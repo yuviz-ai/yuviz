@@ -123,7 +123,50 @@ class TestAgentEndpoints:
 
         resp = await client.get(f"/tenants/{test_tenant['slug']}/agents/support-agent")
         assert resp.status_code == 200
-        assert resp.json()["greeting"] == "Hi!"
+        body = resp.json()
+        assert body["greeting"] == "Hi!"
+        graph = body["workflow"]
+        if isinstance(graph, str):
+            import json
+            graph = json.loads(graph)
+        assert graph is not None
+        start = next(n for n in graph["nodes"] if n["type"] == "start")
+        assert start["data"]["greeting"] == "Hi!"
+
+    async def test_creating_the_same_slug_twice_is_409_not_500(self, client, test_tenant):
+        body = {"slug": "dupe-agent", "name": "Dupe"}
+        assert (await client.post(f"/tenants/{test_tenant['slug']}/agents", json=body)).status_code == 201
+        resp = await client.post(f"/tenants/{test_tenant['slug']}/agents", json=body)
+        assert resp.status_code == 409
+        assert "already taken" in resp.json()["detail"]
+
+    async def test_create_agent_rejects_an_invalid_graph(self, client, test_tenant):
+        resp = await client.post(
+            f"/tenants/{test_tenant['slug']}/agents",
+            json={
+                "slug": "bad-graph", "name": "Bad",
+                "workflow": {
+                    "version": 1,
+                    "nodes": [{"id": "n1", "type": "start", "position": {"x": 0, "y": 0},
+                               "data": {"name": "greeting", "prompt": "Hi."}}],
+                    "edges": [],
+                },
+            },
+        )
+        assert resp.status_code == 400
+        assert any(e["id"] == "n1" for e in resp.json()["errors"])
+
+    async def test_workflow_routes_reject_a_malformed_agent_id_with_400_not_500(
+        self, client, test_tenant,
+    ):
+        base = f"/tenants/{test_tenant['slug']}/agents/not-a-uuid/workflow"
+        assert (await client.get(base)).status_code == 400
+        assert (await client.put(f"{base}/draft", json={"graph": {"version": 1, "nodes": [], "edges": []}})).status_code == 400
+        assert (await client.post(f"{base}/validate", json={"graph": {"version": 1, "nodes": [], "edges": []}})).status_code == 400
+        assert (await client.post(f"{base}/publish", json={})).status_code == 400
+        assert (await client.get(f"{base}/versions")).status_code == 400
+        assert (await client.get(f"{base}/versions/1")).status_code == 400
+        assert (await client.post(f"{base}/versions/1/rollback")).status_code == 400
 
     async def test_create_agent_under_unknown_tenant_is_404(self, client):
         resp = await client.post(

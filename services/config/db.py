@@ -9,11 +9,24 @@ logic, which lives in tenants.py / agents.py / provider_configs.py etc.
 
 from __future__ import annotations
 
+import json
 import os
+from typing import Any
 
 import asyncpg
 
 _pool: asyncpg.Pool | None = None
+
+
+def json_col(value: Any) -> Any:
+    """Decode a JSONB column. asyncpg returns strings (no pool codec — writers
+    already pass json.dumps into $n::jsonb, so a codec would double-encode)."""
+    if value is None or not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except (ValueError, TypeError):
+        return value
 
 
 async def get_pool(dsn: str | None = None) -> asyncpg.Pool:

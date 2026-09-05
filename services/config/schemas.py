@@ -46,6 +46,7 @@ class AgentCreate(BaseModel):
     stt_config_id:  str | None = None
     llm_config_id:  str | None = None
     tts_config_id:  str | None = None
+    workflow: dict | None = None  # None/{} → starter_graph; validated like publish
 
 
 class AgentUpdate(BaseModel):
@@ -83,6 +84,15 @@ class AgentUpdate(BaseModel):
     # duration_s_check) so a bad value is rejected at config time instead
     # of failing the INSERT/UPDATE.
     max_call_duration_s:  int | None = Field(default=None, ge=30, le=7200)
+
+
+class WorkflowDraft(BaseModel):
+    graph: dict[str, Any]
+
+
+class WorkflowPublish(BaseModel):
+    graph: dict[str, Any] | None = None  # None → publish workflow_draft
+    note:  str | None = None
 
 
 class ProviderConfigCreate(BaseModel):

@@ -53,6 +53,14 @@ def _parse_dt(value: Any) -> datetime | None:
     return datetime.fromisoformat(value)
 
 
+def _parse_json(value: Any) -> dict[str, Any] | None:
+    """Like _parse_extra but preserves None — "no workflow" vs empty dict."""
+    import json
+    if value is None or value == "":
+        return None
+    return json.loads(value) if isinstance(value, str) else value
+
+
 def _parse_extra(value: Any) -> dict[str, Any]:
     # JSONB columns come back from asyncpg (and therefore from both Redis's
     # cached JSON and Config Service's REST responses, which both trace back
@@ -117,6 +125,8 @@ def _agent_from_dict(row: dict[str, Any]) -> Agent:
         farewell_message=row.get("farewell_message"),
         transfer_announcement=row.get("transfer_announcement"),
         max_call_duration_s=row.get("max_call_duration_s"),
+        workflow=_parse_json(row.get("workflow")),
+        workflow_draft=_parse_json(row.get("workflow_draft")),
     )
 
 
@@ -202,6 +212,7 @@ class CacheAsideConfigProvider:
                 transfer_prompt=agent.transfer_prompt,
                 farewell_message=agent.farewell_message,
                 transfer_announcement=agent.transfer_announcement,
+                workflow=agent.workflow,
             ),
             media=MediaInfo(
                 voice=providers["tts"].voice,

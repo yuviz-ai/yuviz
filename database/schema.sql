@@ -170,6 +170,12 @@ DO $$ BEGIN
         CHECK (max_call_duration_s IS NULL OR max_call_duration_s BETWEEN 30 AND 7200);
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
+-- Draft autosave (may be invalid) vs published live graph.
+-- Existing rows are backfilled to a starter graph after agent_workflow_versions
+-- and the agents_version trigger exist (see below) — never left NULL forever.
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS workflow       JSONB;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS workflow_draft JSONB;
+
 -- ── tool_provider_configs — Tool Execution Framework, mirrors provider_configs ──
 -- Same shape/discipline as provider_configs above: tenant-scoped, api_key_ref
 -- is a REFERENCE ONLY ('env:...' | 'enc:...' | 'k8s:...'), never a real key
@@ -241,6 +247,19 @@ ALTER TABLE users ALTER COLUMN password_hash SET NOT NULL;
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS is_service_account BOOLEAN NOT NULL DEFAULT false;
 UPDATE users SET is_service_account = true WHERE lower(email) LIKE '%@internal.%' AND is_service_account = false;
+
+-- Append-only publish history (rollback republishes as a new version).
+CREATE TABLE IF NOT EXISTS agent_workflow_versions (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    agent_id     UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    version      INT  NOT NULL,
+    graph        JSONB NOT NULL,
+    published_by UUID REFERENCES users(id),
+    published_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    note         TEXT,
+    UNIQUE (agent_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_awv_agent ON agent_workflow_versions(agent_id, version DESC);
 
 -- ── audit_log — append-only, written in the same transaction as the mutation ─
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -527,9 +546,97 @@ DROP TRIGGER IF EXISTS tenants_version ON tenants;
 CREATE TRIGGER tenants_version BEFORE UPDATE ON tenants
     FOR EACH ROW EXECUTE FUNCTION bump_config_version();
 
+-- Skip config_version bump when only workflow_draft changed (editor autosave).
+CREATE OR REPLACE FUNCTION bump_agent_config_version() RETURNS TRIGGER AS $$
+BEGIN
+    IF to_jsonb(NEW) - 'workflow_draft' - 'updated_at' - 'config_version'
+     = to_jsonb(OLD) - 'workflow_draft' - 'updated_at' - 'config_version'
+    THEN
+        NEW.config_version := OLD.config_version;
+        NEW.updated_at := OLD.updated_at;
+        RETURN NEW;
+    END IF;
+    NEW.config_version := OLD.config_version + 1;
+    NEW.updated_at := now();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
 DROP TRIGGER IF EXISTS agents_version ON agents;
 CREATE TRIGGER agents_version BEFORE UPDATE ON agents
-    FOR EACH ROW EXECUTE FUNCTION bump_config_version();
+    FOR EACH ROW EXECUTE FUNCTION bump_agent_config_version();
+
+-- Pre-workflow agents: seed a starter graph from greeting/system_prompt (and
+-- any enabled tool policies) so live `workflow` is never left NULL. Mirrors
+-- libs/config_sdk.workflow.starter_graph(); re-runs are no-ops.
+WITH starter AS (
+    SELECT
+        a.id,
+        jsonb_build_object(
+            'version', 1,
+            'nodes', jsonb_build_array(
+                jsonb_build_object(
+                    'id', 'global', 'type', 'global',
+                    'position', '{"x": 330, "y": 0}'::jsonb,
+                    'data', jsonb_build_object(
+                        'name', 'always applies',
+                        'prompt', COALESCE(a.system_prompt, '')
+                    )
+                ),
+                jsonb_build_object(
+                    'id', 'start', 'type', 'start',
+                    'position', '{"x": 0, "y": 0}'::jsonb,
+                    'data', jsonb_build_object(
+                        'name', 'greeting',
+                        'prompt', 'Greet the caller and find out what they need.',
+                        'greeting', COALESCE(a.greeting, ''),
+                        'tools', COALESCE((
+                            SELECT jsonb_agg(p.tool_name ORDER BY p.tool_name)
+                            FROM agent_tool_policies p
+                            WHERE p.agent_id = a.id AND p.enabled
+                        ), '[]'::jsonb)
+                    )
+                ),
+                jsonb_build_object(
+                    'id', 'end', 'type', 'end',
+                    'position', '{"x": 0, "y": 230}'::jsonb,
+                    'data', jsonb_build_object(
+                        'name', 'goodbye',
+                        'prompt', 'Confirm anything outstanding and close warmly.',
+                        'disposition', 'completed'
+                    )
+                )
+            ),
+            'edges', jsonb_build_array(
+                jsonb_build_object(
+                    'id', 'e-start-end', 'source', 'start', 'target', 'end',
+                    'data', jsonb_build_object(
+                        'label', 'conversation finished',
+                        'condition', 'The caller has no further questions.'
+                    )
+                )
+            )
+        ) AS graph
+    FROM agents a
+    WHERE a.workflow IS NULL
+)
+UPDATE agents a
+SET workflow = s.graph, workflow_draft = s.graph
+FROM starter s
+WHERE a.id = s.id;
+
+-- Draft may still be NULL if only `workflow` was filled by an older path.
+UPDATE agents
+SET workflow_draft = workflow
+WHERE workflow IS NOT NULL AND workflow_draft IS NULL;
+
+INSERT INTO agent_workflow_versions (agent_id, version, graph, note)
+SELECT a.id, 1, a.workflow, 'backfilled starter graph'
+FROM agents a
+WHERE a.workflow IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM agent_workflow_versions v WHERE v.agent_id = a.id
+  );
 
 -- ── Remaining indexes ────────────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_agents_tenant ON agents(tenant_id);

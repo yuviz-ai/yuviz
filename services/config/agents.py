@@ -10,11 +10,15 @@ exists for the Admin UI's edit-by-id flow, where the id is already known.
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any
 
+from libs.config_sdk.workflow import starter_graph
+
 from . import audit, cache, db
 
+# `workflow` is absent — only publish/create may write a validated graph.
 _UPDATABLE_FIELDS = {
     "name", "greeting", "system_prompt", "goodbye_grace_ms", "language",
     "stt_config_id", "llm_config_id", "tts_config_id",
@@ -26,9 +30,20 @@ _UPDATABLE_FIELDS = {
     "status", "max_call_duration_s",
 }
 
+_JSON_COLUMNS = ("workflow", "workflow_draft")
+
 
 def _cache_key(tenant_slug: str, agent_slug: str) -> str:
     return f"agent:{tenant_slug}:{agent_slug}"
+
+
+def _row(row: Any) -> dict[str, Any]:
+    """Decode JSONB columns on an agents row (see db.json_col)."""
+    out = dict(row)
+    for column in _JSON_COLUMNS:
+        if column in out:
+            out[column] = db.json_col(out[column])
+    return out
 
 
 async def get_agent(tenant_slug: str, agent_slug: str) -> dict[str, Any] | None:
@@ -45,7 +60,7 @@ async def get_agent(tenant_slug: str, agent_slug: str) -> dict[str, Any] | None:
     if row is None:
         return None
 
-    result = dict(row)
+    result = _row(row)
     await cache.set_json(_cache_key(tenant_slug, agent_slug), result)
     return result
 
@@ -55,7 +70,7 @@ async def get_agent_by_id(agent_id: Any) -> dict[str, Any] | None:
     row = await pool.fetchrow(
         "SELECT * FROM agents WHERE id = $1 AND deleted_at IS NULL", agent_id,
     )
-    return dict(row) if row is not None else None
+    return _row(row) if row is not None else None
 
 
 async def list_agents(tenant_id: Any) -> list[dict[str, Any]]:
@@ -64,7 +79,7 @@ async def list_agents(tenant_id: Any) -> list[dict[str, Any]]:
         "SELECT * FROM agents WHERE tenant_id = $1 AND deleted_at IS NULL ORDER BY name",
         tenant_id,
     )
-    return [dict(row) for row in rows]
+    return [_row(row) for row in rows]
 
 
 _PROVIDER_ROLE_BY_FIELD = {
@@ -127,10 +142,23 @@ async def create_agent(
     stt_config_id: Any | None = None,
     llm_config_id: Any | None = None,
     tts_config_id: Any | None = None,
+    workflow: dict[str, Any] | None = None,
     tenant_slug: str | None = None,
     user_id: Any | None = None,
     user_email: str | None = None,
 ) -> dict[str, Any]:
+    """Create agent + published starter workflow in one transaction.
+
+    Caller-supplied `workflow` is validated like publish; None/{} seed
+    starter_graph() from greeting/system_prompt.
+    """
+    # Deferred import: workflows.py imports this module for its cache key.
+    from .workflows import append_version, validate
+
+    graph = workflow if workflow else starter_graph(greeting, system_prompt)
+    validate(graph)
+    graph_json = json.dumps(graph)
+
     pool = await db.get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -141,12 +169,16 @@ async def create_agent(
             row = await conn.fetchrow(
                 "INSERT INTO agents "
                 "(tenant_id, slug, name, greeting, system_prompt, "
-                "stt_config_id, llm_config_id, tts_config_id) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *",
+                "stt_config_id, llm_config_id, tts_config_id, workflow, workflow_draft) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $9::jsonb) RETURNING *",
                 tenant_id, slug, name, greeting, system_prompt,
-                stt_config_id, llm_config_id, tts_config_id,
+                stt_config_id, llm_config_id, tts_config_id, graph_json,
             )
-            result = dict(row)
+            result = _row(row)
+            await append_version(
+                conn, result["id"], graph_json,
+                user_id=user_id, note="created with the agent",
+            )
             await audit.write_audit(
                 conn,
                 entity_type="agent",
@@ -204,7 +236,7 @@ async def update_agent(
             )
             if old_row is None:
                 raise LookupError(f"agent {agent_id} not found under tenant {tenant_slug!r}")
-            old = dict(old_row)
+            old = _row(old_row)
             await _validate_provider_assignments(conn, old["tenant_id"], fields)
 
             columns = list(fields.keys())
@@ -213,7 +245,7 @@ async def update_agent(
                 f"UPDATE agents SET {set_clause} WHERE id = $1 RETURNING *",
                 agent_id, *(fields[col] for col in columns),
             )
-            new = dict(new_row)
+            new = _row(new_row)
 
             await audit.write_audit(
                 conn,
@@ -248,7 +280,7 @@ async def soft_delete_agent(
             )
             if old_row is None:
                 raise LookupError(f"agent {agent_id} not found under tenant {tenant_slug!r}")
-            old = dict(old_row)
+            old = _row(old_row)
 
             await conn.execute("UPDATE agents SET deleted_at = now() WHERE id = $1", agent_id)
             await audit.write_audit(
