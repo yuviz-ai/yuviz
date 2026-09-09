@@ -224,6 +224,24 @@ async def test_chain_status_mapping_table():
         assert result.status == expected, chain_status
 
 
+async def test_invalid_argument_forwards_missing_fields_into_the_payload():
+    """QA defect 9, end to end from the executor response through to what
+    the conversation side receives: a caller who asks for a refund
+    without an order id must get back the name of the field that's
+    missing, not an empty payload — that is the one question the LLM
+    needs to ask to complete the task."""
+    client = _FakeToolExecClient({
+        "chain_status": "invalid_argument", "data": {}, "error": "missing_fields",
+        "missing_fields": [{"name": "order_id", "description": ""}],
+    })
+    executor = ApiExecExecutor(client)
+
+    result = await executor.execute(_request())
+
+    assert result.status == ToolStatus.INVALID_ARGUMENT
+    assert result.payload["missing_fields"] == [{"name": "order_id", "description": ""}]
+
+
 async def test_chain_budget_ms_derived_from_context_deadline():
     import time
     client = _FakeToolExecClient({"chain_status": "success", "data": {}})

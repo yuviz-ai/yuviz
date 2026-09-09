@@ -95,6 +95,11 @@ class ApiExecExecutor:
             # Only the redacted `data` projection reaches the LLM/log —
             # never steps/completed_steps/failed_step.
             payload = dict(response.get("data") or {})
+        elif status is ToolStatus.INVALID_ARGUMENT:
+            # Names the gap (e.g. a missing order id) so the LLM can ask
+            # the one question that would complete the task, same shape
+            # every other executor's missing_fields payload already uses.
+            payload["missing_fields"] = response.get("missing_fields") or []
 
         return ToolResult(
             status=status,

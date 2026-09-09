@@ -416,7 +416,21 @@ def _resolve_arguments(
         name = param["name"]
         if name not in argument_sources:
             continue  # an optional caller field that was simply absent
-        typed_value = _coerce(raw_values[name], param["json_type"])
+        try:
+            typed_value = _coerce(raw_values[name], param["json_type"])
+        except (TypeError, ValueError):
+            # e.g. an LLM-supplied {"qty": "three"} against an `integer`
+            # param — must become a step outcome (invalid_argument, this
+            # param named) rather than escape the step loop past
+            # _finalize_run: an uncaught exception here leaves
+            # api_chain_runs.status stuck 'running' forever and, since
+            # that row already won the idempotency-key claim, wedges
+            # every corrected retry under the same key at
+            # chain_already_running permanently.
+            raise _StepFailure(
+                "invalid_argument", "invalid_argument_type",
+                [{"name": name, "description": param.get("description", "")}],
+            )
         location = param["location"]
 
         if location == "body":
@@ -643,11 +657,22 @@ async def execute_chain(request: ChainExecuteRequest) -> ChainExecuteResponse:
     if not admission.acquire(tenant_id, agent_id):
         return ChainExecuteResponse(run_id="", chain_status="rate_limited", error="rate_limited")
 
+    # Bound before the try — and admission_released tracked separately
+    # from run_id — so a raise from _claim_run itself (pool timeout, or
+    # the api_chain_runs FK on agent_id/target_api_id) neither hits an
+    # UnboundLocalError that masks the original exception nor leaks the
+    # admission slot acquired above: `run_id is not None` alone cannot
+    # tell the finally "was this slot already released", since _claim_run
+    # can raise before run_id is ever assigned, leaving it None exactly
+    # like the ordinary loser's path (which DOES release explicitly below).
+    run_id: str | None = None
+    admission_released = False
     try:
         run_id, existing_run = await _claim_run(tenant_id, agent_id, target_api_id, request)
         if run_id is None:
             # The loser's path — no new work, no new transport call.
             admission.release(tenant_id, agent_id)
+            admission_released = True
             if existing_run is None:
                 return ChainExecuteResponse(run_id="", chain_status="failed", error="chain_already_running")
             return await _response_from_existing_run(existing_run)
@@ -658,12 +683,14 @@ async def execute_chain(request: ChainExecuteRequest) -> ChainExecuteResponse:
             chain_budget_ms=chain_budget_ms,
         )
     finally:
-        # Only reached for the winning path (the loser already released
-        # above and returned) — held until the run reaches a terminal
-        # status, including the barge-in case where the chain keeps
-        # running server-side (lesson 26: nothing here is un-torn-down,
-        # this IS the teardown).
-        if run_id is not None:
+        # Reached for the winning path, and for any exception (including
+        # _claim_run raising before run_id is ever assigned) — held until
+        # the run reaches a terminal status, including the barge-in case
+        # where the chain keeps running server-side (lesson 26: nothing
+        # here is un-torn-down, this IS the teardown). Skipped only when
+        # the loser's path already released above, to avoid a double
+        # release.
+        if not admission_released:
             admission.release(tenant_id, agent_id)
 
 
@@ -680,6 +707,7 @@ async def _run_steps(
     completed_steps: list[str] = []
     failed_step: ChainStepReport | None = None
     chain_error: str | None = None
+    missing_fields: list[dict] = []
     final_redacted_response: dict | None = None
     remaining_budget_ms = chain_budget_ms
     stop = False
@@ -707,6 +735,7 @@ async def _run_steps(
         body_fields: dict[str, Any] = {}
         argument_sources: dict[str, str] | None = None
         arguments_hash: str | None = None
+        injected_auth_keys: set[str] = set()
         started = time.monotonic()
 
         try:
@@ -717,14 +746,28 @@ async def _run_steps(
             hostname, allowed_ips = await resolve_and_validate_endpoint(api_row["endpoint_url"])
 
             try:
-                await auth_schemes.apply(api_row, headers, query_params)
+                injected_auth_keys = await auth_schemes.apply(api_row, headers, query_params)
             except ValueError:
                 # auth_schemes.apply() already never puts the ref itself in
                 # its own ValueError — re-raised here as the step outcome
                 # the design specifies, still with no ref anywhere in it.
                 raise _StepFailure("unavailable", "credential_unavailable")
 
-            resolved_arguments = {**body_fields, **query_params, **headers}
+            # The auth-injected keys (Authorization / an api_key header or
+            # query param) are excluded here, before anything downstream
+            # ever sees this dict — never persisted, never hashed. Both
+            # halves matter: leaving the resolved credential in would put
+            # a live bearer token in api_chain_steps.arguments_redacted
+            # (readable tenant-wide via GET /calls/{session_id}/chain-runs),
+            # and would make arguments_hash a function of a value that
+            # rotates (oauth2_client_credentials' cached token, refreshed
+            # 60s before expiry) rather than of the declared arguments —
+            # breaking the ON CONFLICT (tenant_id, custom_api_id,
+            # arguments_hash) dedupe AC 15 relies on.
+            resolved_arguments = {
+                k: v for k, v in {**body_fields, **query_params, **headers}.items()
+                if k not in injected_auth_keys
+            }
             side_effecting = bool(api_row["side_effecting"])
             idempotency_key_value = None
             if side_effecting:
@@ -794,7 +837,11 @@ async def _run_steps(
         except _StepFailure as failure:
             duration_ms = int((time.monotonic() - started) * 1000)
             sensitive_param_names = [p["name"] for p in params_by_api.get(api_id, []) if p.get("sensitive")]
-            arguments_redacted = redaction.redact({**body_fields, **query_params, **headers}, sensitive_param_names)
+            failure_arguments = {
+                k: v for k, v in {**body_fields, **query_params, **headers}.items()
+                if k not in injected_auth_keys
+            }
+            arguments_redacted = redaction.redact(failure_arguments, sensitive_param_names)
             await _persist_step(
                 run_id, step_index, api_row, levels[api_id], request.session_id,
                 status=failure.status, http_status=failure.http_status, error=failure.error,
@@ -806,6 +853,7 @@ async def _run_steps(
             steps.append(report)
             failed_step = report
             chain_error = failure.error
+            missing_fields = failure.missing_fields
             stop = True
 
     if failed_step is None:
@@ -829,7 +877,8 @@ async def _run_steps(
 
     return ChainExecuteResponse(
         run_id=run_id, chain_status=chain_status, steps=steps, completed_steps=completed_steps,
-        failed_step=failed_step, data=data, deterministic_response=deterministic_response, error=chain_error,
+        failed_step=failed_step, data=data, missing_fields=missing_fields,
+        deterministic_response=deterministic_response, error=chain_error,
     )
 
 

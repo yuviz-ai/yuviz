@@ -179,6 +179,34 @@ async def test_concurrent_cap_plus_one_rate_limited_no_run_row_zero_calls(pool, 
             admission.release(str(tenant["id"]), str(agent["id"]))
 
 
+@pytest.mark.asyncio
+async def test_claim_run_raising_surfaces_the_real_error_and_releases_the_slot(pool, tenant_agent, monkeypatch):
+    """MINOR 5: run_id was first bound at line 647 inside the try; the
+    finally evaluated `if run_id is not None`. If _claim_run itself raised
+    (pool timeout, or the api_chain_runs FK on agent_id/target_api_id),
+    the finally raised UnboundLocalError and masked the original
+    exception — the FK case lost app.py's fk_violation_handler 400 and
+    became an opaque 500. Worse, the admission slot acquired earlier was
+    then never released, permanently wedging that (tenant, agent) at
+    rate_limited after enough such errors."""
+    tenant, agent = tenant_agent
+    api = await _register_and_enable(pool, tenant, agent, f"claimraise_{uuid.uuid4().hex[:8]}", side_effecting=False)
+
+    async def _raising_claim_run(*args, **kwargs):
+        raise RuntimeError("pool timeout")
+
+    monkeypatch.setattr(executor, "_claim_run", _raising_claim_run)
+
+    key = (str(tenant["id"]), str(agent["id"]))
+    with pytest.raises(RuntimeError, match="pool timeout"):
+        await executor.execute_chain(_request(tenant, agent, api["name"]))
+
+    # The real exception reached the caller (never UnboundLocalError), and
+    # the admission slot acquired before _claim_run was released rather
+    # than leaked.
+    assert admission._concurrent[key] == 0
+
+
 # ── T12 — per-step outbound call: DNS-rebind-safe transport, response cap ─
 
 @pytest.mark.asyncio
@@ -723,6 +751,70 @@ async def test_side_effecting_step_missing_required_arg_finalizes_no_500(pool, t
 
 
 @pytest.mark.asyncio
+async def test_missing_fields_reaches_the_response_not_dropped_to_empty(pool, tenant_agent, monkeypatch):
+    """QA defect 9: _resolve_arguments builds _StepFailure.missing_fields
+    precisely so the turn can name the gap, but the except handler used to
+    never carry it out of _run_steps — the response always sent []. A
+    caller who asks for a refund without an order id must get back the
+    name of the field that's missing, not an empty list."""
+    tenant, agent = tenant_agent
+    api = await _register_side_effecting(
+        pool, tenant, agent, f"missingnamed_{uuid.uuid4().hex[:8]}",
+        params=[{"name": "order_id", "location": "body", "json_type": "string", "required": True, "source": "caller"}],
+    )
+
+    response = await executor.execute_chain(_request(tenant, agent, api["name"], caller_arguments={}))
+
+    assert response.chain_status == "invalid_argument"
+    assert response.error == "missing_fields"
+    assert response.missing_fields == [{"name": "order_id", "description": ""}]
+
+
+@pytest.mark.asyncio
+async def test_coerce_failure_finalizes_as_invalid_argument_not_a_raw_exception(pool, tenant_agent, monkeypatch):
+    """QA defect 6: an LLM-supplied {"qty": "three"} against an `integer`
+    param used to raise a bare ValueError out of _coerce, past the step
+    loop's only handler (except _StepFailure), past _finalize_run —
+    leaving api_chain_runs.status stuck 'running' forever. Because that
+    run row already won the (tenant_id, idempotency_key) claim, the
+    corrected retry under the same key would then be permanently answered
+    chain_already_running."""
+    tenant, agent = tenant_agent
+    api = await _register_and_enable(
+        pool, tenant, agent, f"badcoerce_{uuid.uuid4().hex[:8]}", side_effecting=False,
+        params=[{"name": "qty", "location": "body", "json_type": "integer", "required": True, "source": "caller"}],
+    )
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr(executor, "_step_transport", _mock(handler))
+
+    same_key = f"idem-{uuid.uuid4().hex[:8]}"
+    response = await executor.execute_chain(
+        _request(tenant, agent, api["name"], caller_arguments={"qty": "three"}, idempotency_key=same_key),
+    )
+
+    assert calls == []
+    assert response.chain_status == "invalid_argument"
+    assert response.error == "invalid_argument_type"
+    assert response.missing_fields == [{"name": "qty", "description": ""}]
+
+    # The row must reach a terminal status — under the bug, _coerce's bare
+    # ValueError escapes _run_steps/execute_chain entirely, past
+    # _finalize_run, leaving this row stuck 'running' forever. Because
+    # this row already won the (tenant_id, idempotency_key) claim, that
+    # would permanently answer any retry under the same key
+    # chain_already_running (_response_from_existing_run's "running"
+    # branch) instead of the row's real, finalized outcome.
+    run_row = await pool.fetchrow("SELECT * FROM api_chain_runs WHERE id = $1", uuid.UUID(response.run_id))
+    assert run_row["status"] != "running"
+    assert run_row["finished_at"] is not None
+
+
+@pytest.mark.asyncio
 async def test_undecodable_param_row_refuses_the_call_instead_of_dropping_the_field(pool, tenant_agent, monkeypatch):
     """Review finding 1 / security finding 1 (medium): _build_api_tree
     silently SKIPS a custom_api_params row it cannot decode, deleting a
@@ -809,6 +901,101 @@ async def test_credential_unavailable_no_request_ref_not_leaked(pool, tenant_age
     for record in caplog.records:
         assert missing_ref not in record.getMessage()
         assert missing_ref not in str(record.args)
+
+
+@pytest.mark.asyncio
+async def test_auth_injected_credential_absent_from_redacted_step_and_chain_runs(pool, tenant_agent, monkeypatch):
+    """BLOCKING 1: the resolved bearer credential auth_schemes.apply()
+    injects into `headers` at call time must never reach
+    api_chain_steps.arguments_redacted — that column is returned by
+    GET /calls/{session_id}/chain-runs behind bare get_current_user, so a
+    leftover credential there would let any viewer/supervisor/agent in
+    the tenant read the tenant's live bearer token straight out of
+    Postgres."""
+    tenant, agent = tenant_agent
+    tenant_hex = uuid.UUID(str(tenant["id"])).hex.upper()
+    ref = f"env:TENANT_{tenant_hex}_LIVE_BEARER_TOKEN"
+    secret_value = "sk-live-bearer-token-must-never-be-stored"
+    monkeypatch.setenv(f"TENANT_{tenant_hex}_LIVE_BEARER_TOKEN", secret_value)
+    api = await _register_and_enable(
+        pool, tenant, agent, f"authredact_{uuid.uuid4().hex[:8]}", side_effecting=False,
+        auth_scheme="bearer", auth_config={"token_ref": ref},
+    )
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr(executor, "_step_transport", _mock(handler))
+
+    response = await executor.execute_chain(_request(tenant, agent, api["name"]))
+
+    assert response.chain_status == "success"
+    # The outbound call DID carry the credential (it must still work).
+    assert calls[0].headers["Authorization"] == f"Bearer {secret_value}"
+
+    step_row = await pool.fetchrow(
+        "SELECT * FROM api_chain_steps WHERE run_id = $1", uuid.UUID(response.run_id),
+    )
+    arguments_redacted = db.json_col(step_row["arguments_redacted"])
+    assert "Authorization" not in arguments_redacted
+    assert secret_value not in str(arguments_redacted)
+
+    session_runs = await agent_apis._authorize_chain_runs(
+        step_row["session_id"], _admin(str(tenant["id"])),
+    )
+    for run in session_runs:
+        for step in run["steps"]:
+            assert secret_value not in str(step)
+            step_args = db.json_col(step["arguments_redacted"]) or {}
+            assert "Authorization" not in step_args
+
+
+@pytest.mark.asyncio
+async def test_arguments_hash_stable_across_credential_rotation(pool, tenant_agent, monkeypatch):
+    """BLOCKING 2 (AC 15 regression, the more important half): a credential
+    rotation must not move arguments_hash when the declared arguments are
+    unchanged. auth_scheme='oauth2_client_credentials' caches its token
+    per process and refreshes it 60s before expiry, so if the hash were a
+    function of the resolved credential the SAME logical mutation would
+    derive a DIFFERENT hash on the next token refresh — the ON CONFLICT
+    (tenant_id, custom_api_id, arguments_hash) insert would then find no
+    conflict, and a genuinely identical refund would fire twice."""
+    tenant, agent = tenant_agent
+    tenant_hex = uuid.UUID(str(tenant["id"])).hex.upper()
+    ref = f"env:TENANT_{tenant_hex}_ROTATING_TOKEN"
+    monkeypatch.setenv(f"TENANT_{tenant_hex}_ROTATING_TOKEN", "token-before-rotation")
+    api = await _register_side_effecting(
+        pool, tenant, agent, f"rotate_{uuid.uuid4().hex[:8]}",
+        auth_scheme="bearer", auth_config={"token_ref": ref},
+    )
+
+    def handler(request):
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr(executor, "_step_transport", _mock(handler))
+
+    response1 = await executor.execute_chain(_request(tenant, agent, api["name"]))
+    assert response1.chain_status == "success"
+    step1 = await pool.fetchrow(
+        "SELECT * FROM api_chain_steps WHERE run_id = $1", uuid.UUID(response1.run_id),
+    )
+
+    # Rotate the credential — same declared arguments (none), only the
+    # resolved value behind the same ref changes.
+    monkeypatch.setenv(f"TENANT_{tenant_hex}_ROTATING_TOKEN", "token-after-rotation")
+    response2 = await executor.execute_chain(_request(tenant, agent, api["name"]))
+    step2 = await pool.fetchrow(
+        "SELECT * FROM api_chain_steps WHERE run_id = $1", uuid.UUID(response2.run_id),
+    )
+
+    assert step1["arguments_hash"] == step2["arguments_hash"]
+    # And because the hash is unchanged, the second logically-identical
+    # call correctly collapses to the loser's path instead of firing the
+    # mutation again.
+    assert response2.chain_status == "failed"
+    assert response2.error == "side_effecting_step_already_completed"
 
 
 @pytest.mark.asyncio

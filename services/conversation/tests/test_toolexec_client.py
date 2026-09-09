@@ -38,7 +38,7 @@ async def test_execute_chain_logs_in_lazily_on_first_call():
         return httpx.Response(200, json={"chain_status": "success", "data": {}})
 
     client = _client(handler, login_calls, execute_calls)
-    result = await client.execute_chain({"api_name": "lookup_order"})
+    result = await client.execute_chain({"api_name": "lookup_order", "chain_budget_ms": 20000})
 
     assert result == {"chain_status": "success", "data": {}}
     assert len(login_calls) == 1
@@ -60,11 +60,35 @@ async def test_execute_chain_reauthenticates_exactly_once_on_401():
         return httpx.Response(200, json={"chain_status": "success", "data": {"order_id": "o1"}})
 
     client = _client(handler, login_calls, execute_calls)
-    result = await client.execute_chain({"api_name": "lookup_order"})
+    result = await client.execute_chain({"api_name": "lookup_order", "chain_budget_ms": 20000})
 
     assert result == {"chain_status": "success", "data": {"order_id": "o1"}}
     assert len(login_calls) == 2  # exactly one re-auth, not zero and not a retry loop
     assert len(execute_calls) == 2
+    await client.close()
+
+
+async def test_execute_chain_timeout_derived_from_chain_budget_not_the_fixed_constant():
+    """BLOCKING 3: the server clamps to TOOLEXEC_MAX_CHAIN_BUDGET_MS
+    (20-30s) and the UI ships a default timeout_ms of 20000, but the
+    client hard-coded a 10s httpx timeout — any chain over 10s raised
+    ReadTimeout client-side even though the server would have completed
+    it (and any side effect it fired) within its own budget. The
+    per-request timeout must scale with the request's own
+    chain_budget_ms, not stay pinned to the constant used for /auth/login."""
+    login_calls: list = []
+    execute_calls: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"chain_status": "success", "data": {}})
+
+    client = _client(handler, login_calls, execute_calls)
+    await client.execute_chain({"api_name": "lookup_order", "chain_budget_ms": 25000})
+
+    assert len(execute_calls) == 1
+    timeout = execute_calls[0].extensions["timeout"]["read"]
+    assert timeout > 10.0  # would have failed under the old fixed 10s constant
+    assert timeout == 25.0 + 5.0  # chain_budget_ms/1000 + the round-trip margin
     await client.close()
 
 
@@ -77,7 +101,7 @@ async def test_execute_chain_raises_when_still_401_after_the_one_reauth():
 
     client = _client(handler, login_calls, execute_calls)
     try:
-        await client.execute_chain({"api_name": "lookup_order"})
+        await client.execute_chain({"api_name": "lookup_order", "chain_budget_ms": 20000})
         assert False, "expected raise_for_status to raise"
     except httpx.HTTPStatusError:
         pass

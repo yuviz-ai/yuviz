@@ -19,7 +19,17 @@ import httpx
 
 log = logging.getLogger(__name__)
 
-_TIMEOUT_S = 10.0
+_TIMEOUT_S = 10.0  # /auth/login only — the chain-execute call gets its own, derived from the request's own budget
+
+# The request body already carries chain_budget_ms (bounded server-side by
+# TOOLEXEC_MAX_CHAIN_BUDGET_MS, up to 30s) — this margin is slack for the
+# HTTP round trip and response marshalling on top of the server's own
+# budgeted work, not a second content-level deadline. Without it, a chain
+# the server completes within its budget (e.g. 20-30s) would still read
+# as a client-side httpx.ReadTimeout against the fixed 10s constant, and
+# ApiExecExecutor maps that to FAILED/toolexec_unavailable even though the
+# chain — and any side effect it fired — actually went through server-side.
+_CHAIN_TIMEOUT_MARGIN_S = 5.0
 
 
 class ToolExecClient:
@@ -57,18 +67,24 @@ class ToolExecClient:
 
     async def execute_chain(self, body: dict[str, Any]) -> dict[str, Any]:
         """POSTs the chain-execute request once, re-authenticating exactly
-        once on a 401 (an expired/invalid token) before giving up."""
+        once on a 401 (an expired/invalid token) before giving up. The
+        request's own `chain_budget_ms` — not the client's fixed
+        `_TIMEOUT_S` — bounds how long we wait: the server clamps the
+        chain to that same budget (up to TOOLEXEC_MAX_CHAIN_BUDGET_MS), so
+        the client must wait at least that long, plus margin for the
+        round trip itself."""
+        timeout = (body["chain_budget_ms"] / 1000) + _CHAIN_TIMEOUT_MARGIN_S
         if self._token is None:
             self._token = await self._login()
 
         resp = await self._client.post(
-            "/internal/chains/execute", json=body,
+            "/internal/chains/execute", json=body, timeout=timeout,
             headers={"Authorization": f"Bearer {self._token}"},
         )
         if resp.status_code == 401:
             self._token = await self._login()
             resp = await self._client.post(
-                "/internal/chains/execute", json=body,
+                "/internal/chains/execute", json=body, timeout=timeout,
                 headers={"Authorization": f"Bearer {self._token}"},
             )
 

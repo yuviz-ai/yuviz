@@ -151,7 +151,7 @@ async def _oauth2_client_credentials_token(tenant_id: str, custom_api_id: str, c
     return token
 
 
-async def apply(api: dict, headers: dict[str, Any], query_params: dict[str, Any]) -> None:
+async def apply(api: dict, headers: dict[str, Any], query_params: dict[str, Any]) -> set[str]:
     """Places api['auth_scheme']'s credential into `headers` or
     `query_params` (mutated in place), resolving every ref through
     resolve_tenant_ref() at call time — never the bare
@@ -159,7 +159,13 @@ async def apply(api: dict, headers: dict[str, Any], query_params: dict[str, Any]
     Raises ValueError("credential_unavailable") — with no ref, no
     auth_config value, and no partial credential in the message — if the
     ref cannot be resolved (out-of-namespace, missing platform/tenant
-    secret, decrypt failure, or an unreachable OAuth2 token endpoint)."""
+    secret, decrypt failure, or an unreachable OAuth2 token endpoint).
+
+    Returns the set of header/query-param NAMES it just injected — never
+    the values — so the caller (executor.py) can exclude the resolved
+    credential from whatever it persists or hashes. The caller must not
+    put the resolved value itself in a step row, a log line, or the
+    arguments hash either."""
     scheme = api["auth_scheme"]
     config = api["auth_config"] or {}
     tenant_id = api["tenant_id"]
@@ -167,18 +173,22 @@ async def apply(api: dict, headers: dict[str, Any], query_params: dict[str, Any]
 
     try:
         if scheme == "none":
-            return
+            return set()
         if scheme == "api_key":
             value = await resolve_tenant_ref(tenant_id, config["key_ref"])
             if config.get("location") == "query":
                 query_params[config["name"]] = value
             else:
                 headers[config["name"]] = value
+            return {config["name"]}
         elif scheme == "bearer":
             value = await resolve_tenant_ref(tenant_id, config["token_ref"])
             headers["Authorization"] = f"Bearer {value}"
+            return {"Authorization"}
         elif scheme == "oauth2_client_credentials":
             token = await _oauth2_client_credentials_token(tenant_id, custom_api_id, config)
             headers["Authorization"] = f"Bearer {token}"
+            return {"Authorization"}
     except Exception as exc:
         raise ValueError("credential_unavailable") from exc
+    return set()
