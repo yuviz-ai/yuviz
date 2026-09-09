@@ -41,6 +41,7 @@ from .secret_resolver import CompositeSecretResolver
 from .servicer import ConversationServicer
 from .session import SessionContext
 from .tools.executor_registry import ExecutorRegistry
+from .tools.executors.api_exec_executor import ApiExecExecutor
 from .tools.executors.calendar_executor import CalendarExecutor
 from .tools.executors.cancel_appointment_executor import CancelAppointmentExecutor
 from .tools.executors.reschedule_appointment_executor import RescheduleAppointmentExecutor
@@ -232,6 +233,18 @@ async def serve(port: int, args: argparse.Namespace) -> None:
     )
     executor_registry.register("cancel_appointment", lambda provider, companion=None: CancelAppointmentExecutor(provider))
     executor_registry.register("reschedule_appointment", lambda provider, companion=None: RescheduleAppointmentExecutor(provider))
+    # execute_api's provider is a ToolExecClient (provider_manager.py's
+    # _make_toolexec, reading TOOLEXEC_SERVICE_URL). Unlike the three
+    # calendar executors above, ApiExecExecutor's max_chain_depth is NOT
+    # baked in here: this factory is registered once at process startup,
+    # shared by every tenant/agent, so a per-agent override cannot live in
+    # a constructor arg closed over here — orchestrator.py threads
+    # policy.max_chain_depth into ToolExecutionContext per call instead,
+    # and ApiExecExecutor reads it from request.context there.
+    executor_registry.register(
+        "execute_api",
+        lambda provider, companion=None: ApiExecExecutor(provider),
+    )
     tool_provider_manager = ToolProviderManager(CompositeSecretResolver())
     tool_policy_resolver = await ToolPolicyResolver.connect(
         os.environ.get("POSTGRES_DSN"), tool_registry,

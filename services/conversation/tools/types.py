@@ -112,6 +112,13 @@ class ToolExecutionContext:
     # refuses to book against the ANI until this is true.
     phone_number_confirmed:        bool = False
     conversation_history_snapshot: list[dict[str, Any]] = field(default_factory=list)
+    # ResolvedToolPolicy.max_chain_depth for THIS agent's execute_api policy
+    # row (NULL = no override, use the platform default) — only
+    # ApiExecExecutor reads this; every other executor ignores it. Carried
+    # per-call, not baked into the executor at construction time, because
+    # ExecutorRegistry.resolve() has no per-agent policy to close over when
+    # the factory is registered once at process startup (__main__.py).
+    max_chain_depth:                int | None = None
 
 
 @dataclass(frozen=True)

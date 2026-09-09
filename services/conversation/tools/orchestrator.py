@@ -191,7 +191,10 @@ class ToolCallOrchestrator:
             return ToolResult(status=ToolStatus.FAILED, error="no_executor_registered")
 
         timeout_ms = policy.timeout_ms or DEFAULT_TOOL_TIMEOUT_MS
-        chain = build_default_chain(executor, timeout_ms=timeout_ms, metrics=self._metrics)
+        chain = build_default_chain(
+            executor, timeout_ms=timeout_ms, metrics=self._metrics,
+            redact_arg_keys=policy.sensitive_arg_keys,
+        )
 
         request = ToolExecutionRequest(
             tool_call_id=event.tool_call_id,
@@ -204,6 +207,7 @@ class ToolCallOrchestrator:
                 request_id=str(uuid.uuid4()),
                 caller_number=caller_number,
                 phone_number_confirmed=phone_number_confirmed,
+                max_chain_depth=policy.max_chain_depth,
             ),
         )
 

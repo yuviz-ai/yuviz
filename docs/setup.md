@@ -172,6 +172,43 @@ and hostname (no way to disable that while `SMTP_STARTTLS=true`), so the
 relay needs a valid, trusted certificate — a self-signed or expired one
 will fail the send the same way a refused STARTTLS does.
 
+### Tool Execution Service (custom API chains, port 8600)
+
+`services/toolexec/` (started by `scripts/start_local.sh`'s
+`start_toolexec_service()`) owns the custom-API registry and runs
+`execute_api` chains on the Conversation Service's behalf. No new
+service-account is needed: `services/conversation/tools/providers/toolexec/
+client.py` (`ToolExecClient`) authenticates to Config Service's
+`/auth/login` with the SAME `conversation-service@internal.yuviz.ai`
+account created in step 5 above, reusing `CONFIG_SERVICE_EMAIL`/
+`CONFIG_SERVICE_PASSWORD`/`CONFIG_SERVICE_URL` — nothing new to create
+there. Its own env vars:
+
+```bash
+export TOOLEXEC_SERVICE_URL="http://localhost:8600"        # Conversation Service's base URL for it; default shown
+export TOOLEXEC_EXECUTE_SUBJECTS="conversation-service@internal.yuviz.ai"  # comma-separated emails allowed to POST /internal/chains/execute; default shown
+export TOOLEXEC_TENANT_SECRET_ROOT="/path/to/tenant/secrets"  # where tenant-namespaced enc:/env:/k8s: refs resolve — NEVER the platform k8s secret mount; required, no default
+export TOOLEXEC_HTTP_HOST_ALLOWLIST=""                      # comma-separated hostnames allowed to use http:// or a non-default port instead of https://; empty = https-only, no exceptions
+export TOOLEXEC_ARGS_HMAC_KEY_REF="env:TOOLEXEC_HMAC_KEY"   # platform secret ref (CompositeSecretResolver) — required, no default; see rotation note below
+export TOOLEXEC_ARGS_HMAC_KEY_ID="k1"                       # key id embedded in every derived hash/idempotency-key, so a rotation is visible in stored data; default shown
+export TOOLEXEC_SIDE_EFFECT_CLAIM_TTL="24 hours"            # how long a claimed side-effecting step blocks a retry of the same arguments; default shown
+export TOOLEXEC_MAX_CHAIN_BUDGET_MS="30000"                 # hard ceiling on any chain's whole-chain wall clock, regardless of what the caller/agent policy requests; default shown
+export TOOLEXEC_MAX_CONCURRENT_RUNS_PER_AGENT="4"           # abuse brake, per (tenant_id, agent_id), per service replica; default shown
+export TOOLEXEC_MAX_RUNS_PER_MINUTE_PER_AGENT="60"          # same scope as above; default shown
+export TOOLEXEC_MAX_RESPONSE_BYTES="1048576"                # a step's upstream response is abandoned past this many bytes (1 MiB); default shown
+```
+
+`TOOLEXEC_ARGS_HMAC_KEY_REF` rotation: `_derive()` (`services/toolexec/
+executor.py`) uses this one key, with a different domain-separation tag,
+for BOTH the platform's own side-effect claim (`arguments_hash`, stored in
+`api_chain_steps`/`api_side_effect_claims`) AND the value sent to the
+downstream API in its own idempotency header
+(`custom_apis.idempotency_header`). Rotating the key therefore blinds
+**both** of those at once — the platform's fail-closed retry guard and the
+downstream API's own dedupe — for one `TOOLEXEC_SIDE_EFFECT_CLAIM_TTL`
+window, since both are derived from the same rotated secret. Plan a
+rotation around that window, not around the platform claim alone.
+
 ## 6. Seed a default agent
 
 ```bash
@@ -207,6 +244,13 @@ Then, from a fresh tab, run `./scripts/verify_setup.sh` — unlike the
 service actually reports healthy: it calls Config Service's and
 Knowledge Service's `/health` endpoints and makes a real gRPC health
 check against Conversation Service, not just a TCP connect.
+
+`start_web_test.sh` deliberately does not start Tool Execution Service —
+only `scripts/start_local.sh` (the full native stack, see §9) does, via
+its own `start_toolexec_service()`. Add it to your tab order between
+`start_knowledge_service` and `start_conv1` if you're testing `execute_api`
+chains locally; `start_local.sh`'s own `verify`/`portmap` already cover
+its `:8600` port and `/health` check.
 
 ## 8. Test an agent
 

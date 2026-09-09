@@ -223,12 +223,20 @@ class AgentToolPolicyCreate(BaseModel):
     enabled:                  bool = True
     timeout_ms:               int | None = None
     max_calls_per_turn:       int | None = None
+    # NULL = use the platform ceiling (services/toolexec/graph.py's
+    # MAX_CHAIN_LEVELS = 4); a set value can only LOWER it, never raise
+    # it, enforced where it's actually applied (agent_apis.py's
+    # _effective_max_chain_depth and executor.py's ceiling clamp), never
+    # 0/disabled. Meaningful only for tool_name='execute_api'; harmless
+    # (unread) on every other tool's row.
+    max_chain_depth:          int | None = None
 
 
 class AgentToolPolicyUpdate(BaseModel):
     enabled:             bool | None = None
     timeout_ms:          int | None = None
     max_calls_per_turn:  int | None = None
+    max_chain_depth:     int | None = None
     extra:       dict[str, Any] | None = None
 
 

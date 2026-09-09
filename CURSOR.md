@@ -19,6 +19,7 @@ PostgreSQL (source of truth) + Redis (cache / DID routing / config pub-sub)
 | Real-time AI pipeline (STT/LLM/TTS, tools, transfers) | `services/conversation/` |
 | Knowledge / RAG | `services/knowledge/` |
 | Outbound campaigns | `services/campaigns/` |
+| Custom API chains | `services/toolexec/` |
 | DID / number purchase | `services/did/` |
 | Browser media bridge | `services/webcall/` |
 | Shared libraries | `libs/` (`config_sdk`, `knowledge_sdk`, `telephony_sdk`, `vad_sdk`) |

@@ -35,6 +35,7 @@ async def create_agent_tool_policy(
             enabled=body.enabled,
             timeout_ms=body.timeout_ms,
             max_calls_per_turn=body.max_calls_per_turn,
+            max_chain_depth=body.max_chain_depth,
             user_id=current_user.id,
             user_email=current_user.email,
         )

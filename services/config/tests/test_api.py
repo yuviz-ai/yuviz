@@ -986,6 +986,17 @@ class TestToolProviderConfigEndpoints:
         assert resp.status_code == 201
         assert resp.json()["api_key_ref"].startswith("enc:")
 
+    async def test_create_toolexec_engine_with_no_api_key_ref_succeeds(self, client, test_tenant):
+        # engine='toolexec' is internal infrastructure (services/toolexec/),
+        # not a tenant credential — the Admin UI cannot create the row
+        # agent_tool_policies.tool_provider_config_id requires if this 400s.
+        resp = await client.post(
+            f"/tenants/{test_tenant['id']}/tool-providers",
+            json={"name": "Custom APIs", "tool_name": "execute_api", "engine": "toolexec"},
+        )
+        assert resp.status_code == 201
+        assert resp.json()["api_key_ref"] is None
+
     async def test_create_with_blank_api_key_ref_is_400(self, client, test_tenant):
         resp = await client.post(
             f"/tenants/{test_tenant['id']}/tool-providers",
@@ -1043,6 +1054,47 @@ class TestToolProviderConfigEndpoints:
         assert resp.status_code == 200
         assert resp.json()["api_key_ref"].startswith("enc:")
 
+
+class TestAgentToolPolicyMaxChainDepth:
+    """FIX 1 (c): before this, there was no API path to set
+    agent_tool_policies.max_chain_depth at all — the column existed but
+    nothing could write it, so the per-agent override was dead on
+    arrival regardless of what the executor did with it."""
+
+    async def test_create_and_patch_max_chain_depth(self, client, test_tenant, pool):
+        agent = dict(await pool.fetchrow(
+            "INSERT INTO agents (tenant_id, slug, name) VALUES ($1, 'sup', 'Support') RETURNING *",
+            test_tenant["id"],
+        ))
+        tpc = (await client.post(
+            f"/tenants/{test_tenant['id']}/tool-providers",
+            json={"name": "Custom APIs", "tool_name": "execute_api", "engine": "toolexec"},
+        )).json()
+
+        create = await client.post(
+            f"/agents/{agent['id']}/tool-policies",
+            json={
+                "tool_name": "execute_api", "tool_provider_config_id": tpc["id"],
+                "max_chain_depth": 2,
+            },
+        )
+        assert create.status_code == 201
+        assert create.json()["max_chain_depth"] == 2
+
+        patch = await client.patch(
+            f"/agents/{agent['id']}/tool-policies/execute_api", json={"max_chain_depth": 3},
+        )
+        assert patch.status_code == 200
+        assert patch.json()["max_chain_depth"] == 3
+
+        # Explicitly clearing it back to NULL (use the platform ceiling)
+        # must also work — exclude_unset must not confuse "not sent" with
+        # "sent as null".
+        clear = await client.patch(
+            f"/agents/{agent['id']}/tool-policies/execute_api", json={"max_chain_depth": None},
+        )
+        assert clear.status_code == 200
+        assert clear.json()["max_chain_depth"] is None
 
 
 class TestCarrierEndpoints:

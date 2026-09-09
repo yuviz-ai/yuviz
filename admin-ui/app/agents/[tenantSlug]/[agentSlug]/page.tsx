@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Agent, AgentStatus, AgentUpdate, ApiError, deleteAgent, getAgent, listProviders, ProviderConfig, updateAgent, updateProvider } from "@/lib/api";
-import { KnowledgeBasePanel } from "@/components/KnowledgeBasePanel";
+import { KnowledgeBaseTabs } from "@/components/KnowledgeBaseTabs";
 import { ToolsPanel } from "@/components/ToolsPanel";
 import { SipPanel } from "@/components/SipPanel";
 import { TestAgentPanel } from "@/components/TestAgentPanel";
@@ -791,7 +791,7 @@ export default function AgentDetailPage() {
 
       {tab === "tools" && <ToolsPanel tenantId={agent.tenant_id} agentId={agent.id} />}
 
-      {tab === "knowledge-base" && <KnowledgeBasePanel tenantId={agent.tenant_id} agentId={agent.id} />}
+      {tab === "knowledge-base" && <KnowledgeBaseTabs tenantId={agent.tenant_id} agentId={agent.id} />}
 
       {tab !== "knowledge-base" && tab !== "tools" && (
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
