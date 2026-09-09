@@ -100,21 +100,54 @@ async def _verify_ownership(tenant_id: str, agent_id: str, api_name: str) -> dic
     return dict(row) if row is not None else None
 
 
+class _UnbuildableApi(Exception):
+    """Raised by _build_api_tree when the chain being resolved needs an
+    api whose own row, or one of its declared params, could not be
+    decoded. Never silently dropped (lesson 19/32): a hole in a
+    side-effecting api's argument list must refuse the call, not dispatch
+    it with the field missing — so this can only be raised for an api the
+    CURRENT chain actually touches, never merely because some other,
+    unrelated row in the tenant happens to be malformed."""
+
+    def __init__(self, api_id: str) -> None:
+        super().__init__(f"custom_api {api_id} could not be decoded")
+        self.api_id = api_id
+
+
 async def _build_api_tree(tenant_id: str, target_id: str) -> tuple[dict, dict[str, dict], dict[str, list[dict]]]:
     """Builds the nested graph.resolve_order()-shaped tree for target_id
     fresh from custom_api_params on every call — never from the
     denormalized chain_levels (AC 11 backstop). Returns (tree, api_rows,
     params_by_api) so the caller can look up each node's own row/params
-    during execution without re-querying per step."""
+    during execution without re-querying per step.
+
+    Raises _UnbuildableApi if target_id, or an api reachable from it via a
+    declared upstream edge, has an undecodable row or an undecodable
+    param — a hole in a declared argument (esp. a required one on a
+    side-effecting api) must refuse the call, never proceed with the field
+    silently absent."""
     pool = await db.get_pool()
     # dict(row) alone leaves auth_config/sensitive_response_paths as the
     # raw JSON strings asyncpg returns for JSONB (no pool codec — see
     # db.json_col); decoded here via custom_apis' own row decoder so
     # redaction.redact() gets a real list, not a string it would
     # silently iterate character-by-character.
-    api_rows = {str(r["id"]): custom_apis_module._decode_custom_api_row(r) for r in await pool.fetch(
+    #
+    # Decoded ROW BY ROW (lesson 34): this loads every non-deleted API/param
+    # in the tenant in one pass, so a single malformed legacy row must not
+    # fail every execute_api chain in the tenant — only a chain that
+    # actually reaches the poisoned api (below) is affected.
+    api_rows: dict[str, dict] = {}
+    poisoned: set[str] = set()
+    for r in await pool.fetch(
         "SELECT * FROM custom_apis WHERE tenant_id = $1 AND deleted_at IS NULL", tenant_id,
-    )}
+    ):
+        try:
+            api_rows[str(r["id"])] = custom_apis_module._decode_custom_api_row(r)
+        except RuntimeError:
+            log.exception("malformed custom_apis row %s in tenant %s", r["id"], tenant_id)
+            poisoned.add(str(r["id"]))
+
     params_by_api: dict[str, list[dict]] = {}
     for r in await pool.fetch(
         "SELECT p.* FROM custom_api_params p "
@@ -122,13 +155,26 @@ async def _build_api_tree(tenant_id: str, target_id: str) -> tuple[dict, dict[st
         "WHERE ca.tenant_id = $1",
         tenant_id,
     ):
-        params_by_api.setdefault(str(r["custom_api_id"]), []).append(custom_apis_module._decode_param_row(r))
+        try:
+            decoded = custom_apis_module._decode_param_row(r)
+        except RuntimeError:
+            # A param row that cannot be decoded is a hole in that API's
+            # OWN declared arguments — the api itself is poisoned (not
+            # merely this one param dropped), so a chain that actually
+            # calls it refuses rather than dispatching with the field
+            # missing.
+            log.exception("malformed custom_api_params row %s in tenant %s", r["id"], tenant_id)
+            poisoned.add(str(r["custom_api_id"]))
+            continue
+        params_by_api.setdefault(str(r["custom_api_id"]), []).append(decoded)
 
     memo: dict[str, dict] = {}
 
     def _build(api_id: str) -> dict:
         if api_id in memo:
             return memo[api_id]
+        if api_id in poisoned or api_id not in api_rows:
+            raise _UnbuildableApi(api_id)
         node = {"id": api_id, "name": api_rows[api_id]["name"], "upstream_apis": []}
         memo[api_id] = node  # inserted before recursing: makes a stored cycle safe to WALK (graph.resolve_order still refuses it)
         for param in params_by_api.get(api_id, []):
@@ -579,7 +625,14 @@ async def execute_chain(request: ChainExecuteRequest) -> ChainExecuteResponse:
     # never against the platform ceiling alone.
     effective_ceiling = await agent_apis._effective_max_chain_depth(agent_id)
     max_levels = min(request.max_chain_depth, effective_ceiling)
-    tree, api_rows, params_by_api = await _build_api_tree(tenant_id, target_api_id)
+    try:
+        tree, api_rows, params_by_api = await _build_api_tree(tenant_id, target_api_id)
+    except _UnbuildableApi as exc:
+        # A row this chain actually needs (the target or a declared
+        # upstream) could not be decoded — refuse the call rather than
+        # dispatch with a hole in it, or raise a bare KeyError (lesson 19).
+        log.error("chain for %s refused: %s", target_api_id, exc)
+        return ChainExecuteResponse(run_id="", chain_status="failed", error="custom_api_row_undecodable")
     try:
         order = graph.resolve_order(tree, max_levels)
     except ValueError as exc:
@@ -806,5 +859,14 @@ async def _persist_step(
         json.dumps(arguments_redacted) if arguments_redacted is not None else None,
         json.dumps(response_redacted) if response_redacted is not None else None,
         json.dumps(argument_sources) if argument_sources is not None else None,
-        arguments_hash, bool(api_row["side_effecting"]), idempotency_key, duration_ms,
+        # The persisted flag records whether THIS row is actually
+        # hash-keyed, not merely whether the API is registered
+        # side_effecting=true. arguments_hash is only ever derived once
+        # the claim is about to be taken (executor.py's `if
+        # side_effecting:` block), so any step that never got that far —
+        # skipped, or failed before the hash existed (missing argument,
+        # endpoint/credential resolution failure) — genuinely made no
+        # side-effecting attempt and must not claim one, or it retrips
+        # api_chain_steps_side_effect_keyed (lesson 32).
+        arguments_hash, arguments_hash is not None, idempotency_key, duration_ms,
     )

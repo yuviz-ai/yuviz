@@ -104,6 +104,28 @@ def test_k8s_symlink_escape_rejected(resolver_must_not_be_called, tmp_path):
     assert outside_secret.read_text() == "PLATFORM-SENTINEL-FILE-CONTENTS"  # untouched
 
 
+def test_env_ref_accepted_when_tenant_id_is_asyncpg_uuid_object():
+    """Defect 4: update_custom_api passes tenant_id straight off the DB row
+    — an asyncpg.pgproto.pgproto.UUID object, not the str every other
+    caller has (a JSON body field). uuid.UUID() rejects a UUID instance
+    outright ('object has no attribute replace'), so PATCH always 500'd
+    for an env:/k8s: ref. Must behave identically to the str form."""
+    from asyncpg.pgproto.pgproto import UUID as AsyncpgUUID
+
+    tenant_id_obj = AsyncpgUUID(TENANT_ID)
+    auth_schemes.validate_tenant_ref(tenant_id_obj, f"env:TENANT_{TENANT_HEX}_TOKEN")  # must not raise
+
+
+def test_k8s_ref_accepted_when_tenant_id_is_asyncpg_uuid_object():
+    from asyncpg.pgproto.pgproto import UUID as AsyncpgUUID
+
+    root = os.environ["TOOLEXEC_TENANT_SECRET_ROOT"]
+    os.makedirs(os.path.join(root, "tenants", TENANT_ID), exist_ok=True)
+
+    tenant_id_obj = AsyncpgUUID(TENANT_ID)
+    auth_schemes.validate_tenant_ref(tenant_id_obj, f"k8s:tenants/{TENANT_ID}/token")  # must not raise
+
+
 @pytest.mark.asyncio
 async def test_env_own_namespace_resolves():
     os.environ[f"TENANT_{TENANT_HEX}_TOKEN"] = "own-tenant-value"
@@ -172,3 +194,95 @@ async def test_apply_never_puts_the_ref_in_its_own_error_message():
 
     assert missing_ref not in str(exc_info.value)
     assert str(exc_info.value) == "credential_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_k8s_ref_resolves_a_real_file_planted_in_the_tenant_namespace():
+    """QA 'Not covered': only the k8s: rejection paths were driven; no
+    secret file was ever planted, so a successful tenant-namespaced read
+    was unverified. Plants a real file under TOOLEXEC_TENANT_SECRET_ROOT
+    and drives resolve_tenant_ref end to end (validate + the real
+    K8sFileResolver), asserting the file's actual contents come back —
+    fails if the resolver is pointed at the wrong root or the ref
+    resolution logic is broken, not merely if validation is."""
+    tenant_id = str(uuid.uuid4())
+    root = os.environ["TOOLEXEC_TENANT_SECRET_ROOT"]
+    tenant_dir = os.path.join(root, "tenants", tenant_id)
+    os.makedirs(tenant_dir, exist_ok=True)
+    with open(os.path.join(tenant_dir, "partner_token"), "w") as f:
+        f.write("real-tenant-secret-value")
+
+    value = await auth_schemes.resolve_tenant_ref(tenant_id, f"k8s:tenants/{tenant_id}/partner_token")
+
+    assert value == "real-tenant-secret-value"
+
+
+@pytest.mark.asyncio
+async def test_oauth2_token_cached_and_refreshed_60s_before_deployed_expiry(monkeypatch):
+    """Design test plan: 'OAuth2 fetches once, reuses within expiry,
+    re-fetches after' plus the 60s early-refresh margin
+    (auth_schemes.py's `now < cached[1] - 60`) — neither was exercised by
+    any test (QA 'Not covered': no OAuth2 token endpoint was available).
+    Fakes only the token endpoint transport (httpx.AsyncClient), driving
+    the real cache dict and the real time-comparison logic; the clock is
+    advanced by monkeypatching auth_schemes.time.time, never by lowering
+    the 60s constant (lesson 25 — the constant IS the thing under test).
+
+    Mutation proof: removing the `- 60` margin (i.e. only refreshing once
+    now >= cached[1]) makes the third call at exactly expires_at-60 reuse
+    the cached token and calls['n'] stays at 1 — this assertion fails."""
+    tenant_id = str(uuid.uuid4())
+    tenant_hex = uuid.UUID(tenant_id).hex.upper()
+    os.environ[f"TENANT_{tenant_hex}_OAUTH_CID"] = "client-id"
+    os.environ[f"TENANT_{tenant_hex}_OAUTH_CSECRET"] = "client-secret"
+    config = {
+        "token_url": "https://issuer.example.com/token",
+        "client_id_ref": f"env:TENANT_{tenant_hex}_OAUTH_CID",
+        "client_secret_ref": f"env:TENANT_{tenant_hex}_OAUTH_CSECRET",
+    }
+
+    calls = {"n": 0}
+
+    class _FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"access_token": f"tok-{calls['n']}", "expires_in": 100}
+
+    class _FakeAsyncClient:
+        def __init__(self, *a, **kw) -> None:
+            pass
+
+        async def __aenter__(self) -> "_FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *a) -> bool:
+            return False
+
+        async def post(self, url, data=None):
+            calls["n"] += 1
+            return _FakeResponse()
+
+    monkeypatch.setattr(auth_schemes.httpx, "AsyncClient", _FakeAsyncClient)
+    auth_schemes._oauth2_token_cache.clear()
+
+    t0 = 1_700_000_000.0
+    monkeypatch.setattr(auth_schemes.time, "time", lambda: t0)
+    token1 = await auth_schemes._oauth2_client_credentials_token(tenant_id, "api-x", config)
+    assert calls["n"] == 1
+
+    # Still well inside expiry, and inside the fetch's own 60s margin from
+    # now — must be served from cache with NO new call.
+    monkeypatch.setattr(auth_schemes.time, "time", lambda: t0 + 10)
+    token2 = await auth_schemes._oauth2_client_credentials_token(tenant_id, "api-x", config)
+    assert token2 == token1
+    assert calls["n"] == 1
+
+    # Exactly expires_at - 60: the deployed early-refresh margin must
+    # already have kicked in, even though the token has not technically
+    # expired yet.
+    monkeypatch.setattr(auth_schemes.time, "time", lambda: t0 + 100 - 60)
+    token3 = await auth_schemes._oauth2_client_credentials_token(tenant_id, "api-x", config)
+    assert token3 != token1
+    assert calls["n"] == 2

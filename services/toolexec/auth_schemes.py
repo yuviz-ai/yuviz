@@ -69,6 +69,13 @@ def validate_tenant_ref(tenant_id: str, ref: str) -> None:
               cannot point outside it either.
         anything else (including a literal): rejected.
     """
+    # Normalized once: update_custom_api's caller passes the DB row's own
+    # tenant_id, an asyncpg.pgproto.pgproto.UUID object, not the str every
+    # OTHER caller has (a JSON body field) — uuid.UUID() rejects a UUID
+    # instance outright (it expects str/bytes/int), and comparing/joining
+    # a Path with the raw object would misbehave the same way below.
+    tenant_id = str(tenant_id)
+
     if ref.startswith("enc:"):
         return
 

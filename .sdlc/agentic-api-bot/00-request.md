@@ -1,0 +1,1 @@
+Right now the we are answering the user query based on RAG only. Now i want to make a agnetic bot which should have the api and it will call api to perform the tasks. Api can have multilevel dependencies as well

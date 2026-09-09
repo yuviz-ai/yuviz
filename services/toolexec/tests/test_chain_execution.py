@@ -346,6 +346,78 @@ async def test_path_traversal_and_query_injection_produce_single_segment(pool, t
     assert response_b.chain_status == "success"
 
 
+@pytest.mark.asyncio
+async def test_one_malformed_custom_api_row_does_not_break_other_apis_chain(pool, tenant_agent, monkeypatch):
+    """Defect 2's second half / lesson 34: _build_api_tree decodes every
+    non-deleted custom_apis/custom_api_params row in the tenant in one
+    pass. One row whose auth_config is genuinely double-encoded (the shape
+    db.json_col's guard exists to catch — simulated here via a raw SQL
+    write, since the registration/write path cannot produce one) must not
+    take down execute_api for every OTHER api in the tenant."""
+    tenant, agent = tenant_agent
+    broken = await _register_and_enable(pool, tenant, agent, f"broken_{uuid.uuid4().hex[:8]}", side_effecting=False)
+    await pool.execute(
+        "UPDATE custom_apis SET auth_config = to_jsonb('{\"token_ref\": \"x\"}'::text) WHERE id = $1",
+        broken["id"],
+    )
+
+    healthy = await _register_and_enable(pool, tenant, agent, f"healthy_{uuid.uuid4().hex[:8]}", side_effecting=False)
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr(executor, "_step_transport", _mock(handler))
+
+    response = await executor.execute_chain(_request(tenant, agent, healthy["name"]))
+
+    assert len(calls) == 1
+    assert response.chain_status == "success"
+
+
+@pytest.mark.asyncio
+async def test_malformed_upstream_row_in_chain_is_reported_not_a_raw_exception(pool, tenant_agent, monkeypatch):
+    """Review finding 2 / security finding 4: the prior test only proves an
+    UNINVOLVED malformed custom_apis row is harmless. This one corrupts the
+    row that IS an upstream of the target: _build_api_tree still decodes
+    the whole tenant and skips the broken row from api_rows, but _build()
+    then does api_rows[api_id]["name"] for that same id while walking the
+    upstream edge and — per the review — raises KeyError instead of
+    producing a clean chain failure. This test states the intended
+    behaviour (execute_chain returns a failure response, it does not raise)
+    so it fails for the right reason if that intent is not met; per the
+    task, if it reproduces the KeyError that is a real defect to report,
+    not to fix here."""
+    tenant, agent = tenant_agent
+    leaf = await _register_and_enable(pool, tenant, agent, f"badupstream_{uuid.uuid4().hex[:8]}", side_effecting=False)
+    root = await _register_and_enable(
+        pool, tenant, agent, f"badroot_{uuid.uuid4().hex[:8]}", side_effecting=False,
+        params=[{
+            "name": "a", "location": "query", "json_type": "string", "required": True,
+            "source": "upstream", "upstream_api_id": leaf["id"], "upstream_json_path": "$.id",
+        }],
+    )
+    # Same simulated-corruption technique as the uninvolved-row test above,
+    # but on the LEAF that the target actually depends on.
+    await pool.execute(
+        "UPDATE custom_apis SET auth_config = to_jsonb('{\"token_ref\": \"x\"}'::text) WHERE id = $1",
+        leaf["id"],
+    )
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={"id": "x"})
+
+    monkeypatch.setattr(executor, "_step_transport", _mock(handler))
+
+    response = await executor.execute_chain(_request(tenant, agent, root["name"]))
+
+    assert calls == []
+    assert response.chain_status in ("failed", "unavailable", "invalid_argument")
+
+
 # ── T14 — side-effect fail-closed claim ───────────────────────────────────
 
 async def _register_side_effecting(pool, tenant, agent, name: str, **overrides) -> dict:
@@ -615,6 +687,93 @@ async def test_null_arguments_hash_on_side_effecting_step_violates_check(pool, t
         await pool.execute("DELETE FROM api_chain_runs WHERE id = $1", run["id"])
 
 
+@pytest.mark.asyncio
+async def test_side_effecting_step_missing_required_arg_finalizes_no_500(pool, tenant_agent, monkeypatch):
+    """Defect 1 / lesson 32: a side-effecting API's failure paths persist
+    the step before `arguments_hash` is ever derived (missing required
+    caller argument, here) — that write must not retrip
+    api_chain_steps_side_effect_keyed, and the run must reach a terminal
+    status rather than being stranded 'running'."""
+    tenant, agent = tenant_agent
+    api = await _register_side_effecting(
+        pool, tenant, agent, f"refundmissing_{uuid.uuid4().hex[:8]}",
+        params=[{"name": "amount", "location": "body", "json_type": "number", "required": True, "source": "caller"}],
+    )
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={"refunded": True})
+
+    monkeypatch.setattr(executor, "_step_transport", _mock(handler))
+
+    response = await executor.execute_chain(_request(tenant, agent, api["name"], caller_arguments={}))
+
+    assert calls == []
+    assert response.chain_status == "invalid_argument"
+    assert response.error == "missing_fields"
+
+    run_row = await pool.fetchrow("SELECT * FROM api_chain_runs WHERE id = $1", uuid.UUID(response.run_id))
+    assert run_row["status"] != "running"
+    assert run_row["finished_at"] is not None
+
+    step_row = await pool.fetchrow("SELECT * FROM api_chain_steps WHERE run_id = $1", uuid.UUID(response.run_id))
+    assert step_row["arguments_hash"] is None
+    assert step_row["side_effecting"] is False  # no claim was ever attempted for this step
+
+
+@pytest.mark.asyncio
+async def test_undecodable_param_row_refuses_the_call_instead_of_dropping_the_field(pool, tenant_agent, monkeypatch):
+    """Review finding 1 / security finding 1 (medium): _build_api_tree
+    silently SKIPS a custom_api_params row it cannot decode, deleting a
+    declared argument (and, for source='upstream', a dependency edge) from
+    the chain instead of failing it. The security audit found no reachable
+    trigger through the real write path (literal_value is JSONB, so
+    Postgres has already validated it, and _decode_param_row accepts every
+    valid JSON value) — so this test injects the decode failure directly
+    by monkeypatching custom_apis._decode_param_row for exactly the
+    'amount' row, simulating a future stricter decoder or a second writer
+    bypassing _replace_params. This pins the SAFE, intended behaviour: a
+    required argument that cannot be resolved must refuse the call
+    (missing_fields / invalid_argument), never dispatch the side-effecting
+    request with the field silently absent. If the current code fails
+    open (dispatches anyway with chain_status='success' and zero mention
+    of the dropped field), that is the defect described in finding 1 —
+    report it and leave this failing, do not weaken the assertion."""
+    tenant, agent = tenant_agent
+    api = await _register_side_effecting(
+        pool, tenant, agent, f"refundskip_{uuid.uuid4().hex[:8]}",
+        params=[{"name": "amount", "location": "body", "json_type": "number", "required": True, "source": "caller"}],
+    )
+
+    real_decode = custom_apis._decode_param_row
+
+    def _boom_for_amount(row):
+        if row["name"] == "amount":
+            raise RuntimeError("simulated undecodable custom_api_params row")
+        return real_decode(row)
+
+    monkeypatch.setattr(custom_apis, "_decode_param_row", _boom_for_amount)
+
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={"refunded": True})
+
+    monkeypatch.setattr(executor, "_step_transport", _mock(handler))
+
+    response = await executor.execute_chain(
+        _request(tenant, agent, api["name"], caller_arguments={"amount": 50}),
+    )
+
+    # The intended, safe outcome: the call is refused, the dropped
+    # required field is named, and — crucially — the outbound mutation
+    # never fires with the field missing.
+    assert calls == []
+    assert response.chain_status in ("invalid_argument", "failed", "unavailable")
+
+
 # ── T15 — auth application, redaction, success_template interpolation ─────
 
 @pytest.mark.asyncio
@@ -650,6 +809,38 @@ async def test_credential_unavailable_no_request_ref_not_leaked(pool, tenant_age
     for record in caplog.records:
         assert missing_ref not in record.getMessage()
         assert missing_ref not in str(record.args)
+
+
+@pytest.mark.asyncio
+async def test_sensitive_literal_registry_redaction_never_reaches_outbound_call(pool, tenant_agent, monkeypatch):
+    """The registry-read redaction added for the sensitive-literal-exposure
+    fix (_redact_sensitive_literals) must be a REGISTRY-view-only concern:
+    the executor never goes through list_custom_apis/get_custom_api — it
+    decodes custom_api_params rows directly in _build_api_tree — so a
+    sensitive literal must still place its REAL value on the outbound
+    call, never the registry's None."""
+    tenant, agent = tenant_agent
+    secret_value = "sk-live-outbound-real-value"
+    api = await _register_and_enable(
+        pool, tenant, agent, f"sensitiveliteral_{uuid.uuid4().hex[:8]}", side_effecting=False,
+        params=[{
+            "name": "X-Api-Key", "location": "header", "json_type": "string",
+            "required": True, "source": "literal", "literal_value": secret_value, "sensitive": True,
+        }],
+    )
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr(executor, "_step_transport", _mock(handler))
+
+    response = await executor.execute_chain(_request(tenant, agent, api["name"]))
+
+    assert response.chain_status == "success"
+    assert len(calls) == 1
+    assert calls[0].headers["X-Api-Key"] == secret_value
 
 
 @pytest.mark.asyncio

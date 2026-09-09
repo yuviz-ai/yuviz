@@ -338,10 +338,75 @@ def _decode_custom_api_row(row: Any) -> dict[str, Any]:
     return result
 
 
+def _decode_literal_value(value: Any) -> Any:
+    """literal_value is a JSONB column whose payload IS an arbitrary JSON
+    scalar/object/array by design — including an ordinary string like
+    "ACC-42" — so db.json_col's blanket 'a decoded string means
+    double-encoding' guard (correct for auth_config/sensitive_response_paths,
+    which are never legitimately bare scalars) is the wrong check here and
+    would 500 a perfectly normal string literal. Decode once and accept
+    whatever comes back; only genuinely undecodable JSON is an error."""
+    if value is None or not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except (ValueError, TypeError) as exc:
+        log.exception("toolexec custom_api_params.literal_value is not decodable JSON")
+        raise RuntimeError("toolexec custom_api_params.literal_value is not decodable JSON") from exc
+
+
 def _decode_param_row(row: Any) -> dict[str, Any]:
     result = dict(row)
-    result["literal_value"] = db.json_col(result["literal_value"])
+    result["literal_value"] = _decode_literal_value(result["literal_value"])
     return result
+
+
+def _redact_sensitive_literals(params: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Registry reads (list/get) are behind bare Depends(get_current_user)
+    — every authenticated role in the tenant, including viewer — and
+    unlike auth_config, nothing validates a literal param's value against
+    being a real secret (_validate_credential_ref only constrains
+    auth_scheme fields). A param the admin themselves marked `sensitive`
+    (the exact shape the UI's checkbox invites, e.g. a bearer token typed
+    into a header field) must not come back as plaintext here, whatever
+    its source. Only touches the REGISTRY view — executor.py's own
+    _decode_param_row calls (never through this function) still see the
+    real value, which is what actually places it on the outbound call.
+
+    Redacted to None, deliberately NOT a placeholder string like
+    "[redacted]": a source='literal' param is DB-constrained to never
+    legitimately hold NULL (custom_api_params_source_shape), so None here
+    is unambiguous — it can only mean "not shown", never a real value —
+    and update_custom_api's merge (below) can tell "the caller echoed
+    back what they were shown" from "the caller supplied a genuine new
+    value" without comparing against redacted TEXT, which would silently
+    misfire the day a tenant's real secret IS that exact string."""
+    return [
+        {**p, "literal_value": None} if p.get("sensitive") and p.get("literal_value") is not None
+        else p
+        for p in params
+    ]
+
+
+def _merge_sensitive_literals(new_params: list[dict], old_params_by_name: dict[str, dict]) -> list[dict]:
+    """update_custom_api's write-side half of lesson 33: an edit form's
+    only source for a sensitive literal is the redacted (None) value
+    _redact_sensitive_literals hands back, so a save that echoes it
+    unchanged has no legitimate way to supply the real one. None here
+    means "not provided" — the same absence-preserves convention
+    update_custom_api already applies to the top-level `params` list
+    itself — never "clear it": preserve the STORED value instead of
+    writing the caller's None over it. A genuinely non-null incoming
+    literal_value (a deliberate change, including to a new sensitive
+    value) always passes through untouched."""
+    merged = []
+    for p in new_params:
+        if p.get("source") == "literal" and p.get("sensitive") and p.get("literal_value") is None:
+            old = old_params_by_name.get(p["name"])
+            if old is not None and old.get("source") == "literal" and old.get("literal_value") is not None:
+                p = {**p, "literal_value": old["literal_value"]}
+        merged.append(p)
+    return merged
 
 
 async def get_custom_api(custom_api_id: Any) -> dict[str, Any] | None:
@@ -355,16 +420,36 @@ async def get_custom_api(custom_api_id: Any) -> dict[str, Any] | None:
     param_rows = await pool.fetch(
         "SELECT * FROM custom_api_params WHERE custom_api_id = $1 ORDER BY name", custom_api_id,
     )
-    result["params"] = [_decode_param_row(p) for p in param_rows]
+    result["params"] = _redact_sensitive_literals([_decode_param_row(p) for p in param_rows])
     return result
 
 
 async def list_custom_apis(tenant_id: Any) -> list[dict[str, Any]]:
+    """Returns each API WITH its params (lesson 33): this is the admin-ui
+    panel's only source for the Edit form, and update_custom_api only
+    replaces params when the caller explicitly sends the key (`params is
+    not None`) — so a list response missing `params` is what makes the
+    form fall back to an empty array and unknowingly wipe a real API's
+    dependency edges on save, rather than the write layer itself treating
+    absent as "clear it"."""
     pool = await db.get_pool()
     rows = await pool.fetch(
         "SELECT * FROM custom_apis WHERE tenant_id = $1 AND deleted_at IS NULL ORDER BY name", tenant_id,
     )
-    return [_decode_custom_api_row(row) for row in rows]
+    apis = [_decode_custom_api_row(row) for row in rows]
+
+    api_ids = [api["id"] for api in apis]
+    params_by_api: dict[str, list[dict]] = {}
+    if api_ids:
+        param_rows = await pool.fetch(
+            "SELECT * FROM custom_api_params WHERE custom_api_id = ANY($1::uuid[]) ORDER BY name", api_ids,
+        )
+        for p in param_rows:
+            params_by_api.setdefault(str(p["custom_api_id"]), []).append(_decode_param_row(p))
+
+    for api in apis:
+        api["params"] = _redact_sensitive_literals(params_by_api.get(str(api["id"]), []))
+    return apis
 
 
 async def create_custom_api(
@@ -482,14 +567,21 @@ async def update_custom_api(
             final_success_template = fields.get("success_template", old["success_template"])
             final_sensitive_paths = fields.get("sensitive_response_paths", old["sensitive_response_paths"])
 
+            old_params = [
+                _decode_param_row(p) for p in await conn.fetch(
+                    "SELECT * FROM custom_api_params WHERE custom_api_id = $1", custom_api_id,
+                )
+            ]
+
             if params is not None:
+                # Merge BEFORE any validation/write below sees `params` —
+                # every subsequent use (success_template check, upstream
+                # validation, the actual _replace_params write) must see
+                # the real preserved secret, not the caller's None.
+                params = _merge_sensitive_literals(params, {p["name"]: p for p in old_params})
                 final_params = params
             else:
-                final_params = [
-                    _decode_param_row(p) for p in await conn.fetch(
-                        "SELECT * FROM custom_api_params WHERE custom_api_id = $1", custom_api_id,
-                    )
-                ]
+                final_params = old_params
 
             _validate_credential_ref(tenant_id, final_auth_scheme, final_auth_config)
             await resolve_and_validate_endpoint(final_endpoint_url)

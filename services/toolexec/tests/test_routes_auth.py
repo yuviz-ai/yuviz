@@ -92,6 +92,44 @@ async def test_viewer_403s_on_every_write_route_and_200s_on_reads(pool, tenant_a
 
 
 @pytest.mark.asyncio
+async def test_sensitive_literal_param_value_not_readable_by_every_tenant_role(pool, tenant_agent):
+    """Security finding 2 (medium): _validate_credential_ref only
+    constrains auth_config fields for the API's auth_scheme — nothing
+    stops a literal param (source='literal') from carrying a real secret,
+    and the list route (bare Depends(get_current_user), no require_role)
+    now also returns params, so a normal 'sensitive' literal param — a
+    bearer token typed straight into a header field, exactly the shape the
+    UI's 'sensitive' checkbox invites — is readable in PLAINTEXT by the
+    lowest role in the tenant. This pins the intended exposure boundary:
+    a param marked sensitive=True must never come back as its raw value to
+    a viewer, on either the list or the single-item read. If the current
+    code exposes it in plaintext (fails open), that is the defect the
+    security review flagged — report it and leave this failing."""
+    secret_value = "sk-live-do-not-leak-me"
+    api = await custom_apis.create_custom_api(
+        tenant_id=str(tenant_agent[0]["id"]), name=f"secretapi_{uuid.uuid4().hex[:8]}", description="d",
+        endpoint_url="https://example.com/api", method="POST", side_effecting=True,
+        params=[{
+            "name": "X-Api-Key", "location": "header", "json_type": "string",
+            "required": True, "source": "literal", "literal_value": secret_value, "sensitive": True,
+        }],
+    )
+    viewer_headers = _bearer("viewer", str(tenant_agent[0]["id"]))
+
+    async with _client() as c:
+        r_list = await c.get(f"/tenants/{tenant_agent[0]['id']}/custom-apis", headers=viewer_headers)
+        assert r_list.status_code == 200
+        listed = next(row for row in r_list.json() if row["id"] == str(api["id"]))
+        listed_param = next(p for p in listed["params"] if p["name"] == "X-Api-Key")
+        assert listed_param["literal_value"] != secret_value
+
+        r_get = await c.get(f"/custom-apis/{api['id']}", headers=viewer_headers)
+        assert r_get.status_code == 200
+        got_param = next(p for p in r_get.json()["params"] if p["name"] == "X-Api-Key")
+        assert got_param["literal_value"] != secret_value
+
+
+@pytest.mark.asyncio
 async def test_admin_soft_delete_conflict_returns_409(pool, tenant_agent):
     tenant, _agent = tenant_agent
     leaf = await custom_apis.create_custom_api(
