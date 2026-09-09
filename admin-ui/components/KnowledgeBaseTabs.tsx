@@ -3,10 +3,11 @@
 import { useState } from "react";
 import { KnowledgeBasePanel } from "@/components/KnowledgeBasePanel";
 import { CustomApisPanel } from "@/components/CustomApisPanel";
+import { AgentCustomApisPanel } from "@/components/AgentCustomApisPanel";
 
 type SubTab = "documents" | "apis";
 
-export function KnowledgeBaseTabs({ tenantId, agentId }: { tenantId: string; agentId: string }) {
+export function KnowledgeBaseTabs({ tenantId, agentId }: { tenantId: string; agentId?: string }) {
   const [subTab, setSubTab] = useState<SubTab>("documents");
 
   return (
@@ -21,7 +22,12 @@ export function KnowledgeBaseTabs({ tenantId, agentId }: { tenantId: string; age
       </div>
 
       {subTab === "documents" && <KnowledgeBasePanel tenantId={tenantId} agentId={agentId} />}
-      {subTab === "apis" && <CustomApisPanel tenantId={tenantId} agentId={agentId} />}
+      {subTab === "apis" &&
+        (agentId ? (
+          <AgentCustomApisPanel tenantId={tenantId} agentId={agentId} />
+        ) : (
+          <CustomApisPanel tenantId={tenantId} />
+        ))}
     </div>
   );
 }

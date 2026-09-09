@@ -1,28 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { ApiError } from "@/lib/api";
 import {
-  AgentToolPolicy,
-  ApiError,
-  ToolProviderConfig,
-  createAgentToolPolicy,
-  createToolProviderConfig,
-  listAgentToolPolicies,
-  listToolProviderConfigs,
-  updateAgentToolPolicy,
-} from "@/lib/api";
-import {
-  AgentCustomApi,
   CustomApi,
   CustomApiAuthScheme,
   CustomApiMethod,
   CustomApiParamSpec,
   createCustomApi,
   deleteCustomApi,
-  detachAgentCustomApi,
-  listAgentCustomApis,
   listCustomApis,
-  setAgentCustomApiEnabled,
   updateCustomApi,
 } from "@/lib/toolexecApi";
 import { SecretRefInput } from "./SecretRefInput";
@@ -33,8 +20,6 @@ import { Modal } from "@/components/Modal";
 // comment) — used here only to size the worst-case-chain-total hint, never
 // sent to the server as a real value.
 const DEFAULT_STEP_TIMEOUT_MS = 6000;
-const DEFAULT_CHAIN_BUDGET_MS = 20000;
-const EXECUTE_API_TOOL_NAME = "execute_api";
 
 type ParamForm = CustomApiParamSpec;
 
@@ -94,19 +79,14 @@ function estimateChainLevels(params: ParamForm[], allApis: CustomApi[]): number 
   return 1 + Math.max(...upstreamLevels);
 }
 
-export function CustomApisPanel({ tenantId, agentId }: { tenantId: string; agentId: string }) {
+// Registry/authoring only — this API's per-agent enablement (the toggle,
+// Detach, the execute_api master switch and the whole-chain budget) lives
+// in AgentCustomApisPanel now; that is a per-agent question and this page
+// is tenant-wide.
+export function CustomApisPanel({ tenantId }: { tenantId: string }) {
   const [customApis, setCustomApis] = useState<CustomApi[]>([]);
   const [customApisError, setCustomApisError] = useState<string | null>(null);
-  const [agentCustomApis, setAgentCustomApis] = useState<AgentCustomApi[]>([]);
-  const [agentCustomApisError, setAgentCustomApisError] = useState<string | null>(null);
-  const [executeApiPolicy, setExecuteApiPolicy] = useState<AgentToolPolicy | null>(null);
-  const [executeApiPolicyError, setExecuteApiPolicyError] = useState<string | null>(null);
-  const [toolexecConfig, setToolexecConfig] = useState<ToolProviderConfig | null>(null);
   const [loading, setLoading] = useState(true);
-
-  const [switchSaving, setSwitchSaving] = useState(false);
-  const [switchError, setSwitchError] = useState<string | null>(null);
-  const [budgetDraft, setBudgetDraft] = useState(String(DEFAULT_CHAIN_BUDGET_MS));
 
   const [editing, setEditing] = useState<CustomApi | null>(null);
   const [form, setForm] = useState<ApiForm>(emptyForm());
@@ -114,62 +94,23 @@ export function CustomApisPanel({ tenantId, agentId }: { tenantId: string; agent
   const [saveError, setSaveError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
-  // Each source fetched and caught independently (lesson 21): a viewer's
-  // page must still show the APIs list even if a write-scoped sibling
-  // fetch failed, and one 403 must never blank data the API already
-  // returned for the others.
   const refresh = async () => {
     setLoading(true);
-    await Promise.allSettled([
-      listCustomApis(tenantId)
-        .then(setCustomApis)
-        .then(() => setCustomApisError(null))
-        .catch((e) => setCustomApisError(e instanceof ApiError ? e.detail : String(e))),
-      listAgentCustomApis(agentId)
-        .then(setAgentCustomApis)
-        .then(() => setAgentCustomApisError(null))
-        .catch((e) => setAgentCustomApisError(e instanceof ApiError ? e.detail : String(e))),
-      listAgentToolPolicies(agentId)
-        .then((policies) => {
-          const policy = policies.find((p) => p.tool_name === EXECUTE_API_TOOL_NAME) ?? null;
-          setExecuteApiPolicy(policy);
-          setBudgetDraft(String(policy?.timeout_ms ?? DEFAULT_CHAIN_BUDGET_MS));
-        })
-        .then(() => setExecuteApiPolicyError(null))
-        .catch((e) => setExecuteApiPolicyError(e instanceof ApiError ? e.detail : String(e))),
-      listToolProviderConfigs(tenantId, { toolName: EXECUTE_API_TOOL_NAME })
-        .then((configs) => setToolexecConfig(configs.find((c) => c.engine === "toolexec") ?? null))
-        .catch(() => setToolexecConfig(null)),
-    ]);
-    setLoading(false);
+    try {
+      setCustomApis(await listCustomApis(tenantId));
+      setCustomApisError(null);
+    } catch (e) {
+      setCustomApisError(e instanceof ApiError ? e.detail : String(e));
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tenantId, agentId]);
-
-  const agentCustomApiByApiId = new Map(agentCustomApis.map((a) => [a.custom_api_id, a]));
-
-  const handleToggleAgentApi = async (api: CustomApi, enabled: boolean) => {
-    try {
-      await setAgentCustomApiEnabled(agentId, api.id, enabled);
-      await refresh();
-    } catch (e) {
-      setAgentCustomApisError(e instanceof ApiError ? e.detail : String(e));
-    }
-  };
-
-  const handleDetach = async (api: CustomApi) => {
-    if (!confirm(`Remove "${api.name}" from this agent?`)) return;
-    try {
-      await detachAgentCustomApi(agentId, api.id);
-      await refresh();
-    } catch (e) {
-      setAgentCustomApisError(e instanceof ApiError ? e.detail : String(e));
-    }
-  };
+  }, [tenantId]);
 
   const handleDelete = async (api: CustomApi) => {
     if (!confirm(`Delete "${api.name}" for the whole tenant? This cannot be undone.`)) return;
@@ -178,72 +119,6 @@ export function CustomApisPanel({ tenantId, agentId }: { tenantId: string; agent
       await refresh();
     } catch (e) {
       setCustomApisError(e instanceof ApiError ? e.detail : String(e));
-    }
-  };
-
-  // The execute_api master switch: an agent_tool_policies row for
-  // tool_name='execute_api', pointed at a per-tenant engine='toolexec'
-  // tool_provider_config (internal infrastructure — no api_key_ref, see
-  // services/config/routers/tool_provider_configs.py). Created lazily on
-  // first enable, same shape as ToolsPanel's own configure-then-attach flow.
-  const handleToggleMasterSwitch = async (enabled: boolean) => {
-    setSwitchSaving(true);
-    setSwitchError(null);
-    try {
-      if (executeApiPolicy) {
-        await updateAgentToolPolicy(agentId, EXECUTE_API_TOOL_NAME, { enabled });
-      } else {
-        let config = toolexecConfig;
-        if (!config) {
-          config = await createToolProviderConfig(tenantId, {
-            name: "Custom API execution",
-            tool_name: EXECUTE_API_TOOL_NAME,
-            engine: "toolexec",
-          });
-        }
-        await createAgentToolPolicy(agentId, {
-          tool_name: EXECUTE_API_TOOL_NAME,
-          tool_provider_config_id: config.id,
-          enabled,
-          timeout_ms: Number(budgetDraft) || DEFAULT_CHAIN_BUDGET_MS,
-        });
-      }
-      await refresh();
-    } catch (e) {
-      setSwitchError(e instanceof ApiError ? e.detail : String(e));
-    } finally {
-      setSwitchSaving(false);
-    }
-  };
-
-  const handleSaveBudget = async () => {
-    setSwitchSaving(true);
-    setSwitchError(null);
-    try {
-      const timeout_ms = Number(budgetDraft) || DEFAULT_CHAIN_BUDGET_MS;
-      if (executeApiPolicy) {
-        await updateAgentToolPolicy(agentId, EXECUTE_API_TOOL_NAME, { timeout_ms });
-      } else {
-        let config = toolexecConfig;
-        if (!config) {
-          config = await createToolProviderConfig(tenantId, {
-            name: "Custom API execution",
-            tool_name: EXECUTE_API_TOOL_NAME,
-            engine: "toolexec",
-          });
-        }
-        await createAgentToolPolicy(agentId, {
-          tool_name: EXECUTE_API_TOOL_NAME,
-          tool_provider_config_id: config.id,
-          enabled: false,
-          timeout_ms,
-        });
-      }
-      await refresh();
-    } catch (e) {
-      setSwitchError(e instanceof ApiError ? e.detail : String(e));
-    } finally {
-      setSwitchSaving(false);
     }
   };
 
@@ -345,64 +220,19 @@ export function CustomApisPanel({ tenantId, agentId }: { tenantId: string; agent
 
   // AC-agnostic UI hint (design's stated interim mitigation, not an
   // authoritative check): chain_levels(this api) * a per-step timeout
-  // floor of 6000ms, compared against the execute_api master switch's own
-  // whole-chain budget — the same calculation an admin needs to see BEFORE
-  // saving a 4th level onto a chain that a 20s budget cannot fit.
+  // floor of 6000ms. This registry no longer fetches any agent's
+  // execute_api policy, so it shows the absolute worst-case total only —
+  // whether that exceeds a particular agent's whole-chain budget is shown
+  // per attached row in AgentCustomApisPanel, which owns that budget.
   const estimatedLevels = estimateChainLevels(form.params, customApis);
   const perStepMs = form.timeout_ms.trim() ? Number(form.timeout_ms) : DEFAULT_STEP_TIMEOUT_MS;
   const worstCaseMs = estimatedLevels * perStepMs;
-  const budgetMs = executeApiPolicy?.timeout_ms ?? DEFAULT_CHAIN_BUDGET_MS;
-  const worstCaseExceedsBudget = worstCaseMs > budgetMs;
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
   return (
     <div className="cols">
       <div className="col-main">
-        <div className="card">
-          <div className="card-hdr">
-            <div className="card-title">execute_api</div>
-            <div className="card-sub">master switch — required before any custom API below can run for this agent</div>
-          </div>
-          {switchError && <div className="error-banner">{switchError}</div>}
-          {executeApiPolicyError && <div className="error-banner">{executeApiPolicyError}</div>}
-          <div className="kb-row">
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 500 }}>Enable custom API execution</div>
-              <div style={{ fontSize: ".7rem", color: "var(--text-3)" }}>
-                Turns off entirely, this agent gets zero execute_api tool calls regardless of the toggles below.
-              </div>
-            </div>
-            <label className="toggle-switch" title={executeApiPolicy?.enabled ? "Enabled" : "Disabled"}>
-              <input
-                type="checkbox"
-                checked={!!executeApiPolicy?.enabled}
-                disabled={switchSaving}
-                onChange={(e) => handleToggleMasterSwitch(e.target.checked)}
-              />
-              <span className="toggle-slider" />
-            </label>
-          </div>
-          <div className="form-group">
-            <label className="form-label">
-              Whole-chain budget (ms)
-              <span className="hint"> the wall-clock ceiling for one execute_api call, across every step in its chain</span>
-            </label>
-            <div style={{ display: "flex", gap: 8 }}>
-              <input
-                className="form-input"
-                type="number"
-                value={budgetDraft}
-                onChange={(e) => setBudgetDraft(e.target.value)}
-                style={{ maxWidth: 160 }}
-              />
-              <button className="btn btn-ghost btn-sm" disabled={switchSaving} onClick={handleSaveBudget}>
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-
         <div className="card">
           <div className="card-hdr">
             <div className="card-title">Custom APIs</div>
@@ -412,43 +242,23 @@ export function CustomApisPanel({ tenantId, agentId }: { tenantId: string; agent
             </button>
           </div>
           {customApisError && <div className="error-banner">{customApisError}</div>}
-          {agentCustomApisError && <div className="error-banner">{agentCustomApisError}</div>}
 
-          {customApis.map((api) => {
-            const assignment = agentCustomApiByApiId.get(api.id);
-            return (
-              <div key={api.id} className="kb-row">
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 500 }}>{api.name}</div>
-                  <div style={{ fontSize: ".7rem", color: "var(--text-3)" }}>
-                    {api.method} {api.endpoint_url} · chain_levels={api.chain_levels}
-                  </div>
+          {customApis.map((api) => (
+            <div key={api.id} className="kb-row">
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 500 }}>{api.name}</div>
+                <div style={{ fontSize: ".7rem", color: "var(--text-3)" }}>
+                  {api.method} {api.endpoint_url} · chain_levels={api.chain_levels}
                 </div>
-                <label
-                  className="toggle-switch"
-                  title={assignment?.enabled ? "Enabled for this agent" : "Disabled for this agent"}
-                >
-                  <input
-                    type="checkbox"
-                    checked={!!assignment?.enabled}
-                    onChange={(e) => handleToggleAgentApi(api, e.target.checked)}
-                  />
-                  <span className="toggle-slider" />
-                </label>
-                <button className="btn btn-ghost btn-sm" onClick={() => openEdit(api)}>
-                  Edit
-                </button>
-                {assignment && (
-                  <button className="btn btn-ghost btn-sm" onClick={() => handleDetach(api)}>
-                    Detach
-                  </button>
-                )}
-                <button className="btn btn-danger btn-sm" onClick={() => handleDelete(api)}>
-                  Delete
-                </button>
               </div>
-            );
-          })}
+              <button className="btn btn-ghost btn-sm" onClick={() => openEdit(api)}>
+                Edit
+              </button>
+              <button className="btn btn-danger btn-sm" onClick={() => handleDelete(api)}>
+                Delete
+              </button>
+            </div>
+          ))}
 
           {customApis.length === 0 && !customApisError && <div className="empty-state">No custom APIs registered yet.</div>}
         </div>
@@ -471,11 +281,9 @@ export function CustomApisPanel({ tenantId, agentId }: { tenantId: string; agent
       >
         {saveError && <div className="error-banner">{saveError}</div>}
 
-        {worstCaseExceedsBudget && (
-          <div className="error-banner">
-            Worst-case chain total: {estimatedLevels} step(s) × {perStepMs}ms = {worstCaseMs}ms — exceeds the
-            execute_api whole-chain budget of {budgetMs}ms. Raise the budget above, lower this API&apos;s timeout, or
-            shorten the chain.
+        {estimatedLevels > 1 && (
+          <div className="card-sub">
+            Worst-case chain total: {estimatedLevels} step(s) × {perStepMs}ms = {worstCaseMs}ms
           </div>
         )}
 
@@ -489,9 +297,11 @@ export function CustomApisPanel({ tenantId, agentId }: { tenantId: string; agent
         <div className="form-group">
           <label className="form-label">
             Description <span className="required">*</span>
+            <span className="hint">the agent reads this to decide when to call the API</span>
           </label>
-          <input
+          <textarea
             className="form-input"
+            rows={3}
             value={form.description}
             onChange={(e) => setForm({ ...form, description: e.target.value })}
           />
