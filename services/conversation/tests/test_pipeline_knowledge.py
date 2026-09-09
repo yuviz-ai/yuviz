@@ -40,7 +40,7 @@ async def test_no_knowledge_provider_leaves_llm_messages_unchanged():
         pass
 
     assert len(calls) == 1
-    assert [m.role for m in calls[0]] == ["user"]
+    assert [m.role for m in calls[0]] == ["system", "user"]
 
 
 async def test_agent_with_no_eligible_kb_leaves_llm_messages_unchanged():
@@ -48,12 +48,12 @@ async def test_agent_with_no_eligible_kb_leaves_llm_messages_unchanged():
     llm, calls = _capturing_llm(["We", " have", " a", " policy."])
     tts = _make_tts()
     knowledge = MockKnowledgeProvider()  # no chunks added for ("test", "test-agent")
-    handler = _make_handler(stt, llm, tts, knowledge=knowledge)
+    handler = _make_handler(stt, llm, tts, knowledge=knowledge, node_knowledge=["kb1"])
 
     async for _ in handler.on_speech_ended("s1", _silence(), 200, -20.0):
         pass
 
-    assert [m.role for m in calls[0]] == ["user"]
+    assert [m.role for m in calls[0]] == ["system", "user"]
 
 
 async def test_eligible_kb_folds_context_into_user_turn_only_for_this_call():
@@ -65,23 +65,23 @@ async def test_eligible_kb_folds_context_into_user_turn_only_for_this_call():
         "test", "test-agent", "Refunds are processed within 30 days.",
         score=0.9, document_title="Refund Policy",
     )
-    handler = _make_handler(stt, llm, tts, knowledge=knowledge)
+    handler = _make_handler(stt, llm, tts, knowledge=knowledge, node_knowledge=["kb1"])
 
     async for _ in handler.on_speech_ended("s1", _silence(), 200, -20.0):
         pass
 
     # Exactly one message, role=user — never a second system-role message.
-    assert [m.role for m in calls[0]] == ["user"]
-    assert "Refunds are processed within 30 days." in calls[0][0].content
-    assert "Refund Policy" in calls[0][0].content  # citation surfaced by default
-    assert "What is your refund policy?" in calls[0][0].content
+    assert [m.role for m in calls[0]] == ["system", "user"]
+    assert "Refunds are processed within 30 days." in calls[0][1].content
+    assert "Refund Policy" in calls[0][1].content  # citation surfaced by default
+    assert "What is your refund policy?" in calls[0][1].content
 
     # The injected context must never leak into persistent history — only
     # the real user/assistant turn pair (with the caller's actual raw
     # text, not the context-augmented version) should be there afterward.
     history = handler._get_history("s1")
-    assert [m.role for m in history] == ["user", "assistant"]
-    assert history[0].content == "What is your refund policy?"
+    assert [m.role for m in history] == ["system", "user", "assistant"]
+    assert history[1].content == "What is your refund policy?"
 
 
 async def test_second_turn_makes_exactly_one_more_retrieve_call_not_zero_not_two():
@@ -100,7 +100,7 @@ async def test_second_turn_makes_exactly_one_more_retrieve_call_not_zero_not_two
 
     knowledge = CountingMockKnowledgeProvider()
     knowledge.add_chunk("test", "test-agent", "Some fact.", score=0.9)
-    handler = _make_handler(stt, llm, tts, knowledge=knowledge)
+    handler = _make_handler(stt, llm, tts, knowledge=knowledge, node_knowledge=["kb1"])
 
     async for _ in handler.on_speech_ended("s1", _silence(), 200, -20.0):
         pass
@@ -122,11 +122,11 @@ async def test_knowledge_retrieval_exception_degrades_to_no_context_not_a_failed
         async def close(self):
             pass
 
-    handler = _make_handler(stt, llm, tts, knowledge=ExplodingKnowledgeProvider())
+    handler = _make_handler(stt, llm, tts, knowledge=ExplodingKnowledgeProvider(), node_knowledge=["kb1"])
 
     responses = []
     async for r in handler.on_speech_ended("s1", _silence(), 200, -20.0):
         responses.append(r)
 
     assert responses  # the turn still completes normally
-    assert [m.role for m in calls[0]] == ["user"]
+    assert [m.role for m in calls[0]] == ["system", "user"]

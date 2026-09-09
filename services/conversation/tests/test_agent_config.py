@@ -23,6 +23,8 @@ def test_to_runtime_config_carries_agent_fields_through():
 
     assert runtime_config.conversation.greeting == "Hi"
     assert runtime_config.conversation.system_prompt == "Help."
+    start = next(n for n in runtime_config.conversation.workflow["nodes"] if n["type"] == "start")
+    assert start["data"]["greeting"] == "Hi"
     assert runtime_config.policies.goodbye_grace_ms == 1500
     assert isinstance(bundle, ProviderBundle)
     assert bundle.stt == "fake-stt" and bundle.llm == "fake-llm" and bundle.tts == "fake-tts"

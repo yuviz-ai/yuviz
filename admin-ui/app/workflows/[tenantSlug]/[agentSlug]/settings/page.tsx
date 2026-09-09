@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { Agent, AgentStatus, AgentUpdate, ApiError, deleteAgent, getAgent, listProviders, ProviderConfig, updateAgent, updateProvider } from "@/lib/api";
 import { KnowledgeBaseTabs } from "@/components/KnowledgeBaseTabs";
@@ -12,28 +13,6 @@ import { ElevenLabsVoicePicker } from "@/components/ElevenLabsVoicePicker";
 import { LANGUAGES, OTHER, asBrowsableTtsEngine } from "@/lib/engineCatalog";
 
 type Tab = "overview" | "behaviour" | "escalation" | "sip" | "tools" | "knowledge-base";
-
-// Structured system-prompt editor — still writes to the single
-// agent.system_prompt TEXT field (no schema change), just gives Behaviour
-// a labeled-section editing view matching the Personality/Environment/Tone
-// composition pattern, parsed back out of the same three headers on load
-// so switching between Freeform and Structured round-trips losslessly.
-interface PromptSections {
-  personality: string;
-  environment: string;
-  tone: string;
-}
-
-function parsePromptSections(text: string): PromptSections | null {
-  const re = /^#\s*personality\s*\n([\s\S]*?)\n#\s*environment\s*\n([\s\S]*?)\n#\s*tone\s*\n([\s\S]*)$/i;
-  const m = text.trim().match(re);
-  if (!m) return null;
-  return { personality: m[1].trim(), environment: m[2].trim(), tone: m[3].trim() };
-}
-
-function composePromptSections(s: PromptSections): string {
-  return `# Personality\n${s.personality}\n\n# Environment\n${s.environment}\n\n# Tone\n${s.tone}`;
-}
 
 export default function AgentDetailPage() {
   const params = useParams<{ tenantSlug: string; agentSlug: string }>();
@@ -54,8 +33,6 @@ export default function AgentDetailPage() {
   const [form, setForm] = useState<AgentUpdate>({});
   const [languageChoice, setLanguageChoice] = useState<string>("");
   const [customLanguage, setCustomLanguage] = useState("");
-  const [promptMode, setPromptMode] = useState<"freeform" | "structured">("freeform");
-  const [promptSections, setPromptSections] = useState<PromptSections>({ personality: "", environment: "", tone: "" });
   // Explicit override once the user picks an engine from the chooser (or
   // clicks "Change engine") — null defers to whatever engine the agent's
   // current tts_config_id actually points at, so the Voice card only ever
@@ -65,6 +42,9 @@ export default function AgentDetailPage() {
   const [chosenEngine, setChosenEngine] = useState<"macos" | "kokoro" | "elevenlabs" | null>(null);
   const [showEngineChooser, setShowEngineChooser] = useState(false);
 
+  // Greeting / system prompt live on the canvas; end-call and transfer
+  // speech still use agent columns (pipeline _prompt_suffix / scripted lines).
+
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
@@ -73,8 +53,6 @@ export default function AgentDetailPage() {
         setAgent(a);
         setForm({
           name: a.name,
-          greeting: a.greeting,
-          system_prompt: a.system_prompt,
           goodbye_grace_ms: a.goodbye_grace_ms,
           language: a.language,
           stt_config_id: a.stt_config_id,
@@ -88,12 +66,12 @@ export default function AgentDetailPage() {
           platform_did: a.platform_did,
           custom_caller_id: a.custom_caller_id,
           transfer_waiting_experience: a.transfer_waiting_experience,
+          max_call_duration_s: a.max_call_duration_s,
+          status: a.status,
           end_call_prompt: a.end_call_prompt,
           transfer_prompt: a.transfer_prompt,
           farewell_message: a.farewell_message,
           transfer_announcement: a.transfer_announcement,
-          max_call_duration_s: a.max_call_duration_s,
-          status: a.status,
         });
         if (a.language && LANGUAGES.some((l) => l.value === a.language)) {
           setLanguageChoice(a.language);
@@ -102,13 +80,6 @@ export default function AgentDetailPage() {
           setCustomLanguage(a.language);
         } else {
           setLanguageChoice(""); // derive from STT/TTS provider — the pre-this-field behavior
-        }
-        const parsedSections = parsePromptSections(a.system_prompt || "");
-        if (parsedSections) {
-          setPromptMode("structured");
-          setPromptSections(parsedSections);
-        } else {
-          setPromptMode("freeform");
         }
         const provs = await listProviders(a.tenant_id);
         setProviders(provs);
@@ -129,20 +100,6 @@ export default function AgentDetailPage() {
       setLanguageChoice(OTHER);
       setCustomLanguage(language);
     }
-  };
-
-  const switchToStructured = () => {
-    const parsed = parsePromptSections(form.system_prompt || "");
-    const sections = parsed || { personality: form.system_prompt || "", environment: "", tone: "" };
-    setPromptSections(sections);
-    setForm({ ...form, system_prompt: composePromptSections(sections) });
-    setPromptMode("structured");
-  };
-
-  const updatePromptSection = (key: keyof PromptSections, value: string) => {
-    const next = { ...promptSections, [key]: value };
-    setPromptSections(next);
-    setForm({ ...form, system_prompt: composePromptSections(next) });
   };
 
   const handleSave = async () => {
@@ -170,7 +127,7 @@ export default function AgentDetailPage() {
     setDeleting(true);
     try {
       await deleteAgent(tenantSlug, agent.id);
-      router.push("/agents");
+      router.push("/workflows");
     } catch (e) {
       setSaveError(e instanceof ApiError ? e.detail : String(e));
       setDeleting(false);
@@ -186,8 +143,13 @@ export default function AgentDetailPage() {
   return (
     <>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-        <button className="btn btn-ghost btn-sm" onClick={() => router.push("/agents")}>
-          ← Back to Agents
+        {/* A sub-route of the agent's own flow (2026-08-30), so back goes
+            up one level to the canvas, not out to a list. */}
+        <button
+          className="btn btn-ghost btn-sm"
+          onClick={() => router.push(`/workflows/${tenantSlug}/${agentSlug}`)}
+        >
+          ← Back to workflow
         </button>
         <button className="btn btn-primary btn-sm" onClick={() => setTestingAgent(true)}>
           🎙️ Test Agent
@@ -333,93 +295,21 @@ export default function AgentDetailPage() {
       {tab === "behaviour" && (
         <div className="cols">
           <div className="col-main">
+            <div className="info-banner">
+              <strong>Stage prompts live in the{" "}
+              <Link href={`/workflows/${tenantSlug}/${agentSlug}`}>flow</Link>.</strong>{" "}
+              Greeting is on the start step; always-applies holds global instructions
+              (one freeform textarea — the old Personality / Environment / Tone splitter
+              is gone). End-call and transfer wording below still apply on every call.
+            </div>
+
             <div className="card" style={{ marginBottom: 14 }}>
               <div className="card-hdr">
-                <div className="card-title">Conversation Identity</div>
+                <div className="card-title">Call ending</div>
+                <div className="card-sub">condition + verbatim farewell</div>
               </div>
               <div className="card-body">
                 <div className="form-group">
-                  <label className="form-label">
-                    Greeting <span className="required">*</span>
-                  </label>
-                  <textarea
-                    className="form-textarea"
-                    style={{ minHeight: 60 }}
-                    value={form.greeting || ""}
-                    onChange={(e) => setForm({ ...form, greeting: e.target.value })}
-                  />
-                </div>
-                <div className="form-group">
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                    <label className="form-label" style={{ marginBottom: 0 }}>
-                      System Prompt <span className="required">*</span>
-                    </label>
-                    <div style={{ display: "flex", gap: 4 }}>
-                      <button
-                        type="button"
-                        className={`btn btn-sm ${promptMode === "freeform" ? "btn-primary" : "btn-ghost"}`}
-                        onClick={() => setPromptMode("freeform")}
-                      >
-                        Freeform
-                      </button>
-                      <button
-                        type="button"
-                        className={`btn btn-sm ${promptMode === "structured" ? "btn-primary" : "btn-ghost"}`}
-                        onClick={switchToStructured}
-                      >
-                        Structured
-                      </button>
-                    </div>
-                  </div>
-                  {promptMode === "freeform" ? (
-                    <textarea
-                      className="form-textarea"
-                      style={{ minHeight: 110, marginTop: 6 }}
-                      value={form.system_prompt || ""}
-                      onChange={(e) => setForm({ ...form, system_prompt: e.target.value })}
-                    />
-                  ) : (
-                    <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 10 }}>
-                      <div>
-                        <label className="form-label">
-                          Personality <span className="hint">who the agent is</span>
-                        </label>
-                        <textarea
-                          className="form-textarea"
-                          style={{ minHeight: 60 }}
-                          value={promptSections.personality}
-                          onChange={(e) => updatePromptSection("personality", e.target.value)}
-                          placeholder="You are Alex, a friendly, efficient, and highly organized personal assistant…"
-                        />
-                      </div>
-                      <div>
-                        <label className="form-label">
-                          Environment <span className="hint">the situation the agent is operating in</span>
-                        </label>
-                        <textarea
-                          className="form-textarea"
-                          style={{ minHeight: 60 }}
-                          value={promptSections.environment}
-                          onChange={(e) => updatePromptSection("environment", e.target.value)}
-                          placeholder="You are interacting with a caller over a phone call…"
-                        />
-                      </div>
-                      <div>
-                        <label className="form-label">
-                          Tone <span className="hint">how the agent should sound</span>
-                        </label>
-                        <textarea
-                          className="form-textarea"
-                          style={{ minHeight: 60 }}
-                          value={promptSections.tone}
-                          onChange={(e) => updatePromptSection("tone", e.target.value)}
-                          placeholder="Warm, professional, and concise, typically 1-2 sentences…"
-                        />
-                      </div>
-                    </div>
-                  )}
-                </div>
-                <div className="form-group" style={{ marginTop: 12 }}>
                   <label className="form-label">
                     End Call Condition <span className="hint">WHEN to end — a &quot;When the caller…&quot; clause, not what to say. Blank = default.</span>
                   </label>

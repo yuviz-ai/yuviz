@@ -51,6 +51,7 @@ from .tools.policy_resolver import ToolPolicyResolver
 from .tools.provider_manager import ToolProviderManager
 from .tools.registry import ToolRegistry
 from .transcript_builder import TranscriptBuilder
+from .workflow import graph_for
 from .generated.voiceai.v1 import conversation_pb2_grpc as pb_grpc
 
 SERVICE_NAME = "voiceai.v1.ConversationService"
@@ -148,6 +149,7 @@ async def _prewarm_agents(
                 log.warning("prewarm: tenant=%s agent=%s did not resolve — skipping", tenant_slug, agent_slug)
                 continue
             _, bundle = resolved
+            graph = graph_for(resolved[0])
             # Object construction != model loaded — Ollama needs a real
             # request first (see OllamaLLM.warm()). No-op for cloud LLMs.
             warm = getattr(bundle.llm, "warm", None)
@@ -156,7 +158,10 @@ async def _prewarm_agents(
                     await warm()
                 except Exception:
                     log.exception("prewarm: LLM warm() failed tenant=%s agent=%s", tenant_slug, agent_slug)
-            log.info("prewarm: tenant=%s agent=%s providers ready", tenant_slug, agent_slug)
+            log.info(
+                "prewarm: tenant=%s agent=%s providers ready, workflow graph parsed (%d nodes)",
+                tenant_slug, agent_slug, len(graph.nodes),
+            )
 
 
 async def serve(port: int, args: argparse.Namespace) -> None:

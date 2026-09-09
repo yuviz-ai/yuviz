@@ -475,6 +475,11 @@ CREATE TABLE IF NOT EXISTS calls (
 -- silent (crashed, never coming back under the same node_id) WITHOUT
 -- waiting for that exact node_id to restart — the gap the earlier
 -- startup-only reconcile_stale_calls() couldn't cover on its own.
+-- Workflow call observability (variable extraction / outcome).
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS disposition         TEXT;
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS nodes_visited       JSONB;
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS extracted_variables JSONB;
+
 CREATE TABLE IF NOT EXISTS conversation_node_heartbeats (
     node_id      TEXT PRIMARY KEY,
     last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -661,7 +666,8 @@ $agents_version$;
 CREATE OR REPLACE FUNCTION starter_graph_sql(
     greeting text,
     system_prompt text,
-    tools jsonb DEFAULT '[]'::jsonb
+    tools jsonb DEFAULT '[]'::jsonb,
+    knowledge_base_ids jsonb DEFAULT '[]'::jsonb
 ) RETURNS jsonb
 LANGUAGE sql
 IMMUTABLE
@@ -684,7 +690,8 @@ AS $$
                     'name', 'greeting',
                     'prompt', 'Greet the caller and find out what they need.',
                     'greeting', COALESCE(greeting, ''),
-                    'tools', COALESCE(tools, '[]'::jsonb)
+                    'tools', COALESCE(tools, '[]'::jsonb),
+                    'knowledge_base_ids', COALESCE(knowledge_base_ids, '[]'::jsonb)
                 )
             ),
             jsonb_build_object(
@@ -711,9 +718,11 @@ $$;
 
 -- Pre-workflow agents: seed a starter graph from greeting/system_prompt (and
 -- any enabled tool policies) so live `workflow` is never left NULL. Tools come
--- from policies because Node.tools is default-deny. Re-runs are no-ops.
--- Wrapped in one DO so a partial failure cannot exit 0 with workflow still
--- NULL, and each backfill writes an audit_log row alongside the bump.
+-- from policies because Node.tools is default-deny. Knowledge ids are patched
+-- later in knowledge_schema.sql (agent_knowledge_bases lives there). Re-runs
+-- are no-ops. Wrapped in one DO so a partial failure cannot exit 0 with
+-- workflow still NULL, and each backfill writes an audit_log row alongside
+-- the bump.
 DO $workflow_backfill$
 DECLARE
     null_left INT;

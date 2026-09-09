@@ -248,6 +248,21 @@ class TranscriptBuilder:
             latency or TurnLatency(),
         ))
 
+    def record_workflow_outcome(
+        self,
+        session_id: str,
+        *,
+        nodes_visited: list[str] | None = None,
+        disposition: str | None = None,
+        extracted_variables: dict | None = None,
+    ) -> None:
+        """Path, disposition, and extracted vars for a workflow call. Spawn before end_call()."""
+        if self._pool is None:
+            return
+        self._spawn(session_id, self._record_workflow_outcome(
+            session_id, nodes_visited, disposition, extracted_variables,
+        ))
+
     def end_call(self, session_id: str, close_reason: str,
                  final_state: str | None = None) -> None:
         if self._pool is None:
@@ -302,6 +317,23 @@ class TranscriptBuilder:
                 )
         except Exception:
             log.exception("TranscriptBuilder: begin_call failed session=%s", session_id)
+
+    async def _record_workflow_outcome(
+        self, session_id: str, nodes_visited: list[str] | None,
+        disposition: str | None, extracted_variables: dict | None,
+    ) -> None:
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE calls SET nodes_visited = $2::jsonb, disposition = $3, "
+                    "extracted_variables = $4::jsonb WHERE session_id = $1",
+                    session_id,
+                    json.dumps(nodes_visited or []),
+                    disposition,
+                    json.dumps(extracted_variables or {}),
+                )
+        except Exception:
+            log.exception("TranscriptBuilder: record_workflow_outcome failed session=%s", session_id)
 
     async def _record_turn(
         self,

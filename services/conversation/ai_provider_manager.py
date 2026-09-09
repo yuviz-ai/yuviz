@@ -51,6 +51,39 @@ def voice_speed(cfg: "ProviderConfig") -> float:
     return VOICE_SPEED_DEFAULT
 
 
+_THINK_ABSENT = object()
+
+# Models whose Ollama default is thinking ON (5-8s/turn, confirmed live for
+# gemma4). Selecting one of these from the admin-ui catalog must not ship a
+# silent 5-8x latency regression just because no one has set extra.think —
+# there is no UI path to set it at all (ProvidersPanel.tsx has zero extra.*
+# fields today). So absent/malformed think on one of these models degrades
+# to the safe value (False), not to omitting the key. Every other engine's
+# absent/malformed case still omits, matching the byte-identical payload
+# the existing fleet already sends.
+_THINKING_CAPABLE_MODEL_PREFIXES = ("gemma4",)
+
+
+def _is_thinking_capable(model: str | None) -> bool:
+    return bool(model) and model.startswith(_THINKING_CAPABLE_MODEL_PREFIXES)
+
+
+def _think_flag(cfg: "ProviderConfig") -> bool | None:
+    safe_default = False if _is_thinking_capable(cfg.model) else None
+    raw = (cfg.extra or {}).get("think", _THINK_ABSENT)
+    if raw is _THINK_ABSENT:
+        return safe_default
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str) and raw.strip().lower() in ("true", "false"):
+        return raw.strip().lower() == "true"
+    log.warning(
+        "provider_config id=%s engine=%s: extra.think=%r is not a bool — using %r",
+        cfg.id, cfg.engine, raw, safe_default,
+    )
+    return safe_default
+
+
 # Fallback for every LLM factory below when extra has no "system" override.
 _VOICE_SYSTEM_PROMPT = (
     "You are a helpful voice assistant. "
@@ -99,6 +132,7 @@ async def _make_ollama(cfg: ProviderConfig, _api_key: str | None) -> Any:
         temperature=cfg.extra.get("temperature", 0.7),
         base_url=cfg.extra.get("base_url", "http://localhost:11434"),
         timeout_s=cfg.extra.get("timeout_s", 30.0),
+        think=_think_flag(cfg),
     )
 
 

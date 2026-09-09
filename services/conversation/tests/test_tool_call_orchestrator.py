@@ -12,6 +12,8 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+
 from services.conversation.providers.interfaces import ChatMessage
 from services.conversation.tools.executor_registry import ExecutorRegistry
 from services.conversation.tools.llm_adapter import (
@@ -731,11 +733,17 @@ async def test_a_local_tool_that_raises_soft_fails_instead_of_crashing_the_turn(
 async def test_cancel_event_stops_waiting_on_an_in_flight_local_tool():
     started = asyncio.Event()
     release = asyncio.Event()
+    finished: list[str] = []
 
     async def slow(_args: dict) -> ToolResult:
         started.set()
-        await release.wait()
-        return ToolResult(status=ToolStatus.SUCCESS, payload={"done": True})
+        try:
+            await release.wait()
+            finished.append("ok")
+            return ToolResult(status=ToolStatus.SUCCESS, payload={"done": True})
+        except asyncio.CancelledError:
+            finished.append("cancelled")
+            raise
 
     definition = ToolDefinition(
         name="caller_verified", description="x",
@@ -775,6 +783,51 @@ async def test_cancel_event_stops_waiting_on_an_in_flight_local_tool():
 
     release.set()
     await asyncio.sleep(0)
+    assert finished == ["cancelled"]
+
+
+async def test_local_tool_cancel_path_rethrows_outer_cancellation():
+    """Awaiting the cancelled handler must not swallow teardown of the turn task."""
+    started = asyncio.Event()
+
+    async def slow(_args: dict) -> ToolResult:
+        started.set()
+        await asyncio.Event().wait()
+        return ToolResult(status=ToolStatus.SUCCESS, payload={})
+
+    definition = ToolDefinition(
+        name="caller_verified", description="x",
+        parameters_schema={"type": "object", "properties": {}},
+    )
+    llm = _ScriptedLLM([
+        [ToolCallEvent(tool_call_id="c1", tool_name="caller_verified", arguments={})],
+    ])
+    orchestrator = ToolCallOrchestrator(
+        llm_adapter=LLMAdapter(llm),
+        policy_resolver=_FakePolicyResolver([]),
+        provider_manager=_FakeProviderManager(),
+        executor_registry=ExecutorRegistry(),
+    )
+    cancel_event = asyncio.Event()
+    history = [ChatMessage(role="user", content="hi")]
+
+    async def _collect():
+        return [
+            e async for e in orchestrator.run_turn(
+                "agent1", "t1", "c1", "s1", history,
+                cancel_event=cancel_event,
+                local_tools={"caller_verified": (definition, slow)},
+            )
+        ]
+
+    task = asyncio.ensure_future(_collect())
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+    cancel_event.set()
+    # Cancel the turn task while it's awaiting the cancelled handler.
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
 
 async def test_only_tools_is_passed_through_to_the_policy_resolver():

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from libs.config_sdk.workflow import starter_graph
+
 from ..models import (
     Agent,
     ConversationInfo,
@@ -95,6 +97,7 @@ class MockConfigProvider:
                 return None
             providers[role] = cfg
 
+        graph = agent.workflow or starter_graph(agent.greeting, agent.system_prompt)
         return RuntimeConfig(
             tenant=tenant,
             agent=agent,
@@ -105,6 +108,8 @@ class MockConfigProvider:
                 transfer_prompt=agent.transfer_prompt,
                 farewell_message=agent.farewell_message,
                 transfer_announcement=agent.transfer_announcement,
+                workflow=graph,
+                workflow_draft=agent.workflow_draft or graph,
             ),
             media=MediaInfo(
                 voice=providers["tts"].voice,

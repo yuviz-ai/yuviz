@@ -257,7 +257,8 @@ async def _execute_local_tool(
     arguments: dict[str, Any],
     cancel_event: asyncio.Event | None,
 ) -> ToolResult:
-    """Same cancel race as remote tools: stop waiting, do not cancel the handler."""
+    """Race cancel, but never leave the handler running — workflow transitions
+    mutate call state; a background completion would desync history vs node."""
     if cancel_event is None:
         return await _invoke_local_handler(tool_name, handler, arguments)
 
@@ -267,15 +268,27 @@ async def _execute_local_tool(
         done, _ = await asyncio.wait({execute_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED)
         if execute_task in done:
             return execute_task.result()
-        log.info(
-            "ToolCallOrchestrator: caller interrupted mid local tool_call=%r — no longer waiting on its result",
-            tool_name,
-        )
-        return ToolResult(status=ToolStatus.FAILED, error="cancelled")
+        execute_task.cancel()
+        try:
+            await execute_task
+        except asyncio.CancelledError:
+            # Bare `pass` swallows call-teardown cancellation of *this*
+            # coroutine. Only absorb the cancel we sent to execute_task.
+            me = asyncio.current_task()
+            if me is not None and me.cancelling():
+                raise
+            if not execute_task.cancelled():
+                raise
+        if execute_task.cancelled():
+            log.info(
+                "ToolCallOrchestrator: caller interrupted mid local tool_call=%r — handler cancelled",
+                tool_name,
+            )
+            return ToolResult(status=ToolStatus.FAILED, error="cancelled")
+        # Handler finished before cancel took effect — keep its result.
+        return execute_task.result()
     finally:
         cancel_task.cancel()
-        if not execute_task.done():
-            execute_task.add_done_callback(_log_background_tool_result)
 
 
 def _fold_tool_result_into_history(history: list[ChatMessage], event: ToolCallEvent, result: ToolResult) -> None:

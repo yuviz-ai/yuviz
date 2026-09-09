@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from libs.config_sdk.workflow import starter_graph
 from libs.config_sdk import (
     Agent,
     ConversationInfo,
@@ -152,6 +153,8 @@ def _make_handler(
     farewell_message: str | None = None, transfer_announcement: str | None = None,
     tool_orchestrator=None, max_call_duration_s: int | None = None,
     has_booking_tool: bool = False,
+    workflow: dict | None = None, node_tools: list[str] | None = None,
+    node_knowledge: list[str] | None = None,
 ) -> PipelineConversationHandler:
     """Builds the minimal (RuntimeConfig, ProviderBundle) pair these tests
     need — PipelineConversationHandler's real constructor contract now (see
@@ -168,11 +171,21 @@ def _make_handler(
         default_stt_config_id=None, default_llm_config_id=None, default_tts_config_id=None,
         config_version=1, updated_at=now,
     )
+    # Every agent runs a graph; explicit workflow= is for graph tests.
+    # node_tools / node_knowledge land on the start node for per-stage scoping.
+    if workflow is None:
+        workflow = starter_graph(greeting, system_prompt)
+        start = next(n for n in workflow["nodes"] if n["type"] == "start")
+        if node_tools is not None:
+            start["data"]["tools"] = node_tools
+        if node_knowledge is not None:
+            start["data"]["knowledge_base_ids"] = node_knowledge
     agent = Agent(
         id="a1", slug="test-agent", tenant_id="t1", name="Test Agent",
         greeting=greeting, system_prompt=system_prompt, goodbye_grace_ms=goodbye_grace_ms,
         stt_config_id=None, llm_config_id=None, tts_config_id=None,
         status="active", config_version=1, updated_at=now,
+        workflow=workflow,
     )
     placeholder = SDKProviderConfig(id="p1", role="stt", engine="fake", model=None, voice=None, language=None, api_key_ref=None)
     runtime_config = RuntimeConfig(
@@ -183,6 +196,7 @@ def _make_handler(
             end_call_prompt=end_call_prompt, transfer_prompt=transfer_prompt,
             farewell_message=farewell_message,
             transfer_announcement=transfer_announcement,
+            workflow=workflow, workflow_draft=workflow,
         ),
         media=MediaInfo(voice=None, language=None),
         policies=Policies(
@@ -347,10 +361,12 @@ async def test_pipeline_history_accumulates():
         pass
 
     history = handler._get_history("s1")
-    assert len(history) == 2                          # user + assistant
-    assert history[0].role == "user"
-    assert history[0].content == "first turn"
-    assert history[1].role == "assistant"
+    # system (the active step's composed prompt) + user + assistant.
+    assert len(history) == 3
+    assert history[0].role == "system"
+    assert history[1].role == "user"
+    assert history[1].content == "first turn"
+    assert history[2].role == "assistant"
 
 
 @pytest.mark.asyncio
@@ -576,7 +592,7 @@ async def test_agent_id_falsy_sentinel_becomes_none_not_a_fake_string():
         ),
         agent=real_agent,
         providers=ProviderConfigs(stt=placeholder, llm=placeholder, tts=placeholder),
-        conversation=ConversationInfo(greeting="", system_prompt=""),
+        conversation=ConversationInfo(greeting="", system_prompt="", workflow=starter_graph()),
         media=MediaInfo(voice=None, language=None),
         policies=Policies(
             vad_engine=None, vad_onset_ms=None, vad_hold_ms=None, vad_speech_threshold=None,
@@ -727,10 +743,11 @@ async def test_pipeline_detects_transfer_directive_and_yields_transfer_request()
     # Not conflated with end_call — a transfer request is not a hangup.
     assert not any(r.end_call for r in responses)
 
-    # Never leaks into stored history.
+    # Never leaks into stored history. history[0] is the step prompt, [1] the
+    # caller's turn, [2] the agent's reply.
     history = handler._get_history("s1")
-    assert "[[TRANSFER" not in history[1].content
-    assert history[1].content.strip() == "Connecting you now."
+    assert "[[TRANSFER" not in history[2].content
+    assert history[2].content.strip() == "Connecting you now."
 
 
 @pytest.mark.asyncio
@@ -943,10 +960,10 @@ async def test_on_transfer_failed_notice_is_ephemeral_not_stored_in_history():
         pass
 
     history = handler._get_history("s1")
-    # Only the assistant's apology is stored — no user-role notice turn.
-    assert len(history) == 1
-    assert history[0].role == "assistant"
-    assert history[0].content.strip() == "Sorry about that, still happy to help."
+    # The step prompt plus the assistant's apology — no user-role notice turn.
+    assert len(history) == 2
+    assert history[1].role == "assistant"
+    assert history[1].content.strip() == "Sorry about that, still happy to help."
 
 
 @pytest.mark.asyncio
@@ -965,8 +982,8 @@ async def test_on_transfer_failed_falls_back_when_llm_produces_nothing():
     tts.synthesize.assert_any_call(_TRANSFER_FAILED_FALLBACK, 16_000)
 
     history = handler._get_history("s1")
-    assert len(history) == 1
-    assert history[0].content == _TRANSFER_FAILED_FALLBACK
+    assert len(history) == 2
+    assert history[1].content == _TRANSFER_FAILED_FALLBACK
 
 
 @pytest.mark.asyncio
@@ -1366,10 +1383,10 @@ def test_transfer_instruction_injected_when_transfer_configured():
         system_prompt="You are Alex.",
         transfer_type="cold", transfer_destination="1001",
     )
-    assert '[[TRANSFER type="cold" destination="1001"' in handler._system_prompt
+    assert '[[TRANSFER type="cold" destination="1001"' in handler._workflow.system_prompt()
     # The base personality and the end-call instruction are both still there.
-    assert handler._system_prompt.startswith("You are Alex.")
-    assert "[[END_CALL]]" in handler._system_prompt
+    assert handler._workflow.system_prompt().startswith("You are Alex.")
+    assert "[[END_CALL]]" in handler._workflow.system_prompt()
 
 
 def test_transfer_instruction_absent_when_transfer_type_none():
@@ -1378,7 +1395,7 @@ def test_transfer_instruction_absent_when_transfer_type_none():
         system_prompt="You are Alex.",
         transfer_type="none", transfer_destination="1001",
     )
-    assert "[[TRANSFER" not in handler._system_prompt
+    assert "[[TRANSFER" not in handler._workflow.system_prompt()
 
 
 def test_transfer_instruction_absent_without_destination():
@@ -1389,17 +1406,18 @@ def test_transfer_instruction_absent_without_destination():
         system_prompt="You are Alex.",
         transfer_type="cold", transfer_destination=None,
     )
-    assert "[[TRANSFER" not in handler._system_prompt
+    assert "[[TRANSFER" not in handler._workflow.system_prompt()
 
 
-def test_transfer_instruction_absent_with_empty_system_prompt():
-    # Mirrors _END_CALL_INSTRUCTION's gate: no base prompt, no injection.
+def test_transfer_instruction_injected_even_with_empty_system_prompt_column():
+    # The graph always supplies a prompt now — transfer injection is gated on
+    # transfer config validation, not on the transitional system_prompt column.
     handler = _make_handler(
         _make_stt(), _make_llm(), _make_tts(),
         system_prompt="",
         transfer_type="cold", transfer_destination="1001",
     )
-    assert handler._system_prompt == ""
+    assert '[[TRANSFER type="cold" destination="1001"' in handler._workflow.system_prompt()
 
 
 # ---------------------------------------------------------------------------
@@ -1485,7 +1503,7 @@ def test_transfer_instruction_injected_for_valid_sip_uri():
         system_prompt="You are Alex.",
         transfer_type="cold", transfer_destination="sip:agent@example.com",
     )
-    assert 'destination="sip:agent@example.com"' in handler._system_prompt
+    assert 'destination="sip:agent@example.com"' in handler._workflow.system_prompt()
 
 
 def test_transfer_instruction_absent_for_malformed_sip_uri():
@@ -1494,7 +1512,7 @@ def test_transfer_instruction_absent_for_malformed_sip_uri():
         system_prompt="You are Alex.",
         transfer_type="cold", transfer_destination="sip:no-at-sign",
     )
-    assert "[[TRANSFER" not in handler._system_prompt
+    assert "[[TRANSFER" not in handler._workflow.system_prompt()
 
 
 def test_transfer_instruction_absent_for_prose_destination():
@@ -1503,7 +1521,7 @@ def test_transfer_instruction_absent_for_prose_destination():
         system_prompt="You are Alex.",
         transfer_type="cold", transfer_destination="the support desk",
     )
-    assert "[[TRANSFER" not in handler._system_prompt
+    assert "[[TRANSFER" not in handler._workflow.system_prompt()
 
 
 def test_transfer_instruction_absent_for_unknown_transfer_type():
@@ -1512,7 +1530,7 @@ def test_transfer_instruction_absent_for_unknown_transfer_type():
         system_prompt="You are Alex.",
         transfer_type="hot", transfer_destination="1001",
     )
-    assert "[[TRANSFER" not in handler._system_prompt
+    assert "[[TRANSFER" not in handler._workflow.system_prompt()
 
 
 def test_transfer_destination_problem_diagnoses():
@@ -1551,8 +1569,8 @@ def test_default_end_call_instruction_matches_historical_text():
     assert (
         "When the conversation is genuinely finished (the caller says "
         "goodbye, has no more questions, or the issue is resolved), end your"
-    ) in handler._system_prompt
-    assert "[[END_CALL]]" in handler._system_prompt
+    ) in handler._workflow.system_prompt()
+    assert "[[END_CALL]]" in handler._workflow.system_prompt()
 
 
 def test_custom_end_call_prompt_replaces_condition_keeps_mechanics():
@@ -1561,10 +1579,10 @@ def test_custom_end_call_prompt_replaces_condition_keeps_mechanics():
         end_call_prompt="When the caller says the magic word.",
     )
     # Custom condition present (trailing period stripped so grammar holds)…
-    assert "When the caller says the magic word, end your" in handler._system_prompt
+    assert "When the caller says the magic word, end your" in handler._workflow.system_prompt()
     # …default condition gone, token mechanics intact.
-    assert "genuinely finished" not in handler._system_prompt
-    assert "exact token [[END_CALL]]" in handler._system_prompt
+    assert "genuinely finished" not in handler._workflow.system_prompt()
+    assert "exact token [[END_CALL]]" in handler._workflow.system_prompt()
 
 
 def test_blank_end_call_prompt_falls_back_to_default():
@@ -1572,7 +1590,7 @@ def test_blank_end_call_prompt_falls_back_to_default():
         _make_stt(), _make_llm(), _make_tts(), system_prompt="You are Alex.",
         end_call_prompt="   ",
     )
-    assert "genuinely finished" in handler._system_prompt
+    assert "genuinely finished" in handler._workflow.system_prompt()
 
 
 def test_custom_transfer_prompt_replaces_condition_keeps_mechanics():
@@ -1581,9 +1599,9 @@ def test_custom_transfer_prompt_replaces_condition_keeps_mechanics():
         transfer_type="cold", transfer_destination="1001",
         transfer_prompt="If the caller mentions a billing dispute",
     )
-    assert "If the caller mentions a billing dispute, briefly acknowledge" in handler._system_prompt
-    assert "explicitly asks to speak to a human" not in handler._system_prompt
-    assert '[[TRANSFER type="cold" destination="1001"' in handler._system_prompt
+    assert "If the caller mentions a billing dispute, briefly acknowledge" in handler._workflow.system_prompt()
+    assert "explicitly asks to speak to a human" not in handler._workflow.system_prompt()
+    assert '[[TRANSFER type="cold" destination="1001"' in handler._workflow.system_prompt()
 
 
 def test_default_transfer_prompt_unchanged():
@@ -1594,7 +1612,7 @@ def test_default_transfer_prompt_unchanged():
     assert (
         "If the caller explicitly asks to speak to a human agent or "
         "representative, briefly acknowledge"
-    ) in handler._system_prompt
+    ) in handler._workflow.system_prompt()
 
 
 # ---------------------------------------------------------------------------
@@ -1862,7 +1880,7 @@ def test_scripted_messages_switch_instructions_to_token_only():
         farewell_message="Thanks for calling. Goodbye!",
         transfer_announcement="Please hold while I transfer your call.",
     )
-    prompt = handler._system_prompt
+    prompt = handler._workflow.system_prompt()
     # Token-only phrasing for both, and the scripted lines themselves are
     # NOT leaked into the prompt (they're synthesized, not LLM material).
     assert "reply with ONLY the exact token [[END_CALL]]" in prompt
@@ -1877,8 +1895,8 @@ def test_no_scripted_messages_keeps_spoken_word_instructions():
         system_prompt="You are Alex.",
         transfer_type="cold", transfer_destination="1001",
     )
-    assert "after your spoken words" in handler._system_prompt
-    assert "reply with ONLY" not in handler._system_prompt
+    assert "after your spoken words" in handler._workflow.system_prompt()
+    assert "reply with ONLY" not in handler._workflow.system_prompt()
 
 
 @pytest.mark.asyncio
@@ -1962,12 +1980,15 @@ class _FakeToolOrchestrator:
     async def run_turn(
         self, agent_id, tenant_id, call_id, session_id, history,
         caller_number="", cancel_event=None, force_tool_name=None, phone_number_confirmed=False,
+        local_tools=None, only_tools=None,
     ):
         self.seen_force_tool_name = force_tool_name
         self.seen_phone_number_confirmed = phone_number_confirmed
         self.seen_agent_id = agent_id
         self.seen_history = list(history)
         self.seen_caller_number = caller_number
+        self.seen_local_tools = local_tools
+        self.seen_only_tools = only_tools
         for e in self._events:
             yield e
 

@@ -175,3 +175,90 @@ CREATE TABLE IF NOT EXISTS kb_ingestion_jobs (
 
 CREATE INDEX IF NOT EXISTS idx_kb_ingestion_jobs_status ON kb_ingestion_jobs(status) WHERE status IN ('pending', 'running');
 CREATE INDEX IF NOT EXISTS idx_kb_ingestion_jobs_document ON kb_ingestion_jobs(document_id);
+
+-- Starter-graph backfill (schema.sql) had no knowledge param — Node.knowledge
+-- _base_ids is default-deny, so every pre-workflow agent silently lost RAG.
+-- Patch start nodes when the whole graph never opted in and the agent has
+-- enabled KBs. Authored per-stage graphs (any node already lists ids) skip.
+DO $kb_workflow_backfill$
+DECLARE
+    patched INT := 0;
+BEGIN
+    WITH agent_kbs AS (
+        SELECT
+            akb.agent_id,
+            jsonb_agg(akb.kb_id::text ORDER BY akb.kb_id) AS kb_ids
+        FROM agent_knowledge_bases akb
+        WHERE akb.enabled
+        GROUP BY akb.agent_id
+    ),
+    targets AS (
+        SELECT a.id, a.workflow, k.kb_ids,
+            (
+                SELECT (ord - 1)
+                FROM jsonb_array_elements(a.workflow->'nodes') WITH ORDINALITY AS t(n, ord)
+                WHERE n->>'type' = 'start'
+                LIMIT 1
+            ) AS start_idx
+        FROM agents a
+        JOIN agent_kbs k ON k.agent_id = a.id
+        WHERE a.workflow IS NOT NULL
+          AND a.deleted_at IS NULL
+          AND NOT EXISTS (
+              SELECT 1
+              FROM jsonb_array_elements(a.workflow->'nodes') n
+              WHERE jsonb_typeof(COALESCE(n->'data'->'knowledge_base_ids', '[]'::jsonb)) = 'array'
+                AND jsonb_array_length(COALESCE(n->'data'->'knowledge_base_ids', '[]'::jsonb)) > 0
+          )
+    ),
+    updated AS (
+        UPDATE agents a
+        SET
+            workflow = jsonb_set(
+                a.workflow,
+                ARRAY['nodes', t.start_idx::text, 'data', 'knowledge_base_ids'],
+                t.kb_ids,
+                true
+            ),
+            workflow_draft = CASE
+                WHEN a.workflow_draft IS NULL THEN NULL
+                WHEN NOT EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements(a.workflow_draft->'nodes') n
+                    WHERE jsonb_typeof(COALESCE(n->'data'->'knowledge_base_ids', '[]'::jsonb)) = 'array'
+                      AND jsonb_array_length(COALESCE(n->'data'->'knowledge_base_ids', '[]'::jsonb)) > 0
+                ) AND EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements(a.workflow_draft->'nodes') n
+                    WHERE n->>'type' = 'start'
+                ) THEN jsonb_set(
+                    a.workflow_draft,
+                    ARRAY[
+                        'nodes',
+                        (
+                            SELECT (ord - 1)::text
+                            FROM jsonb_array_elements(a.workflow_draft->'nodes')
+                                WITH ORDINALITY AS d(n, ord)
+                            WHERE n->>'type' = 'start'
+                            LIMIT 1
+                        ),
+                        'data',
+                        'knowledge_base_ids'
+                    ],
+                    t.kb_ids,
+                    true
+                )
+                ELSE a.workflow_draft
+            END
+        FROM targets t
+        WHERE a.id = t.id AND t.start_idx IS NOT NULL
+        RETURNING a.id
+    )
+    SELECT COUNT(*) INTO patched FROM updated;
+
+    IF patched > 0 THEN
+        RAISE NOTICE 'kb workflow backfill patched % agent(s)', patched;
+    END IF;
+END
+$kb_workflow_backfill$;
+

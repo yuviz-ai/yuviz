@@ -211,19 +211,21 @@ class TestAgentEndpoints:
         assert resp.status_code == 201
         created = resp.json()
         assert created["slug"] == "support-agent"
-        assert "workflow" not in created and "workflow_draft" not in created
+        assert "workflow" in created and "workflow_draft" not in created
+        assert isinstance(created["workflow"], dict)
 
         resp = await client.get(f"/tenants/{test_tenant['slug']}/agents/support-agent")
         assert resp.status_code == 200
         body = resp.json()
         assert body["greeting"] == "Hi!"
-        assert "workflow" not in body and "workflow_draft" not in body
+        assert "workflow" in body and "workflow_draft" not in body
         wf = await client.get(f"/tenants/{test_tenant['slug']}/agents/{created['id']}/workflow")
         assert wf.status_code == 200
         graph = wf.json()["workflow"]
         assert isinstance(graph, dict)
         start = next(n for n in graph["nodes"] if n["type"] == "start")
         assert start["data"]["greeting"] == "Hi!"
+        assert body["workflow"] == graph
 
     async def test_creating_the_same_slug_twice_is_409_not_500(self, client, test_tenant):
         body = {"slug": "dupe-agent", "name": "Dupe"}
@@ -1246,6 +1248,38 @@ class TestCallEndpoints:
 
         await pool.execute("DELETE FROM transcript_entries WHERE session_id = $1", session_id)
         await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
+
+    async def test_tenant_admin_cannot_read_another_tenants_call(
+        self, admin_client, test_tenant, pool,
+    ):
+        other = await pool.fetchrow(
+            "INSERT INTO tenants (name, slug) VALUES ($1, $2) RETURNING *",
+            "Other Call Tenant", f"test-other-call-{uuid.uuid4().hex[:8]}",
+        )
+        session_id = f"test-call-{uuid.uuid4().hex[:8]}"
+        try:
+            await pool.execute(
+                "INSERT INTO calls (session_id, tenant_id, direction, extracted_variables) "
+                "VALUES ($1, $2, 'inbound', $3::jsonb)",
+                session_id, other["slug"], '{"policy_number": "SECRET"}',
+            )
+            known_other = await admin_client.get(f"/calls/{session_id}")
+            unknown = await admin_client.get("/calls/does-not-exist")
+            assert known_other.status_code == unknown.status_code == 404
+            assert known_other.json() == {"detail": f"call {session_id!r} not found"}
+
+            own_id = f"test-call-{uuid.uuid4().hex[:8]}"
+            await pool.execute(
+                "INSERT INTO calls (session_id, tenant_id, direction) VALUES ($1, $2, 'inbound')",
+                own_id, test_tenant["slug"],
+            )
+            own = await admin_client.get(f"/calls/{own_id}")
+            assert own.status_code == 200
+            assert own.json()["session_id"] == own_id
+            await pool.execute("DELETE FROM calls WHERE session_id = $1", own_id)
+        finally:
+            await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
+            await pool.execute("DELETE FROM tenants WHERE id = $1", other["id"])
 
 
 class TestAuthEndpoints:

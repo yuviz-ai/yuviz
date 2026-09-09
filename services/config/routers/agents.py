@@ -145,7 +145,18 @@ async def save_workflow_draft(
 ):
     await _resolve_tenant(tenant_slug, current_user)
     agent_id = _parse_agent_id(agent_id)
-    return await workflows_service.save_draft(agent_id, tenant_slug=tenant_slug, graph=body.graph)
+    try:
+        return await workflows_service.save_draft(
+            agent_id,
+            tenant_slug=tenant_slug,
+            graph=body.graph,
+            base_config_version=body.base_config_version,
+        )
+    except workflows_service.StaleDraft:
+        raise HTTPException(
+            status_code=409,
+            detail="workflow draft is stale — reload and try again",
+        )
 
 
 @router.post("/{agent_id}/workflow/validate")

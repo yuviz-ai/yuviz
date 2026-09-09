@@ -235,6 +235,14 @@ body {
   background: var(--red-dim); border: 1px solid rgba(239, 68, 68, .3); color: var(--red);
   border-radius: var(--rs); padding: 8px 12px; font-size: .76rem; margin-bottom: 14px;
 }
+/* Same shape as .error-banner, but for something the operator needs to know
+   rather than something that went wrong. */
+.info-banner {
+  background: var(--cyan-dim); border: 1px solid rgba(14, 165, 233, .3); color: var(--text-2);
+  border-radius: var(--rs); padding: 9px 12px; font-size: .74rem; margin-bottom: 14px;
+  line-height: 1.5;
+}
+.info-banner strong { color: var(--cyan); font-weight: 600; }
 
 /* ═══ Login screen ═══ */
 .login-screen { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; position: relative; background: var(--bg); }
@@ -339,3 +347,347 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .test-agent-orb.active, .test-agent-orb.speaking { animation: none; }
 }
+
+/* ═══ Workflow editor (docs/workflow.md Part 6) ═══════════════════════════
+   React Flow ships its own canvas/edge styling; everything here is the
+   node cards, the toolbar, the problem list and the inspector column
+   around it. */
+.wf-root { display: flex; flex-direction: column; }
+
+.wf-help {
+  display: flex; align-items: flex-start; gap: 14px; margin-bottom: 12px; padding: 12px 14px;
+  background: var(--cyan-dim2); border: 1px solid rgba(14, 165, 233, .25); border-radius: var(--r);
+  font-size: .78rem; line-height: 1.6; color: var(--text-2);
+}
+.wf-help strong { color: var(--text); }
+.wf-help .btn { flex-shrink: 0; }
+
+.wf-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.wf-toolbar-right { margin-left: auto; display: flex; gap: 8px; }
+.wf-save-state { font-size: .7rem; color: var(--text-3); min-width: 82px; }
+
+.wf-menu-wrap { position: relative; }
+.wf-menu-scrim { position: fixed; inset: 0; z-index: 19; }
+.wf-menu {
+  position: absolute; top: 100%; left: 0; margin-top: 4px; z-index: 20;
+  background: var(--surf); border: 1px solid var(--border); border-radius: var(--rs);
+  display: flex; flex-direction: column; min-width: 230px; overflow: hidden;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .3);
+}
+/* Right-aligned when the trigger sits at the right edge of the toolbar. */
+.wf-menu-right { left: auto; right: 0; }
+.wf-menu button, .wf-menu a {
+  display: flex; flex-direction: column; gap: 1px; text-align: left; padding: 9px 12px;
+  background: none; border: none; color: var(--text); font-family: var(--font);
+  font-size: .78rem; cursor: pointer; text-decoration: none;
+}
+.wf-menu small { color: var(--text-3); font-size: .68rem; }
+.wf-menu button:hover, .wf-menu a:hover { background: var(--surf-2); }
+.wf-menu button:disabled { opacity: .5; cursor: default; }
+
+.wf-layout { display: flex; gap: 14px; align-items: stretch; }
+.wf-canvas {
+  flex: 1; min-width: 0; height: min(68vh, 720px); min-height: 460px; background: var(--surf);
+  border: 1px solid var(--border); border-radius: var(--r); overflow: hidden;
+}
+
+.wf-inspector {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: 14px; background: var(--surf); border: 1px solid var(--border); border-radius: var(--r);
+}
+.wf-inspector-hdr { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+.wf-inspector-title {
+  font-size: .85rem; font-weight: 700; color: var(--text); text-transform: uppercase;
+  letter-spacing: .03em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wf-inspector-empty { color: var(--text-3); font-size: .78rem; line-height: 1.7; padding: 8px 2px; }
+.wf-inspector-empty-title { font-weight: 700; color: var(--text-2); margin-bottom: 6px; }
+.wf-inspector-empty ul { margin: 10px 0 0; padding-left: 18px; }
+.wf-inspector-empty li { margin-bottom: 5px; }
+
+.wf-check { display: flex; align-items: center; gap: 7px; font-size: .76rem; color: var(--text-2); padding: 3px 0; }
+.wf-inline { display: flex; align-items: center; gap: 8px; }
+.wf-inline .form-input { width: 110px; }
+.wf-extraction { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px; }
+.wf-variable { border: 1px solid var(--border); border-radius: var(--rs); padding: 9px; margin-bottom: 8px; }
+
+/* The condition is the field that decides the transition — give it the
+   weight to match, since operators consistently under-write it. */
+.wf-condition { border-color: var(--cyan); background: var(--surf); }
+
+.wf-vars { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 6px; }
+.wf-vars-label { font-size: .65rem; color: var(--text-3); }
+.wf-var {
+  font-family: var(--mono); font-size: .64rem; padding: 2px 6px; border-radius: 3px;
+  background: var(--surf-3); color: var(--text-2); border: 1px solid var(--border); cursor: pointer;
+}
+.wf-var:hover { border-color: var(--cyan); color: var(--cyan); }
+
+.wf-warn-banner {
+  background: var(--amber-dim); border: 1px solid rgba(245, 158, 11, .3); color: var(--amber);
+  border-radius: var(--rs); padding: 8px 12px; font-size: .76rem; margin-bottom: 14px;
+}
+
+/* ── Problem list ─────────────────────────────────────────────────────── */
+.wf-problems {
+  margin-top: 12px; border: 1px solid var(--border); border-radius: var(--r);
+  background: var(--surf); overflow: hidden;
+}
+.wf-problems-ok { padding: 10px 14px; font-size: .75rem; color: var(--green); background: var(--green-dim); border-color: rgba(34, 197, 94, .25); }
+.wf-problems-hdr {
+  padding: 9px 14px; font-size: .68rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .07em; color: var(--red); background: var(--red-dim);
+  border-bottom: 1px solid var(--border);
+}
+.wf-problems-hdr-warn { color: var(--amber); background: var(--amber-dim); }
+.wf-problem {
+  display: flex; align-items: flex-start; gap: 9px; width: 100%; text-align: left;
+  padding: 9px 14px; background: none; border: none; border-bottom: 1px solid var(--border);
+  color: var(--text-2); font-family: var(--font); font-size: .76rem; line-height: 1.5; cursor: pointer;
+}
+.wf-problem:last-child { border-bottom: none; }
+.wf-problem:hover:not(:disabled) { background: var(--surf-2); color: var(--text); }
+.wf-problem:disabled { cursor: default; }
+.wf-problem-dot { width: 6px; height: 6px; border-radius: 50%; margin-top: 6px; flex-shrink: 0; }
+.wf-problem-error .wf-problem-dot { background: var(--red); }
+.wf-problem-warning .wf-problem-dot { background: var(--amber); }
+
+.wf-history { margin-top: 12px; }
+
+/* ── Node cards ───────────────────────────────────────────────────────── */
+/* Anatomy from the Dograh editor: a coloured type pill straddling the top
+   edge, a titled header rule, then a labelled prompt block. Wide enough
+   (300px) that a prompt is readable without opening the inspector. */
+.wf-node {
+  width: 300px; min-height: 108px; background: var(--surf-2);
+  border: 1px solid var(--border-2); border-radius: 12px;
+  font-family: var(--font); position: relative;
+  transition: border-color .14s ease, box-shadow .14s ease;
+}
+.wf-node:hover { border-color: var(--text-3); }
+.wf-node:focus-visible { outline: none; border-color: var(--cyan); box-shadow: 0 0 0 3px var(--cyan-dim); }
+.wf-node.selected { border-color: var(--cyan); box-shadow: 0 0 0 2px var(--cyan-dim), 0 0 22px rgba(14, 165, 233, .22); }
+.wf-node.invalid { border-color: var(--red); box-shadow: 0 0 0 2px var(--red-dim); }
+
+/* The type pill. Solid fill and overlapping the corner, so the kind of a
+   node is legible zoomed out — the one thing you scan a graph for. */
+.wf-node-pill {
+  position: absolute; top: -11px; left: 14px;
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 8px; border-radius: 5px; color: #fff;
+  font-size: .63rem; font-weight: 700; letter-spacing: .02em; white-space: nowrap;
+}
+.wf-node-pill svg { width: 11px; height: 11px; }
+.wf-node-start    .wf-node-pill { background: var(--green); }
+.wf-node-agent    .wf-node-pill { background: var(--cyan); }
+.wf-node-transfer .wf-node-pill { background: var(--amber); color: #1c1301; }
+.wf-node-end      .wf-node-pill { background: var(--red); }
+
+.wf-node-hdr {
+  display: flex; align-items: center; gap: 8px;
+  padding: 16px 14px 9px; border-bottom: 1px solid var(--border);
+}
+.wf-node-name {
+  font-size: .84rem; font-weight: 700; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.wf-node-body { padding: 11px 14px 13px; }
+.wf-node-label { font-size: .64rem; font-weight: 600; color: var(--text-3); margin-bottom: 5px; }
+.wf-node-prompt {
+  font-size: .72rem; color: var(--text-2); line-height: 1.55;
+  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+}
+.wf-node-todo { color: var(--amber); font-style: italic; }
+.wf-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 9px; }
+.wf-badge {
+  font-size: .6rem; font-weight: 600; padding: 2px 6px; border-radius: 4px;
+  background: var(--surf-3); color: var(--text-3); border: 1px solid var(--border);
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Handles: a fat circle to drag out of, a small tab to drop onto. Sized
+   from Dograh's BaseHandle — the source is the one you aim at. */
+.wf-node .react-flow__handle {
+  background: var(--text-3); border: none; transition: background .14s ease;
+}
+.wf-node .react-flow__handle-bottom { width: 14px; height: 14px; border-radius: 50%; bottom: -7px; }
+.wf-node .react-flow__handle-top { width: 14px; height: 8px; border-radius: 3px; top: -4px; }
+.wf-node .react-flow__handle:hover { background: var(--cyan); }
+
+/* Add-the-next-stage button, so building a flow never depends on landing a
+   drag on a 14px handle. Offset so it doesn't sit on the handle. */
+.wf-node-add {
+  position: absolute; bottom: -13px; left: calc(50% + 22px);
+  width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center;
+  justify-content: center; background: var(--surf-3); color: var(--text-2);
+  border: 1px solid var(--border-2); cursor: pointer; font-size: .9rem; line-height: 1;
+  opacity: 0; transition: opacity .12s ease; z-index: 5;
+}
+.wf-node:hover .wf-node-add,
+.wf-node:focus-within .wf-node-add { opacity: 1; }
+.wf-node-add:hover { background: var(--cyan); color: #fff; border-color: var(--cyan); }
+
+/* ── Edges ────────────────────────────────────────────────────────────── */
+.react-flow__edge-path { stroke: var(--border-2); stroke-width: 2; }
+.react-flow__edge.selected .react-flow__edge-path { stroke: var(--cyan); stroke-width: 2.5; }
+.wf-edge-invalid .react-flow__edge-path { stroke: var(--red); }
+/* A connection with no condition looks finished but never fires — the most
+   common mistake in this editor, so it doesn't get to look finished. */
+.wf-edge-unfinished .react-flow__edge-path { stroke: var(--amber); stroke-dasharray: 6 4; }
+
+/* The label, drawn as HTML by ConditionEdge rather than as SVG text in an
+   opaque white box. */
+.wf-edge-pill {
+  position: absolute; pointer-events: all;
+  padding: 3px 10px; border-radius: 999px; white-space: nowrap;
+  font-size: .68rem; font-weight: 600; line-height: 1.4;
+  background: var(--surf-3); color: var(--text-2); border: 1px solid var(--border-2);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .35);
+  transition: background .14s ease, color .14s ease, border-color .14s ease;
+}
+.wf-edge-pill.wf-edge-unfinished { background: var(--amber); color: #1c1301; border-color: var(--amber); }
+.wf-edge-pill.wf-edge-invalid { background: var(--red); color: #fff; border-color: var(--red); }
+.wf-edge-pill.selected { border-color: var(--cyan); color: var(--cyan); }
+
+/* ── Test tabs (right column) ─────────────────────────────────────────── */
+/* A segmented control, not two buttons: audio and chat are two views of the
+   same thing, and the pair has to read as mutually exclusive. */
+.wf-side { width: 348px; flex-shrink: 0; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.wf-test-tabs {
+  display: flex; gap: 4px; padding: 4px; flex-shrink: 0;
+  background: var(--surf-2); border: 1px solid var(--border); border-radius: 999px;
+}
+.wf-test-tabs button {
+  flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 6px 10px; border-radius: 999px; cursor: pointer;
+  background: none; border: 1px solid transparent; color: var(--text-3);
+  font-family: var(--font); font-size: .75rem; font-weight: 600;
+}
+.wf-test-tabs button svg { width: 13px; height: 13px; }
+.wf-test-tabs button:hover { color: var(--text-2); }
+.wf-test-tabs button.active {
+  background: var(--surf-3); border-color: var(--border-2); color: var(--text);
+}
+/* Closes the panel entirely — back to canvas-only. */
+.wf-test-tabs .wf-test-close { flex: 0 0 26px; padding: 6px 0; font-size: .7rem; }
+
+/* ── Text chat ────────────────────────────────────────────────────────── */
+/* The log scrolls, not the panel — the composer stays put. */
+.wf-chat { display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
+.wf-chat-hdr { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.wf-chat-title { font-size: .85rem; font-weight: 700; }
+.wf-chat-state { font-size: .68rem; color: var(--text-3); margin-left: auto; }
+.wf-chat-log {
+  flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 9px;
+  padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--rs);
+}
+.wf-chat-empty { color: var(--text-3); font-size: .74rem; line-height: 1.6; margin: auto 0; }
+.wf-chat-turn {
+  max-width: 88%; padding: 7px 10px; border-radius: 10px;
+  font-size: .76rem; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+}
+.wf-chat-who {
+  display: block; font-size: .6rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .06em; opacity: .6; margin-bottom: 2px;
+}
+.wf-chat-you { align-self: flex-end; background: var(--cyan); color: #fff; }
+.wf-chat-agent { align-self: flex-start; background: var(--surf-2); border: 1px solid var(--border-2); }
+.wf-chat-note {
+  align-self: center; max-width: 100%; background: none; border: none;
+  color: var(--text-3); font-size: .68rem; font-style: italic;
+}
+.wf-chat-typing { color: var(--text-3); letter-spacing: 2px; }
+.wf-chat-error {
+  flex-shrink: 0; padding: 7px 10px; border-radius: var(--rs); font-size: .72rem;
+  background: var(--amber-dim); border: 1px solid rgba(245, 158, 11, .3); color: var(--amber);
+}
+.wf-chat-compose { display: flex; gap: 8px; align-items: flex-end; flex-shrink: 0; }
+.wf-chat-compose .form-input { flex: 1; resize: none; font-size: .78rem; }
+
+/* ── Canvas chrome ────────────────────────────────────────────────────── */
+/* React Flow ships these hard-coded light (#fefefe buttons, a vertical
+   stack, its own shadow) and imports its stylesheet from the component, so
+   it lands after this file — hence !important, not a specificity war.
+   Horizontal row bottom-left, matching the Dograh editor. */
+.wf-canvas .react-flow__controls {
+  display: flex !important; flex-direction: row !important; gap: 6px;
+  box-shadow: none !important; background: none !important; border: none !important;
+}
+.wf-canvas .react-flow__controls-button {
+  width: 28px !important; height: 28px !important; padding: 7px !important;
+  border: 1px solid var(--border-2) !important; border-radius: var(--rs) !important;
+  background: var(--surf-2) !important; color: var(--text-2) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .3);
+}
+.wf-canvas .react-flow__controls-button:hover {
+  background: var(--surf-3) !important; color: var(--text) !important; border-color: var(--cyan) !important;
+}
+.wf-canvas .react-flow__controls-button svg {
+  max-width: 13px; max-height: 13px; fill: currentColor; stroke: currentColor;
+}
+/* The Tidy button draws strokes, not fills — undo the blanket fill above. */
+.wf-canvas .react-flow__controls-button svg[fill="none"] { fill: none; }
+.react-flow__attribution { background: transparent; color: var(--text-3); opacity: .4; }
+
+/* Floating canvas actions (top-right). */
+.wf-canvas-panel { margin: 12px !important; }
+.wf-canvas-btn {
+  width: 32px; height: 32px; border-radius: var(--rs); cursor: pointer;
+  background: var(--cyan); color: #fff; border: none;
+  font-size: 1.1rem; line-height: 1; font-family: var(--font);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .4);
+}
+.wf-canvas-btn:hover { filter: brightness(1.12); }
+
+@media (max-width: 1100px) {
+  .wf-layout { flex-direction: column; }
+  .wf-inspector { max-height: 520px; }
+  .wf-canvas { height: 52vh; }
+}
+
+/* ── Full-page workflow editor (/workflows/[tenant]/[agent]) ───────────── */
+/* The canvas gets the whole page here, rather than whatever is left under
+   a tab strip — see app/workflows/[tenantSlug]/[agentSlug]/page.tsx. */
+/* Back arrow + agent name, inline at the head of the editor's own toolbar. */
+.wf-page-title { font-size: .95rem; font-weight: 700; color: var(--text); }
+.wf-back-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: var(--rs); flex-shrink: 0;
+  color: var(--text-2); text-decoration: none; font-size: .95rem;
+}
+.wf-back-btn:hover { background: var(--surf-2); color: var(--text); }
+.wf-toolbar-sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 4px; }
+/* The editor owns the whole page here: the canvas takes whatever is left
+   after the toolbar and the problem list, rather than a fixed 74vh box with
+   dead space under it at tall viewport sizes. */
+.wf-page { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.wf-page .wf-root { flex: 1; min-height: 0; }
+.wf-page .wf-layout { flex: 1; min-height: 0; }
+.wf-page .wf-canvas { height: auto; min-height: 0; }
+
+/* The single-prompt / workflow fork on the new-agent screen. */
+.wf-mode-choice { display: flex; gap: 10px; }
+.wf-mode {
+  flex: 1; text-align: left; padding: 12px 14px; border-radius: var(--r); cursor: pointer;
+  background: var(--surf-2); border: 1px solid var(--border-2); color: var(--text-2);
+  font-family: var(--font);
+}
+.wf-mode:hover { border-color: var(--border-2); background: var(--surf-3); }
+.wf-mode.selected { border-color: var(--cyan); background: var(--cyan-dim2); }
+.wf-mode-title { display: block; font-size: .82rem; font-weight: 700; color: var(--text); margin-bottom: 3px; }
+.wf-mode-desc { display: block; font-size: .71rem; line-height: 1.5; color: var(--text-3); }
+/* An inline "do the other thing" affordance inside a form hint. */
+.wf-linkish {
+  background: none; border: none; padding: 0; font: inherit; color: var(--cyan);
+  cursor: pointer; text-decoration: underline;
+}
+
+/* The test call runs in the editor's side column, not a modal — a modal
+   covers the canvas, which is the thing you're testing. Same box as the
+   inspector it replaces. */
+.wf-testpanel {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: 14px; background: var(--surf); border: 1px solid var(--border); border-radius: var(--r);
+}
+@media (max-width: 1100px) { .wf-side { width: auto; } }

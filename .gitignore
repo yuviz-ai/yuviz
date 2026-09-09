@@ -30,9 +30,11 @@ data/knowledge_documents/
 # documented download step (see docs/setup.md) instead of being committed.
 models/
 
-# Personal Claude Code tool config (local permissions, scheduled-task
-# lock) — not project source.
-.claude/
+# Claude Code config. The SDLC pipeline (agents, commands, lessons) is
+# shared with the team; only per-developer state stays local.
+.claude/settings.local.json
+.claude/plans/
+.claude/*.lock
 
 # Excluded from the first push at user request.
 samples/

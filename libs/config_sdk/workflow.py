@@ -128,6 +128,14 @@ class WorkflowGraph:
         return self.nodes[self.start_node_id]
 
     @property
+    def is_single_stage(self) -> bool:
+        """Starter/backfill shape (start+end only). Multi-node authored graphs are False."""
+        return all(
+            n.type in ("start", "end") or n.is_unwired
+            for n in self.nodes.values()
+        )
+
+    @property
     def global_prompt(self) -> str:
         """Always-on instruction prepended to every step. Empty if none."""
         for node in self.nodes.values():
@@ -301,12 +309,20 @@ def _str_list(raw: Any) -> list[str]:
     return [str(item) for item in raw]
 
 
+# Mistyped delays (30000 vs 300) must not hold the line silent for half a minute.
+_MAX_DELAYED_START_MS = 2_000
+
+
 def _delayed_start_ms(raw: Any) -> int:
     try:
         value = int(raw or 0)
     except (TypeError, ValueError):
         return 0
-    return max(0, value)
+    if value < 0:
+        return 0
+    if value > _MAX_DELAYED_START_MS:
+        return _MAX_DELAYED_START_MS
+    return value
 
 
 def _node_from_raw(raw: dict[str, Any]) -> Node:
@@ -610,13 +626,16 @@ def _logic_view(graph: dict[str, Any]) -> dict[str, Any]:
 
 
 def starter_graph(
-    greeting: str = "", system_prompt: str = "", tools: list[str] | None = None,
+    greeting: str = "",
+    system_prompt: str = "",
+    tools: list[str] | None = None,
+    knowledge_base_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Default React Flow JSON for a new agent: global + start + end.
 
-    `tools` goes on start (the only non-terminal). Migrations must pass the
-    agent's existing tools — Node.tools is default-deny, so omitting them
-    would silently disable booking/etc. the moment a graph is attached.
+    `tools` / `knowledge_base_ids` go on start (the only non-terminal).
+    Both are default-deny — migrations must pass the agent's existing
+    tool policies and agent_knowledge_bases rows or booking/RAG vanish.
     """
     return {
         "version": 1,
@@ -632,6 +651,7 @@ def starter_graph(
                     "prompt": "Greet the caller and find out what they need.",
                     "greeting": greeting,
                     "tools": list(tools or []),
+                    "knowledge_base_ids": list(knowledge_base_ids or []),
                 },
             },
             {

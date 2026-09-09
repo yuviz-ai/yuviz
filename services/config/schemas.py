@@ -117,6 +117,9 @@ class AgentUpdate(BaseModel):
 
 class WorkflowDraft(BaseModel):
     graph: dict[str, Any]
+    # When set, save is rejected with 409 if agents.config_version moved
+    # (publish won a race). Omit for backward-compatible last-write-wins.
+    base_config_version: int | None = None
 
     @field_validator("graph")
     @classmethod
