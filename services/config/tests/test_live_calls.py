@@ -311,7 +311,10 @@ async def _cleanup_tenant(pool, tenant: dict) -> None:
 
 
 def _clear_authority_memo() -> None:
-    app.state._live_calls_authority_memo = {}
+    # Deleting the attribute (not assigning `{}`) so fresh_authority()
+    # recreates it as the OrderedDict it expects (T15's bounded LRU memo).
+    if hasattr(app.state, "_live_calls_authority_memo"):
+        del app.state._live_calls_authority_memo
 
 
 def _reset_throttle() -> None:

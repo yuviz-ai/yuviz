@@ -13,10 +13,16 @@ live, reused from calls.py::_status_of.
 
 from __future__ import annotations
 
+import json
+import time
+import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
-from . import db, tenants as tenants_service
+from pydantic import BaseModel
+
+from . import audit, db, tenants as tenants_service
+from .auth import CurrentUser
 
 LIVE_STAGES = ("ai", "waiting_for_human", "human_connected")
 MAX_LIVE_ROWS = 200
@@ -172,3 +178,130 @@ async def get_live_calls(
         },
         "items": [_row_to_item(dict(row), include_transcript=include_transcript) for row in rows],
     }
+
+
+# ── POST /live-calls/{session_id}/interventions ──────────────────────────
+
+class InterventionRequest(BaseModel):
+    action: Literal["listen", "barge"]
+    tenant_slug: str | None = None
+
+
+# A module constant today — no audio join exists yet (see design's Scope
+# decisions), so every successful request is "unavailable", never a
+# fabricated "granted"/"human connected". When the telephony join lands,
+# this becomes 'granted'/'denied' with no change to this function, the
+# table, or the audit shape.
+INTERVENTION_OUTCOME = "unavailable"
+
+# live_call_interventions.session_id has a `length(session_id) <= 200` CHECK
+# (database/schema.sql) — this path never inserts into that table, but the
+# audit row's session_id is truncated to the same bound for consistency and
+# so a 300-char probe can't grow an unbounded string into audit_log either.
+_AUDITED_SESSION_ID_MAX_LEN = 200
+
+
+async def request_intervention(
+    *, tenant_slug: str, tenant_id: uuid.UUID, session_id: str, action: str,
+    user: CurrentUser, ip_address: str | None,
+) -> dict[str, Any] | None:
+    """Returns None when `SELECT 1 FROM calls WHERE session_id=$1 AND
+    tenant_id=$2 AND ended_at IS NULL` finds nothing — tenant_id binds the
+    TEXT slug (matching calls.tenant_id's own type), never the tenant UUID,
+    so a foreign-tenant or nonexistent session_id can never accidentally
+    match (closes security finding #2's type-mismatch predicate). The
+    router turns None into the 404 + denial audit (record_denied_intervention
+    below). Otherwise one transaction: INSERT live_call_interventions
+    (outcome='unavailable') + audit.write_audit(...) — a write_audit failure
+    rolls back the INSERT too, so there is never an intervention row with no
+    audit trail."""
+    pool = await db.get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            exists = await conn.fetchval(
+                "SELECT 1 FROM calls WHERE session_id = $1 AND tenant_id = $2 AND ended_at IS NULL",
+                session_id, tenant_slug,
+            )
+            if exists is None:
+                return None
+
+            row = await conn.fetchrow(
+                "INSERT INTO live_call_interventions "
+                "(tenant_id, session_id, action, outcome, user_id, user_email, ip_address) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *",
+                tenant_slug, session_id, action, INTERVENTION_OUTCOME, user.id, user.email, ip_address,
+            )
+            await audit.write_audit(
+                conn,
+                entity_type="live_call_intervention",
+                entity_id=tenant_id,
+                action="created",
+                user_id=user.id,
+                user_email=user.email,
+                new_value={
+                    "session_id": session_id,
+                    "requested_action": action,
+                    "outcome": INTERVENTION_OUTCOME,
+                    "detail": None,
+                },
+                ip_address=ip_address,
+            )
+
+    return {
+        "action": action,
+        "outcome": INTERVENTION_OUTCOME,
+        "detail": "audio join not yet available",
+        "requested_at": row["created_at"],
+    }
+
+
+# Per-user aggregation window for denial audits (finding #7): a scripted
+# prober hammering this route with foreign/nonexistent session ids would
+# otherwise grow audit_log by one row per attempt at effectively zero cost.
+# Repeated denials from the SAME user inside this window bump one row's
+# count/last-seen instead of inserting a new one. Module-level (not
+# app.state): T14's own scope is this file, and this bookkeeping — unlike
+# fresh_authority's memo — never holds an authorization decision, only a
+# denial-audit row id and count, so it carries no risk of granting anything
+# the database didn't confirm (lesson 16).
+_DENIAL_AUDIT_WINDOW_S = 60.0
+_denial_audit_windows: dict[str, tuple[float, int, int]] = {}  # user_id -> (window_start, audit_log_id, count)
+
+
+async def record_denied_intervention(
+    *, tenant_id: uuid.UUID, session_id: str, user: CurrentUser, ip_address: str | None,
+    detail: str = "not_found_or_out_of_scope",
+) -> None:
+    """Writes (or aggregates into) the one audit_log row for a refused
+    Listen/Barge request — no live_call_interventions row on this path: that
+    table drives in-tenant badges, and letting an arbitrary/out-of-scope
+    session_id insert into it would make it a growth vector of its own
+    (lesson 30)."""
+    truncated_session_id = session_id[:_AUDITED_SESSION_ID_MAX_LEN]
+    now = time.monotonic()
+    pool = await db.get_pool()
+
+    window = _denial_audit_windows.get(user.id)
+    if window is not None and now - window[0] < _DENIAL_AUDIT_WINDOW_S:
+        window_start, audit_log_id, count = window
+        new_count = count + 1
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE audit_log SET new_value = jsonb_set(new_value, '{count}', to_jsonb($2::int)), "
+                "changed_at = now() WHERE id = $1",
+                audit_log_id, new_count,
+            )
+        _denial_audit_windows[user.id] = (window_start, audit_log_id, new_count)
+        return
+
+    new_value = {
+        "session_id": truncated_session_id, "requested_action": None,
+        "outcome": "denied", "detail": detail, "count": 1,
+    }
+    async with pool.acquire() as conn:
+        audit_log_id = await conn.fetchval(
+            "INSERT INTO audit_log (entity_type, entity_id, user_id, user_email, action, new_value, ip_address) "
+            "VALUES ('live_call_intervention', $1, $2, $3, 'created', $4::jsonb, $5) RETURNING id",
+            tenant_id, user.id, user.email, json.dumps(new_value), ip_address,
+        )
+    _denial_audit_windows[user.id] = (now, audit_log_id, 1)

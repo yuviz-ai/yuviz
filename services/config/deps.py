@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections import OrderedDict
 from typing import Any, Awaitable, Callable
 
 from fastapi import Depends, HTTPException, Header
@@ -49,6 +50,12 @@ LIVE_CALLS_ROLES = frozenset({"superadmin", "admin", "supervisor"})
 TRANSCRIPT_ROLES = frozenset({"superadmin", "admin"})
 
 AUTHORITY_MEMO_TTL_S = 60
+
+# scope_key is attacker-influenced (it's the tenant_slug query/body param) —
+# an actor hammering GET/POST live-calls with many distinct nonexistent
+# slugs must not be able to grow the memo without bound (finding #8). This
+# caps total entries regardless of the eviction below.
+AUTHORITY_MEMO_MAX_ENTRIES = 10_000
 
 
 async def get_authenticated_user(authorization: str | None = Header(default=None)) -> CurrentUser:
@@ -161,18 +168,25 @@ async def fresh_authority(
 
     scope_key must come from the REQUEST (the tenant_slug query parameter, or
     "self" when absent), never from the caller's identity, so a tenant SWITCH
-    always re-reads instead of inheriting another selection's validation."""
-    memo: dict[tuple[str, str], tuple[float, CurrentUser]] = getattr(
+    always re-reads instead of inheriting another selection's validation.
+
+    Bounded (AUTHORITY_MEMO_MAX_ENTRIES, evicted least-recently-used) and
+    entered only for a scope_key this identity check accepts — a scope_key
+    whose TENANT never resolves (_resolve_scope's own 404) is evicted again
+    by forget_authority() below, so a flood of nonexistent slugs can't retain
+    entries here either (closes security finding #8, alongside the cap)."""
+    memo: OrderedDict[tuple[str, str], tuple[float, CurrentUser]] = getattr(
         app_state, "_live_calls_authority_memo", None,
     )
     if memo is None:
-        memo = {}
+        memo = OrderedDict()
         app_state._live_calls_authority_memo = memo
 
     key = (user.id, scope_key)
     now = time.monotonic()
     cached = memo.get(key)
     if cached is not None and now - cached[0] < ttl_s:
+        memo.move_to_end(key)
         return cached[1]
 
     row = await users_service.get_user_by_id(user.id)
@@ -183,7 +197,21 @@ async def fresh_authority(
 
     effective_user = _row_to_effective_user(row)
     memo[key] = (now, effective_user)
+    memo.move_to_end(key)
+    while len(memo) > AUTHORITY_MEMO_MAX_ENTRIES:
+        memo.popitem(last=False)
     return effective_user
+
+
+def forget_authority(app_state: Any, user_id: str, scope_key: str) -> None:
+    """Evict a single (user_id, scope_key) entry. Called by _resolve_scope
+    when the scope_key's tenant slug fails to resolve (its own 404) — a
+    scope_key that will never again be useful must not linger in the memo,
+    so a caller flooding GET/POST live-calls with distinct nonexistent slugs
+    can't grow it (finding #8, alongside AUTHORITY_MEMO_MAX_ENTRIES above)."""
+    memo = getattr(app_state, "_live_calls_authority_memo", None)
+    if memo is not None:
+        memo.pop((user_id, scope_key), None)
 
 
 async def get_or_404(fetch: Awaitable[Any | None], detail: str) -> Any:

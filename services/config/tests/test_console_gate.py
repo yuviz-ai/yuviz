@@ -231,9 +231,9 @@ def _route_names_depending_on_code(fastapi_app: FastAPI, code) -> set[str]:
 
 _LIVE_CALLS_OPERATOR_CODE = deps.require_live_calls_operator().__code__
 
-# T5a: route -> expected role set for every route gated by
-# require_live_calls_operator(). POST /live-calls/{session_id}/interventions
-# is added here once it exists (a later task; it isn't wired yet).
+# T5a/T12: route -> expected role set for every route gated by
+# require_live_calls_operator().
 LIVE_CALLS_ROLE_ALLOWLIST: dict[str, frozenset[str]] = {
     "get_live_calls": frozenset({"superadmin", "admin", "supervisor"}),
+    "request_intervention": frozenset({"superadmin", "admin", "supervisor"}),
 }
