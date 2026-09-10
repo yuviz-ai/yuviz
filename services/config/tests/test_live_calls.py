@@ -23,8 +23,9 @@ import asyncpg
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from services.config import auth, cache, deps
+from services.config import auth, cache, db, deps
 from services.config import live_calls
+from services.config import tenants as tenants_service
 from services.config import users as users_service
 from services.config.app import app
 from services.config.routers import live_calls as live_calls_router
@@ -657,3 +658,45 @@ class TestKpis:
             assert after["items"] == []
         finally:
             await _cleanup_call(pool, session_id)
+
+
+# ── T9 — rate limit + acquire timeout ────────────────────────────────────
+
+class TestRateLimitAndAcquireTimeout:
+    async def test_rate_limit_429s_after_bucket_exhausted(self, pool, test_tenant, test_admin):
+        _clear_authority_memo()
+        _reset_throttle()
+        async with _client_as(test_admin["user"]) as client:
+            first = await client.get("/live-calls")
+            second = await client.get("/live-calls")
+        assert first.status_code == 200
+        assert second.status_code == 429
+        _reset_throttle()
+
+    async def test_granted_request_is_never_throttled_below_the_bucket_cap(self, test_tenant, test_admin):
+        # Sanity check on the other side of the same control: a single poll
+        # (the normal 5s cadence) is never itself throttled.
+        _clear_authority_memo()
+        _reset_throttle()
+        async with _client_as(test_admin["user"]) as client:
+            resp = await client.get("/live-calls")
+        assert resp.status_code == 200
+        _reset_throttle()
+
+    async def test_acquire_times_out_when_pool_is_saturated_rather_than_hangs(self, test_tenant):
+        # Pre-warm the Redis-cached tenant lookup so the saturated-pool
+        # assertion below exercises the acquire timeout itself, not an
+        # unrelated (uncapped) wait on tenants_service.get_tenant()'s own
+        # cold-cache Postgres read.
+        await tenants_service.get_tenant(test_tenant["slug"])
+
+        pool = await db.get_pool()
+        held = [await pool.acquire() for _ in range(pool.get_max_size())]
+        try:
+            with pytest.raises(TimeoutError):
+                await live_calls.get_live_calls(
+                    test_tenant["slug"], include_transcript=False, acquire_timeout_s=0.05,
+                )
+        finally:
+            for conn in held:
+                await pool.release(conn)
