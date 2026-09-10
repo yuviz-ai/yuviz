@@ -973,3 +973,56 @@ CREATE INDEX IF NOT EXISTS idx_api_side_effect_claims_run ON api_side_effect_cla
 -- NULL = use the platform ceiling (graph.MAX_CHAIN_LEVELS = 4), never 0/disabled
 -- — the same contract timeout_ms / max_calls_per_turn already document above.
 ALTER TABLE agent_tool_policies ADD COLUMN IF NOT EXISTS max_chain_depth INT;
+
+-- ── Live Calls Monitoring ────────────────────────────────────────────────────
+-- Per-tenant channel cap — the only source for the Live Calls utilization KPI.
+-- INT + CHECK mirror campaigns.max_concurrent_calls (schema.sql:555), but the
+-- column is NULLABLE with NO DEFAULT, deliberately unlike campaigns': a
+-- platform-wide DEFAULT 1 would BE the inferred global cap AC13 forbids, just
+-- moved from the query into the column. NULL means "not configured yet" and is
+-- rendered as a setup prompt, never as a number (see get_live_calls below).
+-- No backfill: there is no honest value to backfill from — calls history has no
+-- provisioned-channel record, so a computed "observed peak" would be the same
+-- fabricated cap under a busier name.
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS max_concurrent_calls INT;
+ALTER TABLE tenants DROP CONSTRAINT IF EXISTS tenants_max_concurrent_calls_check;
+ALTER TABLE tenants ADD  CONSTRAINT tenants_max_concurrent_calls_check
+    CHECK (max_concurrent_calls IS NULL OR max_concurrent_calls >= 1);
+
+-- Mid-call stage. NULL = never transferred; readers COALESCE to 'ai' so no
+-- backfill is needed and no existing writer has to change (lesson 32: every
+-- write path, including Conversation's abort paths, already satisfies this).
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS live_stage TEXT;
+ALTER TABLE calls DROP CONSTRAINT IF EXISTS calls_live_stage_check;
+ALTER TABLE calls ADD  CONSTRAINT calls_live_stage_check
+    CHECK (live_stage IS NULL OR live_stage IN ('ai', 'waiting_for_human', 'human_connected'));
+
+-- Serves both the KPI aggregate and the row list: only live rows are indexed,
+-- so the index stays bounded by concurrent calls, not by call history.
+CREATE INDEX IF NOT EXISTS idx_calls_live_tenant
+    ON calls (tenant_id, started_at DESC) WHERE ended_at IS NULL;
+
+-- Latest-turn snippet lookup per live row. idx_transcript_entries_session
+-- (session_id only) would still sort every turn of the call.
+CREATE INDEX IF NOT EXISTS idx_transcript_entries_session_turn
+    ON transcript_entries (session_id, turn_number DESC);
+
+-- Listen/Barge requests. tenant_id is the slug (matching calls.tenant_id's own
+-- "slug reference, not a hard FK" note), and session_id deliberately has NO FK:
+-- AC11 requires recording a denial, and a denial's requested session may not
+-- exist at all — an FK would turn the audit requirement into a 500 on exactly
+-- the path it exists for.
+CREATE TABLE IF NOT EXISTS live_call_interventions (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id     TEXT NOT NULL,
+    session_id    TEXT NOT NULL CHECK (length(session_id) <= 200),
+    action        TEXT NOT NULL CHECK (action IN ('listen', 'barge')),
+    outcome       TEXT NOT NULL CHECK (outcome IN ('granted', 'denied', 'unavailable')),
+    detail        TEXT,
+    user_id       UUID REFERENCES users(id),
+    user_email    TEXT NOT NULL,
+    ip_address    INET,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_live_call_interventions_lookup
+    ON live_call_interventions (tenant_id, session_id, created_at DESC);

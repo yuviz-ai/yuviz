@@ -25,7 +25,7 @@ from . import cache, db, email, invites
 from . import phone_numbers as phone_numbers_service
 from .routers import (
     agent_tool_policies, agents, audit_log, auth, calls, carriers, invites as invites_router,
-    phone_numbers, provider_configs, telephony_configs, tenants, tool_catalog,
+    live_calls, phone_numbers, provider_configs, telephony_configs, tenants, tool_catalog,
     tool_provider_configs, users,
 )
 
@@ -271,6 +271,7 @@ app.include_router(telephony_configs.tenant_scoped_router)
 app.include_router(telephony_configs.router)
 app.include_router(telephony_configs.providers_router)
 app.include_router(audit_log.router)
+app.include_router(live_calls.router)
 
 
 @app.exception_handler(LookupError)

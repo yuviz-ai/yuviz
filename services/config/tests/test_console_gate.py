@@ -157,8 +157,29 @@ class TestConsoleGateApp:
         assert (await anon_client.post("/auth/bootstrap", json={"email": "x@x.com", "password": "12345678"})).status_code != 401
 
     def test_exactly_two_routes_depend_on_get_authenticated_user(self):
+        # Named allowlist, not a bare literal: route name -> the gate beyond
+        # "decode-or-401" it's allowed to carry. None means unrestricted (any
+        # authenticated role) — /auth/me and /auth/change-password are
+        # deliberately reachable by every role, including supervisor/agent
+        # (see module docstring). A THIRD route landing a bare
+        # Depends(get_authenticated_user) — bypassing both this allowlist and
+        # CONSOLE_ROLES entirely — must fail here rather than pass silently.
         names = _route_names_depending_on(app, deps.get_authenticated_user)
-        assert names == {"me", "change_password"}, names
+        assert names == set(DIRECT_AUTHENTICATED_USER_ALLOWLIST), names
+
+    def test_live_calls_routes_match_role_allowlist(self):
+        # Live Calls routes don't depend on get_authenticated_user directly
+        # (they go through require_live_calls_operator()'s own inner check,
+        # same indirection get_current_user already uses) — so this is a
+        # separate allowlist, keyed on the operator gate's shared code
+        # object rather than route names, and it fails if a route is added
+        # under that gate without an allowlist entry, or if LIVE_CALLS_ROLES
+        # itself ever grows to include viewer.
+        names = _route_names_depending_on_code(app, _LIVE_CALLS_OPERATOR_CODE)
+        assert names == set(LIVE_CALLS_ROLE_ALLOWLIST), names
+        for role_set in LIVE_CALLS_ROLE_ALLOWLIST.values():
+            assert role_set == deps.LIVE_CALLS_ROLES == {"superadmin", "admin", "supervisor"}
+            assert "viewer" not in role_set
 
 
 def _iter_api_routes(routes):
@@ -182,3 +203,37 @@ def _route_names_depending_on(fastapi_app: FastAPI, dep) -> set[str]:
         if any(sub.call is dep for sub in route.dependant.dependencies):
             names.add(route.name)
     return names
+
+
+# T3: named allowlist for _route_names_depending_on(app, get_authenticated_user)
+# — a new entry (route -> expected gate) can be added here without touching
+# the assertion shape above.
+DIRECT_AUTHENTICATED_USER_ALLOWLIST: dict[str, frozenset[str] | None] = {
+    "me": None,
+    "change_password": None,
+}
+
+
+def _route_names_depending_on_code(fastapi_app: FastAPI, code) -> set[str]:
+    """Same "direct dependents only" shape as _route_names_depending_on, but
+    keyed on a dependency function's __code__ rather than its identity:
+    require_live_calls_operator() is a factory called once per route
+    (Depends(require_live_calls_operator())), so each route's inner check
+    closure is a distinct object — but every closure it returns shares the
+    same compiled function body, so __code__ identity still finds all of
+    them without recursing into get_current_user's own indirection."""
+    names: set[str] = set()
+    for route in _iter_api_routes(fastapi_app.routes):
+        if any(getattr(sub.call, "__code__", None) is code for sub in route.dependant.dependencies):
+            names.add(route.name)
+    return names
+
+
+_LIVE_CALLS_OPERATOR_CODE = deps.require_live_calls_operator().__code__
+
+# T5a: route -> expected role set for every route gated by
+# require_live_calls_operator(). POST /live-calls/{session_id}/interventions
+# is added here once it exists (a later task; it isn't wired yet).
+LIVE_CALLS_ROLE_ALLOWLIST: dict[str, frozenset[str]] = {
+    "get_live_calls": frozenset({"superadmin", "admin", "supervisor"}),
+}
