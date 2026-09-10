@@ -3,7 +3,10 @@ Live Calls Monitoring — T2 (fresh_authority/assert_current_authority), T4
 (get_live_calls query shape), T5b (the permanent stale-token-read tripwire),
 T6 (tenant isolation / no existence oracle / platform scope / re-tenanted
 superadmin), T7 (AC15 snippet authority), T8 (KPI split), T9 (rate limit +
-acquire timeout).
+acquire timeout), T10-T12 (POST /interventions: type-safe scope predicate,
+ip_address sourcing, denial auditing), T13 (AC9 stale-token + audit
+completeness for interventions), T14 (denial-audit aggregation), T15
+(bounded/selective fresh_authority memo).
 
 Real Postgres + Redis, same convention as test_calls.py/test_console_gate.py
 — fixtures test_tenant/test_admin/test_viewer/pool from conftest.py, plus
@@ -23,6 +26,7 @@ import asyncpg
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from services.config import audit
 from services.config import auth, cache, db, deps
 from services.config import live_calls
 from services.config import tenants as tenants_service
@@ -703,3 +707,308 @@ class TestRateLimitAndAcquireTimeout:
         finally:
             for conn in held:
                 await pool.release(conn)
+
+
+# ── T10-T14 — POST /live-calls/{session_id}/interventions ────────────────
+
+async def _post_intervention(client: AsyncClient, session_id: str, *, action: str = "listen",
+                              tenant_slug: str | None = None, headers: dict | None = None):
+    return await client.post(
+        f"/live-calls/{session_id}/interventions",
+        json={"action": action, "tenant_slug": tenant_slug},
+        headers=headers,
+    )
+
+
+async def _count_audit_rows(pool, entity_id, outcome: str) -> int:
+    return await pool.fetchval(
+        "SELECT COUNT(*) FROM audit_log WHERE entity_type = 'live_call_intervention' "
+        "AND entity_id = $1 AND new_value->>'outcome' = $2",
+        entity_id, outcome,
+    )
+
+
+class TestRequestInterventionServiceFunction:
+    async def test_cross_tenant_session_id_binds_the_slug_and_returns_none(self, pool, test_tenant):
+        other_tenant = await _create_tenant(pool)
+        # Agent and call both belong to tenant B; the "caller" (tenant A) is
+        # simulated by resolving against test_tenant's own slug/id while the
+        # session actually lives under other_tenant.
+        session_id = await _insert_call(pool, tenant_slug=other_tenant["slug"])
+        user = auth.decode_access_token(auth.create_access_token(
+            await _create_user(role="admin", tenant_id=test_tenant["id"]),
+        ))
+        try:
+            result = await live_calls.request_intervention(
+                tenant_slug=test_tenant["slug"], tenant_id=test_tenant["id"], session_id=session_id,
+                action="listen", user=user, ip_address=None,
+            )
+            assert result is None
+            assert (
+                await pool.fetchval(
+                    "SELECT COUNT(*) FROM live_call_interventions WHERE session_id = $1", session_id,
+                )
+            ) == 0
+        finally:
+            await _cleanup_call(pool, session_id)
+            await _cleanup_tenant(pool, other_tenant)
+
+    async def test_write_audit_failure_rolls_back_the_intervention_insert(self, pool, test_tenant, monkeypatch):
+        session_id = await _insert_call(pool, tenant_slug=test_tenant["slug"])
+        admin_row = await _create_user(role="admin", tenant_id=test_tenant["id"])
+        user = auth.decode_access_token(auth.create_access_token(admin_row))
+        try:
+            async def _raise(*args, **kwargs):
+                raise RuntimeError("boom")
+
+            monkeypatch.setattr(audit, "write_audit", _raise)
+            with pytest.raises(RuntimeError):
+                await live_calls.request_intervention(
+                    tenant_slug=test_tenant["slug"], tenant_id=test_tenant["id"], session_id=session_id,
+                    action="barge", user=user, ip_address=None,
+                )
+            assert (
+                await pool.fetchval(
+                    "SELECT COUNT(*) FROM live_call_interventions WHERE session_id = $1", session_id,
+                )
+            ) == 0
+        finally:
+            await _cleanup_call(pool, session_id)
+            await _soft_delete_user(pool, admin_row["id"])
+
+
+class TestInterventionIpAddress:
+    async def test_spoofed_non_ip_xff_stores_null(self, pool, test_tenant, test_admin):
+        session_id = await _insert_call(pool, tenant_slug=test_tenant["slug"])
+        try:
+            _clear_authority_memo()
+            _reset_throttle()
+            async with _client_as(test_admin["user"]) as client:
+                resp = await _post_intervention(
+                    client, session_id, headers={"X-Forwarded-For": "not-an-ip, 10.0.0.1"},
+                )
+            assert resp.status_code == 202, resp.text
+            row = await pool.fetchrow(
+                "SELECT ip_address FROM live_call_interventions WHERE session_id = $1", session_id,
+            )
+            assert row["ip_address"] is None
+        finally:
+            await _cleanup_call(pool, session_id)
+
+    async def test_well_formed_xff_hop_is_stored(self, pool, test_tenant, test_admin):
+        session_id = await _insert_call(pool, tenant_slug=test_tenant["slug"])
+        try:
+            _clear_authority_memo()
+            _reset_throttle()
+            async with _client_as(test_admin["user"]) as client:
+                resp = await _post_intervention(
+                    client, session_id, headers={"X-Forwarded-For": "203.0.113.7, 10.0.0.1"},
+                )
+            assert resp.status_code == 202, resp.text
+            row = await pool.fetchrow(
+                "SELECT ip_address FROM live_call_interventions WHERE session_id = $1", session_id,
+            )
+            assert str(row["ip_address"]) == "203.0.113.7"
+        finally:
+            await _cleanup_call(pool, session_id)
+
+
+class TestInterventionDenialAuditing:
+    async def test_byte_identical_404_across_foreign_nonexistent_and_oversized_session_id(
+        self, pool, test_tenant, test_admin,
+    ):
+        other_tenant = await _create_tenant(pool)
+        foreign_session = await _insert_call(pool, tenant_slug=other_tenant["slug"])
+        nonexistent_session = f"nope-{uuid.uuid4().hex[:8]}"
+        oversized_session = "x" * 300
+        try:
+            _clear_authority_memo()
+            _reset_throttle()
+            async with _client_as(test_admin["user"]) as client:
+                foreign_resp = await _post_intervention(client, foreign_session)
+                _reset_throttle()
+                nonexistent_resp = await _post_intervention(client, nonexistent_session)
+                _reset_throttle()
+                oversized_resp = await _post_intervention(client, oversized_session)
+
+            bodies = [foreign_resp, nonexistent_resp, oversized_resp]
+            assert all(r.status_code == 404 for r in bodies)
+            assert all(r.json() == {"detail": "call not found"} for r in bodies)
+
+            denied_count = await _count_audit_rows(pool, test_tenant["id"], "denied")
+            assert denied_count == 1  # T14 aggregates all three denials from one user
+        finally:
+            await _cleanup_call(pool, foreign_session)
+            await _cleanup_tenant(pool, other_tenant)
+
+    async def test_resolve_scope_tenant_mismatch_404_is_also_audited(self, pool, test_tenant, test_admin):
+        other_tenant = await _create_tenant(pool)
+        try:
+            _clear_authority_memo()
+            _reset_throttle()
+            async with _client_as(test_admin["user"]) as client:
+                resp = await _post_intervention(
+                    client, f"test-live-{uuid.uuid4().hex[:8]}", tenant_slug=other_tenant["slug"],
+                )
+            # This is _resolve_scope's OWN 404 (a tenant-slug mismatch),
+            # distinct from get_live_calls's/request_intervention's query
+            # miss — its body is unchanged ("tenant not found"); what T12
+            # closes is that it is now AUDITED as a denial too (finding #5),
+            # not that its wording changes to match the query-miss case.
+            assert resp.status_code == 404
+            assert resp.json() == {"detail": "tenant not found"}
+            assert await _count_audit_rows(pool, test_tenant["id"], "denied") == 1
+        finally:
+            await _cleanup_tenant(pool, other_tenant)
+
+
+# ── T13 — AC9 stale-token re-validation + audit completeness ────────────
+
+class TestInterventionStaleTokenAndAuditCompleteness:
+    async def test_soft_delete_after_success_403s_the_replayed_token(self, pool, test_tenant):
+        session_id = await _insert_call(pool, tenant_slug=test_tenant["slug"])
+        admin_row = await _create_user(role="admin", tenant_id=test_tenant["id"])
+        try:
+            _clear_authority_memo()
+            _reset_throttle()
+            async with _client_as(admin_row) as client:
+                first = await _post_intervention(client, session_id)
+                assert first.status_code == 202, first.text
+
+                await _soft_delete_user(pool, admin_row["id"])
+
+                before_count = await pool.fetchval(
+                    "SELECT COUNT(*) FROM live_call_interventions WHERE session_id = $1", session_id,
+                )
+                _reset_throttle()
+                replay = await _post_intervention(client, session_id)
+                assert replay.status_code == 403
+                after_count = await pool.fetchval(
+                    "SELECT COUNT(*) FROM live_call_interventions WHERE session_id = $1", session_id,
+                )
+                assert after_count == before_count
+        finally:
+            await _cleanup_call(pool, session_id)
+
+    async def test_demotion_after_success_403s_the_replayed_token(self, pool, test_tenant):
+        session_id = await _insert_call(pool, tenant_slug=test_tenant["slug"])
+        admin_row = await _create_user(role="admin", tenant_id=test_tenant["id"])
+        try:
+            _clear_authority_memo()
+            _reset_throttle()
+            async with _client_as(admin_row) as client:
+                first = await _post_intervention(client, session_id)
+                assert first.status_code == 202, first.text
+
+                await users_service.update_user(admin_row["id"], role="viewer")
+
+                _reset_throttle()
+                replay = await _post_intervention(client, session_id)
+                assert replay.status_code == 403
+        finally:
+            await _cleanup_call(pool, session_id)
+            await _soft_delete_user(pool, admin_row["id"])
+
+    async def test_in_tenant_request_produces_one_paired_intervention_and_audit_row(
+        self, pool, test_tenant, test_admin,
+    ):
+        session_id = await _insert_call(pool, tenant_slug=test_tenant["slug"])
+        try:
+            _clear_authority_memo()
+            _reset_throttle()
+            async with _client_as(test_admin["user"]) as client:
+                resp = await _post_intervention(client, session_id, action="barge")
+            assert resp.status_code == 202, resp.text
+
+            intervention_rows = await pool.fetch(
+                "SELECT * FROM live_call_interventions WHERE session_id = $1", session_id,
+            )
+            assert len(intervention_rows) == 1
+            intervention = intervention_rows[0]
+            assert intervention["outcome"] == "unavailable"
+            assert intervention["action"] == "barge"
+            assert intervention["user_email"] == test_admin["user"]["email"]
+
+            audit_rows = await pool.fetch(
+                "SELECT * FROM audit_log WHERE entity_type = 'live_call_intervention' "
+                "AND entity_id = $1 AND new_value->>'outcome' = 'unavailable'",
+                test_tenant["id"],
+            )
+            assert len(audit_rows) == 1
+            audit_row = audit_rows[0]
+            assert audit_row["user_id"] == test_admin["user"]["id"]
+            assert audit_row["user_email"] == test_admin["user"]["email"]
+            assert db.json_col(audit_row["new_value"])["session_id"] == session_id
+        finally:
+            await _cleanup_call(pool, session_id)
+
+
+# ── T14 — denial-audit aggregation ────────────────────────────────────────
+
+class TestDenialAuditAggregation:
+    async def test_twenty_rapid_denials_from_one_user_aggregate_into_fewer_than_twenty_rows(
+        self, pool, test_tenant, test_admin,
+    ):
+        live_calls._denial_audit_windows.pop(str(test_admin["user"]["id"]), None)
+        before = await _count_audit_rows(pool, test_tenant["id"], "denied")
+        try:
+            _clear_authority_memo()
+            _reset_throttle()
+            async with _client_as(test_admin["user"]) as client:
+                for _ in range(20):
+                    _reset_throttle()
+                    resp = await _post_intervention(client, f"nope-{uuid.uuid4().hex[:8]}")
+                    assert resp.status_code == 404
+
+            after = await _count_audit_rows(pool, test_tenant["id"], "denied")
+            assert after - before < 20
+            assert after - before == 1
+        finally:
+            live_calls._denial_audit_windows.pop(str(test_admin["user"]["id"]), None)
+
+    async def test_granted_requests_are_never_aggregated(self, pool, test_tenant, test_admin):
+        session_ids = [await _insert_call(pool, tenant_slug=test_tenant["slug"]) for _ in range(3)]
+        try:
+            _clear_authority_memo()
+            _reset_throttle()
+            async with _client_as(test_admin["user"]) as client:
+                for session_id in session_ids:
+                    _reset_throttle()
+                    resp = await _post_intervention(client, session_id)
+                    assert resp.status_code == 202
+
+            unavailable_count = await _count_audit_rows(pool, test_tenant["id"], "unavailable")
+            assert unavailable_count == 3  # one row per successful request, never aggregated
+        finally:
+            for session_id in session_ids:
+                await _cleanup_call(pool, session_id)
+
+
+# ── T15 — bounded, selective fresh_authority memo ────────────────────────
+
+class TestAuthorityMemoBounds:
+    async def test_memo_size_stays_capped_across_many_distinct_scope_keys(
+        self, pool, test_tenant, monkeypatch,
+    ):
+        monkeypatch.setattr(deps, "AUTHORITY_MEMO_MAX_ENTRIES", 5)
+        admin_row = await _create_user(role="admin", tenant_id=test_tenant["id"])
+        try:
+            token_user = auth.decode_access_token(auth.create_access_token(admin_row))
+            _clear_authority_memo()
+            for i in range(20):
+                await deps.fresh_authority(app.state, token_user, f"scope-{i}", ttl_s=60)
+            memo = app.state._live_calls_authority_memo
+            assert len(memo) <= 5
+        finally:
+            await _soft_delete_user(pool, admin_row["id"])
+
+    async def test_a_404d_slug_is_not_retained_in_the_memo(self, pool, test_tenant, test_admin):
+        bad_slug = f"nope-{uuid.uuid4().hex[:8]}"
+        _clear_authority_memo()
+        _reset_throttle()
+        async with _client_as(test_admin["user"]) as client:
+            resp = await client.get("/live-calls", params={"tenant_slug": bad_slug})
+        assert resp.status_code == 404
+
+        memo = app.state._live_calls_authority_memo
+        assert (str(test_admin["user"]["id"]), bad_slug) not in memo
