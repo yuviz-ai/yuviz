@@ -1349,6 +1349,13 @@ class PipelineConversationHandler:
             session_id, self._get_history(session_id), self._llm,
         )
 
+    def record_live_stage(self, session_id: str, stage: str) -> None:
+        """Delegates to TranscriptBuilder.record_live_stage — a no-op when
+        persistence is disabled (self._transcripts is None), same guard as
+        every other write this handler makes."""
+        if self._transcripts is not None:
+            self._transcripts.record_live_stage(session_id, stage)
+
     async def finalize_session(
         self, session_id: str, reason: str = "transfer_completed",
     ) -> FinalizationResult:

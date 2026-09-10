@@ -263,6 +263,22 @@ class TranscriptBuilder:
             session_id, nodes_visited, disposition, extracted_variables,
         ))
 
+    def record_live_stage(self, session_id: str, stage: str) -> None:
+        """Live Calls Monitoring's mid-call stage column (database/
+        schema.sql's calls.live_stage) — 'ai' | 'waiting_for_human' |
+        'human_connected'. Rides the same per-session _spawn() chain as
+        every other write here, which is load-bearing, not incidental: two
+        transfer-hook calls for the same session (session.py's
+        on_transfer_initiated/on_transfer_completed/on_transfer_failed/
+        on_transfer_cancelled) are chained in the order they're CALLED, so
+        even if an earlier call's write is slower to actually land on
+        Postgres, it still completes before the later call's write starts —
+        a later stage can never be overwritten by an earlier one arriving
+        late."""
+        if self._pool is None:
+            return
+        self._spawn(session_id, self._record_live_stage(session_id, stage))
+
     def end_call(self, session_id: str, close_reason: str,
                  final_state: str | None = None) -> None:
         if self._pool is None:
@@ -334,6 +350,16 @@ class TranscriptBuilder:
                 )
         except Exception:
             log.exception("TranscriptBuilder: record_workflow_outcome failed session=%s", session_id)
+
+    async def _record_live_stage(self, session_id: str, stage: str) -> None:
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE calls SET live_stage = $2 WHERE session_id = $1",
+                    session_id, stage,
+                )
+        except Exception:
+            log.exception("TranscriptBuilder: record_live_stage failed session=%s stage=%s", session_id, stage)
 
     async def _record_turn(
         self,
