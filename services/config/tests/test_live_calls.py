@@ -15,6 +15,7 @@ and users at roles/tenant-shapes conftest doesn't already mint).
 from __future__ import annotations
 
 import ast
+import asyncio
 import inspect
 import uuid
 
@@ -492,3 +493,88 @@ class TestTenantIsolationAndScope:
             assert resp.json() == {"detail": "tenant_slug is required"}
         finally:
             await _soft_delete_user(pool, admin_row["id"])
+
+
+# ── T7 — AC15 snippet authority, decided on the DB role not the token ───────
+
+class TestSnippetAuthority:
+    async def test_snippet_visible_to_admin_withheld_from_supervisor(self, pool, test_tenant, test_admin):
+        session_id = await _insert_call(pool, tenant_slug=test_tenant["slug"])
+        await _insert_transcript_turn(pool, session_id=session_id, caller_text="the secret caller phrase")
+        supervisor = await _create_user(role="supervisor", tenant_id=test_tenant["id"])
+        try:
+            _clear_authority_memo()
+            _reset_throttle()
+            async with _client_as(test_admin["user"]) as client:
+                admin_resp = await client.get("/live-calls")
+            assert admin_resp.status_code == 200
+            admin_item = admin_resp.json()["items"][0]
+            assert admin_item["transcript_snippet"] == "the secret caller phrase"
+            assert admin_item["transcript_withheld"] is False
+
+            _clear_authority_memo()
+            _reset_throttle()
+            async with _client_as(supervisor) as client:
+                sup_resp = await client.get("/live-calls")
+            assert sup_resp.status_code == 200
+            sup_item = sup_resp.json()["items"][0]
+            assert sup_item["transcript_snippet"] is None
+            assert sup_item["transcript_withheld"] is True
+            assert "the secret caller phrase" not in sup_resp.text
+        finally:
+            await _cleanup_call(pool, session_id)
+            await _soft_delete_user(pool, supervisor["id"])
+
+    async def test_demotion_stops_snippet_only_after_the_shipped_60s_ttl(self, pool, test_tenant, test_admin):
+        session_id = await _insert_call(pool, tenant_slug=test_tenant["slug"])
+        await _insert_transcript_turn(pool, session_id=session_id, caller_text="only admins should see this")
+        try:
+            _clear_authority_memo()
+            _reset_throttle()
+            async with _client_as(test_admin["user"]) as client:
+                first = await client.get("/live-calls")
+                assert first.status_code == 200
+                assert first.json()["items"][0]["transcript_snippet"] == "only admins should see this"
+
+                await users_service.update_user(test_admin["user"]["id"], role="supervisor")
+
+                # Still inside the shipped 60s memo TTL — the documented,
+                # bounded exposure window (lesson 25: never a shortened one
+                # for this assertion).
+                _reset_throttle()
+                still_admin_view = await client.get("/live-calls")
+                assert still_admin_view.status_code == 200
+                assert still_admin_view.json()["items"][0]["transcript_snippet"] == "only admins should see this"
+
+                await asyncio.sleep(deps.AUTHORITY_MEMO_TTL_S + 1)
+
+                _reset_throttle()
+                after_ttl = await client.get("/live-calls")
+                assert after_ttl.status_code == 200
+                assert after_ttl.json()["items"][0]["transcript_withheld"] is True
+                assert "only admins should see this" not in after_ttl.text
+        finally:
+            await _cleanup_call(pool, session_id)
+
+    async def test_soft_delete_403s_after_the_shipped_60s_ttl(self, pool, test_tenant, test_admin):
+        session_id = await _insert_call(pool, tenant_slug=test_tenant["slug"])
+        try:
+            _clear_authority_memo()
+            _reset_throttle()
+            async with _client_as(test_admin["user"]) as client:
+                first = await client.get("/live-calls")
+                assert first.status_code == 200
+
+                await _soft_delete_user(pool, test_admin["user"]["id"])
+
+                _reset_throttle()
+                still_ok = await client.get("/live-calls")
+                assert still_ok.status_code == 200
+
+                await asyncio.sleep(deps.AUTHORITY_MEMO_TTL_S + 1)
+
+                _reset_throttle()
+                after_ttl = await client.get("/live-calls")
+                assert after_ttl.status_code == 403
+        finally:
+            await _cleanup_call(pool, session_id)
