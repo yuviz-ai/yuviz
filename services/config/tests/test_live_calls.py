@@ -671,13 +671,15 @@ class TestKpis:
 
 class TestRateLimitAndAcquireTimeout:
     async def test_rate_limit_429s_after_bucket_exhausted(self, pool, test_tenant, test_admin):
+        # limit=4 (see LiveCallsThrottle's own docstring for the multiplier
+        # and why) — drive exactly the bucket's capacity, then one more.
         _clear_authority_memo()
         _reset_throttle()
         async with _client_as(test_admin["user"]) as client:
-            first = await client.get("/live-calls")
-            second = await client.get("/live-calls")
-        assert first.status_code == 200
-        assert second.status_code == 429
+            responses = [await client.get("/live-calls") for _ in range(4)]
+            fifth = await client.get("/live-calls")
+        assert all(r.status_code == 200 for r in responses), [r.status_code for r in responses]
+        assert fifth.status_code == 429
         _reset_throttle()
 
     async def test_granted_request_is_never_throttled_below_the_bucket_cap(self, test_tenant, test_admin):
@@ -689,6 +691,33 @@ class TestRateLimitAndAcquireTimeout:
             resp = await client.get("/live-calls")
         assert resp.status_code == 200
         _reset_throttle()
+
+    async def test_throttle_tolerates_realistic_multi_tab_traffic_without_any_reset(
+        self, pool, test_tenant, test_admin,
+    ):
+        """Lesson 25's own shape: no _reset_throttle() call anywhere in this
+        test, and no fixture/fresh-instance sleight of hand either — this
+        drives the REAL shared app.state.live_calls_throttle exactly as
+        production traffic would hit it. test_admin is a brand-new user
+        (fresh per test), so its bucket key has no pre-existing entries;
+        nothing here is reset or pre-cleared.
+
+        Simulates one operator's SAME window legitimately containing more
+        than one request: tab 1's poll tick, tab 2's own (unsynchronized)
+        poll tick, a tenant switch's immediate re-fetch, and a resume's
+        immediate re-fetch — four ordinary, non-hammering requests from one
+        user landing in one 5s window. This is the review's finding #3
+        regression test: limit=1 rejected this exact traffic (every other
+        test only passed because it called _reset_throttle() between
+        requests); limit=4 tolerates it, while a genuine 5th request in the
+        same window still 429s, so the bound still exists."""
+        _clear_authority_memo()
+        async with _client_as(test_admin["user"]) as client:
+            responses = [await client.get("/live-calls") for _ in range(4)]
+            assert all(r.status_code == 200 for r in responses), [r.status_code for r in responses]
+
+            fifth = await client.get("/live-calls")
+            assert fifth.status_code == 429
 
     async def test_acquire_times_out_when_pool_is_saturated_rather_than_hangs(self, test_tenant):
         # Pre-warm the Redis-cached tenant lookup so the saturated-pool
@@ -949,7 +978,8 @@ class TestDenialAuditAggregation:
     async def test_twenty_rapid_denials_from_one_user_aggregate_into_fewer_than_twenty_rows(
         self, pool, test_tenant, test_admin,
     ):
-        live_calls._denial_audit_windows.pop(str(test_admin["user"]["id"]), None)
+        key = (str(test_admin["user"]["id"]), str(test_tenant["id"]))
+        live_calls._denial_audit_windows.pop(key, None)
         before = await _count_audit_rows(pool, test_tenant["id"], "denied")
         try:
             _clear_authority_memo()
@@ -964,7 +994,40 @@ class TestDenialAuditAggregation:
             assert after - before < 20
             assert after - before == 1
         finally:
-            live_calls._denial_audit_windows.pop(str(test_admin["user"]["id"]), None)
+            live_calls._denial_audit_windows.pop(key, None)
+
+    async def test_cross_tenant_denials_within_the_window_get_separate_rows(self, pool, test_tenant):
+        # The load-bearing regression test for the security-review finding:
+        # a superadmin probing tenant A then tenant B within the same 60s
+        # window must NOT have tenant B's denial folded into tenant A's row
+        # — each tenant gets its own audit trail (AC11 / finding #5).
+        other_tenant = await _create_tenant(pool)
+        superadmin = await _create_user(role="superadmin", tenant_id=None)
+        key_a = (str(superadmin["id"]), str(test_tenant["id"]))
+        key_b = (str(superadmin["id"]), str(other_tenant["id"]))
+        live_calls._denial_audit_windows.pop(key_a, None)
+        live_calls._denial_audit_windows.pop(key_b, None)
+        try:
+            _clear_authority_memo()
+            _reset_throttle()
+            async with _client_as(superadmin) as client:
+                resp_a = await _post_intervention(
+                    client, f"nope-{uuid.uuid4().hex[:8]}", tenant_slug=test_tenant["slug"],
+                )
+                assert resp_a.status_code == 404
+                _reset_throttle()
+                resp_b = await _post_intervention(
+                    client, f"nope-{uuid.uuid4().hex[:8]}", tenant_slug=other_tenant["slug"],
+                )
+                assert resp_b.status_code == 404
+
+            assert await _count_audit_rows(pool, test_tenant["id"], "denied") == 1
+            assert await _count_audit_rows(pool, other_tenant["id"], "denied") == 1
+        finally:
+            live_calls._denial_audit_windows.pop(key_a, None)
+            live_calls._denial_audit_windows.pop(key_b, None)
+            await _soft_delete_user(pool, superadmin["id"])
+            await _cleanup_tenant(pool, other_tenant)
 
     async def test_granted_requests_are_never_aggregated(self, pool, test_tenant, test_admin):
         session_ids = [await _insert_call(pool, tenant_slug=test_tenant["slug"]) for _ in range(3)]

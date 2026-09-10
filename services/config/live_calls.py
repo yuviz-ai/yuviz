@@ -255,17 +255,24 @@ async def request_intervention(
     }
 
 
-# Per-user aggregation window for denial audits (finding #7): a scripted
-# prober hammering this route with foreign/nonexistent session ids would
-# otherwise grow audit_log by one row per attempt at effectively zero cost.
-# Repeated denials from the SAME user inside this window bump one row's
-# count/last-seen instead of inserting a new one. Module-level (not
-# app.state): T14's own scope is this file, and this bookkeeping — unlike
-# fresh_authority's memo — never holds an authorization decision, only a
-# denial-audit row id and count, so it carries no risk of granting anything
-# the database didn't confirm (lesson 16).
+# Per-(user, tenant) aggregation window for denial audits (finding #7): a
+# scripted prober hammering this route with foreign/nonexistent session ids
+# would otherwise grow audit_log by one row per attempt at effectively zero
+# cost. Repeated denials from the SAME user against the SAME tenant inside
+# this window bump one row's count/last-seen instead of inserting a new one.
+# Keyed on (user_id, tenant_id), NOT user_id alone — a superadmin who probes
+# tenant A and then, within the window, probes tenant B must get tenant B's
+# OWN row: folding it into tenant A's would silently drop the one audit
+# trail AC11 requires for tenant B's refused request, defeating finding #5's
+# cross-tenant-probe accountability with the very control meant to bound
+# finding #7 (closes the security-review regression on this exact tension).
+# Module-level (not app.state): T14's own scope is this file, and this
+# bookkeeping — unlike fresh_authority's memo — never holds an authorization
+# decision, only a denial-audit row id and count, so it carries no risk of
+# granting anything the database didn't confirm (lesson 16).
 _DENIAL_AUDIT_WINDOW_S = 60.0
-_denial_audit_windows: dict[str, tuple[float, int, int]] = {}  # user_id -> (window_start, audit_log_id, count)
+_DenialAuditKey = tuple[str, str]  # (user_id, tenant_id)
+_denial_audit_windows: dict[_DenialAuditKey, tuple[float, int, int]] = {}  # key -> (window_start, audit_log_id, count)
 
 
 async def record_denied_intervention(
@@ -280,18 +287,20 @@ async def record_denied_intervention(
     truncated_session_id = session_id[:_AUDITED_SESSION_ID_MAX_LEN]
     now = time.monotonic()
     pool = await db.get_pool()
+    key: _DenialAuditKey = (user.id, str(tenant_id))
 
-    window = _denial_audit_windows.get(user.id)
+    window = _denial_audit_windows.get(key)
     if window is not None and now - window[0] < _DENIAL_AUDIT_WINDOW_S:
         window_start, audit_log_id, count = window
         new_count = count + 1
         async with pool.acquire() as conn:
             await conn.execute(
-                "UPDATE audit_log SET new_value = jsonb_set(new_value, '{count}', to_jsonb($2::int)), "
+                "UPDATE audit_log SET new_value = jsonb_set(jsonb_set(new_value, "
+                "'{count}', to_jsonb($2::int)), '{session_id}', to_jsonb($3::text)), "
                 "changed_at = now() WHERE id = $1",
-                audit_log_id, new_count,
+                audit_log_id, new_count, truncated_session_id,
             )
-        _denial_audit_windows[user.id] = (window_start, audit_log_id, new_count)
+        _denial_audit_windows[key] = (window_start, audit_log_id, new_count)
         return
 
     new_value = {
@@ -304,4 +313,4 @@ async def record_denied_intervention(
             "VALUES ('live_call_intervention', $1, $2, $3, 'created', $4::jsonb, $5) RETURNING id",
             tenant_id, user.id, user.email, json.dumps(new_value), ip_address,
         )
-    _denial_audit_windows[user.id] = (now, audit_log_id, 1)
+    _denial_audit_windows[key] = (now, audit_log_id, 1)

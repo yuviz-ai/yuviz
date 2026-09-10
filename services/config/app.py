@@ -212,13 +212,26 @@ class AcceptThrottle:
 class LiveCallsThrottle:
     """Per-user token bucket for GET /live-calls, sized to the 5s poll
     interval (live_calls.py's REFRESH_MS budget), same FixedWindowCounter
-    precedent as InviteThrottle/AcceptThrottle above. One request per window
-    is exactly one poll tick; a client hammering the route faster than the
-    UI's own cadence gets 429 instead of adding load a single-connection
-    poll wasn't sized for."""
+    precedent as InviteThrottle/AcceptThrottle above.
+
+    limit=4, not 1: one operator's own legitimate traffic in a single 5s
+    window is not always exactly one request. A second browser tab polling
+    its own unsynchronized 5s cadence, a superadmin's tenant switch (which
+    fires an immediate re-fetch on top of whatever the old interval still
+    had in flight), and pause-then-immediate-resume (same — an immediate
+    fetch layered on the interval boundary) can all legitimately land 2-3
+    requests from the SAME user in one window without any hammering at all.
+    limit=1 rejected exactly this traffic (found live via review, not by any
+    of this file's own tests — every one of them called _reset_throttle(),
+    which is why nothing caught it; see TestRateLimitAndAcquireTimeout's
+    dedicated non-reset test for the fix's own proof). 4 gives roughly 3-4x
+    the single-tab steady-state rate — enough for 2-3 tabs plus one
+    switch/resume on top — while still bounding a client that is actually
+    hammering the route to a small constant multiple of its intended cadence,
+    not an unbounded one."""
 
     def __init__(self) -> None:
-        self._counter = FixedWindowCounter(limit=1, window_seconds=5)
+        self._counter = FixedWindowCounter(limit=4, window_seconds=5)
 
     def check(self, key: str) -> None:
         over, retry_after = self._counter.over_limit(key)

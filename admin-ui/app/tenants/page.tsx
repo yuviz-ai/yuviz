@@ -95,21 +95,50 @@ export default function TenantsPage() {
     if (!editTarget) return;
     setEditSubmitting(true);
     setEditError(null);
-    try {
-      await updateTenant(editTarget.id, editForm);
-      if (maxConcurrentCalls !== "" && maxConcurrentCalls !== editTarget.max_concurrent_calls) {
+    // Two independent calls, not one folded into the other: PATCH
+    // /tenants/{id} (name/region/timeouts) is superadmin-only
+    // (require_role("superadmin") — routers/tenants.py), but PATCH
+    // /tenants/{id}/concurrency is the route T17 built specifically so a
+    // tenant_admin can set their OWN tenant's cap. Calling updateTenant()
+    // first and letting its 403 abort the handler made that route
+    // unreachable from this page for exactly the role it was built for —
+    // concurrency must be attempted regardless of whether the other PATCH
+    // succeeds, fails, or isn't applicable to this actor's role.
+    const concurrencyChanged =
+      maxConcurrentCalls !== "" && maxConcurrentCalls !== editTarget.max_concurrent_calls;
+    const otherFieldsChanged =
+      editForm.name !== editTarget.name ||
+      editForm.region !== editTarget.region ||
+      editForm.transfer_timeout_ms !== editTarget.transfer_timeout_ms ||
+      editForm.no_speech_timeout_ms !== editTarget.no_speech_timeout_ms;
+
+    const errors: string[] = [];
+    if (concurrencyChanged) {
+      try {
         // Its own audited/cache-invalidated write (T16/T17) — the next
         // Live Calls poll for this tenant reflects the new utilization_pct
         // because update_tenant()'s cache.invalidate() fires either way.
         await updateTenantConcurrency(editTarget.id, maxConcurrentCalls);
+      } catch (e) {
+        errors.push(e instanceof ApiError ? e.detail : String(e));
       }
-      setEditTarget(null);
-      refresh();
-    } catch (e) {
-      setEditError(e instanceof ApiError ? e.detail : String(e));
-    } finally {
-      setEditSubmitting(false);
     }
+    if (otherFieldsChanged) {
+      try {
+        await updateTenant(editTarget.id, editForm);
+      } catch (e) {
+        errors.push(e instanceof ApiError ? e.detail : String(e));
+      }
+    }
+
+    if (errors.length > 0) {
+      setEditError(errors.join(" "));
+      setEditSubmitting(false);
+      return; // keep the modal open — whatever failed is still visible to fix/retry
+    }
+    setEditSubmitting(false);
+    setEditTarget(null);
+    refresh();
   };
 
   return (
