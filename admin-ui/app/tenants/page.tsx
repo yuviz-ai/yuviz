@@ -1,7 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ApiError, createTenant, deleteTenant, listAgents, listTenants, Tenant, TenantUpdate, updateTenant } from "@/lib/api";
+import {
+  ApiError, createTenant, deleteTenant, listAgents, listTenants, Tenant, TenantUpdate,
+  updateTenant, updateTenantConcurrency,
+} from "@/lib/api";
 import { Modal } from "@/components/Modal";
 
 export default function TenantsPage() {
@@ -21,6 +24,13 @@ export default function TenantsPage() {
   const [editForm, setEditForm] = useState<TenantUpdate>({});
   const [editSubmitting, setEditSubmitting] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
+  // Separate from editForm/updateTenant() on purpose: this goes through its
+  // own PATCH /tenants/{id}/concurrency (services/config/routers/tenants.py),
+  // not the superadmin-only PATCH /tenants/{id} — that's what lets an
+  // admin (not just superadmin) edit their own tenant's cap. "" means
+  // "leave it unchanged," never "clear it to NULL" (that endpoint doesn't
+  // offer clearing — see schemas.py's TenantConcurrencyUpdate).
+  const [maxConcurrentCalls, setMaxConcurrentCalls] = useState<number | "">("");
 
   const refresh = () => {
     setLoading(true);
@@ -77,6 +87,7 @@ export default function TenantsPage() {
       transfer_timeout_ms: t.transfer_timeout_ms,
       no_speech_timeout_ms: t.no_speech_timeout_ms,
     });
+    setMaxConcurrentCalls(t.max_concurrent_calls ?? "");
     setEditError(null);
   };
 
@@ -86,6 +97,12 @@ export default function TenantsPage() {
     setEditError(null);
     try {
       await updateTenant(editTarget.id, editForm);
+      if (maxConcurrentCalls !== "" && maxConcurrentCalls !== editTarget.max_concurrent_calls) {
+        // Its own audited/cache-invalidated write (T16/T17) — the next
+        // Live Calls poll for this tenant reflects the new utilization_pct
+        // because update_tenant()'s cache.invalidate() fires either way.
+        await updateTenantConcurrency(editTarget.id, maxConcurrentCalls);
+      }
       setEditTarget(null);
       refresh();
     } catch (e) {
@@ -258,6 +275,22 @@ export default function TenantsPage() {
               })
             }
             placeholder="30000"
+          />
+        </div>
+        <div className="form-group">
+          <label className="form-label">
+            Max Concurrent Calls <span className="hint">the channel cap Live Calls' utilization KPI is measured against — blank means not set yet (never defaulted to a number)</span>
+          </label>
+          <input
+            className="form-input"
+            style={{ fontFamily: "var(--mono)", width: 140 }}
+            type="number"
+            min={1}
+            max={10000}
+            step={1}
+            value={maxConcurrentCalls}
+            onChange={(e) => setMaxConcurrentCalls(e.target.value === "" ? "" : Number(e.target.value))}
+            placeholder="Not set"
           />
         </div>
         <div className="form-hint">Slug can&apos;t be changed after creation — it&apos;s used in Redis routing keys.</div>

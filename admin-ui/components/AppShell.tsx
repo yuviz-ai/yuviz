@@ -6,7 +6,10 @@ import { useEffect, useState } from "react";
 import { getCurrentUser, isConsoleRole, listTenants, Tenant, User } from "@/lib/api";
 import { clearToken, getToken } from "@/lib/auth";
 
-const ACTIVE_TENANT_STORAGE_KEY = "yuviz.activeTenantId";
+// Exported for admin-ui/app/live-calls/page.tsx's superadmin tenant picker
+// (T22b) — the same key this header switcher already writes, so a
+// superadmin's selection here is the one Live Calls reads too (T23).
+export const ACTIVE_TENANT_STORAGE_KEY = "yuviz.activeTenantId";
 
 function tenantInitial(name: string): string {
   return (name.trim()[0] || "?").toUpperCase();
@@ -80,6 +83,12 @@ const ICONS: Record<string, React.ReactNode> = {
       <path d="M2 2h12v9H9l-3 3v-3H2z" />
     </svg>
   ),
+  "live-calls": (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <circle cx="8" cy="8" r="2" fill="currentColor" stroke="none" />
+      <path d="M4.5 4.5a5 5 0 000 7M11.5 4.5a5 5 0 010 7" />
+    </svg>
+  ),
   campaigns: (
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
       <path d="M1.5 6.5v3L5 10.5V5.5L1.5 6.5z" />
@@ -113,6 +122,7 @@ const USERS_ITEM = { href: "/users", label: "Users", icon: "users" };
 const CALLING_ITEMS = [
   { href: "/calls", label: "Calls", icon: "calls" },
   { href: "/campaigns", label: "Campaigns", icon: "campaigns" },
+  { href: "/live-calls", label: "Live Calls", icon: "live-calls" },
 ];
 
 const PLATFORM_ITEMS = [{ href: "/settings", label: "Settings", icon: "settings" }];
@@ -150,12 +160,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // needs to handle "no token at all").
   //
   // A token alone isn't enough: login/page.tsx sends non-console roles
-  // (supervisor/agent — see isConsoleRole) to /no-access, but that's only
-  // enforced at login time. Without re-checking here, a bookmark or a
-  // refresh on any admin URL renders the full sidebar for a role with zero
-  // Config API surface, so the page's own fetches 403 into an error banner
-  // instead (lesson 22). authChecked stays false while a redirect is in
-  // flight so the page underneath never gets to render its own fetches.
+  // (agent — see isConsoleRole) to /no-access, but that's only enforced at
+  // login time. Without re-checking here, a bookmark or a refresh on any
+  // admin URL renders the full sidebar for a role with zero Config API
+  // surface, so the page's own fetches 403 into an error banner instead
+  // (lesson 22). authChecked stays false while a redirect is in flight so
+  // the page underneath never gets to render its own fetches.
+  //
+  // supervisor is a deliberate exception, not an omission: it's outside
+  // CONSOLE_ROLES (deps.py) but IS admitted by require_live_calls_operator
+  // on exactly /live-calls (services/config/deps.py). Landing it anywhere
+  // else in the console still 403s server-side (that gate is untouched),
+  // so it's redirected to /no-access the same as agent — the only route
+  // this guard must let it past is /live-calls itself.
   useEffect(() => {
     if (pathname === "/login" || pathname === "/invite") return;
     if (!getToken()) {
@@ -164,7 +181,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
     getCurrentUser()
       .then((u) => {
-        if (!isConsoleRole(u.role) && pathname !== "/no-access") {
+        const supervisorOnItsOwnPage = u.role === "supervisor" && pathname.startsWith("/live-calls");
+        if (!isConsoleRole(u.role) && !supervisorOnItsOwnPage && pathname !== "/no-access") {
           router.push("/no-access");
           return;
         }
@@ -189,8 +207,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     listTenants()
       .then((ts) => {
         setTenants(ts);
+        // Stores the tenant SLUG, not t.id (security finding #3 — a UUID
+        // here made the superadmin tenant-selection path dead code for any
+        // reader, since every tenant-scoped route/query takes a slug, not
+        // an id; see admin-ui/app/live-calls/page.tsx, the first real
+        // reader of this key besides this switcher itself).
         const stored = typeof window !== "undefined" ? window.localStorage.getItem(ACTIVE_TENANT_STORAGE_KEY) : null;
-        const initial = ts.find((t) => t.id === stored) ?? ts[0] ?? null;
+        const initial = ts.find((t) => t.slug === stored) ?? ts[0] ?? null;
         setActiveTenantId(initial?.id ?? null);
       })
       .catch(() => {
@@ -205,7 +228,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setActiveTenantId(t.id);
     setTenantMenuOpen(false);
     try {
-      window.localStorage.setItem(ACTIVE_TENANT_STORAGE_KEY, t.id);
+      window.localStorage.setItem(ACTIVE_TENANT_STORAGE_KEY, t.slug);
     } catch {
       // Private-mode/blocked storage: the selection just won't survive a
       // reload, which is a strictly worse-but-safe fallback, not a crash.
@@ -220,13 +243,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   if (pathname === "/login" || pathname === "/invite" || pathname === "/no-access") return <>{children}</>;
   if (!authChecked) return null;
 
+  // supervisor sees exactly one nav item (Live Calls) and nothing else —
+  // not a search-filtered coincidence, an unconditional restriction: it has
+  // no Config API surface anywhere else in this console (LIVE_CALLS_ROLES
+  // is the only grant it holds — services/config/deps.py).
+  const isSupervisor = user?.role === "supervisor";
   const canManageUsers = user?.role === "superadmin" || user?.role === "admin";
   const matches = (label: string) => label.toLowerCase().includes(search.trim().toLowerCase());
-  const visibleOverview = OVERVIEW_ITEMS.filter((item) => matches(item.label));
-  const visibleManagement = MANAGEMENT_ITEMS.filter((item) => matches(item.label));
-  const visibleUsers = canManageUsers && matches(USERS_ITEM.label);
-  const visibleCalling = CALLING_ITEMS.filter((item) => matches(item.label));
-  const visiblePlatform = PLATFORM_ITEMS.filter((item) => matches(item.label));
+  const visibleOverview = isSupervisor ? [] : OVERVIEW_ITEMS.filter((item) => matches(item.label));
+  const visibleManagement = isSupervisor ? [] : MANAGEMENT_ITEMS.filter((item) => matches(item.label));
+  const visibleUsers = !isSupervisor && canManageUsers && matches(USERS_ITEM.label);
+  const visibleCalling = isSupervisor
+    ? CALLING_ITEMS.filter((item) => item.href === "/live-calls")
+    : CALLING_ITEMS.filter((item) => matches(item.label));
+  const visiblePlatform = isSupervisor ? [] : PLATFORM_ITEMS.filter((item) => matches(item.label));
 
   // Longest-prefix match, not first-match: /workflows/acme/reception must
   // resolve to "Agents", not a shorter unrelated prefix.

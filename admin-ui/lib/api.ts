@@ -69,6 +69,10 @@ export interface Tenant {
   default_stt_config_id: string | null;
   default_llm_config_id: string | null;
   default_tts_config_id: string | null;
+  // Live Calls Monitoring's utilization KPI's only source column — NULL
+  // means "not configured yet" and must never be defaulted client-side any
+  // more than server-side (see live-calls/page.tsx's setup prompt).
+  max_concurrent_calls: number | null;
   config_version: number;
   created_at: string;
   updated_at: string;
@@ -485,6 +489,84 @@ export const listAllCalls = async (tenants: Tenant[]): Promise<CallWithTenant[]>
   );
   return perTenant.flat().sort((a, b) => b.started_at.localeCompare(a.started_at));
 };
+
+// ── Live Calls Monitoring ────────────────────────────────────────────────
+// Mirrors services/config/routers/live_calls.py's response shape exactly —
+// see that file's docstring/design doc for the full field-by-field rationale
+// (masked numbers, withheld transcript, nullable cap).
+
+export type LiveStage = "ai" | "waiting_for_human" | "human_connected";
+export type InterventionAction = "listen" | "barge";
+export type InterventionOutcome = "granted" | "denied" | "unavailable";
+
+export interface LiveCallIntervention {
+  action: InterventionAction;
+  outcome: InterventionOutcome;
+  requested_by_email: string;
+  requested_at: string;
+}
+
+export interface LiveCall {
+  session_id: string;
+  agent_name: string | null;
+  direction: CallDirection;
+  caller_number_masked: string | null;
+  called_number_masked: string | null;
+  live_stage: LiveStage;
+  started_at: string;
+  elapsed_ms: number;
+  transcript_snippet: string | null;
+  transcript_withheld: boolean;
+  intervention: LiveCallIntervention | null;
+}
+
+export interface LiveCallsKpis {
+  live_calls: number;
+  ai_only: number;
+  waiting_for_human: number;
+  human_connected: number;
+  interventions_pending: number;
+  // null (not 0, not a fallback) when the tenant hasn't set a cap yet —
+  // the UI renders a setup prompt for both fields together, never a number.
+  max_concurrent_calls: number | null;
+  utilization_pct: number | null;
+}
+
+export interface LiveCallsSnapshot {
+  tenant_slug: string;
+  generated_at: string;
+  refresh_seconds: number;
+  truncated: boolean;
+  kpis: LiveCallsKpis;
+  items: LiveCall[];
+}
+
+// tenantSlug is omitted for supervisor/admin (server scopes to their own
+// tenant) and required for a superadmin with a tenant selected — see
+// live-calls/page.tsx.
+export const getLiveCalls = (tenantSlug?: string) => {
+  const qs = tenantSlug ? `?tenant_slug=${encodeURIComponent(tenantSlug)}` : "";
+  return request<LiveCallsSnapshot>(`/live-calls${qs}`);
+};
+
+export interface InterventionResult {
+  action: InterventionAction;
+  outcome: InterventionOutcome;
+  detail: string;
+  requested_at: string;
+}
+
+export const requestIntervention = (sessionId: string, action: InterventionAction, tenantSlug?: string) =>
+  request<InterventionResult>(`/live-calls/${encodeURIComponent(sessionId)}/interventions`, {
+    method: "POST",
+    body: JSON.stringify({ action, tenant_slug: tenantSlug ?? null }),
+  });
+
+export const updateTenantConcurrency = (tenantId: string, maxConcurrentCalls: number) =>
+  request<Tenant>(`/tenants/${tenantId}/concurrency`, {
+    method: "PATCH",
+    body: JSON.stringify({ max_concurrent_calls: maxConcurrentCalls }),
+  });
 
 // ── Latency stats ────────────────────────────────────────────────────────
 // Per-agent, per-LLM-engine voice-to-voice percentiles — see
