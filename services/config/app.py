@@ -209,6 +209,24 @@ class AcceptThrottle:
         self.hour.increment(client_host)
 
 
+class LiveCallsThrottle:
+    """Per-user token bucket for GET /live-calls, sized to the 5s poll
+    interval (live_calls.py's REFRESH_MS budget), same FixedWindowCounter
+    precedent as InviteThrottle/AcceptThrottle above. One request per window
+    is exactly one poll tick; a client hammering the route faster than the
+    UI's own cadence gets 429 instead of adding load a single-connection
+    poll wasn't sized for."""
+
+    def __init__(self) -> None:
+        self._counter = FixedWindowCounter(limit=1, window_seconds=5)
+
+    def check(self, key: str) -> None:
+        over, retry_after = self._counter.over_limit(key)
+        if over:
+            raise _too_many_requests("too many requests; slow down", retry_after)
+        self._counter.increment(key)
+
+
 def _too_many_requests(detail: str, retry_after: int) -> HTTPException:
     return HTTPException(status_code=429, detail=detail, headers={"Retry-After": str(retry_after)})
 
@@ -249,6 +267,7 @@ app.add_middleware(
 # constructs them, with no import cycle back from the router it mounts.
 app.state.invite_throttle = InviteThrottle()
 app.state.accept_throttle = AcceptThrottle()
+app.state.live_calls_throttle = LiveCallsThrottle()
 
 app.include_router(auth.router)
 app.include_router(users.router)

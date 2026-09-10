@@ -69,6 +69,10 @@ async def get_live_calls(
     tenant_slug: str | None = Query(default=None),
     user: CurrentUser = Depends(deps.require_live_calls_operator()),
 ):
+    # Per-user, sized to the 5s poll — a coarse gate that can only reject,
+    # never widen (like require_live_calls_operator above), so it runs
+    # before the identity re-read below, keyed on the token's stable user id.
+    request.app.state.live_calls_throttle.check(user.id)
     slug, _tenant_id, effective_user = await _resolve_scope(request, user, tenant_slug)
     return await live_calls_service.get_live_calls(
         slug, include_transcript=effective_user.role in deps.TRANSCRIPT_ROLES,

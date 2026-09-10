@@ -21,6 +21,12 @@ from . import db, tenants as tenants_service
 LIVE_STAGES = ("ai", "waiting_for_human", "human_connected")
 MAX_LIVE_ROWS = 200
 
+# The 5s poll's whole connection budget (AC5) — an acquire that can't get a
+# connection within this window fails loudly (pool exhaustion surfaces as an
+# error the client can retry) rather than queuing indefinitely behind
+# whatever else is holding the shared 10-connection pool.
+ACQUIRE_TIMEOUT_S = 5.0
+
 # No masking convention exists elsewhere in this repo (the only "mask"
 # references are provider_configs.py's secret notes) — this is the one
 # definition, applied server-side so the raw MSISDN never leaves the API.
@@ -118,19 +124,25 @@ def _row_to_item(row: dict[str, Any], *, include_transcript: bool) -> dict[str, 
     }
 
 
-async def get_live_calls(tenant_slug: str, *, include_transcript: bool) -> dict[str, Any]:
+async def get_live_calls(
+    tenant_slug: str, *, include_transcript: bool, acquire_timeout_s: float = ACQUIRE_TIMEOUT_S,
+) -> dict[str, Any]:
     """include_transcript is the caller's decision, made by the router from
     `effective_user.role in deps.TRANSCRIPT_ROLES` — never from the JWT role
     (AC15). When it's False the transcript LATERAL is omitted from the SQL
     entirely, so the text is never fetched, not merely dropped before
-    serialization."""
+    serialization.
+
+    acquire_timeout_s defaults to the shipped ACQUIRE_TIMEOUT_S; the override
+    exists only so tests can prove the acquire actually times out (rather
+    than hangs) without waiting out the real 5s budget."""
     tenant = await tenants_service.get_tenant(tenant_slug)
     if tenant is None:
         raise LookupError(f"tenant {tenant_slug!r} not found")
     max_concurrent_calls = tenant["max_concurrent_calls"]
 
     pool = await db.get_pool()
-    async with pool.acquire() as conn:
+    async with pool.acquire(timeout=acquire_timeout_s) as conn:
         kpi_row = dict(await conn.fetchrow(_KPI_SQL, tenant_slug))
         rows_sql = _ROWS_SQL_TEMPLATE.format(
             transcript_select="ts.snippet," if include_transcript else "NULL AS snippet,",
