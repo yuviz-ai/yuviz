@@ -60,6 +60,15 @@ class TenantUpdate(BaseModel):
     default_stt_config_id: str | None = None
     default_llm_config_id: str | None = None
     default_tts_config_id: str | None = None
+    # None = field absent, per `exclude_unset` (matching every other field on
+    # this model) — clearing the cap back to NULL is not offered through
+    # this endpoint; use PATCH /tenants/{id}/concurrency's own dedicated
+    # route (routers/tenants.py) for that, which shares this same bound.
+    max_concurrent_calls:  int | None = Field(default=None, ge=1, le=10_000)
+
+
+class TenantConcurrencyUpdate(BaseModel):
+    max_concurrent_calls: int = Field(ge=1, le=10_000)
 
 
 class AgentCreate(BaseModel):

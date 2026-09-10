@@ -202,6 +202,90 @@ class TestTenantEndpoints:
         assert resp.json()["slug"] == test_tenant["slug"]
 
 
+class TestTenantConcurrency:
+    """T16/T17 — PATCH /tenants/{id}/concurrency."""
+
+    async def test_admin_can_patch_own_tenant(self, admin_client, test_tenant):
+        resp = await admin_client.patch(
+            f"/tenants/{test_tenant['id']}/concurrency", json={"max_concurrent_calls": 7},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["max_concurrent_calls"] == 7
+
+    async def test_admin_patching_foreign_tenant_404s(self, admin_client, test_tenant, pool):
+        other = await pool.fetchrow(
+            "INSERT INTO tenants (name, slug) VALUES ($1, $2) RETURNING *",
+            "Foreign", f"test-foreign-{uuid.uuid4().hex[:8]}",
+        )
+        try:
+            resp = await admin_client.patch(
+                f"/tenants/{other['id']}/concurrency", json={"max_concurrent_calls": 3},
+            )
+            assert resp.status_code == 404
+            assert resp.json() == {"detail": f"tenant {str(other['id'])!r} not found"}
+        finally:
+            await pool.execute("DELETE FROM tenants WHERE id = $1", other["id"])
+
+    async def test_superadmin_can_patch_any_tenant(self, client, test_tenant):
+        resp = await client.patch(
+            f"/tenants/{test_tenant['id']}/concurrency", json={"max_concurrent_calls": 9},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["max_concurrent_calls"] == 9
+
+    async def test_viewer_403s(self, viewer_client, test_tenant):
+        resp = await viewer_client.patch(
+            f"/tenants/{test_tenant['id']}/concurrency", json={"max_concurrent_calls": 3},
+        )
+        assert resp.status_code == 403
+
+    async def test_out_of_bounds_value_is_422(self, admin_client, test_tenant):
+        resp = await admin_client.patch(
+            f"/tenants/{test_tenant['id']}/concurrency", json={"max_concurrent_calls": 0},
+        )
+        assert resp.status_code == 422
+
+    async def test_retenanted_admin_is_confined_to_the_fresh_tenant(
+        self, test_tenant, pool,
+    ):
+        # T17's load-bearing regression test for security finding #1 (the
+        # same class as the two highs this whole feature exists to fix):
+        # the token still claims tenant A after the admin's OWN row is
+        # transferred to tenant B — the route must check the FRESH row's
+        # tenant, never the stale claim (lesson 35).
+        other_tenant = await pool.fetchrow(
+            "INSERT INTO tenants (name, slug) VALUES ($1, $2) RETURNING *",
+            "Tenant B", f"test-b-{uuid.uuid4().hex[:8]}",
+        )
+        admin_user = await users_service.create_user(
+            email=f"test-retenanted-admin-{uuid.uuid4().hex[:8]}@example.com",
+            password="test-password-not-real", role="admin", tenant_id=test_tenant["id"],
+        )
+        try:
+            stale_token = auth.create_access_token(admin_user)  # still claims tenant A
+
+            await users_service.update_user(admin_user["id"], tenant_id=other_tenant["id"])
+
+            transport = ASGITransport(app=app)
+            headers = {"Authorization": f"Bearer {stale_token}"}
+            async with AsyncClient(transport=transport, base_url="http://test", headers=headers) as client_:
+                foreign_now = await client_.patch(
+                    f"/tenants/{test_tenant['id']}/concurrency", json={"max_concurrent_calls": 4},
+                )
+                assert foreign_now.status_code == 404
+
+                own_now = await client_.patch(
+                    f"/tenants/{other_tenant['id']}/concurrency", json={"max_concurrent_calls": 4},
+                )
+                assert own_now.status_code == 200, own_now.text
+                assert own_now.json()["max_concurrent_calls"] == 4
+        finally:
+            await pool.execute(
+                "UPDATE users SET deleted_at = now(), tenant_id = NULL WHERE id = $1", admin_user["id"],
+            )
+            await pool.execute("DELETE FROM tenants WHERE id = $1", other_tenant["id"])
+
+
 class TestAgentEndpoints:
     async def test_create_and_get_agent(self, client, test_tenant):
         resp = await client.post(
