@@ -292,3 +292,203 @@ def test_no_stale_token_read_invariant_actually_catches_a_regression():
     fresh_authority_line = _fresh_authority_call_line(tree)
     violations = _stale_token_reads_after(tree, fresh_authority_line)
     assert violations != [], "mutation was not detected — the invariant test is not load-bearing"
+
+
+# ── T6 — tenant isolation, no existence oracle, platform scope, re-tenanting ─
+
+async def _create_tenant(pool, *, name: str = "Other Tenant") -> dict:
+    row = await pool.fetchrow(
+        "INSERT INTO tenants (name, slug) VALUES ($1, $2) RETURNING *",
+        name, f"test-{uuid.uuid4().hex[:8]}",
+    )
+    return dict(row)
+
+
+async def _cleanup_tenant(pool, tenant: dict) -> None:
+    await pool.execute("DELETE FROM tenants WHERE id = $1", tenant["id"])
+
+
+def _clear_authority_memo() -> None:
+    app.state._live_calls_authority_memo = {}
+
+
+def _reset_throttle() -> None:
+    # T9's per-user token bucket is sized to the real 5s poll interval, so
+    # tests that deliberately poll the same user faster than that (to
+    # exercise fresh_authority/_resolve_scope, not the throttle itself) must
+    # reset it between requests — see TestRateLimitAndAcquireTimeout below
+    # for the throttle's own dedicated test.
+    app.state.live_calls_throttle._counter._buckets.clear()
+
+
+class TestTenantIsolationAndScope:
+    async def test_tenant_scoped_admin_sees_only_own_tenant(self, pool, test_tenant, test_admin):
+        other_tenant = await _create_tenant(pool)
+        call_a = await _insert_call(pool, tenant_slug=test_tenant["slug"])
+        call_b = await _insert_call(pool, tenant_slug=other_tenant["slug"])
+        try:
+            async with _client_as(test_admin["user"]) as client:
+                resp = await client.get("/live-calls")
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert body["tenant_slug"] == test_tenant["slug"]
+            assert [item["session_id"] for item in body["items"]] == [call_a]
+            assert body["kpis"]["live_calls"] == 1
+        finally:
+            await _cleanup_call(pool, call_a)
+            await _cleanup_call(pool, call_b)
+            await _cleanup_tenant(pool, other_tenant)
+
+    async def test_no_existence_oracle_for_foreign_vs_nonexistent_tenant_slug(
+        self, pool, test_tenant, test_admin,
+    ):
+        other_tenant = await _create_tenant(pool)
+        try:
+            _reset_throttle()
+            async with _client_as(test_admin["user"]) as client:
+                foreign_resp = await client.get("/live-calls", params={"tenant_slug": other_tenant["slug"]})
+                _reset_throttle()
+                nonexistent_resp = await client.get(
+                    "/live-calls", params={"tenant_slug": f"nope-{uuid.uuid4().hex[:8]}"},
+                )
+            assert foreign_resp.status_code == nonexistent_resp.status_code == 404
+            assert foreign_resp.json() == nonexistent_resp.json() == {"detail": "tenant not found"}
+        finally:
+            await _cleanup_tenant(pool, other_tenant)
+
+    async def test_superadmin_nonexistent_slug_matches_the_same_404(self, pool, test_tenant):
+        superadmin = await _create_user(role="superadmin", tenant_id=None)
+        try:
+            async with _client_as(superadmin) as client:
+                resp = await client.get(
+                    "/live-calls", params={"tenant_slug": f"nope-{uuid.uuid4().hex[:8]}"},
+                )
+            assert resp.status_code == 404
+            assert resp.json() == {"detail": "tenant not found"}
+        finally:
+            await _soft_delete_user(pool, superadmin["id"])
+
+    async def test_null_tenant_viewer_service_account_403s(self, pool, test_tenant):
+        service_account = await _create_service_account_viewer(pool)
+        try:
+            async with _client_as(service_account) as client:
+                resp = await client.get("/live-calls", params={"tenant_slug": test_tenant["slug"]})
+            assert resp.status_code == 403
+        finally:
+            await _hard_delete_user(pool, service_account["id"])
+
+    async def test_null_tenant_superadmin_requires_slug_then_scopes_to_it(self, pool, test_tenant):
+        superadmin = await _create_user(role="superadmin", tenant_id=None)
+        try:
+            _clear_authority_memo()
+            _reset_throttle()
+            async with _client_as(superadmin) as client:
+                no_slug_resp = await client.get("/live-calls")
+                assert no_slug_resp.status_code == 400
+                assert no_slug_resp.json() == {"detail": "tenant_slug is required"}
+
+                _reset_throttle()
+                with_slug_resp = await client.get("/live-calls", params={"tenant_slug": test_tenant["slug"]})
+                assert with_slug_resp.status_code == 200
+                assert with_slug_resp.json()["tenant_slug"] == test_tenant["slug"]
+        finally:
+            await _soft_delete_user(pool, superadmin["id"])
+
+    async def test_selection_time_revalidation_after_soft_delete(self, pool, test_tenant):
+        other_tenant = await _create_tenant(pool)
+        superadmin = await _create_user(role="superadmin", tenant_id=None)
+        try:
+            _clear_authority_memo()
+            _reset_throttle()
+            async with _client_as(superadmin) as client:
+                first = await client.get("/live-calls", params={"tenant_slug": test_tenant["slug"]})
+                assert first.status_code == 200
+
+                await _soft_delete_user(pool, superadmin["id"])
+
+                # Same (already-validated) scope_key, still inside the 60s
+                # memo — the documented, bounded window.
+                _reset_throttle()
+                still_ok = await client.get("/live-calls", params={"tenant_slug": test_tenant["slug"]})
+                assert still_ok.status_code == 200
+
+                # A DIFFERENT scope_key (tenant B) has never been validated,
+                # so it re-reads immediately and 403s.
+                _reset_throttle()
+                other = await client.get("/live-calls", params={"tenant_slug": other_tenant["slug"]})
+                assert other.status_code == 403
+
+                # Clearing the memo (equivalent to advancing past the shipped
+                # 60s TTL) forces a re-read for tenant A too.
+                _clear_authority_memo()
+                _reset_throttle()
+                now_denied = await client.get("/live-calls", params={"tenant_slug": test_tenant["slug"]})
+                assert now_denied.status_code == 403
+        finally:
+            await pool.execute("DELETE FROM users WHERE id = $1", superadmin["id"])
+            await _cleanup_tenant(pool, other_tenant)
+
+    async def test_selection_time_revalidation_after_demotion(self, pool, test_tenant):
+        superadmin = await _create_user(role="superadmin", tenant_id=None)
+        try:
+            _clear_authority_memo()
+            _reset_throttle()
+            async with _client_as(superadmin) as client:
+                first = await client.get("/live-calls", params={"tenant_slug": test_tenant["slug"]})
+                assert first.status_code == 200
+
+                await users_service.update_user(superadmin["id"], role="viewer")
+                _clear_authority_memo()
+                _reset_throttle()
+                denied = await client.get("/live-calls", params={"tenant_slug": test_tenant["slug"]})
+                assert denied.status_code == 403
+        finally:
+            await _soft_delete_user(pool, superadmin["id"])
+
+    async def test_retenanted_superadmin_is_confined_to_the_fresh_row_tenant(self, pool, test_tenant):
+        other_tenant = await _create_tenant(pool)
+        # Minted while tenant_id is still NULL — the token keeps claiming
+        # NULL for its whole life; only the DB row changes below.
+        superadmin = await _create_user(role="superadmin", tenant_id=None)
+        try:
+            await users_service.update_user(superadmin["id"], tenant_id=test_tenant["id"])
+            _clear_authority_memo()
+            _reset_throttle()
+            async with _client_as(superadmin) as client:
+                foreign = await client.get("/live-calls", params={"tenant_slug": other_tenant["slug"]})
+                assert foreign.status_code == 404
+
+                _reset_throttle()
+                own = await client.get("/live-calls", params={"tenant_slug": test_tenant["slug"]})
+                assert own.status_code == 200
+                assert own.json()["tenant_slug"] == test_tenant["slug"]
+
+                _clear_authority_memo()
+                _reset_throttle()
+                no_slug = await client.get("/live-calls")
+                assert no_slug.status_code == 200
+                assert no_slug.json()["tenant_slug"] == test_tenant["slug"]
+        finally:
+            await pool.execute("UPDATE users SET tenant_id = NULL WHERE id = $1", superadmin["id"])
+            await _soft_delete_user(pool, superadmin["id"])
+            await _cleanup_tenant(pool, other_tenant)
+
+    async def test_inverse_retenanted_superadmin_token_claims_tenant_row_is_now_null(
+        self, pool, test_tenant,
+    ):
+        # Token claims test_tenant's id; the row is now NULL-tenant
+        # superadmin (e.g. detached from its tenant) — must be treated as
+        # platform-scoped from the fresh row, not tenant-scoped from the
+        # stale claim.
+        admin_row = await _create_user(role="admin", tenant_id=test_tenant["id"])
+        try:
+            await users_service.update_user(admin_row["id"], role="superadmin", tenant_id=None)
+            _clear_authority_memo()
+            async with _client_as(admin_row) as client:
+                # httpx client built from admin_row's own (stale) token is
+                # fine here — it's the same token minted above.
+                resp = await client.get("/live-calls")
+            assert resp.status_code == 400
+            assert resp.json() == {"detail": "tenant_slug is required"}
+        finally:
+            await _soft_delete_user(pool, admin_row["id"])
