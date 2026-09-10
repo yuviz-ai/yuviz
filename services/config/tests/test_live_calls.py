@@ -23,7 +23,7 @@ import asyncpg
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from services.config import auth, deps
+from services.config import auth, cache, deps
 from services.config import live_calls
 from services.config import users as users_service
 from services.config.app import app
@@ -576,5 +576,84 @@ class TestSnippetAuthority:
                 _reset_throttle()
                 after_ttl = await client.get("/live-calls")
                 assert after_ttl.status_code == 403
+        finally:
+            await _cleanup_call(pool, session_id)
+
+
+# ── T8 — KPI stage split, masking, utilization ───────────────────────────
+
+async def _set_max_concurrent_calls(pool, tenant_slug: str, value: int | None) -> None:
+    await pool.execute("UPDATE tenants SET max_concurrent_calls = $2 WHERE slug = $1", tenant_slug, value)
+    await cache.invalidate(f"tenant:{tenant_slug}")
+
+
+class TestKpis:
+    async def test_stage_split_and_masked_numbers(self, pool, test_tenant):
+        await _set_max_concurrent_calls(pool, test_tenant["slug"], 20)
+        session_ids = [
+            await _insert_call(pool, tenant_slug=test_tenant["slug"], live_stage=None),
+            await _insert_call(pool, tenant_slug=test_tenant["slug"], live_stage="ai"),
+            await _insert_call(pool, tenant_slug=test_tenant["slug"], live_stage="waiting_for_human"),
+            await _insert_call(pool, tenant_slug=test_tenant["slug"], live_stage="human_connected"),
+        ]
+        try:
+            result = await live_calls.get_live_calls(test_tenant["slug"], include_transcript=False)
+            kpis = result["kpis"]
+            assert kpis["live_calls"] == 4
+            assert kpis["ai_only"] == 2  # NULL live_stage COALESCEs to "ai", plus the explicit "ai" row
+            assert kpis["waiting_for_human"] == 1
+            assert kpis["human_connected"] == 1
+            assert kpis["max_concurrent_calls"] == 20
+            assert kpis["utilization_pct"] == 20.0  # 4 / 20 * 100
+
+            assert "+14155557788" not in str(result)
+            for item in result["items"]:
+                assert item["caller_number_masked"] == "+1415•••7788"
+        finally:
+            for session_id in session_ids:
+                await _cleanup_call(pool, session_id)
+            await _set_max_concurrent_calls(pool, test_tenant["slug"], None)
+
+    async def test_utilization_is_independent_per_tenant(self, pool, test_tenant):
+        other_tenant = await _create_tenant(pool)
+        await _set_max_concurrent_calls(pool, test_tenant["slug"], 10)
+        await _set_max_concurrent_calls(pool, other_tenant["slug"], 4)
+        call_a = await _insert_call(pool, tenant_slug=test_tenant["slug"])
+        call_b1 = await _insert_call(pool, tenant_slug=other_tenant["slug"])
+        call_b2 = await _insert_call(pool, tenant_slug=other_tenant["slug"])
+        try:
+            result_a = await live_calls.get_live_calls(test_tenant["slug"], include_transcript=False)
+            result_b = await live_calls.get_live_calls(other_tenant["slug"], include_transcript=False)
+            assert result_a["kpis"]["utilization_pct"] == 10.0  # 1 / 10
+            assert result_b["kpis"]["utilization_pct"] == 50.0  # 2 / 4
+        finally:
+            await _cleanup_call(pool, call_a)
+            await _cleanup_call(pool, call_b1)
+            await _cleanup_call(pool, call_b2)
+            await _set_max_concurrent_calls(pool, test_tenant["slug"], None)
+            await _cleanup_tenant(pool, other_tenant)
+
+    async def test_nullable_cap_has_no_numeric_fallback(self, pool, test_tenant):
+        # test_tenant's cap is NULL by default — no default per T1's schema.
+        session_id = await _insert_call(pool, tenant_slug=test_tenant["slug"])
+        try:
+            result = await live_calls.get_live_calls(test_tenant["slug"], include_transcript=False)
+            assert result["kpis"]["max_concurrent_calls"] is None
+            assert result["kpis"]["utilization_pct"] is None
+        finally:
+            await _cleanup_call(pool, session_id)
+
+    async def test_ended_call_disappears_and_counts_decrement(self, pool, test_tenant):
+        session_id = await _insert_call(pool, tenant_slug=test_tenant["slug"])
+        try:
+            before = await live_calls.get_live_calls(test_tenant["slug"], include_transcript=False)
+            assert before["kpis"]["live_calls"] == 1
+            assert len(before["items"]) == 1
+
+            await pool.execute("UPDATE calls SET ended_at = now() WHERE session_id = $1", session_id)
+
+            after = await live_calls.get_live_calls(test_tenant["slug"], include_transcript=False)
+            assert after["kpis"]["live_calls"] == 0
+            assert after["items"] == []
         finally:
             await _cleanup_call(pool, session_id)
