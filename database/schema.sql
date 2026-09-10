@@ -1014,6 +1014,10 @@ CREATE INDEX IF NOT EXISTS idx_transcript_entries_session_turn
 -- the path it exists for.
 CREATE TABLE IF NOT EXISTS live_call_interventions (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- A slug, not an FK (see above) — this table's tenant scoping is only
+    -- correct as long as a soft-deleted tenant's slug is never reissued to
+    -- a different tenant; reusing one would let an old row's history read
+    -- as belonging to whichever tenant claims the slug next (finding #11).
     tenant_id     TEXT NOT NULL,
     session_id    TEXT NOT NULL CHECK (length(session_id) <= 200),
     action        TEXT NOT NULL CHECK (action IN ('listen', 'barge')),

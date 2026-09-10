@@ -65,7 +65,17 @@ async def _resolve_scope(
     # down the platform-scoped path for the token's remaining life.
     if effective_user.tenant_id is not None:
         tenant = await tenants_service.get_tenant_by_id(effective_user.tenant_id)
-        if tenant is None or (tenant_slug is not None and tenant_slug != tenant["slug"]):
+        if tenant is None:
+            # The actor's OWN tenant has been soft-deleted since the token
+            # was issued — an authority failure (this account currently
+            # belongs to no live tenant at all), not a "does the requested
+            # tenant exist" question. 403, not 404, and NOT a fall-through
+            # to the platform-scoped branch below, which a NULL tenant_id
+            # would otherwise flow into and hand every tenant's live calls
+            # to an account that should have none (closes finding #10).
+            deps.forget_authority(request.app.state, effective_user.id, scope_key)
+            raise HTTPException(status_code=403, detail="account tenant is no longer active")
+        if tenant_slug is not None and tenant_slug != tenant["slug"]:
             # Identical status/body/path to a nonexistent slug — no
             # existence oracle (lesson 2). A scope_key that 404s here is
             # never useful again, so it doesn't stay in the memo either

@@ -1012,3 +1012,29 @@ class TestAuthorityMemoBounds:
 
         memo = app.state._live_calls_authority_memo
         assert (str(test_admin["user"]["id"]), bad_slug) not in memo
+
+
+# ── T25 — soft-deleted own tenant 403s instead of falling through ────────
+
+class TestSoftDeletedOwnTenant:
+    async def test_get_live_calls_403s_when_own_tenant_soft_deleted(self, pool, test_tenant, test_admin):
+        await tenants_service.soft_delete_tenant(test_tenant["id"])
+        try:
+            _clear_authority_memo()
+            _reset_throttle()
+            async with _client_as(test_admin["user"]) as client:
+                resp = await client.get("/live-calls")
+            assert resp.status_code == 403
+        finally:
+            await pool.execute("UPDATE tenants SET deleted_at = NULL WHERE id = $1", test_tenant["id"])
+
+    async def test_post_intervention_403s_when_own_tenant_soft_deleted(self, pool, test_tenant, test_admin):
+        await tenants_service.soft_delete_tenant(test_tenant["id"])
+        try:
+            _clear_authority_memo()
+            _reset_throttle()
+            async with _client_as(test_admin["user"]) as client:
+                resp = await _post_intervention(client, f"test-live-{uuid.uuid4().hex[:8]}")
+            assert resp.status_code == 403
+        finally:
+            await pool.execute("UPDATE tenants SET deleted_at = NULL WHERE id = $1", test_tenant["id"])
