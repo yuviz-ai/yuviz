@@ -215,7 +215,7 @@ export default function UsersPage() {
 
       {error && <div className="error-banner">{error}</div>}
       {notice && (
-        <div className="error-banner" style={{ background: "var(--amber-dim)", borderColor: "rgba(245, 158, 11, .3)", color: "var(--amber)" }}>
+        <div className="error-banner" style={{ background: "var(--amber-dim)", borderColor: "var(--amber-border)", color: "var(--amber)" }}>
           {notice}
         </div>
       )}

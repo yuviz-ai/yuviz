@@ -650,7 +650,7 @@ function Panel({
               minZoom={0.2}
               proOptions={{ hideAttribution: false }}
             >
-              <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#64748b" />
+              <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="var(--border-2)" />
               <Controls showInteractive={false}>
                 {/* Drag a few nodes around and the graph stops reading as a
                     flow. This re-lays it out top-to-bottom and re-centres —

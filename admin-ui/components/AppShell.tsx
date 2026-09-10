@@ -3,8 +3,14 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { getCurrentUser, isConsoleRole, User } from "@/lib/api";
+import { getCurrentUser, isConsoleRole, listTenants, Tenant, User } from "@/lib/api";
 import { clearToken, getToken } from "@/lib/auth";
+
+const ACTIVE_TENANT_STORAGE_KEY = "yuviz.activeTenantId";
+
+function tenantInitial(name: string): string {
+  return (name.trim()[0] || "?").toUpperCase();
+}
 
 // Icons match the original "Yuviz.ai — Admin Console" artifact's nav icon
 // set exactly where that nav item existed there (Accounts/Agents/Phone
@@ -119,11 +125,14 @@ const SETTINGS_CRUMBS = ["Agents", "Settings"];
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [theme, setTheme] = useState<"dark" | "light">("light");
   const [search, setSearch] = useState("");
   const [collapsed, setCollapsed] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const [tenants, setTenants] = useState<Tenant[]>([]);
+  const [activeTenantId, setActiveTenantId] = useState<string | null>(null);
+  const [tenantMenuOpen, setTenantMenuOpen] = useState(false);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -169,6 +178,40 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       });
   }, [pathname, router]);
 
+  // The header tenant switcher only makes sense for a platform-scoped
+  // superadmin (tenant_id === null) — every other role's own account is
+  // already bound to exactly one tenant server-side (lesson 24), so listing
+  // others here would be misleading UI, not a real capability. This is a
+  // display convenience only: it does not re-scope any existing page's own
+  // fetches, which each keep their own tenant selector for now.
+  useEffect(() => {
+    if (user?.role !== "superadmin") return;
+    listTenants()
+      .then((ts) => {
+        setTenants(ts);
+        const stored = typeof window !== "undefined" ? window.localStorage.getItem(ACTIVE_TENANT_STORAGE_KEY) : null;
+        const initial = ts.find((t) => t.id === stored) ?? ts[0] ?? null;
+        setActiveTenantId(initial?.id ?? null);
+      })
+      .catch(() => {
+        // Non-fatal: the switcher simply doesn't render (lesson 21 — a
+        // failed convenience fetch must not block the rest of the shell).
+      });
+  }, [user]);
+
+  const activeTenant = tenants.find((t) => t.id === activeTenantId) ?? null;
+
+  const selectTenant = (t: Tenant) => {
+    setActiveTenantId(t.id);
+    setTenantMenuOpen(false);
+    try {
+      window.localStorage.setItem(ACTIVE_TENANT_STORAGE_KEY, t.id);
+    } catch {
+      // Private-mode/blocked storage: the selection just won't survive a
+      // reload, which is a strictly worse-but-safe fallback, not a crash.
+    }
+  };
+
   const handleLogout = () => {
     clearToken();
     router.push("/login");
@@ -197,14 +240,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="app-shell">
       <aside className={`sidebar${collapsed ? " collapsed" : ""}`}>
         <div className="logo">
-          <div className="logo-icon">
-            <svg width="18" height="16" viewBox="0 0 18 16" fill="none">
-              <rect x="0" y="6" width="2.5" height="4" rx="1.25" fill="currentColor" />
-              <rect x="3.75" y="3.5" width="2.5" height="9" rx="1.25" fill="currentColor" />
-              <rect x="7.5" y="0" width="3" height="16" rx="1.5" fill="currentColor" />
-              <rect x="11.75" y="3.5" width="2.5" height="9" rx="1.25" fill="currentColor" />
-              <rect x="15.5" y="5.5" width="2.5" height="5" rx="1.25" fill="currentColor" />
-            </svg>
+          <div className="logo-icon" aria-hidden="true">
+            <span className="logo-bar" />
+            <span className="logo-bar" />
+            <span className="logo-bar" />
           </div>
           <div className="logo-text">
             Yuviz<span>.ai</span>
@@ -327,6 +366,51 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <div className="main">
         <div className="topbar">
+          {user?.role === "superadmin" ? (
+            tenants.length > 0 && (
+              <div className="tenant-switch">
+                <button
+                  className="tenant-switch-btn"
+                  onClick={() => setTenantMenuOpen((o) => !o)}
+                  aria-expanded={tenantMenuOpen}
+                  title="Switch tenant"
+                >
+                  <span className="tenant-switch-mark">
+                    {activeTenant ? tenantInitial(activeTenant.name) : "—"}
+                  </span>
+                  <span className="tenant-switch-label">
+                    <span className="tenant-switch-name">{activeTenant?.name ?? "All tenants"}</span>
+                    <span className="tenant-switch-id">{activeTenant?.slug ?? "platform"}</span>
+                  </span>
+                  <span className="tenant-switch-caret">▾</span>
+                </button>
+                {tenantMenuOpen && (
+                  <>
+                    <div className="wf-menu-scrim" onClick={() => setTenantMenuOpen(false)} />
+                    <div className="tenant-switch-menu">
+                      <div className="tenant-switch-menu-label">Switch tenant</div>
+                      {tenants.map((t) => (
+                        <button
+                          key={t.id}
+                          className={`tenant-switch-row${t.id === activeTenantId ? " active" : ""}`}
+                          onClick={() => selectTenant(t)}
+                        >
+                          <span className="tenant-switch-mark">{tenantInitial(t.name)}</span>
+                          <span className="tenant-switch-row-name">
+                            {t.name}
+                            <br />
+                            <span className="tenant-switch-row-meta">{t.slug}</span>
+                          </span>
+                          {t.id === activeTenantId && <span className="tenant-switch-check">✓</span>}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )
+          ) : null}
+          {user?.role === "superadmin" && tenants.length > 0 && <div className="topbar-divider" />}
           <span className="topbar-title">
             <span style={{ color: "var(--text-3)" }}>Yuviz</span>
             {crumbs.map((crumb) => (
