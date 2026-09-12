@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 from ..metrics import IMetrics, NullMetrics
 from .types import ToolExecutionRequest, ToolResult, ToolStatus
@@ -31,7 +31,29 @@ log = logging.getLogger(__name__)
 NextCall = Callable[[ToolExecutionRequest], Awaitable[ToolResult]]
 
 
+def _redact(value: Any, redact_keys: frozenset[str]) -> Any:
+    """Replaces any dict key in redact_keys with "[redacted]", at any depth
+    of a dict/list structure — used so a `sensitive` caller input never
+    reaches this log line in clear (see class docstring below)."""
+    if isinstance(value, dict):
+        return {
+            k: ("[redacted]" if k in redact_keys else _redact(v, redact_keys))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact(v, redact_keys) for v in value]
+    return value
+
+
 class LoggingMiddleware:
+    """Kept generic — no tool name appears here; the orchestrator supplies
+    redact_arg_keys from the resolved policy (ResolvedToolPolicy.
+    sensitive_arg_keys) at the one place that holds both the policy and the
+    chain (orchestrator.py's build_default_chain call site)."""
+
+    def __init__(self, redact_arg_keys: frozenset[str] = frozenset()) -> None:
+        self._redact_arg_keys = redact_arg_keys
+
     async def __call__(self, request: ToolExecutionRequest, call_next: NextCall) -> ToolResult:
         # arguments/payload logged here — confirmed live this
         # was previously the only gap in an otherwise-verifiable tool-call
@@ -43,13 +65,14 @@ class LoggingMiddleware:
         log.info(
             "tool_call start tool=%s call_id=%s tenant=%s agent=%s arguments=%r",
             request.tool_name, request.tool_call_id,
-            request.context.tenant_id, request.context.agent_id, request.arguments,
+            request.context.tenant_id, request.context.agent_id,
+            _redact(request.arguments, self._redact_arg_keys),
         )
         result = await call_next(request)
         log.info(
             "tool_call done tool=%s call_id=%s status=%s payload=%r error=%r",
             request.tool_name, request.tool_call_id, result.status.value,
-            result.payload, result.error,
+            _redact(result.payload, self._redact_arg_keys), result.error,
         )
         return result
 
@@ -165,12 +188,15 @@ def _bind(middleware, next_call: NextCall) -> NextCall:
     return bound
 
 
-def build_default_chain(executor, timeout_ms: int = 6000, metrics: IMetrics | None = None) -> MiddlewareChain:
+def build_default_chain(
+    executor, timeout_ms: int = 6000, metrics: IMetrics | None = None,
+    redact_arg_keys: frozenset[str] = frozenset(),
+) -> MiddlewareChain:
     """The standard chain every tool gets unless a specific tool has a
     reason to deviate — Logging, Metrics, CircuitBreaker, Retry(disabled by
     default), Timeout, in that order (see module docstring)."""
     return MiddlewareChain(executor, [
-        LoggingMiddleware(),
+        LoggingMiddleware(redact_arg_keys=redact_arg_keys),
         MetricsMiddleware(metrics),
         CircuitBreakerMiddleware(),
         RetryMiddleware(),

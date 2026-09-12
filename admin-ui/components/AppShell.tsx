@@ -63,6 +63,12 @@ const ICONS: Record<string, React.ReactNode> = {
       <path d="M8 12.5v2M5.5 14.5h5" />
     </svg>
   ),
+  "knowledge-base": (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <path d="M2 2.5h4.5a2 2 0 012 2V14a1.5 1.5 0 00-1.5-1.5H2z" />
+      <path d="M14 2.5H9.5a2 2 0 00-2 2V14a1.5 1.5 0 011.5-1.5H14z" />
+    </svg>
+  ),
   calls: (
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
       <path d="M2 2h12v9H9l-3 3v-3H2z" />
@@ -88,6 +94,7 @@ const OVERVIEW_ITEMS = [{ href: "/dashboard", label: "Dashboard", icon: "dashboa
 const MANAGEMENT_ITEMS = [
   { href: "/tenants", label: "Accounts", icon: "accounts" },
   { href: "/workflows", label: "Agents", icon: "workflows" },
+  { href: "/knowledge-base", label: "Knowledge Base", icon: "knowledge-base" },
   { href: "/ai-voice", label: "AI & Voice", icon: "ai-voice" },
   { href: "/phone-numbers", label: "Phone Numbers", icon: "phone-numbers" },
 ];

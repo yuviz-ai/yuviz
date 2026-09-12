@@ -34,7 +34,9 @@ def test_register_adds_a_new_tool_without_touching_defaults():
 def test_all_returns_every_registered_definition():
     reg = ToolRegistry()
     names = {d.name for d in reg.all()}
-    assert names == {"book_appointment", "cancel_appointment", "reschedule_appointment", "send_sms"}
+    assert names == {
+        "book_appointment", "cancel_appointment", "reschedule_appointment", "send_sms", "execute_api",
+    }
 
 
 def test_default_registry_has_cancel_appointment():

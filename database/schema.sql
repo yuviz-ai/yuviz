@@ -787,3 +787,189 @@ CREATE INDEX IF NOT EXISTS idx_provider_configs_tenant ON provider_configs(tenan
 CREATE INDEX IF NOT EXISTS idx_provider_configs_role_env ON provider_configs(role, environment);
 CREATE INDEX IF NOT EXISTS idx_phone_numbers_tenant ON phone_numbers(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_carriers_tenant ON carriers(tenant_id);
+
+-- ── Agentic API Task Execution (Tool Execution Service) ─────────────────────
+-- All additive: CREATE TABLE/INDEX IF NOT EXISTS, ADD COLUMN IF NOT EXISTS —
+-- no destructive DDL, so no DO $$ guard is needed (lessons 10, 13). The
+-- tables are new, so no data-normalizing backfill exists to collide with
+-- the lower(name) unique index (lesson 5).
+
+-- ── custom_apis — a tenant-registered HTTP API, reachable only via execute_api ──
+-- auth_config is REFERENCES ONLY, same discipline as tool_provider_configs.api_key_ref:
+--   api_key:  {"key_ref":"env:...","location":"header"|"query","name":"X-Api-Key"}
+--   bearer:   {"token_ref":"enc:..."}
+--   oauth2_client_credentials:
+--             {"token_url":"https://...","client_id_ref":"env:...",
+--              "client_secret_ref":"enc:...","scope":"orders.write"}
+-- chain_levels is the number of APIs in this API's own chain (leaf = 1); it is
+-- recomputed for this row and every transitive dependent inside the same
+-- transaction as any params write, and the write is rejected if it would exceed
+-- graph.MAX_CHAIN_LEVELS (4) or introduce a cycle.
+CREATE TABLE IF NOT EXISTS custom_apis (
+    id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id                UUID NOT NULL REFERENCES tenants(id),
+    name                     TEXT NOT NULL,          -- LLM-facing api_name, snake_case
+    description              TEXT NOT NULL,          -- surfaced in execute_api's schema
+    endpoint_url             TEXT NOT NULL,
+    method                   TEXT NOT NULL CHECK (method IN ('GET','POST','PUT','PATCH','DELETE')),
+    body_style               TEXT NOT NULL DEFAULT 'json' CHECK (body_style IN ('json','form')),
+    auth_scheme              TEXT NOT NULL DEFAULT 'none'
+                                CHECK (auth_scheme IN ('none','api_key','bearer','oauth2_client_credentials')),
+    auth_config              JSONB NOT NULL DEFAULT '{}'::jsonb,
+    side_effecting           BOOLEAN NOT NULL DEFAULT true,   -- UI defaults false only for GET
+    idempotency_header       TEXT,                   -- NULL = downstream accepts no idempotency key
+    timeout_ms               INT,                    -- per-step ceiling; NULL = 6000
+    sensitive_response_paths JSONB NOT NULL DEFAULT '[]'::jsonb,  -- ["$.customer.ssn", ...]
+    success_template         TEXT,                   -- optional deterministic confirmation line
+    chain_levels             INT  NOT NULL DEFAULT 1,
+    created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at               TIMESTAMPTZ
+);
+-- Tenant-SCOPED uniqueness: two tenants may both register 'lookup_account', and
+-- neither can block the other's name (lesson 3). Partial on deleted_at so a
+-- soft-deleted name is reusable.
+CREATE UNIQUE INDEX IF NOT EXISTS custom_apis_tenant_name_key
+    ON custom_apis (tenant_id, lower(name)) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_custom_apis_tenant ON custom_apis (tenant_id) WHERE deleted_at IS NULL;
+
+-- ── custom_api_params — one row per input, and the declared dependency graph ──
+-- Edges ARE the upstream params: the graph is exactly
+-- {(custom_api_id -> upstream_api_id) : source='upstream'}. No second edge table,
+-- so a declared dependency can never disagree with the value it produces.
+-- The FK to custom_apis cannot express "same tenant" — custom_apis.py validates
+-- upstream_api_id against the owning row's tenant_id inside the write
+-- transaction (AC 10, AC 17).
+CREATE TABLE IF NOT EXISTS custom_api_params (
+    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    custom_api_id      UUID NOT NULL REFERENCES custom_apis(id) ON DELETE CASCADE,
+    name               TEXT NOT NULL,
+    location           TEXT NOT NULL CHECK (location IN ('body','query','header','path')),
+    json_type          TEXT NOT NULL CHECK (json_type IN ('string','number','integer','boolean','object','array')),
+    description        TEXT NOT NULL DEFAULT '',
+    required           BOOLEAN NOT NULL DEFAULT true,
+    source             TEXT NOT NULL CHECK (source IN ('literal','caller','upstream')),
+    literal_value      JSONB,
+    upstream_api_id    UUID REFERENCES custom_apis(id),
+    upstream_json_path TEXT,
+    sensitive          BOOLEAN NOT NULL DEFAULT false,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (custom_api_id, name),
+    CONSTRAINT custom_api_params_source_shape CHECK (
+        (source = 'literal'  AND literal_value IS NOT NULL AND upstream_api_id IS NULL)
+     OR (source = 'caller'   AND upstream_api_id IS NULL)
+     OR (source = 'upstream' AND upstream_api_id IS NOT NULL AND upstream_json_path IS NOT NULL)),
+    CONSTRAINT custom_api_params_no_self_dep CHECK (upstream_api_id IS DISTINCT FROM custom_api_id)
+);
+CREATE INDEX IF NOT EXISTS idx_custom_api_params_api      ON custom_api_params (custom_api_id);
+CREATE INDEX IF NOT EXISTS idx_custom_api_params_upstream ON custom_api_params (upstream_api_id)
+    WHERE upstream_api_id IS NOT NULL;
+
+-- ── agent_custom_apis — which of the tenant's APIs this agent may target ─────
+-- Mirrors agent_knowledge_bases / agent_tool_policies: no row = not enabled,
+-- not a broken default. The execute_api agent_tool_policies row is the master
+-- switch and carries timeout_ms / max_chain_depth; this table is the allow-list.
+CREATE TABLE IF NOT EXISTS agent_custom_apis (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    agent_id      UUID NOT NULL REFERENCES agents(id),
+    custom_api_id UUID NOT NULL REFERENCES custom_apis(id),
+    enabled       BOOLEAN NOT NULL DEFAULT true,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (agent_id, custom_api_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_custom_apis_agent ON agent_custom_apis (agent_id) WHERE enabled;
+
+-- ── api_chain_runs / api_chain_steps — the operator-facing chain history ─────
+-- calls.tenant_id is a slug string on the call path, but these rows are written
+-- by an admin-scoped service against real UUIDs, so tenant_id is a UUID FK like
+-- every other owned row. UNIQUE (tenant_id, idempotency_key) is what makes a
+-- re-invoked chain return its recorded outcome instead of re-executing (AC 15).
+--
+-- 'rate_limited' is deliberately NOT in this CHECK: admission (executor step
+-- 2b) rejects before any api_chain_runs row is ever created, so a run row can
+-- never legitimately carry that status. It survives only as a
+-- ChainExecuteResponse.chain_status literal for the caller that got rejected
+-- pre-insert.
+CREATE TABLE IF NOT EXISTS api_chain_runs (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id       UUID NOT NULL REFERENCES tenants(id),
+    agent_id        UUID NOT NULL REFERENCES agents(id),
+    call_id         TEXT,
+    session_id      TEXT,
+    turn_id         TEXT,
+    tool_call_id    TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    target_api_id   UUID NOT NULL REFERENCES custom_apis(id),
+    status          TEXT NOT NULL DEFAULT 'running'
+                       CHECK (status IN ('running','success','partial','failed','timeout',
+                                         'invalid_argument','unavailable')),
+    error           TEXT,
+    started_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at     TIMESTAMPTZ,
+    UNIQUE (tenant_id, idempotency_key)
+);
+-- Tenant-first so the chain-history read (_authorize_chain_runs) is scoped by
+-- tenant in the index, not only in the predicate.
+CREATE INDEX IF NOT EXISTS idx_api_chain_runs_tenant_session ON api_chain_runs (tenant_id, session_id);
+CREATE INDEX IF NOT EXISTS idx_api_chain_runs_tenant  ON api_chain_runs (tenant_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS api_chain_steps (
+    id                 BIGSERIAL PRIMARY KEY,
+    run_id             UUID NOT NULL REFERENCES api_chain_runs(id) ON DELETE CASCADE,
+    step_index         INT  NOT NULL,          -- 0 = shallowest upstream
+    custom_api_id      UUID NOT NULL REFERENCES custom_apis(id),
+    api_name           TEXT NOT NULL,          -- denormalized: survives a rename/delete
+    level              INT  NOT NULL,
+    session_id         TEXT,                   -- denormalized from the run, for history reads only
+    status             TEXT NOT NULL CHECK (status IN ('claimed','success','failed','timeout',
+                                                       'skipped','invalid_argument','unavailable')),
+    http_status        INT,
+    error              TEXT,
+    arguments_redacted JSONB,                  -- redaction.py applied BEFORE insert
+    response_redacted  JSONB,
+    argument_sources   JSONB,                  -- {"order_id":"lookup_order:$.data.id","name":"caller"}
+    arguments_hash     TEXT,                   -- '<kid>:<hmac>' — see api_side_effect_claims; it is
+                                               -- an HMAC, never a plain hash, because it sits in the
+                                               -- same row as arguments_redacted (finding 7)
+    side_effecting     BOOLEAN NOT NULL,
+    idempotency_key    TEXT,
+    duration_ms        INT,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (run_id, step_index),
+    -- A NULL is distinct from every other NULL in a unique index, so a side-
+    -- effecting step with a NULL hash would silently escape the claim below
+    -- (finding 5). Make it unrepresentable rather than merely unwritten.
+    CONSTRAINT api_chain_steps_side_effect_keyed
+        CHECK (NOT side_effecting OR arguments_hash IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS idx_api_chain_steps_run ON api_chain_steps (run_id);
+
+-- ── api_side_effect_claims — the AC 15 arbiter, deliberately NOT a partial ──
+-- index on api_chain_steps. Two reasons the claim needs its own row:
+--   (1) api_chain_steps is append-only history (AC 14) — a legitimate repeat of
+--       an identical mutation after the window must not overwrite the earlier
+--       step's record, which a unique index on the history table would force.
+--   (2) Every claim column can be NOT NULL here, so there is no NULL row that
+--       slips past uniqueness (finding 5).
+-- Scope is (tenant_id, custom_api_id, arguments_hash) — NOT session_id: the
+-- caller whose refund succeeded, hung up and redialled arrives with a brand new
+-- session, and that is exactly the duplicate AC 15 exists to stop.
+CREATE TABLE IF NOT EXISTS api_side_effect_claims (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id      UUID NOT NULL REFERENCES tenants(id),
+    custom_api_id  UUID NOT NULL REFERENCES custom_apis(id),
+    arguments_hash TEXT NOT NULL,           -- '<kid>:<hmac>', see executor.py step 6
+    run_id         UUID NOT NULL REFERENCES api_chain_runs(id) ON DELETE CASCADE,
+    session_id     TEXT NOT NULL,           -- who won it, for the refusal message
+    status         TEXT NOT NULL CHECK (status IN ('claimed','success','timeout','released')),
+    claimed_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (tenant_id, custom_api_id, arguments_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_api_side_effect_claims_run ON api_side_effect_claims (run_id);
+
+-- ── per-agent chain-depth override ──────────────────────────────────────────
+-- NULL = use the platform ceiling (graph.MAX_CHAIN_LEVELS = 4), never 0/disabled
+-- — the same contract timeout_ms / max_calls_per_turn already document above.
+ALTER TABLE agent_tool_policies ADD COLUMN IF NOT EXISTS max_chain_depth INT;

@@ -32,7 +32,10 @@ async def create_tool_provider_config(
     current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
 ):
     await _resolve_tenant_id(tenant_id)
-    if not ((body.api_key_ref or "").strip() or (body.api_key or "").strip()):
+    # engine='toolexec' is internal infrastructure (services/toolexec/), not
+    # a tenant credential — it has no api_key_ref to require. Every other
+    # engine still needs one.
+    if body.engine != "toolexec" and not ((body.api_key_ref or "").strip() or (body.api_key or "").strip()):
         raise HTTPException(status_code=400, detail="api_key_ref or api_key is required")
     return await tool_provider_configs_service.create_tool_provider_config(
         tenant_id=tenant_id,

@@ -23,7 +23,7 @@ from typing import Any
 
 from . import audit, db
 
-_UPDATABLE_FIELDS = {"enabled", "timeout_ms", "max_calls_per_turn"}
+_UPDATABLE_FIELDS = {"enabled", "timeout_ms", "max_calls_per_turn", "max_chain_depth"}
 
 
 async def get_agent_tool_policy(agent_id: Any, tool_name: str) -> dict[str, Any] | None:
@@ -57,6 +57,7 @@ async def create_agent_tool_policy(
     enabled: bool = True,
     timeout_ms: int | None = None,
     max_calls_per_turn: int | None = None,
+    max_chain_depth: int | None = None,
     user_id: Any | None = None,
     user_email: str | None = None,
 ) -> dict[str, Any]:
@@ -65,9 +66,11 @@ async def create_agent_tool_policy(
         async with conn.transaction():
             row = await conn.fetchrow(
                 "INSERT INTO agent_tool_policies "
-                "(agent_id, tool_name, tool_provider_config_id, enabled, timeout_ms, max_calls_per_turn) "
-                "VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
+                "(agent_id, tool_name, tool_provider_config_id, enabled, timeout_ms, max_calls_per_turn, "
+                " max_chain_depth) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *",
                 agent_id, tool_name, tool_provider_config_id, enabled, timeout_ms, max_calls_per_turn,
+                max_chain_depth,
             )
             result = dict(row)
             await audit.write_audit(
