@@ -46,6 +46,38 @@ function deriveStatus(invite: Invite): DerivedInviteStatus {
   return invite.status;
 }
 
+// A read-only reference, not an editable ACL — this system's roles are
+// fixed in code (services/config/deps.py's require_role() call sites,
+// CONSOLE_ROLES, LIVE_CALLS_ROLES, TRANSCRIPT_ROLES), not a per-tenant
+// configurable permission set, so there is nothing here for a click to
+// grant or revoke. Every ✓/— below traces to a real gate, not a guess:
+//   - dashboards: CONSOLE_ROLES (deps.py) — supervisor isn't a member,
+//     and AppShell's own nav restricts a supervisor to the Live Calls
+//     item alone, so it never reaches the dashboard route at all.
+//   - live calls / transcripts: LIVE_CALLS_ROLES / TRANSCRIPT_ROLES
+//     (deps.py) — the two sets this feature's own security rounds fixed.
+//   - agents/IVR, phone numbers/telephony, invites: require_role(
+//     "superadmin","admin") on agents.py / phone_numbers.py /
+//     telephony_configs.py / carriers.py / invites.py.
+//   - tenants (create/delete) and the audit log: require_role(
+//     "superadmin") alone (tenants.py, audit_log.py) — the one row where
+//     "admin" is genuinely narrower than tenant management as a whole
+//     (an admin CAN update their own tenant's settings, just not create
+//     or delete a tenant, or read another tenant's).
+// `agent` isn't a column: it has zero console reach (CONSOLE_ROLES
+// excludes it), landing on /no-access on any console URL.
+type Reach = "yes" | "no";
+const CAPABILITY_MATRIX: { label: string; superadmin: Reach; admin: Reach; supervisor: Reach; viewer: Reach }[] = [
+  { label: "View dashboards & analytics", superadmin: "yes", admin: "yes", supervisor: "no", viewer: "yes" },
+  { label: "Listen & join live calls", superadmin: "yes", admin: "yes", supervisor: "yes", viewer: "no" },
+  { label: "View live-call transcripts", superadmin: "yes", admin: "yes", supervisor: "no", viewer: "no" },
+  { label: "Manage agents & IVR flows", superadmin: "yes", admin: "yes", supervisor: "no", viewer: "no" },
+  { label: "Manage phone numbers & telephony", superadmin: "yes", admin: "yes", supervisor: "no", viewer: "no" },
+  { label: "Invite & manage users", superadmin: "yes", admin: "yes", supervisor: "no", viewer: "no" },
+  { label: "Create or delete tenants", superadmin: "yes", admin: "no", supervisor: "no", viewer: "no" },
+  { label: "View the platform audit log", superadmin: "yes", admin: "no", supervisor: "no", viewer: "no" },
+];
+
 export default function UsersPage() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [users, setUsers] = useState<User[]>([]);
@@ -220,47 +252,83 @@ export default function UsersPage() {
         </div>
       )}
 
-      <div className="card" style={{ marginBottom: 14 }}>
-        <div className="card-hdr">
-          <div className="card-title">Users</div>
-        </div>
-        {loading ? (
-          <div className="empty-state">Loading…</div>
-        ) : users.length === 0 ? (
-          <div className="empty-state">No users yet.</div>
-        ) : (
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th>Email</th>
-                <th>Role</th>
-                {isSuperadmin && <th>Tenant</th>}
-                <th>Created</th>
-              </tr>
-            </thead>
-            <tbody>
-              {users.map((u) => (
-                <tr key={u.id}>
-                  <td className="bold">
-                    {u.email}
-                    {u.id === currentUser?.id && (
-                      <span className="badge indigo" style={{ marginLeft: 6 }}>
-                        You
-                      </span>
-                    )}
-                  </td>
-                  <td>
-                    <span className={`badge ${ROLE_BADGE[u.role]}`}>{u.role}</span>
-                  </td>
-                  {isSuperadmin && <td>{tenantName(u.tenant_id)}</td>}
-                  <td style={{ fontSize: ".71rem", color: "var(--text-3)" }}>
-                    {new Date(u.created_at).toLocaleDateString()}
-                  </td>
+      <div className="users-layout" style={{ marginBottom: 14 }}>
+        <div className="card">
+          <div className="card-hdr">
+            <div className="card-title">Members</div>
+          </div>
+          {loading ? (
+            <div className="empty-state">Loading…</div>
+          ) : users.length === 0 ? (
+            <div className="empty-state">No users yet.</div>
+          ) : (
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>Email</th>
+                  <th>Role</th>
+                  {isSuperadmin && <th>Tenant</th>}
+                  <th>Created</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+              </thead>
+              <tbody>
+                {users.map((u) => (
+                  <tr key={u.id}>
+                    <td className="bold">
+                      {u.email}
+                      {u.id === currentUser?.id && (
+                        <span className="badge indigo" style={{ marginLeft: 6 }}>
+                          You
+                        </span>
+                      )}
+                    </td>
+                    <td>
+                      <span className={`badge ${ROLE_BADGE[u.role]}`}>{u.role}</span>
+                    </td>
+                    {isSuperadmin && <td>{tenantName(u.tenant_id)}</td>}
+                    <td style={{ fontSize: ".71rem", color: "var(--text-3)" }}>
+                      {new Date(u.created_at).toLocaleDateString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div className="card">
+          <div className="card-hdr">
+            <div className="card-title">What each role can do</div>
+          </div>
+          <div className="card-body" style={{ padding: "10px 16px 16px" }}>
+            <table className="tbl tbl-matrix">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th style={{ textAlign: "center" }}>Super&shy;admin</th>
+                  <th style={{ textAlign: "center" }}>Admin</th>
+                  <th style={{ textAlign: "center" }}>Super&shy;visor</th>
+                  <th style={{ textAlign: "center" }}>Viewer</th>
+                </tr>
+              </thead>
+              <tbody>
+                {CAPABILITY_MATRIX.map((row) => (
+                  <tr key={row.label}>
+                    <td style={{ fontSize: ".76rem" }}>{row.label}</td>
+                    <td className="tbl-matrix-cell">{row.superadmin === "yes" ? "✓" : "—"}</td>
+                    <td className="tbl-matrix-cell">{row.admin === "yes" ? "✓" : "—"}</td>
+                    <td className="tbl-matrix-cell">{row.supervisor === "yes" ? "✓" : "—"}</td>
+                    <td className="tbl-matrix-cell">{row.viewer === "yes" ? "✓" : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="form-hint" style={{ marginTop: 10 }}>
+              Fixed by role, not editable here — reflects how this console actually
+              gates each action today.
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className="card">

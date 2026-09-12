@@ -206,6 +206,11 @@ body {
 .btn:disabled { opacity: .4; cursor: not-allowed; }
 
 /* ═══ Cards / tables ═══ */
+.users-layout { display: grid; grid-template-columns: 1.6fr 1fr; gap: 14px; align-items: start; }
+@media (max-width: 900px) { .users-layout { grid-template-columns: 1fr; } }
+.tbl-matrix-cell { text-align: center; color: var(--text-2); }
+.tbl-matrix td:first-child { color: var(--text); }
+
 .card { background: var(--surf); border: 1px solid var(--border); border-radius: var(--r); }
 .card-hdr { padding: 12px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
 .card-title { font-size: .8rem; font-weight: 600; color: var(--text); }
