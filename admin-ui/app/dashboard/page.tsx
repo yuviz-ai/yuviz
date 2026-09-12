@@ -1,13 +1,17 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import {
   AgentWithTenant,
   ApiError,
   DashboardStats,
+  DispositionSlice,
+  dispositionLabel,
   LatencyStatWithTenant,
   listAllAgents,
   listAllDashboardStats,
+  listAllDispositionMix,
   listAllLatencyStats,
   listAllTodaysActivity,
   listAllUsageTrend,
@@ -23,44 +27,54 @@ const RANGE_OPTIONS = [
   { label: "90 Days", hours: 24 * 90, days: 90 },
 ];
 
-const STAT_ICONS: Record<string, React.ReactNode> = {
-  minutes: (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <circle cx="8" cy="8" r="6.5" />
-      <path d="M8 4.5V8l2.5 1.5" />
-    </svg>
-  ),
-  agents: (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <circle cx="8" cy="5" r="3" />
-      <path d="M2 14c0-3.314 2.686-5 6-5s6 1.686 6 5" />
-    </svg>
-  ),
-  live: (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <path d="M3 2h3l1.5 4-2 1.5a10 10 0 004.5 4.5L11.5 10l4 1.5v3a2 2 0 01-2 2C7.5 16.5 -0.5 8.5 1 3a2 2 0 012-1z" />
-    </svg>
-  ),
-  success: (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <path d="M1.5 12.5l4.5-5 3 3 5.5-6.5" />
-      <path d="M10.5 4h4v4" />
-    </svg>
-  ),
+// Explicit "en-IN" rather than the browser default: this renders inside a
+// client component that Next also prerenders on the server, and a
+// locale-dependent group separator that differs between the two is a
+// hydration mismatch. Indian digit grouping (1,36,650) is also what this
+// product's operators read numbers in.
+const fmtInt = (n: number) => n.toLocaleString("en-IN");
+
+function fmtDuration(ms: number | null): string {
+  if (ms == null) return "—";
+  const total = Math.round(ms / 1000);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+// AHT's progress bar needs a ceiling to fill against. 2 minutes is the
+// target the tile states out loud rather than an invisible constant, so a
+// bar that looks "nearly full" always means "nearly at the stated target".
+const AHT_TARGET_MS = 120_000;
+
+type Tone = "good" | "bad" | "flat";
+
+const TONE_COLOR: Record<Tone, string> = {
+  good: "var(--green)",
+  bad: "var(--red)",
+  flat: "var(--text-3)",
 };
 
-function StatCard({
-  icon, label, value, accent, live,
+/** One headline tile: label, big value, a fill bar, and a delta + context line.
+    The value carries the same accent colour as its bar — the StatCard this
+    replaced coloured its number per metric, and keeping that means a tile
+    still reads at a glance without tracing the thin bar underneath. */
+function Kpi({
+  label, value, fillPct, fillColor, delta, deltaTone, footnote, live,
 }: {
-  icon: keyof typeof STAT_ICONS; label: string; value: string; accent: string; live?: boolean;
+  label: string;
+  value: string;
+  fillPct: number | null;
+  fillColor: string;
+  delta: string | null;
+  deltaTone: Tone;
+  footnote: string;
+  live?: boolean;
 }) {
   return (
-    <div className="card" style={{ padding: "14px 16px", flex: "1 1 180px", minWidth: 160 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-        <span style={{ width: 15, height: 15, color: accent, flexShrink: 0 }}>{STAT_ICONS[icon]}</span>
-        <span style={{ fontSize: ".68rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".07em", color: "var(--text-3)" }}>
-          {label}
-        </span>
+    <div className="card" style={{ padding: "14px 16px", flex: "1 1 200px", minWidth: 180 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <span style={{ fontSize: ".72rem", fontWeight: 600, color: "var(--text-2)" }}>{label}</span>
         {live && (
           <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 4, fontSize: ".64rem", color: "var(--green)" }}>
             <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--green)", display: "inline-block" }} />
@@ -68,9 +82,99 @@ function StatCard({
           </span>
         )}
       </div>
-      <div style={{ fontSize: "1.6rem", fontWeight: 700, color: accent, fontVariantNumeric: "tabular-nums" }}>{value}</div>
+      <div style={{
+        fontSize: "1.75rem", fontWeight: 600, letterSpacing: "-.025em",
+        color: fillColor, fontVariantNumeric: "tabular-nums", lineHeight: 1.1,
+      }}>
+        {value}
+      </div>
+      <div style={{ height: 3, borderRadius: 2, background: "var(--surf-3)", margin: "12px 0 8px" }}>
+        {/* A null fill means the ratio has no denominator yet (no calls in
+            the window). An empty track is honest there; a full or zeroed
+            bar would both read as a real measurement. */}
+        {fillPct !== null && (
+          <div style={{
+            width: `${Math.min(100, Math.max(0, fillPct))}%`, height: "100%",
+            borderRadius: 2, background: fillColor,
+          }} />
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 6, alignItems: "baseline", fontSize: ".7rem" }}>
+        {delta && <span style={{ color: TONE_COLOR[deltaTone], fontWeight: 600 }}>{delta}</span>}
+        <span style={{ color: "var(--text-3)" }}>{footnote}</span>
+      </div>
     </div>
   );
+}
+
+/** Stacked hourly volume. Plain divs rather than SVG — every bar is a
+    simple proportion of the tallest hour, and the stack only ever has two
+    segments (see get_todays_activity: 'web' is hardcoded 0, not a real
+    channel on this platform, so stacking it would draw a permanent
+    zero-height lie into the legend). */
+function StackedBars({ points }: { points: TodaysActivityPoint[] }) {
+  const max = Math.max(1, ...points.map((p) => p.inbound + p.outbound));
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "flex-end", gap: 6, height: 190 }}>
+        {points.map((p) => {
+          const total = p.inbound + p.outbound;
+          return (
+            <div
+              key={p.hour}
+              style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", height: "100%" }}
+              title={`${String(p.hour).padStart(2, "0")}:00 — ${p.outbound} outbound, ${p.inbound} inbound`}
+            >
+              <div style={{
+                height: `${(total / max) * 100}%`, display: "flex", flexDirection: "column",
+                justifyContent: "flex-end", borderRadius: "4px 4px 0 0", overflow: "hidden", minHeight: total > 0 ? 2 : 0,
+              }}>
+                {/* inbound=cyan / outbound=amber is the convention the Calls
+                    page already sets (app/calls/page.tsx's direction badge).
+                    Do not re-pick these per screen — the same colour has to
+                    mean the same direction everywhere in the console. */}
+                <div style={{ flex: p.inbound, background: "var(--cyan)" }} />
+                <div style={{ flex: p.outbound, background: "var(--amber)" }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+        {points.map((p) => (
+          <span key={p.hour} style={{ flex: 1, textAlign: "center", fontSize: ".65rem", color: "var(--text-3)" }}>
+            {String(p.hour).padStart(2, "0")}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Disposition bars are coloured by what the reason MEANS, not by rank — a
+// clean caller hangup and a transport error should never read as the same
+// kind of outcome just because they happen to sit next to each other.
+// Returns one of globals.css's existing .badge tones rather than a raw
+// colour, so these rows use the same pills as every other status in the
+// console instead of a palette invented for this one card.
+type BadgeTone = "green" | "amber" | "red" | "gray" | "cyan";
+
+const BADGE_VAR: Record<BadgeTone, string> = {
+  green: "var(--green)",
+  amber: "var(--amber)",
+  red: "var(--red)",
+  gray: "var(--text-3)",
+  cyan: "var(--cyan)",
+};
+
+function dispositionTone(closeReason: string): BadgeTone {
+  if (closeReason.startsWith("TRANSFER")) {
+    return closeReason === "TRANSFER_SUCCESS" ? "amber" : "red";
+  }
+  if (closeReason === "caller_hangup") return "green";
+  if (closeReason === "transport_error" || closeReason === "close_timeout") return "red";
+  if (closeReason === "reconciled_inactive" || closeReason === "unknown") return "gray";
+  return "cyan";
 }
 
 // Rough, named bands rather than a bare number — Retell/Vapi's own
@@ -177,6 +281,9 @@ export default function DashboardPage() {
   const [latencyLoading, setLatencyLoading] = useState(true);
   const [latencyHours, setLatencyHours] = useState(24);
 
+  const [dispositions, setDispositions] = useState<DispositionSlice[]>([]);
+  const [dispositionsLoading, setDispositionsLoading] = useState(true);
+
   useEffect(() => {
     listTenants().then(setTenants).catch((e) => setError(e instanceof ApiError ? e.detail : String(e)));
   }, []);
@@ -219,6 +326,16 @@ export default function DashboardPage() {
   useEffect(() => {
     if (tenants.length === 0) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
+    setDispositionsLoading(true);
+    listAllDispositionMix(tenants, range.hours)
+      .then(setDispositions)
+      .catch((e) => setError(e instanceof ApiError ? e.detail : String(e)))
+      .finally(() => setDispositionsLoading(false));
+  }, [tenants, range]);
+
+  useEffect(() => {
+    if (tenants.length === 0) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLatencyLoading(true);
     listAllLatencyStats(tenants, latencyHours)
       .then(setLatencyStats)
@@ -227,9 +344,49 @@ export default function DashboardPage() {
   }, [tenants, latencyHours]);
 
   const activeAgents = agents.filter((a) => a.status === "active").length;
-  const successPct = stats && stats.success_count + stats.failed_count > 0
-    ? Math.round((stats.success_count / (stats.success_count + stats.failed_count)) * 100)
-    : null;
+
+  // Every headline number is derived here from raw counts rather than read
+  // off the API, so a zero denominator stays null (rendered "—") instead of
+  // turning into NaN%, 0% or Infinity. With the window set to 90 days on a
+  // fresh install all four of these are legitimately null.
+  const kpi = useMemo(() => {
+    const pctChange = (cur: number, prev: number): number | null =>
+      prev === 0 ? null : ((cur - prev) / prev) * 100;
+    const ratePct = (num: number, den: number): number | null =>
+      den === 0 ? null : (num / den) * 100;
+    const mean = (sum: number, n: number): number | null => (n === 0 ? null : sum / n);
+
+    if (!stats) return null;
+
+    const containment = ratePct(stats.ended_count - stats.escalated_count, stats.ended_count);
+    const prevContainment = ratePct(
+      stats.prev_ended_count - stats.prev_escalated_count, stats.prev_ended_count,
+    );
+    const aht = mean(stats.aht_duration_ms, stats.aht_sample_count);
+    const prevAht = mean(stats.prev_aht_duration_ms, stats.prev_aht_sample_count);
+
+    return {
+      containment,
+      // Percentage POINTS, not a percent-of-a-percent — 80% to 83% is
+      // "+3.0pt", never "+3.75%".
+      containmentDeltaPt: containment !== null && prevContainment !== null
+        ? containment - prevContainment : null,
+      aht,
+      ahtDeltaSec: aht !== null && prevAht !== null ? (aht - prevAht) / 1000 : null,
+      callsDeltaPct: pctChange(stats.total_calls, stats.prev_total_calls),
+      handoffDeltaPct: pctChange(stats.handoff_count, stats.prev_handoff_count),
+      // Share of started calls that actually reached an ended state — the
+      // closest honest analogue to "handled of attempted", since nothing in
+      // the schema records a dial attempt that never became a call row.
+      handledPct: ratePct(stats.ended_count, stats.total_calls),
+      handoffPct: ratePct(stats.handoff_count, stats.ended_count),
+    };
+  }, [stats]);
+
+  const signed = (n: number, unit: string, digits = 1) =>
+    `${n >= 0 ? "+" : "−"}${Math.abs(n).toFixed(digits)}${unit}`;
+
+  const dispositionTotal = dispositions.reduce((sum, d) => sum + d.count, 0);
 
   const trendSeries = useMemo(
     () => [
@@ -240,39 +397,114 @@ export default function DashboardPage() {
   );
   const trendLabels = trend.map((p) => new Date(p.date).toLocaleDateString(undefined, { month: "short", day: "numeric" }));
 
-  const activitySeries = useMemo(
-    () => [
-      { name: "Inbound", color: "var(--cyan)", values: activity.map((p) => p.inbound) },
-      { name: "Outbound", color: "var(--green)", values: activity.map((p) => p.outbound) },
-      { name: "Web", color: "var(--indigo)", values: activity.map((p) => p.web) },
-    ],
-    [activity],
-  );
-  const activityLabels = activity.map((p) => `${String(p.hour).padStart(2, "0")}:00`);
+  const todayLabel = new Date().toLocaleDateString("en-IN", {
+    weekday: "long", day: "numeric", month: "short",
+  });
+
+  // The API only returns hours that had at least one call, so a quiet hour
+  // comes back missing rather than zero. Rendering that raw would silently
+  // close the gap and draw 14:00 flush against 16:00 as if 15:00 never
+  // existed — the dead hour is exactly what an operator is looking for.
+  // Filled between the first and last active hour only; padding out to a
+  // full 00-23 would bury a short business window in empty columns.
+  const hourly = useMemo(() => {
+    if (activity.length === 0) return [];
+    const byHour = new Map(activity.map((p) => [p.hour, p]));
+    const hours = activity.map((p) => p.hour);
+    const dense: TodaysActivityPoint[] = [];
+    for (let h = Math.min(...hours); h <= Math.max(...hours); h++) {
+      dense.push(byHour.get(h) ?? { hour: h, inbound: 0, outbound: 0, web: 0 });
+    }
+    return dense;
+  }, [activity]);
 
   return (
     <>
       {error && <div className="error-banner">{error}</div>}
 
-      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
-        <div style={{ display: "flex", gap: 4 }}>
-          {RANGE_OPTIONS.map((o) => (
-            <button
-              key={o.label}
-              className={`btn btn-sm ${range.label === o.label ? "btn-primary" : "btn-ghost"}`}
-              onClick={() => setRange(o)}
-            >
-              {o.label}
-            </button>
-          ))}
+      <div style={{
+        display: "flex", alignItems: "flex-start", justifyContent: "space-between",
+        gap: 16, flexWrap: "wrap", marginBottom: 18,
+      }}>
+        <div>
+          <h1 style={{ fontSize: "1.55rem", fontWeight: 600, letterSpacing: "-.025em", margin: 0, color: "var(--text)" }}>
+            Today across {tenants.length === 0 ? "your accounts" : `${tenants.length} account${tenants.length === 1 ? "" : "s"}`}
+          </h1>
+          {/* The date is computed from the viewer's clock, which need not
+              match the prerender host's — suppressed rather than deferred to
+              an effect so the line does not pop in after paint. */}
+          <div suppressHydrationWarning style={{ fontSize: ".8rem", color: "var(--text-2)", marginTop: 4 }}>
+            {todayLabel} · last {range.label.toLowerCase()} ·{" "}
+            {statsLoading ? "…" : `${fmtInt(stats?.live_calls ?? 0)} live now`} ·{" "}
+            {fmtInt(activeAgents)} active agent{activeAgents === 1 ? "" : "s"}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 4, marginRight: 4 }}>
+            {RANGE_OPTIONS.map((o) => (
+              <button
+                key={o.label}
+                className={`btn btn-sm ${range.label === o.label ? "btn-primary" : "btn-ghost"}`}
+                onClick={() => setRange(o)}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+          <Link href="/calls" className="btn">Open live monitor</Link>
+          <Link href="/campaigns" className="btn btn-primary">New campaign</Link>
         </div>
       </div>
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
-        <StatCard icon="minutes" label="Total Minutes" value={statsLoading ? "—" : String(stats?.total_minutes ?? 0)} accent="var(--text)" />
-        <StatCard icon="agents" label="Active Agents" value={agents.length === 0 && tenants.length === 0 ? "—" : String(activeAgents)} accent="var(--cyan)" />
-        <StatCard icon="live" label="Live Calls" value={statsLoading ? "—" : String(stats?.live_calls ?? 0)} accent="var(--amber)" live={(stats?.live_calls ?? 0) > 0} />
-        <StatCard icon="success" label="Success Rate" value={successPct === null ? "—" : `${successPct}%`} accent="var(--green)" />
+        <Kpi
+          label="Calls handled"
+          value={statsLoading || !stats ? "—" : fmtInt(stats.ended_count)}
+          fillPct={kpi?.handledPct ?? null}
+          fillColor="var(--cyan)"
+          delta={kpi?.callsDeltaPct != null ? signed(kpi.callsDeltaPct, "%") : null}
+          deltaTone={(kpi?.callsDeltaPct ?? 0) >= 0 ? "good" : "bad"}
+          footnote={stats ? `of ${fmtInt(stats.total_calls)} started` : "no calls yet"}
+          // The old Live Calls StatCard owned this pulse; that tile is gone,
+          // so the signal rides the volume tile rather than disappearing.
+          live={(stats?.live_calls ?? 0) > 0}
+        />
+        <Kpi
+          label="Containment"
+          value={kpi?.containment == null ? "—" : `${Math.round(kpi.containment)}%`}
+          fillPct={kpi?.containment ?? null}
+          fillColor="var(--green)"
+          delta={kpi?.containmentDeltaPt != null ? signed(kpi.containmentDeltaPt, "pt") : null}
+          deltaTone={(kpi?.containmentDeltaPt ?? 0) >= 0 ? "good" : "bad"}
+          footnote="resolved without a human"
+        />
+        <Kpi
+          label="Avg handle time"
+          value={fmtDuration(kpi?.aht ?? null)}
+          fillPct={kpi?.aht != null ? (kpi.aht / AHT_TARGET_MS) * 100 : null}
+          fillColor={kpi?.aht != null && kpi.aht > AHT_TARGET_MS ? "var(--red)" : "var(--amber)"}
+          // Faster is better, so a negative delta is the good one — the only
+          // tile where the sign/tone mapping inverts.
+          delta={kpi?.ahtDeltaSec != null ? signed(kpi.ahtDeltaSec, "s", 0) : null}
+          deltaTone={(kpi?.ahtDeltaSec ?? 0) <= 0 ? "good" : "bad"}
+          footnote={stats && stats.aht_sample_count < stats.ended_count
+            ? `${fmtInt(stats.aht_sample_count)} of ${fmtInt(stats.ended_count)} calls report duration`
+            : "target under 2m"}
+        />
+        <Kpi
+          label="Human handoffs"
+          value={statsLoading || !stats ? "—" : fmtInt(stats.handoff_count)}
+          fillPct={kpi?.handoffPct ?? null}
+          // Amber, not red, and the same amber dispositionTone() gives
+          // TRANSFER_SUCCESS below: a handoff is an escalation worth
+          // watching, not a failure. Failed transfers are the red ones.
+          fillColor="var(--amber)"
+          delta={kpi?.handoffDeltaPct != null ? signed(kpi.handoffDeltaPct, "%") : null}
+          deltaTone={(kpi?.handoffDeltaPct ?? 0) <= 0 ? "good" : "bad"}
+          footnote={stats && stats.escalated_count > stats.handoff_count
+            ? `${fmtInt(stats.escalated_count - stats.handoff_count)} transfer${stats.escalated_count - stats.handoff_count === 1 ? "" : "s"} failed`
+            : "reached a human agent"}
+        />
       </div>
 
       <div className="card" style={{ marginBottom: 16 }}>
@@ -288,8 +520,19 @@ export default function DashboardPage() {
       <div style={{ display: "flex", gap: 16, marginBottom: 16, flexWrap: "wrap" }}>
         <div className="card" style={{ flex: "2 1 420px" }}>
           <div className="card-hdr">
-            <div className="card-title">Today&apos;s Activity</div>
-            <div className="card-sub">Call channels per hour</div>
+            <div className="card-title">Call volume by hour</div>
+            <div className="card-sub">Today</div>
+            <div style={{ marginLeft: "auto", display: "flex", gap: 14 }}>
+              {[
+                { name: "Inbound", color: "var(--cyan)" },
+                { name: "Outbound", color: "var(--amber)" },
+              ].map((s) => (
+                <span key={s.name} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: ".72rem", color: "var(--text-2)" }}>
+                  <span style={{ width: 8, height: 8, borderRadius: 2, background: s.color, display: "inline-block" }} />
+                  {s.name}
+                </span>
+              ))}
+            </div>
           </div>
           <div style={{ padding: 16 }}>
             {activityLoading ? (
@@ -297,37 +540,47 @@ export default function DashboardPage() {
             ) : activity.length === 0 ? (
               <div className="empty-state">No calls yet today.</div>
             ) : (
-              <LineChart series={activitySeries} xLabels={activityLabels} />
+              <StackedBars points={hourly} />
             )}
           </div>
         </div>
 
-        <div className="card" style={{ flex: "1 1 260px" }}>
+        <div className="card" style={{ flex: "1 1 300px" }}>
           <div className="card-hdr">
-            <div className="card-title">Call Outcomes</div>
-            <div className="card-sub">This window</div>
+            <div className="card-title">Disposition mix</div>
+            <div className="card-sub">
+              {dispositionsLoading ? "Loading…" : `${fmtInt(dispositionTotal)} ended call${dispositionTotal === 1 ? "" : "s"}`}
+            </div>
           </div>
           <div style={{ padding: 16 }}>
-            {statsLoading ? (
+            {dispositionsLoading ? (
               <div className="empty-state">Loading…</div>
+            ) : dispositions.length === 0 ? (
+              <div className="empty-state">No calls have ended in this window yet.</div>
             ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ color: "var(--text-2)" }}>Total</span>
-                  <strong style={{ color: "var(--text)" }}>{stats?.total_calls ?? 0}</strong>
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span><span className="badge green">success</span></span>
-                  <strong style={{ color: "var(--text)" }}>{stats?.success_count ?? 0}</strong>
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span><span className="badge red">failed</span></span>
-                  <strong style={{ color: "var(--text)" }}>{stats?.failed_count ?? 0}</strong>
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span><span className="badge amber">outbound</span></span>
-                  <strong style={{ color: "var(--text)" }}>{stats?.outbound_count ?? 0}</strong>
-                </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                {dispositions.map((d) => {
+                  const pct = (d.count / dispositionTotal) * 100;
+                  const tone = dispositionTone(d.close_reason);
+                  return (
+                    <div key={d.close_reason}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                        <span className={`badge ${tone}`}>{dispositionLabel(d.close_reason)}</span>
+                        <span style={{ fontSize: ".8rem", color: "var(--text-2)", fontVariantNumeric: "tabular-nums" }}>
+                          {/* Sub-1% slices round to "<1%" rather than "0%",
+                              which would contradict the row existing at all. */}
+                          {pct < 1 ? "<1%" : `${Math.round(pct)}%`}
+                        </span>
+                      </div>
+                      <div style={{ height: 4, borderRadius: 2, background: "var(--surf-3)" }}>
+                        <div style={{
+                          width: `${Math.max(pct, 1)}%`, height: "100%", borderRadius: 2,
+                          background: BADGE_VAR[tone],
+                        }} />
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

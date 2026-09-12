@@ -166,6 +166,10 @@ body {
 .badge.red { background: var(--red-dim); color: var(--red); }
 .badge.gray { background: var(--surf-3); color: var(--text-3); }
 .badge.indigo { background: var(--indigo-dim); color: var(--indigo); }
+/* Referenced by the Calls page's inbound direction badge and the campaigns
+   status badge since before this rule existed — without it those rendered
+   with no background at all while every other badge had one. */
+.badge.cyan { background: var(--cyan-dim); color: var(--cyan); }
 
 .env-chip { font-size: .6rem; font-weight: 700; padding: 1px 6px; border-radius: 3px; border: 1px solid transparent; }
 .env-chip.prod { background: var(--green-dim); color: var(--green); border-color: rgba(34, 197, 94, .25); }
