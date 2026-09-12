@@ -1,0 +1,27 @@
+# Tasks: Tenant-level Knowledge Bases page
+
+## Phase 1: Backend reverse-lookup endpoint
+
+- [x] T1 Add `list_for_kb(kb_id)` to `agent_kb.py` — `services/knowledge/agent_kb.py` — done when the function exists next to `list_for_agent` and its SQL joins `agents`/`tenants` filtering `deleted_at IS NULL` on both, matching the design's query text.
+- [x] T2 Add service-level tests for `list_for_kb` — `services/knowledge/tests/test_agent_kb.py` — done when: attached-to-two-agents returns both, detaching one leaves exactly the other (KB and its documents still present), a KB with no attachments returns `[]`, and a soft-deleted agent is excluded — all passing against the `tenant_agent` fixture.
+- [x] T3 Add `GET /knowledge-bases/{kb_id}/agents` route with tenant predicate and malformed-id handling — `services/knowledge/routers/knowledge_bases.py` — done when: own-tenant caller gets 200 with the KB's agents, a nonexistent `kb_id` gets 404 with the same detail string `get_knowledge_base` uses, a non-UUID `kb_id` gets 404 (not 500), and `is_platform_scoped` (imported from `services.config.deps`) — not a role check — gates the platform bypass.
+- [x] T4 Add HTTP-layer tests for the new route — `services/knowledge/tests/test_kb_agents_api.py` (new) — done when all pass: 200 own-tenant admin, 404 cross-tenant admin with identical detail string to unknown-id 404 (and deleting the tenant predicate turns only this case red), 200 NULL-tenant `viewer` service account, 200 tenant `viewer`, 401 with no `Authorization` header, 404 on malformed `kb_id`.
+
+## Phase 2: Frontend client and navigation
+
+- [x] T5 Add `KbAgent` interface and `listKbAgents(kbId)` — `admin-ui/lib/knowledgeApi.ts` — done when the function calls `GET /knowledge-bases/{kbId}/agents` and returns `KbAgent[]` matching the field shape in the design (`agent_id`, `kb_id`, `enabled`, `created_at`, `agent_slug`, `agent_name`, `tenant_id`); this is the only new export in the file.
+- [x] T6 Add "Knowledge bases" nav entry — `admin-ui/components/AppShell.tsx` — done when a `{ href: "/knowledge-bases", label: "Knowledge bases", icon: "knowledge-bases" }` item appears in `MANAGEMENT_ITEMS` after Agents, its icon renders, and the item shows active state when the current path starts with `/knowledge-bases`.
+
+## Phase 3: List page
+
+- [x] T7 Build the tenant-scoped KB list page — `admin-ui/app/knowledge-bases/page.tsx` (new) — done when: it fetches `listTenants()` then, per tenant, `listKnowledgeBases`/`listDocuments`/`listKbAgents` via independent `Promise.allSettled` calls (not `Promise.all`); each row shows name, status, document count (`0` renders as `0`), attached-agent count (`0` renders as "Not used by any agent"), links to the detail route; an empty result renders the empty state; a `listTenants()` failure renders a page-level error with retry; a single tenant's or single KB's fetch failure renders a scoped, non-blocking banner while other rows still render; "+ Add source" opens `AddSourceModal` (stubbed until T9) only when `canManage` (role `superadmin`/`admin` from `getCurrentUser()`) is true.
+- [x] T8 Manual verification of list-page fetch isolation — `admin-ui/app/knowledge-bases/page.tsx` — done when, with one tenant's `listKnowledgeBases` call forced to reject (e.g. temporarily pointing it at a bad id) and another tenant's call succeeding, the succeeding tenant's rows still render alongside a scoped error banner; reverting the page's `allSettled` calls to `Promise.all` must reproduce a blanked page, confirming the check would have failed on that regression.
+
+## Phase 4: Detail page and upload modal
+
+- [x] T9 Build the add-source modal and shared file validator — `admin-ui/components/AddSourceModal.tsx` (new) — done when: it exports `ACCEPTED_DOC_EXTENSIONS`, `ACCEPTED_DOC_ACCEPT`, and `rejectionReasonFor(file)`; the 4-card picker renders with only "Upload files" enabled; `rejectionReasonFor` rejects `notes.pdf` and `x.txt.exe`, accepts `readme.md` and `a.TXT` (case-insensitive extension plus MIME check where the browser supplies one), and choosing a rejected file sends no request; the create path calls `createKnowledgeBase` then `uploadDocument` with an editable, auto-derived slug, surfacing a duplicate-slug error from the API in the modal rather than retrying silently.
+- [x] T10 Build the KB detail page — `admin-ui/app/knowledge-bases/[tenantSlug]/[kbId]/page.tsx` (new) — done when: it resolves the KB from `listKnowledgeBases(tenantId)` (no new `getKnowledgeBase` client call) and shows a not-found state if absent; the documents table shows status/error badge, usage-mode toggle, delete, and an upload control that imports T9's shared validator; the attached-agents list supports attach (`assignKnowledgeBase`, `enabled` defaults true) and detach (`detachKnowledgeBase`, behind a `confirm()` naming that documents are not deleted) against an agent picker from `listAgents(tenantSlug)` minus already-attached ids; each mutation re-fetches only `listKbAgents(kbId)`, not the whole page.
+
+## Phase 5: Manual verification
+
+- [x] T11 End-to-end manual smoke test across roles — no file change — done when, in a browser: a tenant `viewer` sees the nav item, the list and detail pages load, and no create/attach/detach/delete control is clickable; a tenant admin runs add-source → create KB → upload `.md` → open detail → attach a second agent → detach it → the KB list shows "0 agents" for that KB; and the agent's own `KnowledgeBasePanel` tab is confirmed unchanged and consistent afterward.

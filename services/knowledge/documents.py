@@ -27,8 +27,13 @@ async def get_document(document_id: Any) -> dict[str, Any] | None:
 
 async def list_documents(kb_id: Any) -> list[dict[str, Any]]:
     pool = await db.get_pool()
+    # chunk_count is scoped to chunks matching the document's *current*
+    # version — an older version's chunks are leftover history from a
+    # previous ingestion run, not what's live in retrieval today.
     rows = await pool.fetch(
-        "SELECT * FROM kb_documents WHERE kb_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC",
+        "SELECT d.*, "
+        "(SELECT COUNT(*) FROM kb_chunks c WHERE c.document_id = d.id AND c.version = d.version) AS chunk_count "
+        "FROM kb_documents d WHERE d.kb_id = $1 AND d.deleted_at IS NULL ORDER BY d.created_at DESC",
         kb_id,
     )
     return [dict(row) for row in rows]
