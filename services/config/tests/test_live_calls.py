@@ -1076,6 +1076,35 @@ class TestAuthorityMemoBounds:
         memo = app.state._live_calls_authority_memo
         assert (str(test_admin["user"]["id"]), bad_slug) not in memo
 
+    async def test_post_intervention_404_should_not_recache_the_evicted_scope_key(
+        self, pool, test_tenant, test_admin,
+    ):
+        """KNOWN BUG — security finding, left unfixed by decision (low
+        severity). _resolve_scope evicts the memo entry for a scope_key that
+        fails to resolve (forget_authority), but
+        routers.live_calls.request_intervention's 404 except-handler calls
+        deps.fresh_authority() again with that SAME scope_key (to attribute
+        the denial-audit row), which re-reads the row and re-inserts exactly
+        the entry _resolve_scope just evicted — undoing the eviction bound
+        on the POST path, unlike the GET path proven clean above. This pins
+        the INTENDED behavior (a 404'd slug must not be cached) and is
+        expected to FAIL until the implementer removes the re-insertion —
+        do not weaken this assertion to make it pass."""
+        other_tenant = await _create_tenant(pool)
+        try:
+            _clear_authority_memo()
+            _reset_throttle()
+            async with _client_as(test_admin["user"]) as client:
+                resp = await _post_intervention(
+                    client, f"test-live-{uuid.uuid4().hex[:8]}", tenant_slug=other_tenant["slug"],
+                )
+            assert resp.status_code == 404
+
+            memo = app.state._live_calls_authority_memo
+            assert (str(test_admin["user"]["id"]), other_tenant["slug"]) not in memo
+        finally:
+            await _cleanup_tenant(pool, other_tenant)
+
 
 # ── T25 — soft-deleted own tenant 403s instead of falling through ────────
 
@@ -1099,5 +1128,73 @@ class TestSoftDeletedOwnTenant:
             async with _client_as(test_admin["user"]) as client:
                 resp = await _post_intervention(client, f"test-live-{uuid.uuid4().hex[:8]}")
             assert resp.status_code == 403
+        finally:
+            await pool.execute("UPDATE tenants SET deleted_at = NULL WHERE id = $1", test_tenant["id"])
+
+
+# ── AC16 — PATCH /tenants/{tenant_id}/concurrency (design test plan item 8) ──
+# No test for this route existed anywhere in the suite before this file.
+
+class TestConcurrencyEndpoint:
+    async def test_admin_can_update_own_tenant_concurrency_and_next_poll_reflects_it(
+        self, pool, test_tenant, test_admin,
+    ):
+        session_id = await _insert_call(pool, tenant_slug=test_tenant["slug"])
+        try:
+            _clear_authority_memo()
+            _reset_throttle()
+            async with _client_as(test_admin["user"]) as client:
+                patch_resp = await client.patch(
+                    f"/tenants/{test_tenant['id']}/concurrency", json={"max_concurrent_calls": 4},
+                )
+                assert patch_resp.status_code == 200, patch_resp.text
+                assert patch_resp.json()["max_concurrent_calls"] == 4
+
+                _reset_throttle()
+                poll = await client.get("/live-calls")
+            assert poll.status_code == 200
+            assert poll.json()["kpis"]["utilization_pct"] == 25.0  # 1 / 4 * 100 — proves cache invalidation
+        finally:
+            await _cleanup_call(pool, session_id)
+            await _set_max_concurrent_calls(pool, test_tenant["slug"], None)
+
+    async def test_admin_cannot_update_another_tenants_concurrency(self, pool, test_tenant, test_admin):
+        other_tenant = await _create_tenant(pool)
+        try:
+            async with _client_as(test_admin["user"]) as client:
+                resp = await client.patch(
+                    f"/tenants/{other_tenant['id']}/concurrency", json={"max_concurrent_calls": 5},
+                )
+            assert resp.status_code == 404
+        finally:
+            await _cleanup_tenant(pool, other_tenant)
+
+    async def test_viewer_403s_on_concurrency_patch(self, test_tenant, test_viewer):
+        async with _client_as(test_viewer["user"]) as client:
+            resp = await client.patch(
+                f"/tenants/{test_tenant['id']}/concurrency", json={"max_concurrent_calls": 5},
+            )
+        assert resp.status_code == 403
+
+    async def test_patch_concurrency_on_soft_deleted_tenant_should_404(
+        self, pool, test_tenant, test_superadmin,
+    ):
+        """KNOWN BUG — security finding, left unfixed by decision (medium
+        severity). update_tenant_concurrency's own-tenant check re-reads the
+        ACTOR's row but never checks whether the TARGET tenant is
+        soft-deleted; tenants_service.update_tenant()'s
+        `SELECT * FROM tenants WHERE id=$1 FOR UPDATE` carries no
+        `deleted_at IS NULL` predicate, disagreeing with _resolve_scope's
+        own 403 for exactly this shape elsewhere in this same feature
+        (TestSoftDeletedOwnTenant above). Pins the intended behavior
+        (403/404, never 200) and is expected to FAIL until the implementer
+        adds the predicate — do not weaken this assertion to make it pass."""
+        await tenants_service.soft_delete_tenant(test_tenant["id"])
+        try:
+            async with _client_as(test_superadmin["user"]) as client:
+                resp = await client.patch(
+                    f"/tenants/{test_tenant['id']}/concurrency", json={"max_concurrent_calls": 5},
+                )
+            assert resp.status_code in (403, 404), resp.text
         finally:
             await pool.execute("UPDATE tenants SET deleted_at = NULL WHERE id = $1", test_tenant["id"])
