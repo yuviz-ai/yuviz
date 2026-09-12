@@ -53,6 +53,21 @@ async def list_for_agent(agent_id: Any) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+async def list_for_kb(kb_id: Any) -> list[dict[str, Any]]:
+    pool = await db.get_pool()
+    rows = await pool.fetch(
+        "SELECT akb.agent_id, akb.kb_id, akb.enabled, akb.created_at, "
+        "       a.slug AS agent_slug, a.name AS agent_name, a.tenant_id "
+        "FROM agent_knowledge_bases akb "
+        "JOIN agents a  ON a.id = akb.agent_id  AND a.deleted_at IS NULL "
+        "JOIN tenants t ON t.id = a.tenant_id   AND t.deleted_at IS NULL "
+        "WHERE akb.kb_id = $1 "
+        "ORDER BY a.name",
+        kb_id,
+    )
+    return [dict(row) for row in rows]
+
+
 async def assign(agent_id: Any, kb_id: Any, *, enabled: bool = True) -> dict[str, Any]:
     pool = await db.get_pool()
     row = await pool.fetchrow(

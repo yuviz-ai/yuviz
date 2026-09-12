@@ -58,6 +58,16 @@ async def get_dashboard_stats(
     return await calls_service.get_dashboard_stats(tenant_slug, hours=hours)
 
 
+@tenant_scoped_router.get("/disposition-mix")
+async def get_disposition_mix(
+    tenant_slug: str,
+    hours: int = Query(default=24 * 30, ge=1, le=24 * 365),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    await get_or_404(tenants_service.get_tenant(tenant_slug), f"tenant {tenant_slug!r} not found")
+    return await calls_service.get_disposition_mix(tenant_slug, hours=hours)
+
+
 @tenant_scoped_router.get("/usage-trend")
 async def get_usage_trend(
     tenant_slug: str,

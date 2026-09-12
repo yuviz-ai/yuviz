@@ -92,6 +92,7 @@ export interface KbDocument {
   error: string | null;
   version: number;
   usage_mode: UsageMode;
+  chunk_count: number;
   created_at: string;
   updated_at: string;
 }
@@ -119,6 +120,20 @@ export const updateDocument = (documentId: string, body: DocumentUpdate) =>
   request<KbDocument>(`/documents/${documentId}`, { method: "PATCH", body: JSON.stringify(body) });
 export const deleteDocument = (documentId: string) =>
   request<void>(`/documents/${documentId}`, { method: "DELETE" });
+
+// ── Reverse lookup: which agents use this KB ────────────────────────────
+
+export interface KbAgent {
+  agent_id: string;
+  kb_id: string;
+  enabled: boolean;
+  created_at: string;
+  agent_slug: string;
+  agent_name: string;
+  tenant_id: string;
+}
+
+export const listKbAgents = (kbId: string) => request<KbAgent[]>(`/knowledge-bases/${kbId}/agents`);
 
 // ── Agent ↔ Knowledge Base assignment ───────────────────────────────────
 

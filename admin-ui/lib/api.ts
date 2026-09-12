@@ -616,7 +616,30 @@ export interface DashboardStats {
   success_count: number;
   failed_count: number;
   outbound_count: number;
+  // Headline-tile inputs. All raw numerator/denominator pairs, never
+  // pre-computed rates — see get_dashboard_stats()'s own note: these get
+  // summed across every tenant below, and averaging per-tenant averages
+  // would weigh a 3-call tenant the same as a 30,000-call one.
+  ended_count: number;
+  aht_sample_count: number;
+  aht_duration_ms: number;
+  handoff_count: number;
+  escalated_count: number;
+  prev_total_calls: number;
+  prev_ended_count: number;
+  prev_aht_sample_count: number;
+  prev_aht_duration_ms: number;
+  prev_handoff_count: number;
+  prev_escalated_count: number;
 }
+
+const EMPTY_DASHBOARD_STATS: DashboardStats = {
+  total_calls: 0, total_minutes: 0, live_calls: 0, success_count: 0, failed_count: 0,
+  outbound_count: 0, ended_count: 0, aht_sample_count: 0, aht_duration_ms: 0,
+  handoff_count: 0, escalated_count: 0, prev_total_calls: 0, prev_ended_count: 0,
+  prev_aht_sample_count: 0, prev_aht_duration_ms: 0, prev_handoff_count: 0,
+  prev_escalated_count: 0,
+};
 
 export const getDashboardStats = (tenantSlug: string, hours: number = 24 * 30) =>
   request<DashboardStats>(`/tenants/${tenantSlug}/calls/dashboard-stats?hours=${hours}`);
@@ -631,9 +654,61 @@ export const listAllDashboardStats = async (tenants: Tenant[], hours: number = 2
       success_count: acc.success_count + s.success_count,
       failed_count: acc.failed_count + s.failed_count,
       outbound_count: acc.outbound_count + s.outbound_count,
+      ended_count: acc.ended_count + s.ended_count,
+      aht_sample_count: acc.aht_sample_count + s.aht_sample_count,
+      aht_duration_ms: acc.aht_duration_ms + s.aht_duration_ms,
+      handoff_count: acc.handoff_count + s.handoff_count,
+      escalated_count: acc.escalated_count + s.escalated_count,
+      prev_total_calls: acc.prev_total_calls + s.prev_total_calls,
+      prev_ended_count: acc.prev_ended_count + s.prev_ended_count,
+      prev_aht_sample_count: acc.prev_aht_sample_count + s.prev_aht_sample_count,
+      prev_aht_duration_ms: acc.prev_aht_duration_ms + s.prev_aht_duration_ms,
+      prev_handoff_count: acc.prev_handoff_count + s.prev_handoff_count,
+      prev_escalated_count: acc.prev_escalated_count + s.prev_escalated_count,
     }),
-    { total_calls: 0, total_minutes: 0, live_calls: 0, success_count: 0, failed_count: 0, outbound_count: 0 },
+    { ...EMPTY_DASHBOARD_STATS },
   );
+};
+
+// close_reason is a free-text column, not an enum — the set below is every
+// value the platform actually writes (services/conversation/session.py's
+// close() plus the reconciler), and anything unrecognised falls through to
+// its raw string rather than being bucketed into a misleading "other".
+const DISPOSITION_LABELS: Record<string, string> = {
+  caller_hangup: "Caller hung up",
+  stream_ended: "Stream ended",
+  close_timeout: "Closed on timeout",
+  session_destroyed: "Session destroyed",
+  transport_error: "Transport error",
+  reconciled_inactive: "Reconciled (node went silent)",
+  TRANSFER_SUCCESS: "Transferred to human",
+  TRANSFER_FAILED: "Transfer failed",
+  TRANSFER_TIMEOUT: "Transfer timed out",
+  unknown: "No close reason recorded",
+};
+
+export interface DispositionSlice {
+  close_reason: string;
+  count: number;
+}
+
+export const dispositionLabel = (closeReason: string): string =>
+  DISPOSITION_LABELS[closeReason] ?? closeReason;
+
+export const getDispositionMix = (tenantSlug: string, hours: number = 24 * 30) =>
+  request<DispositionSlice[]>(`/tenants/${tenantSlug}/calls/disposition-mix?hours=${hours}`);
+
+export const listAllDispositionMix = async (
+  tenants: Tenant[], hours: number = 24 * 30,
+): Promise<DispositionSlice[]> => {
+  const perTenant = await Promise.all(tenants.map((t) => getDispositionMix(t.slug, hours)));
+  const byReason = new Map<string, number>();
+  for (const slices of perTenant) {
+    for (const s of slices) byReason.set(s.close_reason, (byReason.get(s.close_reason) || 0) + s.count);
+  }
+  return [...byReason.entries()]
+    .map(([close_reason, count]) => ({ close_reason, count }))
+    .sort((a, b) => b.count - a.count);
 };
 
 export interface UsageTrendPoint {

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncpg
 from fastapi import APIRouter, Depends, HTTPException
 
 from services.config.auth import CurrentUser
-from services.config.deps import get_current_user, require_role
+from services.config.deps import get_current_user, is_platform_scoped, require_role
 
+from .. import agent_kb as agent_kb_service
 from .. import knowledge_bases as kb_service
 from ..schemas import KnowledgeBaseCreate, KnowledgeBaseUpdate
 
@@ -40,6 +42,22 @@ async def get_knowledge_base(kb_id: str, current_user: CurrentUser = Depends(get
     if kb is None:
         raise HTTPException(status_code=404, detail=f"knowledge_base {kb_id!r} not found")
     return kb
+
+
+@router.get("/{kb_id}/agents")
+async def list_knowledge_base_agents(
+    kb_id: str, current_user: CurrentUser = Depends(get_current_user),
+) -> list[dict]:
+    not_found = HTTPException(status_code=404, detail=f"knowledge_base {kb_id!r} not found")
+    try:
+        kb = await kb_service.get_knowledge_base(kb_id)
+    except asyncpg.DataError:
+        # A malformed non-UUID kb_id reaches asyncpg's uuid column binding —
+        # same 404 as a well-formed but nonexistent id (lesson 2).
+        raise not_found
+    if kb is None or (not is_platform_scoped(current_user) and str(kb["tenant_id"]) != current_user.tenant_id):
+        raise not_found
+    return await agent_kb_service.list_for_kb(kb_id)
 
 
 @router.patch("/{kb_id}")

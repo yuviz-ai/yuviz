@@ -257,3 +257,112 @@ async def test_get_todays_activity_buckets_by_hour_and_direction(test_tenant, po
 
     for sid in (inbound_id, outbound_id):
         await pool.execute("DELETE FROM calls WHERE session_id = $1", sid)
+
+
+async def test_get_dashboard_stats_aht_denominator_skips_null_durations(test_tenant, pool):
+    """AHT must divide by calls that REPORTED a duration, not by every ended
+    call — duration_ms is NULL on reconciled/dead-node calls, and counting
+    those in the denominator would drag the average toward zero in exact
+    proportion to how broken duration reporting is."""
+    timed_id, untimed_id = (f"test-call-{uuid.uuid4().hex[:8]}" for _ in range(2))
+    await pool.execute(
+        "INSERT INTO calls (session_id, tenant_id, direction, duration_ms, close_reason, ended_at) "
+        "VALUES ($1, $2, 'inbound', 90000, 'caller_hangup', NOW())",
+        timed_id, test_tenant["slug"],
+    )
+    await pool.execute(
+        "INSERT INTO calls (session_id, tenant_id, direction, close_reason, ended_at) "
+        "VALUES ($1, $2, 'inbound', 'reconciled_inactive', NOW())",
+        untimed_id, test_tenant["slug"],
+    )
+
+    stats = await calls.get_dashboard_stats(test_tenant["slug"], hours=24)
+
+    assert stats["ended_count"] == 2
+    assert stats["aht_sample_count"] == 1       # not 2
+    assert stats["aht_duration_ms"] == 90000
+
+    for sid in (timed_id, untimed_id):
+        await pool.execute("DELETE FROM calls WHERE session_id = $1", sid)
+
+
+async def test_get_dashboard_stats_counts_handoffs_apart_from_escalations(test_tenant, pool):
+    """A handoff is a transfer that REACHED a human (TRANSFER_SUCCESS); an
+    escalation is any attempt. Containment is the complement of the latter,
+    so the two counts must not collapse into one."""
+    ok_id, failed_id, plain_id = (f"test-call-{uuid.uuid4().hex[:8]}" for _ in range(3))
+    for sid, reason in ((ok_id, "TRANSFER_SUCCESS"), (failed_id, "TRANSFER_FAILED"), (plain_id, "caller_hangup")):
+        await pool.execute(
+            "INSERT INTO calls (session_id, tenant_id, direction, duration_ms, close_reason, ended_at) "
+            "VALUES ($1, $2, 'inbound', 30000, $3, NOW())",
+            sid, test_tenant["slug"], reason,
+        )
+
+    stats = await calls.get_dashboard_stats(test_tenant["slug"], hours=24)
+
+    assert stats["ended_count"] == 3
+    assert stats["handoff_count"] == 1       # TRANSFER_SUCCESS only
+    assert stats["escalated_count"] == 2     # both TRANSFER_* rows
+    # Containment is computed by the caller as (ended - escalated) / ended.
+    assert stats["ended_count"] - stats["escalated_count"] == 1
+
+    for sid in (ok_id, failed_id, plain_id):
+        await pool.execute("DELETE FROM calls WHERE session_id = $1", sid)
+
+
+async def test_get_dashboard_stats_prev_window_is_the_preceding_equal_window(test_tenant, pool):
+    """prev_* powers the trend deltas, so it must cover exactly the window
+    immediately before the current one — not all history before it."""
+    recent_id, prev_id, ancient_id = (f"test-call-{uuid.uuid4().hex[:8]}" for _ in range(3))
+    await pool.execute(
+        "INSERT INTO calls (session_id, tenant_id, direction, duration_ms, close_reason, started_at, ended_at) "
+        "VALUES ($1, $2, 'inbound', 10000, 'caller_hangup', NOW() - INTERVAL '2 hours', NOW() - INTERVAL '2 hours')",
+        recent_id, test_tenant["slug"],
+    )
+    await pool.execute(
+        "INSERT INTO calls (session_id, tenant_id, direction, duration_ms, close_reason, started_at, ended_at) "
+        "VALUES ($1, $2, 'inbound', 10000, 'caller_hangup', NOW() - INTERVAL '30 hours', NOW() - INTERVAL '30 hours')",
+        prev_id, test_tenant["slug"],
+    )
+    await pool.execute(
+        "INSERT INTO calls (session_id, tenant_id, direction, duration_ms, close_reason, started_at, ended_at) "
+        "VALUES ($1, $2, 'inbound', 10000, 'caller_hangup', NOW() - INTERVAL '100 hours', NOW() - INTERVAL '100 hours')",
+        ancient_id, test_tenant["slug"],
+    )
+
+    stats = await calls.get_dashboard_stats(test_tenant["slug"], hours=24)
+
+    assert stats["total_calls"] == 1        # only the 2-hour-old row
+    assert stats["prev_total_calls"] == 1   # only the 30-hour-old row, NOT the 100-hour one
+    assert stats["prev_ended_count"] == 1
+
+    for sid in (recent_id, prev_id, ancient_id):
+        await pool.execute("DELETE FROM calls WHERE session_id = $1", sid)
+
+
+async def test_get_disposition_mix_groups_ended_calls_only(test_tenant, pool):
+    """Live calls have no disposition yet, so they must not appear — and the
+    raw close_reason strings come back unlabelled for the UI to map."""
+    a_id, b_id, xfer_id, live_id = (f"test-call-{uuid.uuid4().hex[:8]}" for _ in range(4))
+    for sid in (a_id, b_id):
+        await pool.execute(
+            "INSERT INTO calls (session_id, tenant_id, direction, close_reason, ended_at) "
+            "VALUES ($1, $2, 'inbound', 'caller_hangup', NOW())",
+            sid, test_tenant["slug"],
+        )
+    await pool.execute(
+        "INSERT INTO calls (session_id, tenant_id, direction, close_reason, ended_at) "
+        "VALUES ($1, $2, 'inbound', 'TRANSFER_SUCCESS', NOW())",
+        xfer_id, test_tenant["slug"],
+    )
+    await pool.execute(
+        "INSERT INTO calls (session_id, tenant_id, direction, ended_at) VALUES ($1, $2, 'inbound', NULL)",
+        live_id, test_tenant["slug"],
+    )
+
+    mix = {row["close_reason"]: row["count"] for row in await calls.get_disposition_mix(test_tenant["slug"], hours=24)}
+
+    assert mix == {"caller_hangup": 2, "TRANSFER_SUCCESS": 1}   # live call absent
+
+    for sid in (a_id, b_id, xfer_id, live_id):
+        await pool.execute("DELETE FROM calls WHERE session_id = $1", sid)

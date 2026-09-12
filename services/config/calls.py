@@ -163,7 +163,69 @@ async def get_dashboard_stats(tenant_slug: str, *, hours: int = 24 * 30) -> dict
             ) AS failed_count,
             COUNT(*) FILTER (
                 WHERE started_at >= NOW() - ($2 * INTERVAL '1 hour') AND direction = 'outbound'
-            ) AS outbound_count
+            ) AS outbound_count,
+
+            -- ── Headline-tile aggregates (Containment / AHT / Handoffs) ──
+            -- Every one of these is returned as raw numerator + denominator
+            -- rather than a finished percentage or average, because the
+            -- Dashboard sums them across ALL tenants (listAllDashboardStats)
+            -- and an average of per-tenant averages is not the average — a
+            -- tenant with 3 calls would weigh the same as one with 30,000.
+            COUNT(*) FILTER (
+                WHERE started_at >= NOW() - ($2 * INTERVAL '1 hour') AND ended_at IS NOT NULL
+            ) AS ended_count,
+            -- AHT's denominator is NOT ended_count: duration_ms is NULL on
+            -- calls that ended without the Gateway ever reporting a duration
+            -- (reconciled dead nodes, and every inbound/outbound row in the
+            -- current dev DB). Dividing by ended_count would silently drag
+            -- the average toward zero in exact proportion to how broken
+            -- duration reporting is, which is the opposite of informative.
+            COUNT(*) FILTER (
+                WHERE started_at >= NOW() - ($2 * INTERVAL '1 hour')
+                  AND ended_at IS NOT NULL AND duration_ms IS NOT NULL
+            ) AS aht_sample_count,
+            COALESCE(SUM(duration_ms) FILTER (
+                WHERE started_at >= NOW() - ($2 * INTERVAL '1 hour')
+                  AND ended_at IS NOT NULL AND duration_ms IS NOT NULL
+            ), 0) AS aht_duration_ms,
+            -- A handoff is TRANSFER_SUCCESS only — a human actually took the
+            -- call. TRANSFER_FAILED/TRANSFER_TIMEOUT never reached anyone, so
+            -- counting them here would overstate how much load agents take.
+            COUNT(*) FILTER (
+                WHERE started_at >= NOW() - ($2 * INTERVAL '1 hour')
+                  AND close_reason = 'TRANSFER_SUCCESS'
+            ) AS handoff_count,
+            -- Containment's complement is every ESCALATION ATTEMPT, not just
+            -- the successful ones: a call the AI tried to hand off was not
+            -- resolved without a human, whether or not the transfer landed.
+            COUNT(*) FILTER (
+                WHERE started_at >= NOW() - ($2 * INTERVAL '1 hour')
+                  AND close_reason LIKE 'TRANSFER%'
+            ) AS escalated_count,
+
+            -- ── Same five, one window earlier, for the trend deltas ──
+            -- Compared against the immediately preceding window of equal
+            -- length, so "+8.2%" always means "vs the previous `hours`",
+            -- never an all-time or calendar-period comparison.
+            COUNT(*) FILTER (WHERE started_at >= NOW() - (2 * $2 * INTERVAL '1 hour')
+                               AND started_at <  NOW() - ($2 * INTERVAL '1 hour')) AS prev_total_calls,
+            COUNT(*) FILTER (WHERE started_at >= NOW() - (2 * $2 * INTERVAL '1 hour')
+                               AND started_at <  NOW() - ($2 * INTERVAL '1 hour')
+                               AND ended_at IS NOT NULL) AS prev_ended_count,
+            COUNT(*) FILTER (WHERE started_at >= NOW() - (2 * $2 * INTERVAL '1 hour')
+                               AND started_at <  NOW() - ($2 * INTERVAL '1 hour')
+                               AND ended_at IS NOT NULL AND duration_ms IS NOT NULL) AS prev_aht_sample_count,
+            COALESCE(SUM(duration_ms) FILTER (
+                WHERE started_at >= NOW() - (2 * $2 * INTERVAL '1 hour')
+                  AND started_at <  NOW() - ($2 * INTERVAL '1 hour')
+                  AND ended_at IS NOT NULL AND duration_ms IS NOT NULL
+            ), 0) AS prev_aht_duration_ms,
+            COUNT(*) FILTER (WHERE started_at >= NOW() - (2 * $2 * INTERVAL '1 hour')
+                               AND started_at <  NOW() - ($2 * INTERVAL '1 hour')
+                               AND close_reason = 'TRANSFER_SUCCESS') AS prev_handoff_count,
+            COUNT(*) FILTER (WHERE started_at >= NOW() - (2 * $2 * INTERVAL '1 hour')
+                               AND started_at <  NOW() - ($2 * INTERVAL '1 hour')
+                               AND close_reason LIKE 'TRANSFER%') AS prev_escalated_count
         FROM calls WHERE tenant_id = $1
         """,
         tenant_slug, hours,
@@ -171,6 +233,35 @@ async def get_dashboard_stats(tenant_slug: str, *, hours: int = 24 * 30) -> dict
     d = dict(row)
     d["total_minutes"] = round(d.pop("total_duration_ms") / 60000, 2)
     return d
+
+
+async def get_disposition_mix(tenant_slug: str, *, hours: int = 24 * 30) -> list[dict[str, Any]]:
+    """How ended calls in the window broke down by close_reason.
+
+    Deliberately returns the RAW close_reason strings plus counts and lets the
+    caller label them. This platform records why a *session* closed
+    (caller_hangup, stream_ended, TRANSFER_SUCCESS, reconciled_inactive, …),
+    which is not the same taxonomy as a contact-centre disposition list
+    ("intent captured", "info delivered", "busy / switched off"). There is no
+    business-outcome field anywhere in the schema to derive those from, so
+    inventing them here would produce a chart that looks authoritative and
+    means nothing. Live calls are excluded — a call still in progress has no
+    disposition yet.
+    """
+    pool = await db.get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT COALESCE(close_reason, 'unknown') AS close_reason, COUNT(*) AS count
+        FROM calls
+        WHERE tenant_id = $1
+          AND started_at >= NOW() - ($2 * INTERVAL '1 hour')
+          AND ended_at IS NOT NULL
+        GROUP BY COALESCE(close_reason, 'unknown')
+        ORDER BY count DESC
+        """,
+        tenant_slug, hours,
+    )
+    return [dict(row) for row in rows]
 
 
 async def get_usage_trend(tenant_slug: str, *, days: int = 30) -> list[dict[str, Any]]:
