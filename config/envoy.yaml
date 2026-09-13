@@ -39,10 +39,7 @@ static_resources:
           - lb_endpoints:
               - endpoint:
                   address:
-                    socket_address: { address: 127.0.0.1, port_value: 50051 }
-              - endpoint:
-                  address:
-                    socket_address: { address: 127.0.0.1, port_value: 50052 }
+                    socket_address: { address: 127.0.0.1, port_value: 50053 }
       health_checks:
         - timeout: 2s
           interval: 5s
