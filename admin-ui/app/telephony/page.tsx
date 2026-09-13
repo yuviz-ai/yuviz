@@ -6,14 +6,13 @@ import {
   AvailableNumber,
   Carrier,
   CarrierProvider,
-  PhoneNumber,
+  Tenant,
   createCarrier,
   createPhoneNumber,
   listCarriers,
-  listPhoneNumbers,
+  listTenants,
   purchaseNumber,
   searchAvailableNumbers,
-  updatePhoneNumber,
 } from "@/lib/api";
 import { Modal } from "@/components/Modal";
 
@@ -23,9 +22,18 @@ const PROVIDER_LABEL: Record<CarrierProvider, string> = {
   vonage: "Vonage",
 };
 
-export function SipPanel({ tenantId, agentId }: { tenantId: string; agentId: string }) {
+// Tenant-wide trunk/carrier management, moved out of the per-agent SIP tab
+// (2026-09) — carriers were never actually agent-scoped (createCarrier only
+// ever took a tenantId), so managing them required drilling into one
+// specific agent's settings for a concept that applies to the whole
+// account. Assigning a DID to an agent stays on /phone-numbers, which
+// already does that tenant-wide for both purchased and manually-entered
+// numbers — this page only owns carriers and buying new numbers from them.
+export default function TelephonyPage() {
+  const [tenants, setTenants] = useState<Tenant[]>([]);
+  const [tenantId, setTenantId] = useState("");
+
   const [carriers, setCarriers] = useState<Carrier[]>([]);
-  const [numbers, setNumbers] = useState<PhoneNumber[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -45,29 +53,27 @@ export function SipPanel({ tenantId, agentId }: { tenantId: string; agentId: str
   const [searching, setSearching] = useState(false);
   const [purchasingNumber, setPurchasingNumber] = useState<string | null>(null);
   const [buyError, setBuyError] = useState<string | null>(null);
-
-  const refresh = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const [c, n] = await Promise.all([listCarriers(tenantId), listPhoneNumbers(tenantId)]);
-      setCarriers(c);
-      setNumbers(n);
-    } catch (e) {
-      setError(e instanceof ApiError ? e.detail : String(e));
-    } finally {
-      setLoading(false);
-    }
-  };
+  const [lastPurchased, setLastPurchased] = useState<string | null>(null);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tenantId, agentId]);
+    listTenants().then((ts) => {
+      setTenants(ts);
+      if (ts.length > 0) setTenantId(ts[0].id);
+    });
+  }, []);
 
-  const assignedNumbers = numbers.filter((n) => n.agent_id === agentId);
-  const unassignedNumbers = numbers.filter((n) => !n.agent_id);
+  const refresh = () => {
+    if (!tenantId) return;
+    setLoading(true);
+    setError(null);
+    listCarriers(tenantId)
+      .then(setCarriers)
+      .catch((e) => setError(e instanceof ApiError ? e.detail : String(e)))
+      .finally(() => setLoading(false));
+  };
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(refresh, [tenantId]);
 
   const openAddCarrier = () => {
     setCarrierName("");
@@ -89,7 +95,7 @@ export function SipPanel({ tenantId, agentId }: { tenantId: string; agentId: str
         auth_token_ref: carrierAuthTokenRef || undefined,
       });
       setAddingCarrier(false);
-      await refresh();
+      refresh();
     } catch (e) {
       setCarrierError(e instanceof ApiError ? e.detail : String(e));
     } finally {
@@ -103,6 +109,7 @@ export function SipPanel({ tenantId, agentId }: { tenantId: string; agentId: str
     setBuyAreaCode("");
     setSearchResults(null);
     setBuyError(null);
+    setLastPurchased(null);
     setBuying(true);
   };
 
@@ -133,14 +140,11 @@ export function SipPanel({ tenantId, agentId }: { tenantId: string; agentId: str
       await purchaseNumber(tenantId, { carrier_id: buyCarrierId, phone_number: phoneNumber });
       // Config Service owns DID->agent routing (phone_numbers) — DID Service
       // only owns the carrier purchase itself, per architecture principle #7.
-      await createPhoneNumber(tenantId, {
-        did: phoneNumber,
-        agent_id: agentId,
-        carrier_id: buyCarrierId,
-        status: "active",
-      });
-      setBuying(false);
-      await refresh();
+      // Lands unassigned; assign it to an agent from /phone-numbers, same as
+      // any manually-entered DID.
+      await createPhoneNumber(tenantId, { did: phoneNumber, carrier_id: buyCarrierId, status: "active" });
+      setLastPurchased(phoneNumber);
+      setSearchResults((prev) => prev?.filter((r) => r.phone_number !== phoneNumber) ?? null);
     } catch (e) {
       setBuyError(e instanceof ApiError ? e.detail : String(e));
     } finally {
@@ -148,104 +152,66 @@ export function SipPanel({ tenantId, agentId }: { tenantId: string; agentId: str
     }
   };
 
-  const handleAssignExisting = async (phoneNumberId: string) => {
-    if (!phoneNumberId) return;
-    try {
-      await updatePhoneNumber(phoneNumberId, { agent_id: agentId });
-      await refresh();
-    } catch (e) {
-      setError(e instanceof ApiError ? e.detail : String(e));
-    }
-  };
-
-  const handleUnassign = async (phoneNumberId: string) => {
-    try {
-      await updatePhoneNumber(phoneNumberId, { agent_id: null });
-      await refresh();
-    } catch (e) {
-      setError(e instanceof ApiError ? e.detail : String(e));
-    }
-  };
-
-  if (loading) return <div className="empty-state">Loading…</div>;
-
   return (
-    <div className="cols">
-      <div className="col-main">
-        {error && <div className="error-banner">{error}</div>}
-
-        <div className="card">
-          <div className="card-hdr">
-            <div className="card-title">Trunk Provider</div>
-            <div className="card-sub">carriers this tenant can buy numbers from</div>
-            <button className="btn btn-primary btn-sm" style={{ marginLeft: "auto" }} onClick={openAddCarrier}>
-              + Add Carrier
-            </button>
-          </div>
-
-          {carriers.map((c) => (
-            <div key={c.id} className="kb-row">
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 500 }}>{c.name}</div>
-                <div style={{ fontSize: ".7rem", color: "var(--text-3)" }}>{c.auth_id ?? "no auth_id set"}</div>
-              </div>
-              <span className="badge indigo">{PROVIDER_LABEL[c.provider]}</span>
-            </div>
+    <>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14, gap: 10 }}>
+        <select className="form-select" style={{ width: 240 }} value={tenantId} onChange={(e) => setTenantId(e.target.value)}>
+          {tenants.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name}
+            </option>
           ))}
+        </select>
+      </div>
 
-          {carriers.length === 0 && <div className="empty-state">No carriers configured yet.</div>}
-        </div>
+      {error && <div className="error-banner">{error}</div>}
 
-        <div className="card" style={{ marginTop: 16 }}>
-          <div className="card-hdr">
-            <div className="card-title">Assigned Number</div>
-            <div className="card-sub">which DID routes calls to this agent</div>
-            <button
-              className="btn btn-primary btn-sm"
-              style={{ marginLeft: "auto" }}
-              onClick={openBuy}
-              disabled={carriers.length === 0}
-              title={carriers.length === 0 ? "Add a carrier first" : "Buy a new number"}
-            >
-              + Buy a Number
-            </button>
-          </div>
-
-          {assignedNumbers.map((n) => (
-            <div key={n.id} className="kb-row">
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 500 }}>{n.did}</div>
-                <div style={{ fontSize: ".7rem", color: "var(--text-3)" }}>Registered · {n.status}</div>
-              </div>
-              <span className={`badge ${n.status === "active" ? "green" : n.status === "suspended" ? "red" : "gray"}`}>
-                {n.status}
-              </span>
-              <button className="btn btn-ghost btn-sm" onClick={() => handleUnassign(n.id)}>
-                Unassign
+      <div className="cols">
+        <div className="col-main">
+          <div className="card">
+            <div className="card-hdr">
+              <div className="card-title">Trunk Provider</div>
+              <div className="card-sub">carriers this account can buy numbers from</div>
+              <button className="btn btn-primary btn-sm" style={{ marginLeft: "auto" }} onClick={openAddCarrier} disabled={!tenantId}>
+                + Add Carrier
               </button>
             </div>
-          ))}
 
-          {assignedNumbers.length === 0 && (
-            <>
-              <div className="empty-state">No number assigned to this agent.</div>
-              {unassignedNumbers.length > 0 && (
-                <div className="form-group">
-                  <label className="form-label">Assign an existing unassigned number</label>
-                  <select className="form-input" defaultValue="" onChange={(e) => handleAssignExisting(e.target.value)}>
-                    <option value="" disabled>
-                      Choose a number…
-                    </option>
-                    {unassignedNumbers.map((n) => (
-                      <option key={n.id} value={n.id}>
-                        {n.did}
-                      </option>
-                    ))}
-                  </select>
+            {loading && <div className="empty-state">Loading…</div>}
+
+            {!loading &&
+              carriers.map((c) => (
+                <div key={c.id} className="kb-row">
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 500 }}>{c.name}</div>
+                    <div style={{ fontSize: ".7rem", color: "var(--text-3)" }}>{c.auth_id ?? "no auth_id set"}</div>
+                  </div>
+                  <span className="badge indigo">{PROVIDER_LABEL[c.provider]}</span>
                 </div>
-              )}
-            </>
-          )}
+              ))}
+
+            {!loading && carriers.length === 0 && <div className="empty-state">No carriers configured yet.</div>}
+          </div>
+
+          <div className="card" style={{ marginTop: 16 }}>
+            <div className="card-hdr">
+              <div className="card-title">Buy a Number</div>
+              <div className="card-sub">search and purchase a new DID from a carrier</div>
+              <button
+                className="btn btn-primary btn-sm"
+                style={{ marginLeft: "auto" }}
+                onClick={openBuy}
+                disabled={carriers.length === 0}
+                title={carriers.length === 0 ? "Add a carrier first" : "Buy a new number"}
+              >
+                + Buy a Number
+              </button>
+            </div>
+            <div className="empty-state">
+              Purchased numbers land unassigned — assign them to an agent from{" "}
+              <a href="/phone-numbers">Phone Numbers</a>.
+            </div>
+          </div>
         </div>
       </div>
 
@@ -314,6 +280,11 @@ export function SipPanel({ tenantId, agentId }: { tenantId: string; agentId: str
         }
       >
         {buyError && <div className="error-banner">{buyError}</div>}
+        {lastPurchased && (
+          <div className="empty-state" style={{ color: "var(--green, green)" }}>
+            Purchased {lastPurchased} — unassigned. Assign it to an agent from Phone Numbers.
+          </div>
+        )}
         <div className="form-group">
           <label className="form-label">Carrier</label>
           <select className="form-input" value={buyCarrierId} onChange={(e) => setBuyCarrierId(e.target.value)}>
@@ -359,6 +330,6 @@ export function SipPanel({ tenantId, agentId }: { tenantId: string; agentId: str
           </div>
         )}
       </Modal>
-    </div>
+    </>
   );
 }

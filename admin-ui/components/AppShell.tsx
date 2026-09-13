@@ -56,6 +56,12 @@ const ICONS: Record<string, React.ReactNode> = {
       <path d="M3 2h3l1.5 4-2 1.5a10 10 0 004.5 4.5L11.5 10l4 1.5v3a2 2 0 01-2 2C7.5 16.5 -0.5 8.5 1 3a2 2 0 012-1z" />
     </svg>
   ),
+  telephony: (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <rect x="1.5" y="3" width="13" height="10" rx="1.5" />
+      <path d="M4.5 6.5h2M9.5 6.5h2M4.5 9.5h7" />
+    </svg>
+  ),
   "ai-voice": (
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
       <path d="M8 1.5a2.5 2.5 0 012.5 2.5v4a2.5 2.5 0 01-5 0V4A2.5 2.5 0 018 1.5z" />
@@ -90,6 +96,7 @@ const MANAGEMENT_ITEMS = [
   { href: "/workflows", label: "Agents", icon: "workflows" },
   { href: "/ai-voice", label: "AI & Voice", icon: "ai-voice" },
   { href: "/phone-numbers", label: "Phone Numbers", icon: "phone-numbers" },
+  { href: "/telephony", label: "Telephony", icon: "telephony" },
 ];
 
 // Invite-based onboarding is a superadmin/admin surface only (matches

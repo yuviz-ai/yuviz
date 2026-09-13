@@ -6,13 +6,12 @@ import { useParams, useRouter } from "next/navigation";
 import { Agent, AgentStatus, AgentUpdate, ApiError, deleteAgent, getAgent, listProviders, ProviderConfig, updateAgent, updateProvider } from "@/lib/api";
 import { KnowledgeBasePanel } from "@/components/KnowledgeBasePanel";
 import { ToolsPanel } from "@/components/ToolsPanel";
-import { SipPanel } from "@/components/SipPanel";
 import { TestAgentPanel } from "@/components/TestAgentPanel";
 import { LocalVoicePicker } from "@/components/LocalVoicePicker";
 import { ElevenLabsVoicePicker } from "@/components/ElevenLabsVoicePicker";
 import { LANGUAGES, OTHER, asBrowsableTtsEngine } from "@/lib/engineCatalog";
 
-type Tab = "overview" | "behaviour" | "escalation" | "sip" | "tools" | "knowledge-base";
+type Tab = "overview" | "behaviour" | "escalation" | "tools" | "knowledge-base";
 
 export default function AgentDetailPage() {
   const params = useParams<{ tenantSlug: string; agentSlug: string }>();
@@ -172,9 +171,6 @@ export default function AgentDetailPage() {
         </button>
         <button className={`tab${tab === "escalation" ? " active" : ""}`} onClick={() => setTab("escalation")}>
           Escalation
-        </button>
-        <button className={`tab${tab === "sip" ? " active" : ""}`} onClick={() => setTab("sip")}>
-          SIP
         </button>
         <button className={`tab${tab === "tools" ? " active" : ""}`} onClick={() => setTab("tools")}>
           Tools
@@ -617,8 +613,6 @@ export default function AgentDetailPage() {
           </div>
         </div>
       )}
-
-      {tab === "sip" && <SipPanel tenantId={agent.tenant_id} agentId={agent.id} />}
 
       {tab === "tools" && <ToolsPanel tenantId={agent.tenant_id} agentId={agent.id} />}
 
