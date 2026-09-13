@@ -1,0 +1,1 @@
+How to make our system available for developer or integrator, so that we can purchase sip trunk and connect with our infrastructure and everthing should work end-to-end like inbound and outbound calls ?
