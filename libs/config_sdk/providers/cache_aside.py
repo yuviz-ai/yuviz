@@ -58,9 +58,15 @@ def _parse_extra(value: Any) -> dict[str, Any]:
     # cached JSON and Config Service's REST responses, which both trace back
     # to the same raw row) as a JSON *string*, not a parsed dict — see
     # agent_resolver.py's identical historical handling of this.
+    parsed = _parse_json(value)
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _parse_json(value: Any) -> Any:
+    """JSONB / Redis-cached JSON may arrive as a string or already-parsed."""
     import json
     if value is None:
-        return {}
+        return None
     if isinstance(value, str):
         return json.loads(value)
     return value
@@ -117,6 +123,8 @@ def _agent_from_dict(row: dict[str, Any]) -> Agent:
         farewell_message=row.get("farewell_message"),
         transfer_announcement=row.get("transfer_announcement"),
         max_call_duration_s=row.get("max_call_duration_s"),
+        workflow=_parse_json(row.get("workflow")),
+        workflow_draft=_parse_json(row.get("workflow_draft")),
     )
 
 
@@ -202,6 +210,8 @@ class CacheAsideConfigProvider:
                 transfer_prompt=agent.transfer_prompt,
                 farewell_message=agent.farewell_message,
                 transfer_announcement=agent.transfer_announcement,
+                workflow=agent.workflow,
+                workflow_draft=agent.workflow_draft,
             ),
             media=MediaInfo(
                 voice=providers["tts"].voice,

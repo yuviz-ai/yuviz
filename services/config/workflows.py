@@ -39,6 +39,10 @@ class WorkflowValidationError(Exception):
         super().__init__("workflow is not valid")
 
 
+class StaleDraft(Exception):
+    """Draft PUT lost a race with a publish (config_version moved)."""
+
+
 def _validate_sync(graph: dict[str, Any]) -> list[dict[str, Any]]:
     try:
         parsed = parse_graph(graph)
@@ -116,7 +120,8 @@ async def append_version(
 async def get_workflow(agent_id: Any, tenant_slug: str) -> dict[str, Any]:
     pool = await db.get_pool()
     row = await pool.fetchrow(
-        "SELECT a.workflow, a.workflow_draft FROM agents a JOIN tenants t ON t.id = a.tenant_id "
+        "SELECT a.workflow, a.workflow_draft, a.config_version "
+        "FROM agents a JOIN tenants t ON t.id = a.tenant_id "
         "WHERE a.id = $1 AND t.slug = $2 AND a.deleted_at IS NULL",
         agent_id, tenant_slug,
     )
@@ -127,33 +132,67 @@ async def get_workflow(agent_id: Any, tenant_slug: str) -> dict[str, Any]:
         "workflow": published,
         "workflow_draft": _as_graph(row["workflow_draft"]),
         "published": published is not None,
+        "config_version": row["config_version"],
     }
 
 
 async def save_draft(
-    agent_id: Any, *, tenant_slug: str, graph: dict[str, Any],
+    agent_id: Any,
+    *,
+    tenant_slug: str,
+    graph: dict[str, Any],
+    base_config_version: int | None = None,
 ) -> dict[str, Any]:
-    """Autosave. Last-write-wins; tenant + soft-delete enforced on the UPDATE itself.
+    """Autosave. Optional base_config_version fences publish races (409 StaleDraft).
 
     Draft is not cached on the agent row (GET /agents strips it), so no cache
     invalidation — GET .../workflow always reads Postgres.
     """
     pool = await db.get_pool()
-    status = await pool.execute(
-        """
-        UPDATE agents a
-           SET workflow_draft = $3::jsonb
-          FROM tenants t
-         WHERE a.id = $1
-           AND t.id = a.tenant_id
-           AND t.slug = $2
-           AND a.deleted_at IS NULL
-        """,
-        agent_id, tenant_slug, json.dumps(graph),
-    )
-    if status == "UPDATE 0":
+    if base_config_version is None:
+        row = await pool.fetchrow(
+            """
+            UPDATE agents a
+               SET workflow_draft = $3::jsonb
+              FROM tenants t
+             WHERE a.id = $1
+               AND t.id = a.tenant_id
+               AND t.slug = $2
+               AND a.deleted_at IS NULL
+         RETURNING a.config_version
+            """,
+            agent_id, tenant_slug, json.dumps(graph),
+        )
+    else:
+        row = await pool.fetchrow(
+            """
+            UPDATE agents a
+               SET workflow_draft = $3::jsonb
+              FROM tenants t
+             WHERE a.id = $1
+               AND t.id = a.tenant_id
+               AND t.slug = $2
+               AND a.deleted_at IS NULL
+               AND a.config_version = $4
+         RETURNING a.config_version
+            """,
+            agent_id, tenant_slug, json.dumps(graph), base_config_version,
+        )
+    if row is None:
+        exists = await pool.fetchrow(
+            """
+            SELECT a.config_version FROM agents a
+              JOIN tenants t ON t.id = a.tenant_id
+             WHERE a.id = $1 AND t.slug = $2 AND a.deleted_at IS NULL
+            """,
+            agent_id, tenant_slug,
+        )
+        if exists is None:
+            raise LookupError(f"agent {agent_id} not found under tenant {tenant_slug!r}")
+        if base_config_version is not None:
+            raise StaleDraft()
         raise LookupError(f"agent {agent_id} not found under tenant {tenant_slug!r}")
-    return {"saved": True}
+    return {"saved": True, "config_version": row["config_version"]}
 
 
 async def _peek_draft(agent_id: Any, tenant_slug: str) -> dict[str, Any] | None:
@@ -182,7 +221,8 @@ async def publish(
 
     graph=None publishes workflow_draft (editor Publish button).
     Identical logic to the already-live graph (ignoring RF chrome / order)
-    is a no-op (no version row, no bump).
+    syncs positions onto workflow + workflow_draft without a new version row;
+    config_version still bumps when the stored JSON actually changes.
 
     Also mirrors start.greeting / global.prompt into agents.greeting /
     system_prompt — those columns are what the runtime reads today.
@@ -205,44 +245,53 @@ async def publish(
 
             current = _as_graph(old["workflow"])
             if graphs_equivalent(candidate, current):
+                # Logic matches live, but canvas chrome (positions) may differ.
+                # Write both columns so the editor's position compare clears;
+                # no version row — conversation logic did not change.
+                new_row = await conn.fetchrow(
+                    """
+                    UPDATE agents SET
+                        workflow = $2::jsonb,
+                        workflow_draft = $2::jsonb
+                    WHERE id = $1
+                    RETURNING config_version, slug
+                    """,
+                    agent_id, json.dumps(candidate),
+                )
                 version = await conn.fetchval(
                     "SELECT COALESCE(MAX(version), 0) FROM agent_workflow_versions WHERE agent_id = $1",
                     agent_id,
                 )
-                return {
-                    "version": version,
-                    "config_version": old["config_version"],
-                    "warnings": warnings,
-                }
-
-            payload = json.dumps(candidate)
-            greeting, system_prompt = column_prompts(candidate)
-            new_row = await conn.fetchrow(
-                """
-                UPDATE agents SET
-                    workflow = $2::jsonb,
-                    workflow_draft = $2::jsonb,
-                    greeting = $3,
-                    system_prompt = $4
-                WHERE id = $1
-                RETURNING *
-                """,
-                agent_id, payload, greeting, system_prompt,
-            )
-            version = await append_version(
-                conn, agent_id, payload, user_id=user_id, note=note,
-            )
-            await audit.write_audit(
-                conn,
-                entity_type="agent_workflow",
-                entity_id=agent_id,
-                action="updated",
-                user_id=user_id,
-                user_email=user_email,
-                old_value={"workflow": current},
-                new_value={"workflow": candidate, "version": version},
-            )
-            new = dict(new_row)
+                new = dict(new_row)
+            else:
+                payload = json.dumps(candidate)
+                greeting, system_prompt = column_prompts(candidate)
+                new_row = await conn.fetchrow(
+                    """
+                    UPDATE agents SET
+                        workflow = $2::jsonb,
+                        workflow_draft = $2::jsonb,
+                        greeting = $3,
+                        system_prompt = $4
+                    WHERE id = $1
+                    RETURNING *
+                    """,
+                    agent_id, payload, greeting, system_prompt,
+                )
+                version = await append_version(
+                    conn, agent_id, payload, user_id=user_id, note=note,
+                )
+                await audit.write_audit(
+                    conn,
+                    entity_type="agent_workflow",
+                    entity_id=agent_id,
+                    action="updated",
+                    user_id=user_id,
+                    user_email=user_email,
+                    old_value={"workflow": current},
+                    new_value={"workflow": candidate, "version": version},
+                )
+                new = dict(new_row)
 
     await cache.invalidate(agents_service.cache_key(tenant_slug, new["slug"]))
     return {

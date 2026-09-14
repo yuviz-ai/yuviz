@@ -134,6 +134,8 @@ async def test_runtime_config_uses_tenant_defaults():
     assert rc.providers.tts.engine == "elevenlabs"
     assert rc.conversation.greeting == "Hi there"
     assert rc.conversation.system_prompt == "Be helpful."
+    assert rc.conversation.workflow is None
+    assert rc.conversation.workflow_draft is None
     assert rc.version == 1
 
 

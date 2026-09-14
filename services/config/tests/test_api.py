@@ -202,6 +202,90 @@ class TestTenantEndpoints:
         assert resp.json()["slug"] == test_tenant["slug"]
 
 
+class TestTenantConcurrency:
+    """T16/T17 — PATCH /tenants/{id}/concurrency."""
+
+    async def test_admin_can_patch_own_tenant(self, admin_client, test_tenant):
+        resp = await admin_client.patch(
+            f"/tenants/{test_tenant['id']}/concurrency", json={"max_concurrent_calls": 7},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["max_concurrent_calls"] == 7
+
+    async def test_admin_patching_foreign_tenant_404s(self, admin_client, test_tenant, pool):
+        other = await pool.fetchrow(
+            "INSERT INTO tenants (name, slug) VALUES ($1, $2) RETURNING *",
+            "Foreign", f"test-foreign-{uuid.uuid4().hex[:8]}",
+        )
+        try:
+            resp = await admin_client.patch(
+                f"/tenants/{other['id']}/concurrency", json={"max_concurrent_calls": 3},
+            )
+            assert resp.status_code == 404
+            assert resp.json() == {"detail": f"tenant {str(other['id'])!r} not found"}
+        finally:
+            await pool.execute("DELETE FROM tenants WHERE id = $1", other["id"])
+
+    async def test_superadmin_can_patch_any_tenant(self, client, test_tenant):
+        resp = await client.patch(
+            f"/tenants/{test_tenant['id']}/concurrency", json={"max_concurrent_calls": 9},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["max_concurrent_calls"] == 9
+
+    async def test_viewer_403s(self, viewer_client, test_tenant):
+        resp = await viewer_client.patch(
+            f"/tenants/{test_tenant['id']}/concurrency", json={"max_concurrent_calls": 3},
+        )
+        assert resp.status_code == 403
+
+    async def test_out_of_bounds_value_is_422(self, admin_client, test_tenant):
+        resp = await admin_client.patch(
+            f"/tenants/{test_tenant['id']}/concurrency", json={"max_concurrent_calls": 0},
+        )
+        assert resp.status_code == 422
+
+    async def test_retenanted_admin_is_confined_to_the_fresh_tenant(
+        self, test_tenant, pool,
+    ):
+        # T17's load-bearing regression test for security finding #1 (the
+        # same class as the two highs this whole feature exists to fix):
+        # the token still claims tenant A after the admin's OWN row is
+        # transferred to tenant B — the route must check the FRESH row's
+        # tenant, never the stale claim (lesson 35).
+        other_tenant = await pool.fetchrow(
+            "INSERT INTO tenants (name, slug) VALUES ($1, $2) RETURNING *",
+            "Tenant B", f"test-b-{uuid.uuid4().hex[:8]}",
+        )
+        admin_user = await users_service.create_user(
+            email=f"test-retenanted-admin-{uuid.uuid4().hex[:8]}@example.com",
+            password="test-password-not-real", role="admin", tenant_id=test_tenant["id"],
+        )
+        try:
+            stale_token = auth.create_access_token(admin_user)  # still claims tenant A
+
+            await users_service.update_user(admin_user["id"], tenant_id=other_tenant["id"])
+
+            transport = ASGITransport(app=app)
+            headers = {"Authorization": f"Bearer {stale_token}"}
+            async with AsyncClient(transport=transport, base_url="http://test", headers=headers) as client_:
+                foreign_now = await client_.patch(
+                    f"/tenants/{test_tenant['id']}/concurrency", json={"max_concurrent_calls": 4},
+                )
+                assert foreign_now.status_code == 404
+
+                own_now = await client_.patch(
+                    f"/tenants/{other_tenant['id']}/concurrency", json={"max_concurrent_calls": 4},
+                )
+                assert own_now.status_code == 200, own_now.text
+                assert own_now.json()["max_concurrent_calls"] == 4
+        finally:
+            await pool.execute(
+                "UPDATE users SET deleted_at = now(), tenant_id = NULL WHERE id = $1", admin_user["id"],
+            )
+            await pool.execute("DELETE FROM tenants WHERE id = $1", other_tenant["id"])
+
+
 class TestAgentEndpoints:
     async def test_create_and_get_agent(self, client, test_tenant):
         resp = await client.post(
@@ -211,19 +295,21 @@ class TestAgentEndpoints:
         assert resp.status_code == 201
         created = resp.json()
         assert created["slug"] == "support-agent"
-        assert "workflow" not in created and "workflow_draft" not in created
+        assert "workflow" in created and "workflow_draft" not in created
+        assert isinstance(created["workflow"], dict)
 
         resp = await client.get(f"/tenants/{test_tenant['slug']}/agents/support-agent")
         assert resp.status_code == 200
         body = resp.json()
         assert body["greeting"] == "Hi!"
-        assert "workflow" not in body and "workflow_draft" not in body
+        assert "workflow" in body and "workflow_draft" not in body
         wf = await client.get(f"/tenants/{test_tenant['slug']}/agents/{created['id']}/workflow")
         assert wf.status_code == 200
         graph = wf.json()["workflow"]
         assert isinstance(graph, dict)
         start = next(n for n in graph["nodes"] if n["type"] == "start")
         assert start["data"]["greeting"] == "Hi!"
+        assert body["workflow"] == graph
 
     async def test_creating_the_same_slug_twice_is_409_not_500(self, client, test_tenant):
         body = {"slug": "dupe-agent", "name": "Dupe"}
@@ -986,6 +1072,17 @@ class TestToolProviderConfigEndpoints:
         assert resp.status_code == 201
         assert resp.json()["api_key_ref"].startswith("enc:")
 
+    async def test_create_toolexec_engine_with_no_api_key_ref_succeeds(self, client, test_tenant):
+        # engine='toolexec' is internal infrastructure (services/toolexec/),
+        # not a tenant credential — the Admin UI cannot create the row
+        # agent_tool_policies.tool_provider_config_id requires if this 400s.
+        resp = await client.post(
+            f"/tenants/{test_tenant['id']}/tool-providers",
+            json={"name": "Custom APIs", "tool_name": "execute_api", "engine": "toolexec"},
+        )
+        assert resp.status_code == 201
+        assert resp.json()["api_key_ref"] is None
+
     async def test_create_with_blank_api_key_ref_is_400(self, client, test_tenant):
         resp = await client.post(
             f"/tenants/{test_tenant['id']}/tool-providers",
@@ -1043,6 +1140,47 @@ class TestToolProviderConfigEndpoints:
         assert resp.status_code == 200
         assert resp.json()["api_key_ref"].startswith("enc:")
 
+
+class TestAgentToolPolicyMaxChainDepth:
+    """FIX 1 (c): before this, there was no API path to set
+    agent_tool_policies.max_chain_depth at all — the column existed but
+    nothing could write it, so the per-agent override was dead on
+    arrival regardless of what the executor did with it."""
+
+    async def test_create_and_patch_max_chain_depth(self, client, test_tenant, pool):
+        agent = dict(await pool.fetchrow(
+            "INSERT INTO agents (tenant_id, slug, name) VALUES ($1, 'sup', 'Support') RETURNING *",
+            test_tenant["id"],
+        ))
+        tpc = (await client.post(
+            f"/tenants/{test_tenant['id']}/tool-providers",
+            json={"name": "Custom APIs", "tool_name": "execute_api", "engine": "toolexec"},
+        )).json()
+
+        create = await client.post(
+            f"/agents/{agent['id']}/tool-policies",
+            json={
+                "tool_name": "execute_api", "tool_provider_config_id": tpc["id"],
+                "max_chain_depth": 2,
+            },
+        )
+        assert create.status_code == 201
+        assert create.json()["max_chain_depth"] == 2
+
+        patch = await client.patch(
+            f"/agents/{agent['id']}/tool-policies/execute_api", json={"max_chain_depth": 3},
+        )
+        assert patch.status_code == 200
+        assert patch.json()["max_chain_depth"] == 3
+
+        # Explicitly clearing it back to NULL (use the platform ceiling)
+        # must also work — exclude_unset must not confuse "not sent" with
+        # "sent as null".
+        clear = await client.patch(
+            f"/agents/{agent['id']}/tool-policies/execute_api", json={"max_chain_depth": None},
+        )
+        assert clear.status_code == 200
+        assert clear.json()["max_chain_depth"] is None
 
 
 class TestCarrierEndpoints:
@@ -1194,6 +1332,38 @@ class TestCallEndpoints:
 
         await pool.execute("DELETE FROM transcript_entries WHERE session_id = $1", session_id)
         await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
+
+    async def test_tenant_admin_cannot_read_another_tenants_call(
+        self, admin_client, test_tenant, pool,
+    ):
+        other = await pool.fetchrow(
+            "INSERT INTO tenants (name, slug) VALUES ($1, $2) RETURNING *",
+            "Other Call Tenant", f"test-other-call-{uuid.uuid4().hex[:8]}",
+        )
+        session_id = f"test-call-{uuid.uuid4().hex[:8]}"
+        try:
+            await pool.execute(
+                "INSERT INTO calls (session_id, tenant_id, direction, extracted_variables) "
+                "VALUES ($1, $2, 'inbound', $3::jsonb)",
+                session_id, other["slug"], '{"policy_number": "SECRET"}',
+            )
+            known_other = await admin_client.get(f"/calls/{session_id}")
+            unknown = await admin_client.get("/calls/does-not-exist")
+            assert known_other.status_code == unknown.status_code == 404
+            assert known_other.json() == {"detail": f"call {session_id!r} not found"}
+
+            own_id = f"test-call-{uuid.uuid4().hex[:8]}"
+            await pool.execute(
+                "INSERT INTO calls (session_id, tenant_id, direction) VALUES ($1, $2, 'inbound')",
+                own_id, test_tenant["slug"],
+            )
+            own = await admin_client.get(f"/calls/{own_id}")
+            assert own.status_code == 200
+            assert own.json()["session_id"] == own_id
+            await pool.execute("DELETE FROM calls WHERE session_id = $1", own_id)
+        finally:
+            await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
+            await pool.execute("DELETE FROM tenants WHERE id = $1", other["id"])
 
 
 class TestAuthEndpoints:

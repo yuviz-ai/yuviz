@@ -6,12 +6,14 @@ import { getCurrentUser, User } from "@/lib/api";
 import { clearToken } from "@/lib/auth";
 
 // Landing page for an authenticated user whose role has no Config API
-// surface at all (supervisor/agent — see deps.py's CONSOLE_ROLES). Every
-// admin page 403s for them, so login sends them here instead of dumping
-// them onto /tenants with an error banner and buttons that can never work.
-// Rendered standalone, without the sidebar (AppShell.tsx treats this route
-// like /login and /invite) — there's nothing in the console nav this role
-// can use, so there's nothing to show.
+// surface at all — agent (see deps.py's CONSOLE_ROLES). Every admin page
+// 403s for it, so login sends it here instead of dumping it onto /tenants
+// with an error banner and buttons that can never work. This page is now
+// agent-only — every other non-console role has its own landing page
+// elsewhere (see AppShell.tsx/login/page.tsx). Rendered standalone, without
+// the sidebar (AppShell.tsx treats this route like /login and /invite) —
+// there's nothing in the console nav this role can use, so there's nothing
+// to show.
 export default function NoAccessPage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
@@ -28,9 +30,9 @@ export default function NoAccessPage() {
   };
 
   // Built as one string, not split across JSX text nodes around {user...} —
-  // this is the first (and only) screen a newly invited agent/supervisor
-  // sees, so it says who they're signed in as, that this console is for
-  // administrators, and what to do about it in one pass.
+  // this is the first (and only) screen a newly invited agent sees, so it
+  // says who they're signed in as, that this console is for administrators,
+  // and what to do about it in one pass.
   const message = user
     ? `You're signed in as ${user.email} (role: ${user.role}). This admin console is for superadmin, admin, and viewer accounts only, so there's nothing here for you yet. Sign out below, or ask a superadmin or admin on your team if that seems wrong.`
     : "This admin console is for superadmin, admin, and viewer accounts only. Sign out below, or ask a superadmin or admin on your team if that seems wrong.";

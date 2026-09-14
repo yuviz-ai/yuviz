@@ -65,13 +65,18 @@ export default function LoginPage() {
     try {
       const result = creating ? await bootstrap(email, password) : await login(email, password);
       setToken(result.access_token);
-      // `supervisor`/`agent` have zero Config API surface (deps.py's
-      // CONSOLE_ROLES) — every admin page 403s for them, so they land on
-      // the standalone "not for your role" screen instead. A `viewer` is a
-      // console role but can't create/edit tenants, so /tenants (built
-      // around superadmin/admin actions) isn't a page they can use either —
-      // Dashboard is read-only and works for them.
-      if (!isConsoleRole(result.user.role)) router.push("/no-access");
+      // `agent` has zero Config API surface at all (deps.py's CONSOLE_ROLES)
+      // — every admin page 403s for it, so it lands on the standalone "not
+      // for your role" screen instead. `supervisor` is also outside
+      // CONSOLE_ROLES but DOES hold a grant — LIVE_CALLS_ROLES, exactly
+      // /live-calls and its POST route (services/config/deps.py) — so it
+      // gets its own landing page rather than being lumped in with agent's
+      // dead end (lesson 22: the role must land somewhere it can use). A
+      // `viewer` is a console role but can't create/edit tenants, so
+      // /tenants (built around superadmin/admin actions) isn't a page they
+      // can use either — Dashboard is read-only and works for them.
+      if (result.user.role === "supervisor") router.push("/live-calls");
+      else if (!isConsoleRole(result.user.role)) router.push("/no-access");
       else if (result.user.role === "viewer") router.push("/dashboard");
       else router.push("/tenants");
     } catch (e) {

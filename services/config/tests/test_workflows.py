@@ -213,6 +213,46 @@ async def test_republishing_the_same_graph_is_a_noop(test_tenant, pool):
     assert [v["version"] for v in versions_after] == [v["version"] for v in versions_before]
 
 
+async def test_chrome_only_publish_writes_live_positions(test_tenant, pool):
+    """Position-only publish must update agents.workflow (editor compares positions)."""
+    agent = await _agent(test_tenant, slug="wf-chrome")
+    first = await workflows.publish(agent["id"], tenant_slug=test_tenant["slug"], graph=GRAPH)
+    moved = {
+        **GRAPH,
+        "nodes": [
+            {**n, "position": {"x": n["position"]["x"] + 40, "y": n["position"]["y"] + 10}}
+            for n in GRAPH["nodes"]
+        ],
+    }
+    await workflows.save_draft(agent["id"], tenant_slug=test_tenant["slug"], graph=moved)
+    result = await workflows.publish(
+        agent["id"], tenant_slug=test_tenant["slug"], graph=moved,
+    )
+    # No new history row — logic unchanged — but live JSON and config_version move.
+    assert result["version"] == first["version"]
+    assert result["config_version"] == first["config_version"] + 1
+    state = await workflows.get_workflow(agent["id"], test_tenant["slug"])
+    assert state["workflow"]["nodes"] == moved["nodes"]
+    assert state["workflow_draft"]["nodes"] == moved["nodes"]
+
+
+async def test_draft_save_with_stale_config_version_is_rejected(test_tenant):
+    agent = await _agent(test_tenant, slug="wf-stale")
+    state = await workflows.get_workflow(agent["id"], test_tenant["slug"])
+    base = state["config_version"]
+    await workflows.publish(agent["id"], tenant_slug=test_tenant["slug"], graph=GRAPH)
+    with pytest.raises(workflows.StaleDraft):
+        await workflows.save_draft(
+            agent["id"],
+            tenant_slug=test_tenant["slug"],
+            graph=DEAD_END,
+            base_config_version=base,
+        )
+    after = await workflows.get_workflow(agent["id"], test_tenant["slug"])
+    assert after["workflow_draft"] == GRAPH
+    assert after["config_version"] == base + 1
+
+
 async def test_rollback_to_the_already_live_version_is_a_noop(test_tenant):
     agent = await _agent(test_tenant, slug="wf-rb-noop")
     published = await workflows.publish(
@@ -238,7 +278,7 @@ async def test_empty_workflow_object_at_create_uses_the_starter_graph(test_tenan
     assert [v["version"] for v in versions] == [1]
 
 
-async def test_republishing_with_only_position_changes_is_a_noop(test_tenant, pool):
+async def test_republishing_with_only_position_changes_updates_live_chrome(test_tenant, pool):
     agent = await _agent(test_tenant, slug="wf-pos-noop")
     first = await workflows.publish(
         agent["id"], tenant_slug=test_tenant["slug"], graph=GRAPH,
@@ -254,9 +294,11 @@ async def test_republishing_with_only_position_changes_is_a_noop(test_tenant, po
         agent["id"], tenant_slug=test_tenant["slug"], graph=moved,
     )
     assert again["version"] == first["version"]
-    assert again["config_version"] == first["config_version"]
+    assert again["config_version"] == first["config_version"] + 1
     versions = await workflows.list_versions(agent["id"], test_tenant["slug"])
     assert [v["version"] for v in versions] == [first["version"], 1]
+    state = await workflows.get_workflow(agent["id"], test_tenant["slug"])
+    assert state["workflow"]["nodes"] == moved["nodes"]
 
 
 async def test_get_agent_does_not_expose_or_cache_the_draft(test_tenant):
@@ -267,10 +309,17 @@ async def test_get_agent_does_not_expose_or_cache_the_draft(test_tenant):
     await workflows.save_draft(agent["id"], tenant_slug=test_tenant["slug"], graph=DEAD_END)
     fetched = await agents.get_agent(test_tenant["slug"], "wf-no-draft")
     assert fetched is not None
-    assert "workflow" not in fetched and "workflow_draft" not in fetched
+    # Published graph stays on the agent GET/cache payload for call-setup;
+    # draft is editor-only until draft testing.
+    assert "workflow" in fetched and "workflow_draft" not in fetched
+    assert fetched["workflow"] == CREATED_GRAPH
     listed = await agents.list_agents(test_tenant["id"])
     row = next(a for a in listed if a["id"] == agent["id"])
     assert "workflow" not in row and "workflow_draft" not in row
+    assert row["has_workflow"] is True
+    assert row["has_workflow_draft"] is True
+    assert row["workflow_diverged"] is True
+    assert row["workflow_node_count"] == len(DEAD_END["nodes"])
     state = await workflows.get_workflow(agent["id"], test_tenant["slug"])
     assert state["workflow"] == CREATED_GRAPH
     assert state["workflow_draft"] == DEAD_END
@@ -337,13 +386,25 @@ async def test_starter_graph_sql_matches_python_starter_graph(pool):
     from libs.config_sdk.workflow import graphs_equivalent, starter_graph
 
     row = await pool.fetchval(
+        "SELECT starter_graph_sql($1, $2, $3::jsonb, $4::jsonb)",
+        "Thanks for calling.", "Be helpful.",
+        '["book_appointment"]', '["kb-1"]',
+    )
+    sql_graph = json.loads(row) if isinstance(row, str) else dict(row)
+    expected = starter_graph(
+        "Thanks for calling.", "Be helpful.",
+        ["book_appointment"], ["kb-1"],
+    )
+    assert graphs_equivalent(sql_graph, expected)
+    assert sql_graph == expected
+
+    # 3-arg form still works (knowledge defaults to []).
+    row3 = await pool.fetchval(
         "SELECT starter_graph_sql($1, $2, $3::jsonb)",
         "Thanks for calling.", "Be helpful.", '["book_appointment"]',
     )
-    sql_graph = json.loads(row) if isinstance(row, str) else dict(row)
-    expected = starter_graph("Thanks for calling.", "Be helpful.", ["book_appointment"])
-    assert graphs_equivalent(sql_graph, expected)
-    assert sql_graph == expected
+    sql3 = json.loads(row3) if isinstance(row3, str) else dict(row3)
+    assert sql3 == starter_graph("Thanks for calling.", "Be helpful.", ["book_appointment"])
 
 
 async def test_create_with_a_graph_stores_prompts_from_the_graph_not_the_body(test_tenant):

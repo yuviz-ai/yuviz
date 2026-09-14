@@ -248,6 +248,37 @@ class TranscriptBuilder:
             latency or TurnLatency(),
         ))
 
+    def record_workflow_outcome(
+        self,
+        session_id: str,
+        *,
+        nodes_visited: list[str] | None = None,
+        disposition: str | None = None,
+        extracted_variables: dict | None = None,
+    ) -> None:
+        """Path, disposition, and extracted vars for a workflow call. Spawn before end_call()."""
+        if self._pool is None:
+            return
+        self._spawn(session_id, self._record_workflow_outcome(
+            session_id, nodes_visited, disposition, extracted_variables,
+        ))
+
+    def record_live_stage(self, session_id: str, stage: str) -> None:
+        """Live Calls Monitoring's mid-call stage column (database/
+        schema.sql's calls.live_stage) — 'ai' | 'waiting_for_human' |
+        'human_connected'. Rides the same per-session _spawn() chain as
+        every other write here, which is load-bearing, not incidental: two
+        transfer-hook calls for the same session (session.py's
+        on_transfer_initiated/on_transfer_completed/on_transfer_failed/
+        on_transfer_cancelled) are chained in the order they're CALLED, so
+        even if an earlier call's write is slower to actually land on
+        Postgres, it still completes before the later call's write starts —
+        a later stage can never be overwritten by an earlier one arriving
+        late."""
+        if self._pool is None:
+            return
+        self._spawn(session_id, self._record_live_stage(session_id, stage))
+
     def end_call(self, session_id: str, close_reason: str,
                  final_state: str | None = None) -> None:
         if self._pool is None:
@@ -302,6 +333,33 @@ class TranscriptBuilder:
                 )
         except Exception:
             log.exception("TranscriptBuilder: begin_call failed session=%s", session_id)
+
+    async def _record_workflow_outcome(
+        self, session_id: str, nodes_visited: list[str] | None,
+        disposition: str | None, extracted_variables: dict | None,
+    ) -> None:
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE calls SET nodes_visited = $2::jsonb, disposition = $3, "
+                    "extracted_variables = $4::jsonb WHERE session_id = $1",
+                    session_id,
+                    json.dumps(nodes_visited or []),
+                    disposition,
+                    json.dumps(extracted_variables or {}),
+                )
+        except Exception:
+            log.exception("TranscriptBuilder: record_workflow_outcome failed session=%s", session_id)
+
+    async def _record_live_stage(self, session_id: str, stage: str) -> None:
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE calls SET live_stage = $2 WHERE session_id = $1",
+                    session_id, stage,
+                )
+        except Exception:
+            log.exception("TranscriptBuilder: record_live_stage failed session=%s stage=%s", session_id, stage)
 
     async def _record_turn(
         self,

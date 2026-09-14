@@ -28,6 +28,14 @@ async def create_campaign(
     tenant_id: str, body: CampaignCreate,
     current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
 ):
+    # agent_id is a NOT NULL FK server-side (database/schema.sql) but the
+    # Admin UI's wizard now lets it through blank ("optional for now") — an
+    # empty or foreign-tenant id must fail here with a real 422, not reach
+    # the INSERT and crash with an unhandled asyncpg cast/FK error (which
+    # returns without CORS headers and shows up in the browser as a bare,
+    # misleading "blocked by CORS policy" fetch failure).
+    if not await campaigns_service.agent_exists_for_tenant(tenant_id, body.agent_id):
+        raise HTTPException(status_code=422, detail="agent_id must reference an existing agent for this tenant")
     return await campaigns_service.create_campaign(
         tenant_id, agent_id=body.agent_id, name=body.name, caller_id=body.caller_id,
         max_concurrent_calls=body.max_concurrent_calls, pacing_seconds=body.pacing_seconds,

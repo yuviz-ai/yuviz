@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from libs.config_sdk.workflow import starter_graph
 from libs.config_sdk import (
     Agent,
     ConversationInfo,
@@ -57,7 +58,13 @@ AGENTS_DIR  = _REPO_ROOT / "config" / "agents"
 class AgentConfig:
     name:          str = "Default Assistant"
     greeting:      str = "Hello! How can I help you today?"
-    system_prompt: str = ""   # empty → use PipelineConfig / env-var default
+    system_prompt: str = ""
+    # The conversation graph this fallback agent runs. None means "build one
+    # from greeting/system_prompt above" — this path exists for when the
+    # config plane is unreachable mid-call (see agent_resolver.py), and a
+    # degraded call still has to be a graph-driven one. A YAML file may
+    # supply its own under `workflow:`.
+    workflow:      dict | None = None
     # Matches CallFsmTimerConfig::goodbye_timeout's gateway-side default
     # (config/gateway.yaml has no per-tenant override yet) — keep them in
     # sync unless an agent explicitly overrides this value.
@@ -114,6 +121,7 @@ def load_agent(script_id: str, agents_dir: Path = AGENTS_DIR) -> AgentConfig:
                     name=data.get("name", AgentConfig.name),
                     greeting=data.get("greeting", AgentConfig.greeting),
                     system_prompt=data.get("system_prompt", AgentConfig.system_prompt),
+                    workflow=data.get("workflow"),
                     goodbye_grace_period_ms=_validate_grace_period(
                         data.get("goodbye_grace_period_ms"), path.name,
                     ),
@@ -165,12 +173,14 @@ def to_runtime_config(
         default_stt_config_id=None, default_llm_config_id=None, default_tts_config_id=None,
         config_version=0, updated_at=now,
     )
+    graph = agent.workflow or starter_graph(agent.greeting, agent.system_prompt)
     agent_row = Agent(
         id="", slug=script_id, tenant_id="", name=agent.name,
         greeting=agent.greeting, system_prompt=agent.system_prompt,
         goodbye_grace_ms=agent.goodbye_grace_period_ms,
         stt_config_id=None, llm_config_id=None, tts_config_id=None,
         status="active", config_version=0, updated_at=now,
+        workflow=graph,
     )
     # Descriptive only — never resolved via ProviderRegistry for this path,
     # see docstring above. engine=type name is the closest honest label
@@ -184,7 +194,10 @@ def to_runtime_config(
         tenant=tenant,
         agent=agent_row,
         providers=placeholder_providers,
-        conversation=ConversationInfo(greeting=agent.greeting, system_prompt=agent.system_prompt),
+        conversation=ConversationInfo(
+            greeting=agent.greeting, system_prompt=agent.system_prompt,
+            workflow=graph, workflow_draft=graph,
+        ),
         # legacy YAML path has no prompt-override columns — defaults apply
         media=MediaInfo(voice=None, language=None),
         policies=Policies(

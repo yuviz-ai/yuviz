@@ -1,37 +1,54 @@
-:root {
-  --bg: #07090f; --sidebar: #0b0f19; --surf: #0f1623; --surf-2: #141e30; --surf-3: #1a2540;
-  --border: #1a2640; --border-2: #223050;
-  --cyan: #0ea5e9; --cyan-dim: rgba(14, 165, 233, .12); --cyan-dim2: rgba(14, 165, 233, .06);
-  --indigo: #818cf8; --indigo-dim: rgba(129, 140, 248, .12);
-  --green: #22c55e; --green-dim: rgba(34, 197, 94, .12);
-  --amber: #f59e0b; --amber-dim: rgba(245, 158, 11, .12);
-  --red: #ef4444; --red-dim: rgba(239, 68, 68, .12);
-  --text: #dde6f0; --text-2: #8898b8; --text-3: #5c6f8f;
-  --font: system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --mono: ui-monospace, 'SF Mono', monospace;
-  --r: 10px; --rs: 6px; --sidebar-w: 224px;
-  color-scheme: dark;
-}
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap');
 
-:root[data-theme="light"] {
-  --bg: #f4f5f7; --sidebar: #ffffff; --surf: #ffffff; --surf-2: #f4f5f7; --surf-3: #ebedf1;
-  --border: #e6e8ec; --border-2: #dcdfe4;
-  --cyan-dim: rgba(14, 165, 233, .1); --cyan-dim2: rgba(14, 165, 233, .06);
-  --indigo-dim: rgba(129, 140, 248, .12); --green-dim: rgba(34, 197, 94, .12);
-  --amber-dim: rgba(245, 158, 11, .12); --red-dim: rgba(239, 68, 68, .1);
-  --text: #16181d; --text-2: #6b7280; --text-3: #9aa1ac;
+:root {
+  /* Light canvas + dark sidebar (console-redesign tokens.md). Sidebar is a
+     structural surface, not a theme-following one — it stays --sidebar-dark
+     in both themes; only --sidebar-text/--sidebar-text-dim vary with it. */
+  --bg: #faf7f0; --sidebar: #17201e; --surf: #ffffff; --surf-2: #f7f4ed; --surf-3: #ede9e0;
+  --border: #e4dfd4; --border-2: #ede9e0;
+  --cyan: #0b5f5a; --cyan-dim: #e6efed; --cyan-dim2: #e6efed;
+  --indigo: #818cf8; --indigo-dim: rgba(129, 140, 248, .12);
+  --green: #1b7a43; --green-dim: #f0f6f1;
+  --amber: #7a5b08; --amber-dim: #fdf9f0;
+  --red: #b3341f; --red-dim: #fdf3f0; --red-dim-2: #fae1dc;
+  --text: #17201e; --text-2: #5c645f; --text-3: #636c67;
+  --sidebar-text: #e9e5dc; --sidebar-text-dim: #7e8a85; --sidebar-active-bg: #0b5f5a;
+  --cyan-border: #cfe3df; --green-border: #cfe3d4; --amber-border: #efe3c9; --red-border: #efd3c9;
+  --font: 'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mono: 'Geist Mono', ui-monospace, 'SF Mono', monospace;
+  --r: 12px; --rs: 8px; --sidebar-w: 224px;
   color-scheme: light;
 }
 
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) {
-    --bg: #f4f5f7; --sidebar: #ffffff; --surf: #ffffff; --surf-2: #f4f5f7; --surf-3: #ebedf1;
-    --border: #e6e8ec; --border-2: #dcdfe4;
-    --cyan-dim: rgba(14, 165, 233, .1); --cyan-dim2: rgba(14, 165, 233, .06);
-    --indigo-dim: rgba(129, 140, 248, .12); --green-dim: rgba(34, 197, 94, .12);
-    --amber-dim: rgba(245, 158, 11, .12); --red-dim: rgba(239, 68, 68, .1);
-    --text: #16181d; --text-2: #6b7280; --text-3: #9aa1ac;
-    color-scheme: light;
+/* Same hues, shifted only in lightness — the mockup itself has no dark
+   mode, but the toggle is real product surface (AppShell's theme-toggle
+   button), so it stays wired to a genuine dark variant rather than being
+   silently dropped. */
+:root[data-theme="dark"] {
+  --bg: #10221f; --surf: #172422; --surf-2: #1d2b28; --surf-3: #24342f;
+  --border: #2a3a35; --border-2: #33453f;
+  --cyan: #4fb3ac; --cyan-dim: rgba(79, 179, 172, .16); --cyan-dim2: rgba(79, 179, 172, .08);
+  --indigo-dim: rgba(129, 140, 248, .12);
+  --green: #4fbd7d; --green-dim: rgba(79, 189, 125, .14);
+  --amber: #d7b164; --amber-dim: rgba(215, 177, 100, .14);
+  --red: #e0685a; --red-dim: rgba(224, 104, 90, .14); --red-dim-2: rgba(224, 104, 90, .24);
+  --text: #e9e5dc; --text-2: #a9b0ab; --text-3: #7e8a85;
+  --cyan-border: rgba(79, 179, 172, .35); --green-border: rgba(79, 189, 125, .35);
+  --amber-border: rgba(215, 177, 100, .35); --red-border: rgba(224, 104, 90, .35);
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #10221f; --surf: #172422; --surf-2: #1d2b28; --surf-3: #24342f;
+    --border: #2a3a35; --border-2: #33453f;
+    --cyan: #4fb3ac; --cyan-dim: rgba(79, 179, 172, .16); --cyan-dim2: rgba(79, 179, 172, .08);
+    --indigo-dim: rgba(129, 140, 248, .12);
+    --green: #4fbd7d; --green-dim: rgba(79, 189, 125, .14);
+    --amber: #d7b164; --amber-dim: rgba(215, 177, 100, .14);
+    --red: #e0685a; --red-dim: rgba(224, 104, 90, .14); --red-dim-2: rgba(224, 104, 90, .24);
+    --text: #e9e5dc; --text-2: #a9b0ab; --text-3: #7e8a85;
+    color-scheme: dark;
   }
 }
 
@@ -58,21 +75,32 @@ body {
 .sidebar {
   width: var(--sidebar-w); min-height: 100vh; background: var(--sidebar);
   border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0;
-  transition: width .15s ease;
+  transition: width .15s ease; color: var(--sidebar-text);
 }
-.logo { padding: 18px 16px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
+.logo { padding: 18px 16px 16px; border-bottom: 1px solid rgba(233, 229, 220, .1); display: flex; align-items: center; gap: 10px; }
 .logo-icon {
-  width: 32px; height: 32px; background: var(--cyan-dim); border: 1px solid rgba(14, 165, 233, .3);
-  border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; color: var(--cyan);
+  width: 32px; height: 32px; background: var(--sidebar-active-bg); border: 1px solid var(--sidebar-active-bg);
+  border-radius: 8px; display: flex; align-items: flex-end; justify-content: center; gap: 2px;
+  flex-shrink: 0; padding-bottom: 8px;
 }
-.logo-text { font-size: 1rem; font-weight: 700; letter-spacing: -.02em; flex: 1; }
-.logo-text span { color: var(--cyan); }
+.logo-bar {
+  width: 2.5px; height: 13px; background: #7fd8c9; border-radius: 2px;
+  animation: logo-bars 1.1s ease-in-out infinite;
+}
+.logo-bar:nth-child(2) { animation-delay: .18s; }
+.logo-bar:nth-child(3) { animation-delay: .36s; }
+@keyframes logo-bars { 0%, 100% { transform: scaleY(.3); } 50% { transform: scaleY(1); } }
+@media (prefers-reduced-motion: reduce) {
+  .logo-bar { animation: none; transform: scaleY(.75); }
+}
+.logo-text { font-size: 1rem; font-weight: 700; letter-spacing: -.02em; flex: 1; color: var(--sidebar-text); }
+.logo-text span { color: #6bbdb6; }
 .sidebar-collapse-btn {
-  background: none; border: 1px solid var(--border-2); color: var(--text-3);
+  background: none; border: 1px solid rgba(233, 229, 220, .16); color: var(--sidebar-text-dim);
   width: 22px; height: 22px; border-radius: 5px; display: flex; align-items: center;
   justify-content: center; cursor: pointer; flex-shrink: 0;
 }
-.sidebar-collapse-btn:hover { color: var(--text); border-color: var(--cyan); }
+.sidebar-collapse-btn:hover { color: var(--sidebar-text); border-color: #6bbdb6; }
 .sidebar-collapse-btn svg { transition: transform .15s ease; }
 
 .sidebar.collapsed { width: 56px; }
@@ -86,38 +114,73 @@ body {
 .sidebar.collapsed .sidebar-user { justify-content: center; }
 .sidebar.collapsed .sidebar-collapse-btn svg { transform: rotate(180deg); }
 
-.sidebar-search { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.sidebar-search { padding: 10px 12px; border-bottom: 1px solid rgba(233, 229, 220, .1); }
 .sidebar-search input {
-  width: 100%; padding: 7px 10px; background: var(--surf-2); border: 1px solid var(--border-2);
-  border-radius: var(--rs); color: var(--text); font-family: var(--font); font-size: .76rem; outline: none;
+  width: 100%; padding: 7px 10px; background: rgba(233, 229, 220, .06); border: 1px solid rgba(233, 229, 220, .16);
+  border-radius: var(--rs); color: var(--sidebar-text); font-family: var(--font); font-size: .76rem; outline: none;
 }
-.sidebar-search input:focus { border-color: var(--cyan); }
-.sidebar-search input::placeholder { color: var(--text-3); }
+.sidebar-search input:focus { border-color: #6bbdb6; }
+.sidebar-search input::placeholder { color: var(--sidebar-text-dim); }
 
 .nav { padding: 8px; flex: 1; overflow-y: auto; }
-.nav-section { font-size: .6rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--text-3); padding: 12px 10px 4px; }
+.nav-section { font-size: .6rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--sidebar-text-dim); padding: 12px 10px 4px; }
 .nav-item {
   display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: var(--rs);
-  cursor: pointer; margin-bottom: 2px; color: var(--text-2); font-size: .81rem;
-  transition: background .15s, color .15s; border-left: 2px solid transparent; text-decoration: none;
+  cursor: pointer; margin-bottom: 2px; color: var(--sidebar-text-dim); font-size: .81rem;
+  transition: background .15s, color .15s; text-decoration: none;
 }
-.nav-item:hover { background: var(--surf-2); color: var(--text); }
-.nav-item.active { background: var(--cyan-dim2); color: var(--cyan); border-left-color: var(--cyan); }
+.nav-item:hover { background: rgba(233, 229, 220, .07); color: var(--sidebar-text); }
+.nav-item.active { background: var(--sidebar-active-bg); color: #fff; }
 .nav-item svg { width: 15px; height: 15px; flex-shrink: 0; opacity: .7; }
 .nav-item.active svg { opacity: 1; }
 
-.sidebar-user { padding: 11px 12px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 9px; }
+.sidebar-user { padding: 11px 12px; border-top: 1px solid rgba(233, 229, 220, .1); display: flex; align-items: center; gap: 9px; }
 .user-avatar {
-  width: 30px; height: 30px; border-radius: 50%; background: var(--cyan-dim); border: 1px solid rgba(14, 165, 233, .3);
-  display: flex; align-items: center; justify-content: center; font-size: .72rem; font-weight: 700; color: var(--cyan); flex-shrink: 0;
+  width: 30px; height: 30px; border-radius: 50%; background: var(--sidebar-active-bg); border: 1px solid var(--sidebar-active-bg);
+  display: flex; align-items: center; justify-content: center; font-size: .72rem; font-weight: 700; color: #fff; flex-shrink: 0;
 }
-.user-name { font-size: .78rem; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.user-role { font-size: .66rem; color: var(--text-3); }
+.user-name { font-size: .78rem; font-weight: 600; color: var(--sidebar-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.user-role { font-size: .66rem; color: var(--sidebar-text-dim); }
 
 .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-.topbar { height: 50px; padding: 0 22px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; background: var(--sidebar); flex-shrink: 0; }
+.topbar { height: 50px; padding: 0 22px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; background: var(--surf); flex-shrink: 0; }
 .topbar-title { font-size: .88rem; font-weight: 600; color: var(--text); }
 .topbar-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.topbar-divider { width: 1px; height: 22px; background: var(--border); flex-shrink: 0; }
+
+.tenant-switch { position: relative; flex-shrink: 0; }
+.tenant-switch-btn {
+  display: flex; align-items: center; gap: 8px; background: var(--surf); border: 1px solid var(--border);
+  border-radius: var(--rs); padding: 5px 9px 5px 7px; color: var(--text); cursor: pointer; font-family: var(--font);
+  transition: border-color .14s ease;
+}
+.tenant-switch-btn:hover { border-color: var(--cyan); }
+.tenant-switch-mark {
+  width: 22px; height: 22px; border-radius: 6px; background: var(--cyan-dim); color: var(--cyan);
+  font-size: .7rem; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.tenant-switch-label { text-align: left; line-height: 1.25; }
+.tenant-switch-name { display: block; font-size: .76rem; font-weight: 600; color: var(--text); }
+.tenant-switch-id { display: block; font-family: var(--mono); font-size: .62rem; color: var(--text-3); }
+.tenant-switch-caret { font-size: .6rem; color: var(--text-3); }
+.tenant-switch-menu {
+  position: absolute; top: 100%; left: 0; margin-top: 6px; z-index: 30; width: 260px;
+  background: var(--surf); border: 1px solid var(--border); border-radius: var(--rs);
+  box-shadow: 0 18px 44px rgba(23, 32, 30, .14); padding: 6px; max-height: 320px; overflow-y: auto;
+}
+.tenant-switch-menu-label {
+  font-size: .62rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--text-3);
+  padding: 6px 8px 8px;
+}
+.tenant-switch-row {
+  display: flex; align-items: center; gap: 9px; width: 100%; background: none; border: none;
+  border-radius: var(--rs); padding: 7px 8px; text-align: left; cursor: pointer; font-family: var(--font);
+}
+.tenant-switch-row:hover { background: var(--surf-2); }
+.tenant-switch-row.active { background: var(--cyan-dim); }
+.tenant-switch-row-name { flex: 1; min-width: 0; font-size: .8rem; font-weight: 500; color: var(--text); }
+.tenant-switch-row-meta { font-size: .68rem; color: var(--text-3); font-family: var(--mono); }
+.tenant-switch-check { color: var(--cyan); font-size: .8rem; flex-shrink: 0; }
 .content { flex: 1; overflow-y: auto; padding: 22px; }
 
 .theme-toggle {
@@ -134,15 +197,20 @@ body {
   font-family: var(--font);
 }
 .btn-primary { background: var(--cyan); color: #fff; }
-.btn-primary:hover { background: #38bdf8; }
+.btn-primary:hover { background: #08423e; }
 .btn-ghost { background: transparent; color: var(--text-2); border-color: var(--border-2); }
 .btn-ghost:hover { background: var(--surf-2); color: var(--text); }
 .btn-sm { padding: 4px 10px; font-size: .71rem; }
-.btn-danger { background: var(--red-dim); color: var(--red); border-color: rgba(239, 68, 68, .3); }
-.btn-danger:hover { background: rgba(239, 68, 68, .2); }
+.btn-danger { background: var(--red-dim); color: var(--red); border-color: var(--red-border); }
+.btn-danger:hover { background: var(--red-dim-2); }
 .btn:disabled { opacity: .4; cursor: not-allowed; }
 
 /* ═══ Cards / tables ═══ */
+.users-layout { display: grid; grid-template-columns: 1.6fr 1fr; gap: 14px; align-items: start; }
+@media (max-width: 900px) { .users-layout { grid-template-columns: 1fr; } }
+.tbl-matrix-cell { text-align: center; color: var(--text-2); }
+.tbl-matrix td:first-child { color: var(--text); }
+
 .card { background: var(--surf); border: 1px solid var(--border); border-radius: var(--r); }
 .card-hdr { padding: 12px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
 .card-title { font-size: .8rem; font-weight: 600; color: var(--text); }
@@ -151,28 +219,29 @@ body {
 
 .tbl { width: 100%; border-collapse: collapse; font-size: .78rem; }
 .tbl th {
-  font-size: .63rem; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--text-3);
-  padding: 9px 13px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap;
+  font-size: .656rem; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; color: var(--text-2);
+  padding: 11px 13px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap;
+  background: var(--surf-2);
 }
-.tbl td { padding: 10px 13px; border-bottom: 1px solid var(--border); color: var(--text-2); vertical-align: middle; }
+.tbl td { padding: 10px 13px; border-bottom: 1px solid var(--border-2); color: var(--text-2); vertical-align: middle; }
 .tbl tr:last-child td { border-bottom: none; }
-.tbl tbody tr:hover td { background: var(--surf-2); cursor: pointer; }
+.tbl tbody tr:hover td { background: #fcfaf6; cursor: pointer; }
 .tbl td.bold { color: var(--text); font-weight: 500; }
 .tbl td.mono { font-family: var(--mono); font-size: .71rem; color: var(--text-3); }
 
-.badge { display: inline-flex; align-items: center; gap: 4px; font-size: .65rem; font-weight: 700; padding: 2px 7px; border-radius: 20px; white-space: nowrap; }
-.badge.green { background: var(--green-dim); color: var(--green); }
-.badge.amber { background: var(--amber-dim); color: var(--amber); }
-.badge.red { background: var(--red-dim); color: var(--red); }
-.badge.gray { background: var(--surf-3); color: var(--text-3); }
-.badge.indigo { background: var(--indigo-dim); color: var(--indigo); }
+.badge { display: inline-flex; align-items: center; gap: 4px; font-size: .68rem; font-weight: 500; padding: 2px 8px; border-radius: 6px; border: 1px solid transparent; white-space: nowrap; }
+.badge.green { background: var(--green-dim); color: var(--green); border-color: var(--green-border); }
+.badge.amber { background: var(--amber-dim); color: var(--amber); border-color: var(--amber-border); }
+.badge.red { background: var(--red-dim); color: var(--red); border-color: var(--red-border); }
+.badge.gray { background: var(--surf-3); color: var(--text-3); border-color: var(--border-2); }
+.badge.indigo { background: var(--indigo-dim); color: var(--indigo); border-color: rgba(129, 140, 248, .3); }
 /* Referenced by the Calls page's inbound direction badge and the campaigns
    status badge since before this rule existed — without it those rendered
    with no background at all while every other badge had one. */
-.badge.cyan { background: var(--cyan-dim); color: var(--cyan); }
+.badge.cyan { background: var(--cyan-dim); color: var(--cyan); border-color: var(--cyan-border); }
 
 .env-chip { font-size: .6rem; font-weight: 700; padding: 1px 6px; border-radius: 3px; border: 1px solid transparent; }
-.env-chip.prod { background: var(--green-dim); color: var(--green); border-color: rgba(34, 197, 94, .25); }
+.env-chip.prod { background: var(--green-dim); color: var(--green); border-color: var(--green-border); }
 .env-chip.dev, .env-chip.staging { background: var(--surf-3); color: var(--text-3); border-color: var(--border); }
 
 /* Status <select> is colored by its OWN current value — the selected
@@ -180,9 +249,9 @@ body {
    needing a separate badge next to it (which read as a redundant second
    control — see project memory 2026-07-13). */
 .status-select { font-weight: 700; border-width: 1px; }
-.status-select.active { background: var(--green-dim); color: var(--green); border-color: rgba(34, 197, 94, .35); }
+.status-select.active { background: var(--green-dim); color: var(--green); border-color: var(--green-border); }
 .status-select.inactive { background: var(--surf-3); color: var(--text-3); border-color: var(--border-2); }
-.status-select.suspended { background: var(--red-dim); color: var(--red); border-color: rgba(239, 68, 68, .35); }
+.status-select.suspended { background: var(--red-dim); color: var(--red); border-color: var(--red-border); }
 
 /* ═══ Forms ═══ */
 .form-group { margin-bottom: 14px; }
@@ -226,7 +295,7 @@ body {
   align-items: center; justify-content: center;
 }
 .modal-overlay.open { display: flex; }
-.modal { background: var(--surf); border: 1px solid var(--border); border-radius: 12px; width: 580px; max-width: 90vw; max-height: 85vh; overflow-y: auto; }
+.modal { background: var(--surf); border: 1px solid var(--border); border-radius: 14px; width: 580px; max-width: 90vw; max-height: 85vh; overflow-y: auto; box-shadow: 0 30px 80px rgba(23, 32, 30, .26); }
 .modal-hdr { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; position: sticky; top: 0; background: var(--surf); }
 .modal-title { font-size: .92rem; font-weight: 700; color: var(--text); }
 .modal-close { margin-left: auto; background: none; border: none; color: var(--text-3); cursor: pointer; font-size: 1.1rem; padding: 4px; border-radius: 4px; }
@@ -236,9 +305,17 @@ body {
 
 .empty-state { padding: 40px 20px; text-align: center; color: var(--text-3); font-size: .8rem; }
 .error-banner {
-  background: var(--red-dim); border: 1px solid rgba(239, 68, 68, .3); color: var(--red);
+  background: var(--red-dim); border: 1px solid var(--red-border); color: var(--red);
   border-radius: var(--rs); padding: 8px 12px; font-size: .76rem; margin-bottom: 14px;
 }
+/* Same shape as .error-banner, but for something the operator needs to know
+   rather than something that went wrong. */
+.info-banner {
+  background: var(--cyan-dim); border: 1px solid var(--cyan-border); color: var(--text-2);
+  border-radius: var(--rs); padding: 9px 12px; font-size: .74rem; margin-bottom: 14px;
+  line-height: 1.5;
+}
+.info-banner strong { color: var(--cyan); font-weight: 600; }
 
 /* ═══ Login screen ═══ */
 .login-screen { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; position: relative; background: var(--bg); }
@@ -246,7 +323,7 @@ body {
 .login-card { width: 380px; max-width: 100%; }
 .login-logo { display: flex; align-items: center; gap: 10px; justify-content: center; margin-bottom: 32px; }
 .login-logo-icon {
-  width: 38px; height: 38px; background: var(--cyan-dim); border: 1px solid rgba(14, 165, 233, .3);
+  width: 38px; height: 38px; background: var(--cyan-dim); border: 1px solid var(--cyan-border);
   border-radius: 10px; display: flex; align-items: center; justify-content: center; color: var(--cyan);
 }
 .login-logo-text { font-size: 1.2rem; font-weight: 700; letter-spacing: -.02em; }
@@ -281,7 +358,7 @@ body {
   width: 100%; padding: 10px; background: var(--cyan); color: #fff; border: none; border-radius: var(--rs);
   font-size: .85rem; font-weight: 700; cursor: pointer; margin-top: 6px;
 }
-.login-btn:hover { background: #38bdf8; }
+.login-btn:hover { background: #08423e; }
 .login-btn:disabled { opacity: .6; cursor: not-allowed; }
 
 /* ── Knowledge Base tab — range slider (minimum_score) + toggle switch ──── */
@@ -343,3 +420,347 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .test-agent-orb.active, .test-agent-orb.speaking { animation: none; }
 }
+
+/* ═══ Workflow editor (docs/workflow.md Part 6) ═══════════════════════════
+   React Flow ships its own canvas/edge styling; everything here is the
+   node cards, the toolbar, the problem list and the inspector column
+   around it. */
+.wf-root { display: flex; flex-direction: column; }
+
+.wf-help {
+  display: flex; align-items: flex-start; gap: 14px; margin-bottom: 12px; padding: 12px 14px;
+  background: var(--cyan-dim2); border: 1px solid var(--cyan-border); border-radius: var(--r);
+  font-size: .78rem; line-height: 1.6; color: var(--text-2);
+}
+.wf-help strong { color: var(--text); }
+.wf-help .btn { flex-shrink: 0; }
+
+.wf-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.wf-toolbar-right { margin-left: auto; display: flex; gap: 8px; }
+.wf-save-state { font-size: .7rem; color: var(--text-3); min-width: 82px; }
+
+.wf-menu-wrap { position: relative; }
+.wf-menu-scrim { position: fixed; inset: 0; z-index: 19; }
+.wf-menu {
+  position: absolute; top: 100%; left: 0; margin-top: 4px; z-index: 20;
+  background: var(--surf); border: 1px solid var(--border); border-radius: var(--rs);
+  display: flex; flex-direction: column; min-width: 230px; overflow: hidden;
+  box-shadow: 0 18px 44px rgba(23, 32, 30, .14);
+}
+/* Right-aligned when the trigger sits at the right edge of the toolbar. */
+.wf-menu-right { left: auto; right: 0; }
+.wf-menu button, .wf-menu a {
+  display: flex; flex-direction: column; gap: 1px; text-align: left; padding: 9px 12px;
+  background: none; border: none; color: var(--text); font-family: var(--font);
+  font-size: .78rem; cursor: pointer; text-decoration: none;
+}
+.wf-menu small { color: var(--text-3); font-size: .68rem; }
+.wf-menu button:hover, .wf-menu a:hover { background: var(--surf-2); }
+.wf-menu button:disabled { opacity: .5; cursor: default; }
+
+.wf-layout { display: flex; gap: 14px; align-items: stretch; }
+.wf-canvas {
+  flex: 1; min-width: 0; height: min(68vh, 720px); min-height: 460px; background: var(--surf);
+  border: 1px solid var(--border); border-radius: var(--r); overflow: hidden;
+}
+
+.wf-inspector {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: 14px; background: var(--surf); border: 1px solid var(--border); border-radius: var(--r);
+}
+.wf-inspector-hdr { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+.wf-inspector-title {
+  font-size: .85rem; font-weight: 700; color: var(--text); text-transform: uppercase;
+  letter-spacing: .03em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wf-inspector-empty { color: var(--text-3); font-size: .78rem; line-height: 1.7; padding: 8px 2px; }
+.wf-inspector-empty-title { font-weight: 700; color: var(--text-2); margin-bottom: 6px; }
+.wf-inspector-empty ul { margin: 10px 0 0; padding-left: 18px; }
+.wf-inspector-empty li { margin-bottom: 5px; }
+
+.wf-check { display: flex; align-items: center; gap: 7px; font-size: .76rem; color: var(--text-2); padding: 3px 0; }
+.wf-inline { display: flex; align-items: center; gap: 8px; }
+.wf-inline .form-input { width: 110px; }
+.wf-extraction { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px; }
+.wf-variable { border: 1px solid var(--border); border-radius: var(--rs); padding: 9px; margin-bottom: 8px; }
+
+/* The condition is the field that decides the transition — give it the
+   weight to match, since operators consistently under-write it. */
+.wf-condition { border-color: var(--cyan); background: var(--surf); }
+
+.wf-vars { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 6px; }
+.wf-vars-label { font-size: .65rem; color: var(--text-3); }
+.wf-var {
+  font-family: var(--mono); font-size: .64rem; padding: 2px 6px; border-radius: 3px;
+  background: var(--surf-3); color: var(--text-2); border: 1px solid var(--border); cursor: pointer;
+}
+.wf-var:hover { border-color: var(--cyan); color: var(--cyan); }
+
+.wf-warn-banner {
+  background: var(--amber-dim); border: 1px solid var(--amber-border); color: var(--amber);
+  border-radius: var(--rs); padding: 8px 12px; font-size: .76rem; margin-bottom: 14px;
+}
+
+/* ── Problem list ─────────────────────────────────────────────────────── */
+.wf-problems {
+  margin-top: 12px; border: 1px solid var(--border); border-radius: var(--r);
+  background: var(--surf); overflow: hidden;
+}
+.wf-problems-ok { padding: 10px 14px; font-size: .75rem; color: var(--green); background: var(--green-dim); border-color: var(--green-border); }
+.wf-problems-hdr {
+  padding: 9px 14px; font-size: .68rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .07em; color: var(--red); background: var(--red-dim);
+  border-bottom: 1px solid var(--border);
+}
+.wf-problems-hdr-warn { color: var(--amber); background: var(--amber-dim); }
+.wf-problem {
+  display: flex; align-items: flex-start; gap: 9px; width: 100%; text-align: left;
+  padding: 9px 14px; background: none; border: none; border-bottom: 1px solid var(--border);
+  color: var(--text-2); font-family: var(--font); font-size: .76rem; line-height: 1.5; cursor: pointer;
+}
+.wf-problem:last-child { border-bottom: none; }
+.wf-problem:hover:not(:disabled) { background: var(--surf-2); color: var(--text); }
+.wf-problem:disabled { cursor: default; }
+.wf-problem-dot { width: 6px; height: 6px; border-radius: 50%; margin-top: 6px; flex-shrink: 0; }
+.wf-problem-error .wf-problem-dot { background: var(--red); }
+.wf-problem-warning .wf-problem-dot { background: var(--amber); }
+
+.wf-history { margin-top: 12px; }
+
+/* ── Node cards ───────────────────────────────────────────────────────── */
+/* Anatomy from the Dograh editor: a coloured type pill straddling the top
+   edge, a titled header rule, then a labelled prompt block. Wide enough
+   (300px) that a prompt is readable without opening the inspector. */
+.wf-node {
+  width: 300px; min-height: 108px; background: var(--surf-2);
+  border: 1px solid var(--border-2); border-radius: 12px;
+  font-family: var(--font); position: relative;
+  transition: border-color .14s ease, box-shadow .14s ease;
+}
+.wf-node:hover { border-color: var(--text-3); }
+.wf-node:focus-visible { outline: none; border-color: var(--cyan); box-shadow: 0 0 0 3px var(--cyan-dim); }
+.wf-node.selected { border-color: var(--cyan); box-shadow: 0 0 0 2px var(--cyan-dim), 0 0 22px var(--cyan-border); }
+.wf-node.invalid { border-color: var(--red); box-shadow: 0 0 0 2px var(--red-dim); }
+
+/* The type pill. Solid fill and overlapping the corner, so the kind of a
+   node is legible zoomed out — the one thing you scan a graph for. */
+.wf-node-pill {
+  position: absolute; top: -11px; left: 14px;
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 8px; border-radius: 5px; color: #fff;
+  font-size: .63rem; font-weight: 700; letter-spacing: .02em; white-space: nowrap;
+}
+.wf-node-pill svg { width: 11px; height: 11px; }
+.wf-node-start    .wf-node-pill { background: var(--green); }
+.wf-node-agent    .wf-node-pill { background: var(--cyan); }
+.wf-node-transfer .wf-node-pill { background: var(--amber); color: #1c1301; }
+.wf-node-end      .wf-node-pill { background: var(--red); }
+
+.wf-node-hdr {
+  display: flex; align-items: center; gap: 8px;
+  padding: 16px 14px 9px; border-bottom: 1px solid var(--border);
+}
+.wf-node-name {
+  font-size: .84rem; font-weight: 700; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.wf-node-body { padding: 11px 14px 13px; }
+.wf-node-label { font-size: .64rem; font-weight: 600; color: var(--text-3); margin-bottom: 5px; }
+.wf-node-prompt {
+  font-size: .72rem; color: var(--text-2); line-height: 1.55;
+  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+}
+.wf-node-todo { color: var(--amber); font-style: italic; }
+.wf-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 9px; }
+.wf-badge {
+  font-size: .6rem; font-weight: 600; padding: 2px 6px; border-radius: 4px;
+  background: var(--surf-3); color: var(--text-3); border: 1px solid var(--border);
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Handles: a fat circle to drag out of, a small tab to drop onto. Sized
+   from Dograh's BaseHandle — the source is the one you aim at. */
+.wf-node .react-flow__handle {
+  background: var(--text-3); border: none; transition: background .14s ease;
+}
+.wf-node .react-flow__handle-bottom { width: 14px; height: 14px; border-radius: 50%; bottom: -7px; }
+.wf-node .react-flow__handle-top { width: 14px; height: 8px; border-radius: 3px; top: -4px; }
+.wf-node .react-flow__handle:hover { background: var(--cyan); }
+
+/* Add-the-next-stage button, so building a flow never depends on landing a
+   drag on a 14px handle. Offset so it doesn't sit on the handle. */
+.wf-node-add {
+  position: absolute; bottom: -13px; left: calc(50% + 22px);
+  width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center;
+  justify-content: center; background: var(--surf-3); color: var(--text-2);
+  border: 1px solid var(--border-2); cursor: pointer; font-size: .9rem; line-height: 1;
+  opacity: 0; transition: opacity .12s ease; z-index: 5;
+}
+.wf-node:hover .wf-node-add,
+.wf-node:focus-within .wf-node-add { opacity: 1; }
+.wf-node-add:hover { background: var(--cyan); color: #fff; border-color: var(--cyan); }
+
+/* ── Edges ────────────────────────────────────────────────────────────── */
+.react-flow__edge-path { stroke: var(--border-2); stroke-width: 2; }
+.react-flow__edge.selected .react-flow__edge-path { stroke: var(--cyan); stroke-width: 2.5; }
+.wf-edge-invalid .react-flow__edge-path { stroke: var(--red); }
+/* A connection with no condition looks finished but never fires — the most
+   common mistake in this editor, so it doesn't get to look finished. */
+.wf-edge-unfinished .react-flow__edge-path { stroke: var(--amber); stroke-dasharray: 6 4; }
+
+/* The label, drawn as HTML by ConditionEdge rather than as SVG text in an
+   opaque white box. */
+.wf-edge-pill {
+  position: absolute; pointer-events: all;
+  padding: 3px 10px; border-radius: 999px; white-space: nowrap;
+  font-size: .68rem; font-weight: 600; line-height: 1.4;
+  background: var(--surf-3); color: var(--text-2); border: 1px solid var(--border-2);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .35);
+  transition: background .14s ease, color .14s ease, border-color .14s ease;
+}
+.wf-edge-pill.wf-edge-unfinished { background: var(--amber); color: #1c1301; border-color: var(--amber); }
+.wf-edge-pill.wf-edge-invalid { background: var(--red); color: #fff; border-color: var(--red); }
+.wf-edge-pill.selected { border-color: var(--cyan); color: var(--cyan); }
+
+/* ── Test tabs (right column) ─────────────────────────────────────────── */
+/* A segmented control, not two buttons: audio and chat are two views of the
+   same thing, and the pair has to read as mutually exclusive. */
+.wf-side { width: 348px; flex-shrink: 0; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.wf-test-tabs {
+  display: flex; gap: 4px; padding: 4px; flex-shrink: 0;
+  background: var(--surf-2); border: 1px solid var(--border); border-radius: 999px;
+}
+.wf-test-tabs button {
+  flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 6px 10px; border-radius: 999px; cursor: pointer;
+  background: none; border: 1px solid transparent; color: var(--text-3);
+  font-family: var(--font); font-size: .75rem; font-weight: 600;
+}
+.wf-test-tabs button svg { width: 13px; height: 13px; }
+.wf-test-tabs button:hover { color: var(--text-2); }
+.wf-test-tabs button.active {
+  background: var(--surf-3); border-color: var(--border-2); color: var(--text);
+}
+/* Closes the panel entirely — back to canvas-only. */
+.wf-test-tabs .wf-test-close { flex: 0 0 26px; padding: 6px 0; font-size: .7rem; }
+
+/* ── Text chat ────────────────────────────────────────────────────────── */
+/* The log scrolls, not the panel — the composer stays put. */
+.wf-chat { display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
+.wf-chat-hdr { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.wf-chat-title { font-size: .85rem; font-weight: 700; }
+.wf-chat-state { font-size: .68rem; color: var(--text-3); margin-left: auto; }
+.wf-chat-log {
+  flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 9px;
+  padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--rs);
+}
+.wf-chat-empty { color: var(--text-3); font-size: .74rem; line-height: 1.6; margin: auto 0; }
+.wf-chat-turn {
+  max-width: 88%; padding: 7px 10px; border-radius: 10px;
+  font-size: .76rem; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+}
+.wf-chat-who {
+  display: block; font-size: .6rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .06em; opacity: .6; margin-bottom: 2px;
+}
+.wf-chat-you { align-self: flex-end; background: var(--cyan); color: #fff; }
+.wf-chat-agent { align-self: flex-start; background: var(--surf-2); border: 1px solid var(--border-2); }
+.wf-chat-note {
+  align-self: center; max-width: 100%; background: none; border: none;
+  color: var(--text-3); font-size: .68rem; font-style: italic;
+}
+.wf-chat-typing { color: var(--text-3); letter-spacing: 2px; }
+.wf-chat-error {
+  flex-shrink: 0; padding: 7px 10px; border-radius: var(--rs); font-size: .72rem;
+  background: var(--amber-dim); border: 1px solid var(--amber-border); color: var(--amber);
+}
+.wf-chat-compose { display: flex; gap: 8px; align-items: flex-end; flex-shrink: 0; }
+.wf-chat-compose .form-input { flex: 1; resize: none; font-size: .78rem; }
+
+/* ── Canvas chrome ────────────────────────────────────────────────────── */
+/* React Flow ships these hard-coded light (#fefefe buttons, a vertical
+   stack, its own shadow) and imports its stylesheet from the component, so
+   it lands after this file — hence !important, not a specificity war.
+   Horizontal row bottom-left, matching the Dograh editor. */
+.wf-canvas .react-flow__controls {
+  display: flex !important; flex-direction: row !important; gap: 6px;
+  box-shadow: none !important; background: none !important; border: none !important;
+}
+.wf-canvas .react-flow__controls-button {
+  width: 28px !important; height: 28px !important; padding: 7px !important;
+  border: 1px solid var(--border-2) !important; border-radius: var(--rs) !important;
+  background: var(--surf-2) !important; color: var(--text-2) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .3);
+}
+.wf-canvas .react-flow__controls-button:hover {
+  background: var(--surf-3) !important; color: var(--text) !important; border-color: var(--cyan) !important;
+}
+.wf-canvas .react-flow__controls-button svg {
+  max-width: 13px; max-height: 13px; fill: currentColor; stroke: currentColor;
+}
+/* The Tidy button draws strokes, not fills — undo the blanket fill above. */
+.wf-canvas .react-flow__controls-button svg[fill="none"] { fill: none; }
+.react-flow__attribution { background: transparent; color: var(--text-3); opacity: .4; }
+
+/* Floating canvas actions (top-right). */
+.wf-canvas-panel { margin: 12px !important; }
+.wf-canvas-btn {
+  width: 32px; height: 32px; border-radius: var(--rs); cursor: pointer;
+  background: var(--cyan); color: #fff; border: none;
+  font-size: 1.1rem; line-height: 1; font-family: var(--font);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .4);
+}
+.wf-canvas-btn:hover { filter: brightness(1.12); }
+
+@media (max-width: 1100px) {
+  .wf-layout { flex-direction: column; }
+  .wf-inspector { max-height: 520px; }
+  .wf-canvas { height: 52vh; }
+}
+
+/* ── Full-page workflow editor (/workflows/[tenant]/[agent]) ───────────── */
+/* The canvas gets the whole page here, rather than whatever is left under
+   a tab strip — see app/workflows/[tenantSlug]/[agentSlug]/page.tsx. */
+/* Back arrow + agent name, inline at the head of the editor's own toolbar. */
+.wf-page-title { font-size: .95rem; font-weight: 700; color: var(--text); }
+.wf-back-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: var(--rs); flex-shrink: 0;
+  color: var(--text-2); text-decoration: none; font-size: .95rem;
+}
+.wf-back-btn:hover { background: var(--surf-2); color: var(--text); }
+.wf-toolbar-sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 4px; }
+/* The editor owns the whole page here: the canvas takes whatever is left
+   after the toolbar and the problem list, rather than a fixed 74vh box with
+   dead space under it at tall viewport sizes. */
+.wf-page { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.wf-page .wf-root { flex: 1; min-height: 0; }
+.wf-page .wf-layout { flex: 1; min-height: 0; }
+.wf-page .wf-canvas { height: auto; min-height: 0; }
+
+/* The single-prompt / workflow fork on the new-agent screen. */
+.wf-mode-choice { display: flex; gap: 10px; }
+.wf-mode {
+  flex: 1; text-align: left; padding: 12px 14px; border-radius: var(--r); cursor: pointer;
+  background: var(--surf-2); border: 1px solid var(--border-2); color: var(--text-2);
+  font-family: var(--font);
+}
+.wf-mode:hover { border-color: var(--border-2); background: var(--surf-3); }
+.wf-mode.selected { border-color: var(--cyan); background: var(--cyan-dim2); }
+.wf-mode-title { display: block; font-size: .82rem; font-weight: 700; color: var(--text); margin-bottom: 3px; }
+.wf-mode-desc { display: block; font-size: .71rem; line-height: 1.5; color: var(--text-3); }
+/* An inline "do the other thing" affordance inside a form hint. */
+.wf-linkish {
+  background: none; border: none; padding: 0; font: inherit; color: var(--cyan);
+  cursor: pointer; text-decoration: underline;
+}
+
+/* The test call runs in the editor's side column, not a modal — a modal
+   covers the canvas, which is the thing you're testing. Same box as the
+   inspector it replaces. */
+.wf-testpanel {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: 14px; background: var(--surf); border: 1px solid var(--border); border-radius: var(--r);
+}
+@media (max-width: 1100px) { .wf-side { width: auto; } }

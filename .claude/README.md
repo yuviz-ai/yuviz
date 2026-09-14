@@ -39,16 +39,16 @@ function that does not exist is its highest-value finding.
 **Loops are capped.** Two rounds per stage, three for security. Anything still open is reported to
 you rather than ground on.
 
-## `sdlc/lessons.md` — the part that compounds
+## `.sdlc/lessons.md` — the part that compounds
 
-Every rule in that file was earned from a real miss on this codebase: a `DROP CONSTRAINT` that would
-have aborted a schema apply half-finished, a console-role gate that would have taken `/health` down
-with docker-compose, tests that could not fail. Every agent reads it before starting and must comply
-or say why a lesson does not apply.
+Every rule in **`.sdlc/lessons.md`** (repo-root, shared with Cursor) was earned from a real miss on
+this codebase: a `DROP CONSTRAINT` that would have aborted a schema apply half-finished, a
+console-role gate that would have taken `/health` down with docker-compose, tests that could not
+fail. Every agent reads it before starting and must comply or say why a lesson does not apply.
 
 When a review catches something a previous stage should have, `/sdlc:retro` turns it into a lesson —
 but only if it is a *class* of mistake, not a one-off. Merge aggressively; a long lessons file stops
-being read.
+being read. Write only that path — do not keep a second copy under `.claude/`.
 
 ## Using it
 

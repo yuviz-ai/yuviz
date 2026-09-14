@@ -406,7 +406,7 @@ export function TestAgentPanel({
           <div
             style={{
               height: 6,
-              background: "var(--border, #333)",
+              background: "var(--border)",
               borderRadius: 3,
               overflow: "hidden",
               margin: "0 auto 14px",
@@ -417,7 +417,7 @@ export function TestAgentPanel({
               style={{
                 height: "100%",
                 width: `${micLevelPct}%`,
-                background: state === "talking" ? "#d33" : "#4a4",
+                background: state === "talking" ? "var(--red)" : "var(--green)",
                 transition: "width 60ms linear",
               }}
             />

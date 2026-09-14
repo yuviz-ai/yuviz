@@ -41,6 +41,7 @@ from .secret_resolver import CompositeSecretResolver
 from .servicer import ConversationServicer
 from .session import SessionContext
 from .tools.executor_registry import ExecutorRegistry
+from .tools.executors.api_exec_executor import ApiExecExecutor
 from .tools.executors.calendar_executor import CalendarExecutor
 from .tools.executors.cancel_appointment_executor import CancelAppointmentExecutor
 from .tools.executors.reschedule_appointment_executor import RescheduleAppointmentExecutor
@@ -50,6 +51,7 @@ from .tools.policy_resolver import ToolPolicyResolver
 from .tools.provider_manager import ToolProviderManager
 from .tools.registry import ToolRegistry
 from .transcript_builder import TranscriptBuilder
+from .workflow import graph_for
 from .generated.voiceai.v1 import conversation_pb2_grpc as pb_grpc
 
 SERVICE_NAME = "voiceai.v1.ConversationService"
@@ -147,6 +149,7 @@ async def _prewarm_agents(
                 log.warning("prewarm: tenant=%s agent=%s did not resolve — skipping", tenant_slug, agent_slug)
                 continue
             _, bundle = resolved
+            graph = graph_for(resolved[0])
             # Object construction != model loaded — Ollama needs a real
             # request first (see OllamaLLM.warm()). No-op for cloud LLMs.
             warm = getattr(bundle.llm, "warm", None)
@@ -155,7 +158,10 @@ async def _prewarm_agents(
                     await warm()
                 except Exception:
                     log.exception("prewarm: LLM warm() failed tenant=%s agent=%s", tenant_slug, agent_slug)
-            log.info("prewarm: tenant=%s agent=%s providers ready", tenant_slug, agent_slug)
+            log.info(
+                "prewarm: tenant=%s agent=%s providers ready, workflow graph parsed (%d nodes)",
+                tenant_slug, agent_slug, len(graph.nodes),
+            )
 
 
 async def serve(port: int, args: argparse.Namespace) -> None:
@@ -232,6 +238,18 @@ async def serve(port: int, args: argparse.Namespace) -> None:
     )
     executor_registry.register("cancel_appointment", lambda provider, companion=None: CancelAppointmentExecutor(provider))
     executor_registry.register("reschedule_appointment", lambda provider, companion=None: RescheduleAppointmentExecutor(provider))
+    # execute_api's provider is a ToolExecClient (provider_manager.py's
+    # _make_toolexec, reading TOOLEXEC_SERVICE_URL). Unlike the three
+    # calendar executors above, ApiExecExecutor's max_chain_depth is NOT
+    # baked in here: this factory is registered once at process startup,
+    # shared by every tenant/agent, so a per-agent override cannot live in
+    # a constructor arg closed over here — orchestrator.py threads
+    # policy.max_chain_depth into ToolExecutionContext per call instead,
+    # and ApiExecExecutor reads it from request.context there.
+    executor_registry.register(
+        "execute_api",
+        lambda provider, companion=None: ApiExecExecutor(provider),
+    )
     tool_provider_manager = ToolProviderManager(CompositeSecretResolver())
     tool_policy_resolver = await ToolPolicyResolver.connect(
         os.environ.get("POSTGRES_DSN"), tool_registry,

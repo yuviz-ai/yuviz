@@ -96,3 +96,11 @@ async def test_update_tenant_writes_audit_row(test_tenant, pool):
     assert row is not None
     assert row["action"] == "updated"
     assert row["new_value"] is not None
+
+
+async def test_update_tenant_accepts_max_concurrent_calls(test_tenant):
+    # T16: the Live Calls Monitoring utilization KPI's only source column —
+    # must be updatable through the same audited/cache-invalidated path as
+    # every other tenant field, not a special case.
+    updated = await tenants.update_tenant(test_tenant["id"], max_concurrent_calls=5)
+    assert updated["max_concurrent_calls"] == 5

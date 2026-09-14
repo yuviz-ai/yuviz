@@ -74,7 +74,9 @@ export const MODELS_BY_ENGINE: Record<string, string[] | null> = {
   deepgram: ["nova-3", "nova-2"],
   // Local models, so the list is what dev.sh can pull rather than what an
   // account is entitled to; `ollama pull <tag>` first, or dev.sh --llm-model.
-  ollama: ["llama3.2", "llama3", "qwen2.5", "mistral", "phi3", "gemma3:4b"],
+  // gemma4:e2b is the thinking-capable/tool-calling option — set
+  // extra.think:false on its provider config or voice latency regresses.
+  ollama: ["llama3.2", "llama3", "qwen2.5", "mistral", "phi3", "gemma3:4b", "gemma4:e2b"],
   // Cheapest-capable first below, so the cheap option is the one a reader
   // reaches for. It is NOT what the form submits by default — the model
   // select starts blank ("— select a model —"), and a blank model means the

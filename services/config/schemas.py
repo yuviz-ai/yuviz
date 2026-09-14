@@ -60,6 +60,15 @@ class TenantUpdate(BaseModel):
     default_stt_config_id: str | None = None
     default_llm_config_id: str | None = None
     default_tts_config_id: str | None = None
+    # None = field absent, per `exclude_unset` (matching every other field on
+    # this model) — clearing the cap back to NULL is not offered through
+    # this endpoint; use PATCH /tenants/{id}/concurrency's own dedicated
+    # route (routers/tenants.py) for that, which shares this same bound.
+    max_concurrent_calls:  int | None = Field(default=None, ge=1, le=10_000)
+
+
+class TenantConcurrencyUpdate(BaseModel):
+    max_concurrent_calls: int = Field(ge=1, le=10_000)
 
 
 class AgentCreate(BaseModel):
@@ -117,6 +126,9 @@ class AgentUpdate(BaseModel):
 
 class WorkflowDraft(BaseModel):
     graph: dict[str, Any]
+    # When set, save is rejected with 409 if agents.config_version moved
+    # (publish won a race). Omit for backward-compatible last-write-wins.
+    base_config_version: int | None = None
 
     @field_validator("graph")
     @classmethod
@@ -223,12 +235,20 @@ class AgentToolPolicyCreate(BaseModel):
     enabled:                  bool = True
     timeout_ms:               int | None = None
     max_calls_per_turn:       int | None = None
+    # NULL = use the platform ceiling (services/toolexec/graph.py's
+    # MAX_CHAIN_LEVELS = 4); a set value can only LOWER it, never raise
+    # it, enforced where it's actually applied (agent_apis.py's
+    # _effective_max_chain_depth and executor.py's ceiling clamp), never
+    # 0/disabled. Meaningful only for tool_name='execute_api'; harmless
+    # (unread) on every other tool's row.
+    max_chain_depth:          int | None = None
 
 
 class AgentToolPolicyUpdate(BaseModel):
     enabled:             bool | None = None
     timeout_ms:          int | None = None
     max_calls_per_turn:  int | None = None
+    max_chain_depth:     int | None = None
     extra:       dict[str, Any] | None = None
 
 

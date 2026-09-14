@@ -3,9 +3,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 
 from .. import tenants as tenants_service
+from .. import users as users_service
 from ..auth import CurrentUser
 from ..deps import get_current_user, get_or_404, require_role
-from ..schemas import TenantCreate, TenantUpdate
+from ..schemas import TenantConcurrencyUpdate, TenantCreate, TenantUpdate
 
 router = APIRouter(prefix="/tenants", tags=["tenants"])
 
@@ -55,6 +56,46 @@ async def update_tenant(
         raise HTTPException(status_code=400, detail="request body has no fields to update")
     return await tenants_service.update_tenant(
         tenant_id, user_id=current_user.id, user_email=current_user.email, **fields,
+    )
+
+
+@router.patch("/{tenant_id}/concurrency")
+async def update_tenant_concurrency(
+    tenant_id: str, body: TenantConcurrencyUpdate,
+    current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
+):
+    """AC16's admin-editable path — a dedicated route rather than widening
+    PATCH /tenants/{tenant_id} (superadmin-only), which would hand an admin
+    name/region/VAD/default-provider ids too.
+
+    The own-tenant check re-reads the actor's CURRENT role/tenant_id from
+    `users` rather than trusting `current_user.tenant_id` off the token
+    (closes security finding #1 — same class of bug as the two highs this
+    whole feature exists to fix: a JWT claim is a login-time snapshot, not a
+    live fact). This deliberately does NOT reuse deps.assert_current_authority:
+    that helper 403s outright the instant the fresh row's tenant no longer
+    matches the TOKEN's claim, which is the right contract for the live-calls
+    intervention route (any re-tenanting kills that write), but wrong here —
+    an admin who has just been transferred to a new tenant must still be able
+    to edit THAT tenant's concurrency with their still-valid token, scoped to
+    the tenant the fresh row says they belong to now, never the one the stale
+    token remembers."""
+    row = await users_service.get_user_by_id(current_user.id)
+    if row is None:
+        raise HTTPException(status_code=403, detail="account is no longer active")
+    if row["role"] not in ("superadmin", "admin"):
+        raise HTTPException(status_code=403, detail=f"role {row['role']!r} cannot perform this action")
+    effective_tenant_id = str(row["tenant_id"]) if row["tenant_id"] is not None else None
+
+    if row["role"] != "superadmin" and effective_tenant_id != tenant_id:
+        # Same non-oracle 404 body GET /tenants/{slug} already returns for a
+        # foreign tenant — a re-tenanted admin querying their OLD tenant id
+        # is indistinguishable from one that never existed (lesson 2).
+        raise HTTPException(status_code=404, detail=f"tenant {tenant_id!r} not found")
+
+    return await tenants_service.update_tenant(
+        tenant_id, user_id=row["id"], user_email=row["email"],
+        max_concurrent_calls=body.max_concurrent_calls,
     )
 
 

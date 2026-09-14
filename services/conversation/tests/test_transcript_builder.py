@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 
@@ -353,3 +354,72 @@ async def test_reconcile_inactive_calls_leaves_already_ended_calls_untouched():
 async def test_reconcile_inactive_calls_is_a_noop_when_persistence_disabled():
     builder = TranscriptBuilder(pool=None)
     assert await builder.reconcile_inactive_calls(inactive_after_seconds=300) == 0
+
+
+# ── record_live_stage (Live Calls Monitoring, T18/T19) ───────────────────
+
+async def test_record_live_stage_is_fire_and_forget_and_updates_the_column():
+    builder = await TranscriptBuilder.connect(os.environ["POSTGRES_DSN"])
+    pool = builder._pool
+    session_id = f"test-live-stage-{uuid.uuid4().hex[:8]}"
+    await _insert_live_call(pool, session_id, conv_node=None)
+
+    builder.record_live_stage(session_id, "waiting_for_human")
+    # The call above returned synchronously with no `await` — proving it
+    # didn't block the caller on a real DB round trip — and scheduled a
+    # background task we can observe directly, same convention as
+    # test_begin_call_stamps_conv_node above.
+    assert session_id in builder._chains
+    await builder._chains[session_id]
+
+    row = await pool.fetchrow("SELECT live_stage FROM calls WHERE session_id = $1", session_id)
+    assert row["live_stage"] == "waiting_for_human"
+
+    await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
+    await builder.close()
+
+
+async def test_record_live_stage_is_noop_when_persistence_disabled():
+    builder = TranscriptBuilder(pool=None)
+    builder.record_live_stage("some-session", "ai")  # must not raise
+    assert builder._chains == {}
+
+
+async def test_record_live_stage_serializes_per_session_a_later_call_is_never_overtaken(monkeypatch):
+    """The design's own risk note: record_live_stage rides the per-session
+    _spawn() chain, so an EARLIER hook call's write — even if it happens to
+    be slower to actually land on Postgres — can never overtake a LATER
+    call's write already applied. Simulated here by artificially delaying
+    the first ("waiting_for_human") write; if writes ran unserialized, the
+    delayed write finishing last would clobber "human_connected" back to
+    "waiting_for_human". T18's own mutation proof (see PR notes) bypasses
+    _spawn() to confirm this test actually fails without the chaining."""
+    builder = await TranscriptBuilder.connect(os.environ["POSTGRES_DSN"])
+    pool = builder._pool
+    session_id = f"test-live-stage-order-{uuid.uuid4().hex[:8]}"
+    await _insert_live_call(pool, session_id, conv_node=None)
+
+    original_write = builder._record_live_stage
+
+    async def _slow_for_waiting_for_human(sid, stage):
+        if stage == "waiting_for_human":
+            await asyncio.sleep(0.2)
+        await original_write(sid, stage)
+
+    monkeypatch.setattr(builder, "_record_live_stage", _slow_for_waiting_for_human)
+
+    builder.record_live_stage(session_id, "waiting_for_human")  # on_transfer_initiated
+    builder.record_live_stage(session_id, "human_connected")    # on_transfer_completed, right after
+
+    await builder._chains[session_id]
+    # Margin past the injected 0.2s delay: proves the FINAL state once both
+    # writes have truly landed, not just whichever happened to finish first
+    # — an unserialized implementation would otherwise pass this assertion
+    # "by luck" (checked before the slow write lands) rather than for real.
+    await asyncio.sleep(0.3)
+
+    row = await pool.fetchrow("SELECT live_stage FROM calls WHERE session_id = $1", session_id)
+    assert row["live_stage"] == "human_connected"
+
+    await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
+    await builder.close()

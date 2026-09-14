@@ -91,3 +91,7 @@ class EchoConversationHandler:
             summary="", summary_generated=False, transcript_written=False,
             status=FinalizationStatus.COMPLETED,
         )
+
+    def record_live_stage(self, session_id: str, stage: str) -> None:
+        # Echo mode has no transcripts to persist live_stage against.
+        pass

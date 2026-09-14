@@ -26,14 +26,36 @@ some future router can forget to add itself to.
 
 from __future__ import annotations
 
+import time
 import uuid
+from collections import OrderedDict
 from typing import Any, Awaitable, Callable
 
 from fastapi import Depends, HTTPException, Header
 
+from . import users as users_service
 from .auth import CurrentUser, InvalidTokenError, decode_access_token
 
 CONSOLE_ROLES = frozenset({"superadmin", "admin", "viewer"})
+
+# Live Calls Monitoring: supervisor reaches exactly these two routes, and no
+# others — see require_live_calls_operator below, built on
+# get_authenticated_user rather than get_current_user so CONSOLE_ROLES stays
+# untouched (lesson 4).
+LIVE_CALLS_ROLES = frozenset({"superadmin", "admin", "supervisor"})
+
+# Matches who reaches GET /calls/{id}/transcript today (get_current_user's
+# CONSOLE_ROLES minus viewer — see routers/calls.py) — supervisor is
+# deliberately excluded (AC15).
+TRANSCRIPT_ROLES = frozenset({"superadmin", "admin"})
+
+AUTHORITY_MEMO_TTL_S = 60
+
+# scope_key is attacker-influenced (it's the tenant_slug query/body param) —
+# an actor hammering GET/POST live-calls with many distinct nonexistent
+# slugs must not be able to grow the memo without bound (finding #8). This
+# caps total entries regardless of the eviction below.
+AUTHORITY_MEMO_MAX_ENTRIES = 10_000
 
 
 async def get_authenticated_user(authorization: str | None = Header(default=None)) -> CurrentUser:
@@ -80,6 +102,116 @@ def require_role(*allowed_roles: str):
         return user
 
     return _check
+
+
+def require_live_calls_operator():
+    """Returns a dependency admitting exactly superadmin/admin/supervisor —
+    403 for viewer/agent and any future role. Built on get_authenticated_user,
+    NOT get_current_user: supervisor is deliberately outside CONSOLE_ROLES and
+    must stay outside it (lesson 4), so this grant lives on its own dependency
+    rather than widening the shared console gate."""
+
+    async def _check(user: CurrentUser = Depends(get_authenticated_user)) -> CurrentUser:
+        if user.role not in LIVE_CALLS_ROLES:
+            raise HTTPException(status_code=403, detail=f"role {user.role!r} cannot access this service")
+        return user
+
+    return _check
+
+
+def _row_to_effective_user(row: dict[str, Any]) -> CurrentUser:
+    """Rebuild a CurrentUser from a fresh `users` row rather than a token's
+    claims — the row is what fresh_authority()/assert_current_authority()
+    exist to substitute for `user.tenant_id`/`user.role` everywhere after
+    their call (lesson 35: a JWT claim is a login-time snapshot, not a live
+    fact)."""
+    return CurrentUser(
+        id=str(row["id"]),
+        email=row["email"],
+        role=row["role"],
+        tenant_id=str(row["tenant_id"]) if row["tenant_id"] is not None else None,
+        is_service_account=row["is_service_account"],
+    )
+
+
+async def assert_current_authority(user: CurrentUser) -> CurrentUser:
+    """Re-read users WHERE id=$1 AND deleted_at IS NULL. 403 if the row is
+    gone, if role has changed out of LIVE_CALLS_ROLES, or if tenant_id no
+    longer matches the token's. Closes lesson 27 / AC9 for the intervention
+    route, which must refuse a demoted, deleted or re-tenanted actor outright
+    rather than silently rescoping it the way fresh_authority()'s branch
+    selection does."""
+    row = await users_service.get_user_by_id(user.id)
+    if row is None:
+        raise HTTPException(status_code=403, detail="account is no longer active")
+    if row["role"] not in LIVE_CALLS_ROLES:
+        raise HTTPException(status_code=403, detail=f"role {row['role']!r} cannot access this service")
+    fresh_tenant_id = str(row["tenant_id"]) if row["tenant_id"] is not None else None
+    if fresh_tenant_id != user.tenant_id:
+        raise HTTPException(status_code=403, detail="account tenant has changed; sign in again")
+    return _row_to_effective_user(row)
+
+
+async def fresh_authority(
+    app_state: Any, user: CurrentUser, scope_key: str, *, ttl_s: int = AUTHORITY_MEMO_TTL_S,
+) -> CurrentUser:
+    """The same `users` re-read as assert_current_authority(), returning a
+    CurrentUser built from the ROW's current role/tenant_id rather than the
+    token's claims — memoized per (user.id, scope_key) for ttl_s in an
+    in-process dict on app_state (same placement convention as
+    app.state.invite_throttle, services/config/app.py:250).
+
+    Unlike assert_current_authority(), this does NOT reject a tenant_id that
+    no longer matches the token's claim — _resolve_scope's branch selection
+    is exactly what needs the row's current tenant_id, not a rejection of it.
+    It still 403s on a gone row or a role that has left LIVE_CALLS_ROLES.
+
+    scope_key must come from the REQUEST (the tenant_slug query parameter, or
+    "self" when absent), never from the caller's identity, so a tenant SWITCH
+    always re-reads instead of inheriting another selection's validation.
+
+    Bounded (AUTHORITY_MEMO_MAX_ENTRIES, evicted least-recently-used) and
+    entered only for a scope_key this identity check accepts — a scope_key
+    whose TENANT never resolves (_resolve_scope's own 404) is evicted again
+    by forget_authority() below, so a flood of nonexistent slugs can't retain
+    entries here either (closes security finding #8, alongside the cap)."""
+    memo: OrderedDict[tuple[str, str], tuple[float, CurrentUser]] = getattr(
+        app_state, "_live_calls_authority_memo", None,
+    )
+    if memo is None:
+        memo = OrderedDict()
+        app_state._live_calls_authority_memo = memo
+
+    key = (user.id, scope_key)
+    now = time.monotonic()
+    cached = memo.get(key)
+    if cached is not None and now - cached[0] < ttl_s:
+        memo.move_to_end(key)
+        return cached[1]
+
+    row = await users_service.get_user_by_id(user.id)
+    if row is None:
+        raise HTTPException(status_code=403, detail="account is no longer active")
+    if row["role"] not in LIVE_CALLS_ROLES:
+        raise HTTPException(status_code=403, detail=f"role {row['role']!r} cannot access this service")
+
+    effective_user = _row_to_effective_user(row)
+    memo[key] = (now, effective_user)
+    memo.move_to_end(key)
+    while len(memo) > AUTHORITY_MEMO_MAX_ENTRIES:
+        memo.popitem(last=False)
+    return effective_user
+
+
+def forget_authority(app_state: Any, user_id: str, scope_key: str) -> None:
+    """Evict a single (user_id, scope_key) entry. Called by _resolve_scope
+    when the scope_key's tenant slug fails to resolve (its own 404) — a
+    scope_key that will never again be useful must not linger in the memo,
+    so a caller flooding GET/POST live-calls with distinct nonexistent slugs
+    can't grow it (finding #8, alongside AUTHORITY_MEMO_MAX_ENTRIES above)."""
+    memo = getattr(app_state, "_live_calls_authority_memo", None)
+    if memo is not None:
+        memo.pop((user_id, scope_key), None)
 
 
 async def get_or_404(fetch: Awaitable[Any | None], detail: str) -> Any:

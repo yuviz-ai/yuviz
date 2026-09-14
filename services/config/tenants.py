@@ -23,6 +23,7 @@ _UPDATABLE_FIELDS = {
     "no_speech_timeout_ms", "stt_timeout_ms", "llm_timeout_ms",
     "transfer_timeout_ms",
     "default_stt_config_id", "default_llm_config_id", "default_tts_config_id",
+    "max_concurrent_calls",
 }
 
 

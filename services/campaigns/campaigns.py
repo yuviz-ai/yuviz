@@ -8,6 +8,7 @@ already used by services/knowledge/'s ingestion worker.
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from . import audit, db
@@ -28,6 +29,29 @@ async def list_campaigns(tenant_id: Any) -> list[dict[str, Any]]:
         tenant_id,
     )
     return [dict(row) for row in rows]
+
+
+async def agent_exists_for_tenant(tenant_id: Any, agent_id: Any) -> bool:
+    """campaigns.agent_id is a NOT NULL FK (database/schema.sql) — an empty
+    string or another tenant's agent id previously reached the INSERT
+    unchecked and surfaced as an unhandled asyncpg UUID-cast/FK-violation
+    exception (a bare 500 with no CORS headers, since the exception occurs
+    after CORSMiddleware's request phase — Chrome then misreports the
+    response as CORS-blocked rather than a server error). Checked up front
+    so the router can raise a clean, CORS-intact 422 instead."""
+    try:
+        uuid.UUID(str(agent_id))
+    except (ValueError, AttributeError, TypeError):
+        # Not even UUID-shaped (e.g. "") — the query below would itself
+        # raise the same uncaught asyncpg cast error this check exists to
+        # avoid, so short-circuit before it ever reaches the database.
+        return False
+    pool = await db.get_pool()
+    row = await pool.fetchrow(
+        "SELECT 1 FROM agents WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
+        agent_id, tenant_id,
+    )
+    return row is not None
 
 
 async def create_campaign(

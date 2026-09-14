@@ -68,6 +68,43 @@ async def test_get_call_unknown_returns_none():
     assert await calls.get_call("does-not-exist") is None
 
 
+async def test_get_call_wrong_tenant_returns_none(test_tenant, pool):
+    other = await pool.fetchrow(
+        "INSERT INTO tenants (name, slug) VALUES ($1, $2) RETURNING *",
+        "Call Cross Tenant", f"test-call-x-{uuid.uuid4().hex[:8]}",
+    )
+    session_id = f"test-call-{uuid.uuid4().hex[:8]}"
+    try:
+        await _insert_call(pool, tenant_slug=other["slug"], session_id=session_id)
+        assert await calls.get_call(session_id, tenant_slug=test_tenant["slug"]) is None
+        assert await calls.get_call(session_id, tenant_slug=other["slug"]) is not None
+        assert await calls.get_call(session_id) is not None  # unscoped
+    finally:
+        await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
+        await pool.execute("DELETE FROM tenants WHERE id = $1", other["id"])
+
+
+async def test_get_transcript_wrong_tenant_returns_empty(test_tenant, pool):
+    other = await pool.fetchrow(
+        "INSERT INTO tenants (name, slug) VALUES ($1, $2) RETURNING *",
+        "Transcript Cross Tenant", f"test-tr-x-{uuid.uuid4().hex[:8]}",
+    )
+    session_id = f"test-call-{uuid.uuid4().hex[:8]}"
+    try:
+        await _insert_call(pool, tenant_slug=other["slug"], session_id=session_id)
+        await pool.execute(
+            "INSERT INTO transcript_entries (session_id, turn_number, caller_text, ai_response) "
+            "VALUES ($1, 1, 'secret', 'reply')",
+            session_id,
+        )
+        assert await calls.get_transcript(session_id, tenant_slug=test_tenant["slug"]) == []
+        assert len(await calls.get_transcript(session_id, tenant_slug=other["slug"])) == 1
+    finally:
+        await pool.execute("DELETE FROM transcript_entries WHERE session_id = $1", session_id)
+        await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
+        await pool.execute("DELETE FROM tenants WHERE id = $1", other["id"])
+
+
 async def test_get_latency_stats_computes_percentiles_per_agent_and_engine(test_tenant, pool):
     session_id = f"test-call-{uuid.uuid4().hex[:8]}"
     await _insert_call(pool, tenant_slug=test_tenant["slug"], session_id=session_id)

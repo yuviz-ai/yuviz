@@ -109,6 +109,18 @@ start_campaigns_service() {
   python3 -m uvicorn services.campaigns.app:app --host 0.0.0.0 --port 8400
 }
 
+# ── Block 8b: Tool Execution Service (REST API, port 8600) — custom API chains ─
+start_toolexec_service() {
+  export POSTGRES_DSN="postgresql://satish@localhost:5432/voiceai"
+  export JWT_SECRET="${JWT_SECRET:?set this in your shell — see docs/setup.md, never commit the real value}"
+  # Tenant-namespaced credential refs resolve under this root, NOT the
+  # platform k8s secret mount — see services/toolexec/auth_schemes.py.
+  export TOOLEXEC_TENANT_SECRET_ROOT="${TOOLEXEC_TENANT_SECRET_ROOT:-$REPO/data/toolexec_tenant_secrets}"
+  mkdir -p "$TOOLEXEC_TENANT_SECRET_ROOT"
+  cd "$REPO"
+  python3 -m services.toolexec
+}
+
 # ── Block 9/10: Python ConversationService instances (ports 50051/50052) ─────
 _conv_env() {
   export POSTGRES_DSN="postgresql://satish@localhost:5432/voiceai"
@@ -159,7 +171,7 @@ start_admin_ui() {
 # ── Verify: check all services are healthy ───────────────────────────────────
 verify() {
   echo "=== Port check ==="
-  for port in 3306 5060 5080 5432 6379 11434 8000 8100 8400 50051 50052 10000 8080 3000; do
+  for port in 3306 5060 5080 5432 6379 11434 8000 8100 8400 8600 50051 50052 10000 8080 3000; do
     nc -z localhost "$port" 2>/dev/null && echo "  :$port  OPEN" || echo "  :$port  CLOSED"
   done
 
@@ -170,6 +182,8 @@ verify() {
   curl -s http://localhost:8100/health || echo "  Knowledge Service not reachable"
   echo ""
   curl -sf http://localhost:8400/health || echo "  Campaigns Service not reachable"
+  echo ""
+  curl -s http://localhost:8600/health || echo "  Tool Execution Service not reachable"
 
   echo ""
   echo "=== Envoy upstream health ==="
@@ -194,6 +208,7 @@ portmap() {
   :8000   Config Service    — REST API
   :8100   Knowledge Service — REST API (RAG)
   :8400   Campaigns Service — REST API (outbound calling)
+  :8600   Tool Execution Service — REST API (custom API chains)
   :50051  ConvSvc-1  — gRPC ConversationService
   :50052  ConvSvc-2  — gRPC ConversationService
   :10000  Envoy      — gRPC load balancer (upstream -> 50051, 50052)
@@ -204,4 +219,4 @@ portmap() {
 EOF
 }
 
-echo "start_local.sh loaded. Functions: start_mysql, start_kamailio, start_data, start_ollama, start_config_service, start_knowledge_service, start_knowledge_worker, start_campaigns_service, start_conv1, start_conv2, start_envoy, start_gateway, start_freeswitch, start_admin_ui, verify, portmap"
+echo "start_local.sh loaded. Functions: start_mysql, start_kamailio, start_data, start_ollama, start_config_service, start_knowledge_service, start_knowledge_worker, start_campaigns_service, start_toolexec_service, start_conv1, start_conv2, start_envoy, start_gateway, start_freeswitch, start_admin_ui, verify, portmap"

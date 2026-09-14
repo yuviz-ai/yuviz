@@ -13,6 +13,7 @@ UNDERSTAND → PLAN → IMPLEMENT → VERIFY → REVIEW
 
 - Small fixes: skip long plans; inspect callers, change, verify.
 - Larger changes: inspect existing implementation first, brief plan, then implement.
+- Multi-stage features: use the SDLC skills (`/sdlc-new` …) — see `.cursor/README.md`.
 - Never start editing without reading the code you are changing.
 
 ## Communication

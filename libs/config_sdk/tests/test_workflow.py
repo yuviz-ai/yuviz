@@ -340,6 +340,23 @@ def test_the_starter_graph_carries_the_tools_it_is_given():
     assert parse_graph(starter_graph("hi", "be nice")).start.tools == []
 
 
+def test_the_starter_graph_carries_knowledge_base_ids():
+    graph = parse_graph(starter_graph("hi", "be nice", knowledge_base_ids=["kb1"]))
+    assert graph.start.knowledge_base_ids == ["kb1"]
+    assert parse_graph(starter_graph("hi", "be nice")).start.knowledge_base_ids == []
+
+
+def test_delayed_start_ms_is_capped():
+    from libs.config_sdk.workflow import _MAX_DELAYED_START_MS
+
+    graph = parse_graph(_graph(nodes=[
+        _node("n1", "start", "greeting", delayed_start_ms=30_000),
+        _node("n2", "agent", "booking", prompt="ok"),
+        _node("n3", "end", "goodbye"),
+    ]))
+    assert graph.start.delayed_start_ms == _MAX_DELAYED_START_MS
+
+
 def test_graphs_equivalent_ignores_node_positions():
     from libs.config_sdk.workflow import graphs_equivalent
 

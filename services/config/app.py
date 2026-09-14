@@ -25,7 +25,7 @@ from . import cache, db, email, invites
 from . import phone_numbers as phone_numbers_service
 from .routers import (
     agent_tool_policies, agents, audit_log, auth, calls, carriers, invites as invites_router,
-    phone_numbers, provider_configs, telephony_configs, tenants, tool_catalog,
+    live_calls, phone_numbers, provider_configs, telephony_configs, tenants, tool_catalog,
     tool_provider_configs, users,
 )
 
@@ -209,6 +209,37 @@ class AcceptThrottle:
         self.hour.increment(client_host)
 
 
+class LiveCallsThrottle:
+    """Per-user token bucket for GET /live-calls, sized to the 5s poll
+    interval (live_calls.py's REFRESH_MS budget), same FixedWindowCounter
+    precedent as InviteThrottle/AcceptThrottle above.
+
+    limit=4, not 1: one operator's own legitimate traffic in a single 5s
+    window is not always exactly one request. A second browser tab polling
+    its own unsynchronized 5s cadence, a superadmin's tenant switch (which
+    fires an immediate re-fetch on top of whatever the old interval still
+    had in flight), and pause-then-immediate-resume (same — an immediate
+    fetch layered on the interval boundary) can all legitimately land 2-3
+    requests from the SAME user in one window without any hammering at all.
+    limit=1 rejected exactly this traffic (found live via review, not by any
+    of this file's own tests — every one of them called _reset_throttle(),
+    which is why nothing caught it; see TestRateLimitAndAcquireTimeout's
+    dedicated non-reset test for the fix's own proof). 4 gives roughly 3-4x
+    the single-tab steady-state rate — enough for 2-3 tabs plus one
+    switch/resume on top — while still bounding a client that is actually
+    hammering the route to a small constant multiple of its intended cadence,
+    not an unbounded one."""
+
+    def __init__(self) -> None:
+        self._counter = FixedWindowCounter(limit=4, window_seconds=5)
+
+    def check(self, key: str) -> None:
+        over, retry_after = self._counter.over_limit(key)
+        if over:
+            raise _too_many_requests("too many requests; slow down", retry_after)
+        self._counter.increment(key)
+
+
 def _too_many_requests(detail: str, retry_after: int) -> HTTPException:
     return HTTPException(status_code=429, detail=detail, headers={"Retry-After": str(retry_after)})
 
@@ -249,6 +280,7 @@ app.add_middleware(
 # constructs them, with no import cycle back from the router it mounts.
 app.state.invite_throttle = InviteThrottle()
 app.state.accept_throttle = AcceptThrottle()
+app.state.live_calls_throttle = LiveCallsThrottle()
 
 app.include_router(auth.router)
 app.include_router(users.router)
@@ -271,6 +303,7 @@ app.include_router(telephony_configs.tenant_scoped_router)
 app.include_router(telephony_configs.router)
 app.include_router(telephony_configs.providers_router)
 app.include_router(audit_log.router)
+app.include_router(live_calls.router)
 
 
 @app.exception_handler(LookupError)

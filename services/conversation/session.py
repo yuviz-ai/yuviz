@@ -107,6 +107,12 @@ class IConversationHandler(Protocol):
                         for finalize_session() to be called on
                         TransferCompleted (see session_finalizer.py's
                         start_summary_early()).
+    - record_live_stage → Live Calls Monitoring's mid-call stage column
+                        (database/schema.sql's calls.live_stage). Called
+                        from the four transfer hooks below — the only
+                        places transfer state is known mid-call — and
+                        nothing else; a handler with no transcript
+                        persistence (EchoHandler) is a no-op.
     """
 
     async def greeting(self, session_id: str) -> list[bytes]: ...
@@ -134,6 +140,8 @@ class IConversationHandler(Protocol):
     def start_finalization(self, session_id: str) -> None: ...
 
     async def finalize_session(self, session_id: str, reason: str) -> FinalizationResult: ...
+
+    def record_live_stage(self, session_id: str, stage: str) -> None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +329,7 @@ class ConversationSession:
         any point after this, so this is the one guaranteed chance to react."""
         self._fsm.on_transfer_requested(destination, reason)
         self._metrics.increment("transfer_attempts_total")
+        self._handler.record_live_stage(self._ctx.session_id, "waiting_for_human")
         self._bus.publish(TransferInitiated(
             session_id=self._ctx.session_id, transfer_type=transfer_type,
             destination=destination, reason=reason, transfer_id=transfer_id,
@@ -353,6 +362,7 @@ class ConversationSession:
         self._transfer_outcome = "TRANSFER_SUCCESS"
         self._metrics.increment("transfer_success_total")
         self._fsm.on_transfer_completed(True, destination)
+        self._handler.record_live_stage(self._ctx.session_id, "human_connected")
         self._bus.publish(TransferCompleted(session_id=self._ctx.session_id,
                                             destination=destination, transfer_id=transfer_id))
         self._bus.publish(SessionFinalizing(session_id=self._ctx.session_id))
@@ -395,6 +405,7 @@ class ConversationSession:
             "TRANSFER_TIMEOUT" if reason == "transfer_timeout" else "TRANSFER_FAILED"
         )
         self._fsm.on_transfer_failed_event(reason)
+        self._handler.record_live_stage(self._ctx.session_id, "ai")
 
         any_audio = False
         first_audio = True
@@ -434,6 +445,7 @@ class ConversationSession:
         attempt's real outcome overwrites it."""
         self._transfer_outcome = "TRANSFER_CANCELLED"
         self._metrics.increment("transfer_cancelled_total")
+        self._handler.record_live_stage(self._ctx.session_id, "ai")
         log.info("Transfer cancelled (barge-in before dispatch) transfer_id=%s session=%s",
                  transfer_id, self._ctx.session_id)
         self._handler.on_transfer_cancelled(self._ctx.session_id)

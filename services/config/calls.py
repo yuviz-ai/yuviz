@@ -36,9 +36,17 @@ def _mode_of(row: dict[str, Any]) -> str:
     return "AI" if row.get("direction") == "inbound" else "WebRTC"
 
 
+# Written as JSONB by TranscriptBuilder.record_workflow_outcome(). Decode so
+# API consumers get objects/lists, not JSON strings.
+_JSON_COLUMNS = ("nodes_visited", "extracted_variables")
+
+
 def _decorate(row: dict[str, Any]) -> dict[str, Any]:
     row["status"] = _status_of(row)
     row["mode"] = _mode_of(row)
+    for column in _JSON_COLUMNS:
+        if column in row:
+            row[column] = db.json_col(row[column])
     return row
 
 
@@ -77,23 +85,50 @@ async def list_calls(
     }
 
 
-async def get_call(session_id: str) -> dict[str, Any] | None:
+async def get_call(
+    session_id: str,
+    *,
+    tenant_slug: str | None = None,
+) -> dict[str, Any] | None:
+    """tenant_slug=None is platform-scoped (superadmin / service account)."""
     pool = await db.get_pool()
-    row = await pool.fetchrow(
-        "SELECT c.*, a.name AS agent_name FROM calls c "
-        "LEFT JOIN agents a ON a.id = c.agent_id "
-        "WHERE c.session_id = $1",
-        session_id,
-    )
+    if tenant_slug is None:
+        row = await pool.fetchrow(
+            "SELECT c.*, a.name AS agent_name FROM calls c "
+            "LEFT JOIN agents a ON a.id = c.agent_id "
+            "WHERE c.session_id = $1",
+            session_id,
+        )
+    else:
+        row = await pool.fetchrow(
+            "SELECT c.*, a.name AS agent_name FROM calls c "
+            "LEFT JOIN agents a ON a.id = c.agent_id "
+            "WHERE c.session_id = $1 AND c.tenant_id = $2",
+            session_id, tenant_slug,
+        )
     return _decorate(dict(row)) if row is not None else None
 
 
-async def get_transcript(session_id: str) -> list[dict[str, Any]]:
+async def get_transcript(
+    session_id: str,
+    *,
+    tenant_slug: str | None = None,
+) -> list[dict[str, Any]]:
+    """tenant_slug scopes via the owning calls row (same predicate as get_call)."""
     pool = await db.get_pool()
-    rows = await pool.fetch(
-        "SELECT * FROM transcript_entries WHERE session_id = $1 ORDER BY turn_number",
-        session_id,
-    )
+    if tenant_slug is None:
+        rows = await pool.fetch(
+            "SELECT * FROM transcript_entries WHERE session_id = $1 ORDER BY turn_number",
+            session_id,
+        )
+    else:
+        rows = await pool.fetch(
+            "SELECT te.* FROM transcript_entries te "
+            "JOIN calls c ON c.session_id = te.session_id "
+            "WHERE te.session_id = $1 AND c.tenant_id = $2 "
+            "ORDER BY te.turn_number",
+            session_id, tenant_slug,
+        )
     return [dict(row) for row in rows]
 
 
