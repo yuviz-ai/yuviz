@@ -34,7 +34,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import asyncpg
@@ -73,6 +73,16 @@ class ResolvedToolPolicy:
     extra:                   dict[str, Any]
     timeout_ms:              int | None
     max_calls_per_turn:      int | None
+    # execute_api only — the agent's effective chain-depth ceiling from
+    # agent_tool_policies.max_chain_depth (NULL = platform default, same
+    # NULL-means-framework-default contract as timeout_ms above). None for
+    # every other tool.
+    max_chain_depth:         int | None = None
+    # execute_api only — union of custom_api_params.name WHERE sensitive AND
+    # source='caller', across the agent's enabled APIs (see
+    # _specialize_execute_api). Empty frozenset for every legacy tool, so
+    # their logging stays byte-identical to today (middleware.py finding 8).
+    sensitive_arg_keys:      frozenset[str] = frozenset()
 
 
 class ToolPolicyResolver:
@@ -110,7 +120,7 @@ class ToolPolicyResolver:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT atp.tool_name, atp.timeout_ms, atp.max_calls_per_turn,
+                SELECT atp.tool_name, atp.timeout_ms, atp.max_calls_per_turn, atp.max_chain_depth,
                        tpc.id AS tool_provider_config_id, tpc.engine, tpc.api_key_ref, tpc.extra
                 FROM agent_tool_policies atp
                 JOIN tool_provider_configs tpc ON tpc.id = atp.tool_provider_config_id
@@ -139,13 +149,92 @@ class ToolPolicyResolver:
                 extra=extra,
                 timeout_ms=row["timeout_ms"],
                 max_calls_per_turn=row["max_calls_per_turn"],
+                max_chain_depth=row["max_chain_depth"],
             ))
 
         self._add_auto_derived_companions(resolved, agent_id)
+        await self._specialize_execute_api_if_present(resolved, agent_id)
 
         # Cache unnarrowed; `only` is applied on read (varies per node).
         self._cache[agent_id] = (time.monotonic(), resolved)
         return _narrow(resolved, only)
+
+    async def _specialize_execute_api_if_present(
+        self, resolved: list[ResolvedToolPolicy], agent_id: str,
+    ) -> None:
+        """Runs the execute_api specialization query only when an
+        agent_tool_policies row for it is actually present (AC 9 — an agent
+        that never enabled execute_api issues no second query at all).
+        Drops the policy entirely when the agent has zero enabled custom
+        APIs, so the LLM never sees an execute_api with an empty enum."""
+        for i, policy in enumerate(resolved):
+            if policy.definition.name != "execute_api":
+                continue
+            specialized = await self._specialize_execute_api(policy.definition, agent_id)
+            if specialized is None:
+                del resolved[i]
+            else:
+                defn, sensitive_arg_keys = specialized
+                resolved[i] = replace(policy, definition=defn, sensitive_arg_keys=sensitive_arg_keys)
+            return
+
+    async def _specialize_execute_api(
+        self, defn: ToolDefinition, agent_id: str,
+    ) -> tuple[ToolDefinition, frozenset[str]] | None:
+        """Returns (defn with api_name.enum + per-API leaf-input docs, the
+        union of sensitive caller-param names across those APIs), or None
+        when the agent has zero enabled custom APIs.
+
+        The query is the runtime tenant fence for AC 10 — an agent_custom_apis
+        row can only resolve if the agent and the API share a tenant,
+        independent of the write-time check in services/toolexec."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT ca.id, ca.name, ca.description, ca.chain_levels,
+                       p.name AS param_name, p.description AS param_description,
+                       p.json_type, p.required, p.sensitive AS param_sensitive
+                FROM agent_custom_apis aca
+                JOIN custom_apis ca ON ca.id = aca.custom_api_id AND ca.deleted_at IS NULL
+                JOIN agents      a  ON a.id  = aca.agent_id AND a.tenant_id = ca.tenant_id
+                LEFT JOIN custom_api_params p ON p.custom_api_id = ca.id AND p.source = 'caller'
+                WHERE aca.agent_id = $1 AND aca.enabled
+                ORDER BY ca.name, p.name
+                """,
+                agent_id,
+            )
+        if not rows:
+            return None
+
+        apis: dict[str, dict[str, Any]] = {}
+        sensitive_arg_keys: set[str] = set()
+        for row in rows:
+            api = apis.setdefault(row["name"], {"description": row["description"], "params": []})
+            if row["param_name"] is not None:
+                api["params"].append(row)
+                if row["param_sensitive"]:
+                    sensitive_arg_keys.add(row["param_name"])
+
+        api_docs = "\n".join(
+            f"- {name}: {api['description']}" + "".join(
+                f"\n    * {p['param_name']} ({p['json_type']}"
+                f"{', required' if p['required'] else ''}): {p['param_description']}"
+                for p in api["params"]
+            )
+            for name, api in apis.items()
+        )
+        specialized = replace(
+            defn,
+            description=f"{defn.description}\n\nAvailable APIs:\n{api_docs}",
+            parameters_schema={
+                **defn.parameters_schema,
+                "properties": {
+                    **defn.parameters_schema["properties"],
+                    "api_name": {"type": "string", "enum": sorted(apis)},
+                },
+            },
+        )
+        return specialized, frozenset(sensitive_arg_keys)
 
     def _add_auto_derived_companions(self, resolved: list[ResolvedToolPolicy], agent_id: str) -> None:
         """Fill gaps from _AUTO_DERIVED_COMPANIONS; explicit rows win."""

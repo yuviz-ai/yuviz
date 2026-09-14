@@ -194,11 +194,37 @@ _SEND_SMS = ToolDefinition(
     llm_visible=False,
 )
 
+# execute_api — the ONE LLM-facing entry for every tenant-registered custom
+# API (services/toolexec/). api_name's enum is empty here; ToolPolicyResolver
+# ._specialize_execute_api() fills it in per agent at resolve time with that
+# agent's enabled APIs (and appends their leaf-input docs to the
+# description) — see policy_resolver.py. An agent with zero enabled custom
+# APIs never gets this tool at all, so the LLM never sees an empty enum.
+_EXECUTE_API = ToolDefinition(
+    name="execute_api",
+    description=(
+        "Call one of this business's own systems. Pick api_name from the list below and "
+        "supply only the inputs it says come from the caller; anything a prior system must "
+        "provide is fetched automatically — never ask the caller for it and never claim a "
+        "result this function did not return."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "api_name": {"type": "string", "enum": []},
+            "inputs": {"type": "object", "description": "Leaf inputs this api_name needs from the caller."},
+        },
+        "required": ["api_name"],
+    },
+    category="custom_api",
+)
+
 _DEFAULT_TOOLS: dict[str, ToolDefinition] = {
     _BOOK_APPOINTMENT.name: _BOOK_APPOINTMENT,
     _CANCEL_APPOINTMENT.name: _CANCEL_APPOINTMENT,
     _RESCHEDULE_APPOINTMENT.name: _RESCHEDULE_APPOINTMENT,
     _SEND_SMS.name: _SEND_SMS,
+    _EXECUTE_API.name: _EXECUTE_API,
 }
 
 

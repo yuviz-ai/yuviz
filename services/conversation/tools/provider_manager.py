@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections import defaultdict
 from typing import Any, Awaitable, Callable
 
@@ -63,9 +64,26 @@ async def _make_twilio_sms(policy: ResolvedToolPolicy, api_key: str | None) -> A
     return TwilioSmsProvider(account_sid=account_sid, auth_token=api_key, from_number=from_number)
 
 
+async def _make_toolexec(policy: ResolvedToolPolicy, api_key: str | None) -> Any:
+    from .providers.toolexec.client import ToolExecClient
+
+    # engine='toolexec' is internal infrastructure, not a tenant credential
+    # — no api_key_ref is required (services/config/routers/tool_provider_
+    # configs.py exempts this engine from the usual "api_key_ref or api_key
+    # is required" check). Auth against the service is the conversation
+    # service's own service account, not anything tenant-supplied.
+    return ToolExecClient(
+        base_url=os.environ.get("TOOLEXEC_SERVICE_URL", "http://localhost:8600"),
+        auth_base_url=os.environ.get("CONFIG_SERVICE_URL", "http://localhost:8000"),
+        service_email=os.environ.get("CONFIG_SERVICE_EMAIL", ""),
+        service_password=os.environ.get("CONFIG_SERVICE_PASSWORD", ""),
+    )
+
+
 _DEFAULT_REGISTRY: dict[str, ProviderFactory] = {
     "cal_com": _make_cal_com,
     "twilio": _make_twilio_sms,
+    "toolexec": _make_toolexec,
 }
 
 
