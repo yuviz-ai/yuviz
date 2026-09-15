@@ -1,10 +1,12 @@
 "use client";
 
-// Full-page workflow editor — an agent IS its flow (2026-08-30), so this is
-// what opening an agent shows. Its voice, model, tools and number are one
-// level down at ./settings, reached from the editor's ⋮ menu.
+// Full-page call-flow editor for one agent. An agent no longer *is* its
+// flow (that was the 2026-08-30 model): opening an agent now shows its
+// configuration under /agents, and this canvas is the separate, optional
+// surface for splitting a call into steps. The flow graph is still stored
+// on the agent row (agents.workflow), so this route stays keyed by agent.
 //
-// No header row of its own: the back link, the title and the settings entry
+// No header row of its own: the back link, the title and the config entry
 // are passed into WorkflowPanel's toolbar so the canvas starts one row down
 // instead of two.
 
@@ -38,7 +40,7 @@ export default function WorkflowEditorPage() {
         header={{
           title: agent.name,
           backHref: "/workflows",
-          settingsHref: `/workflows/${tenantSlug}/${agentSlug}/settings`,
+          settingsHref: `/agents/${tenantSlug}/${agentSlug}`,
         }}
       />
     </div>

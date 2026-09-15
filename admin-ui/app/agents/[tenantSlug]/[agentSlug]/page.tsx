@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Agent, AgentStatus, AgentUpdate, ApiError, deleteAgent, getAgent, listProviders, ProviderConfig, updateAgent, updateProvider } from "@/lib/api";
 import { KnowledgeBaseTabs } from "@/components/KnowledgeBaseTabs";
 import { ToolsPanel } from "@/components/ToolsPanel";
@@ -12,16 +11,31 @@ import { LocalVoicePicker } from "@/components/LocalVoicePicker";
 import { ElevenLabsVoicePicker } from "@/components/ElevenLabsVoicePicker";
 import { LANGUAGES, OTHER, asBrowsableTtsEngine } from "@/lib/engineCatalog";
 
-type Tab = "overview" | "behaviour" | "escalation" | "sip" | "tools" | "knowledge-base";
+// Same stages as the creation wizard (/agents/new), in the same order, so
+// editing an agent and creating one are the same mental model. The wizard's
+// final "Review" step is "Prompt" here — on an existing agent the prompt is
+// a stored value you edit, not a draft you generate before saving.
+type Tab = "identity" | "voice" | "limits" | "advanced" | "knowledge" | "prompt" | "sip";
+
+const TABS: { key: Tab; label: string }[] = [
+  { key: "identity", label: "Identity" },
+  { key: "voice", label: "Language & Voice" },
+  { key: "limits", label: "Limits" },
+  { key: "advanced", label: "Advanced" },
+  { key: "knowledge", label: "Knowledge & Tools" },
+  { key: "prompt", label: "Prompt" },
+  { key: "sip", label: "SIP" },
+];
 
 export default function AgentDetailPage() {
   const params = useParams<{ tenantSlug: string; agentSlug: string }>();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { tenantSlug, agentSlug } = params;
 
   const [agent, setAgent] = useState<Agent | null>(null);
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
-  const [tab, setTab] = useState<Tab>("overview");
+  const [tab, setTab] = useState<Tab>("identity");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -42,8 +56,17 @@ export default function AgentDetailPage() {
   const [chosenEngine, setChosenEngine] = useState<"macos" | "kokoro" | "elevenlabs" | null>(null);
   const [showEngineChooser, setShowEngineChooser] = useState(false);
 
-  // Greeting / system prompt live on the canvas; end-call and transfer
-  // speech still use agent columns (pipeline _prompt_suffix / scripted lines).
+  // Greeting / system prompt are edited here again (Prompt tab), not only on
+  // the canvas: they are agent columns, and update_agent mirrors them into
+  // the flow's start/global nodes, so the two stay in sync either way.
+
+  // Landed here straight from the creation wizard (?test=1) — open the test
+  // call immediately so the very first thing you do with a new agent is
+  // hear whether it actually talks the way the wizard said it should.
+  useEffect(() => {
+    if (searchParams.get("test") === "1") setTestingAgent(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -53,6 +76,8 @@ export default function AgentDetailPage() {
         setAgent(a);
         setForm({
           name: a.name,
+          greeting: a.greeting,
+          system_prompt: a.system_prompt,
           goodbye_grace_ms: a.goodbye_grace_ms,
           language: a.language,
           stt_config_id: a.stt_config_id,
@@ -127,7 +152,7 @@ export default function AgentDetailPage() {
     setDeleting(true);
     try {
       await deleteAgent(tenantSlug, agent.id);
-      router.push("/workflows");
+      router.push("/agents");
     } catch (e) {
       setSaveError(e instanceof ApiError ? e.detail : String(e));
       setDeleting(false);
@@ -143,17 +168,23 @@ export default function AgentDetailPage() {
   return (
     <>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-        {/* A sub-route of the agent's own flow (2026-08-30), so back goes
-            up one level to the canvas, not out to a list. */}
-        <button
-          className="btn btn-ghost btn-sm"
-          onClick={() => router.push(`/workflows/${tenantSlug}/${agentSlug}`)}
-        >
-          ← Back to workflow
+        {/* This page IS the agent now (not a sub-route of the canvas), so
+            back goes out to the agent list; the call flow is a sibling
+            surface reached explicitly. */}
+        <button className="btn btn-ghost btn-sm" onClick={() => router.push("/agents")}>
+          ← All agents
         </button>
-        <button className="btn btn-primary btn-sm" onClick={() => setTestingAgent(true)}>
-          🎙️ Test Agent
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => router.push(`/workflows/${tenantSlug}/${agentSlug}`)}
+          >
+            Call flow →
+          </button>
+          <button className="btn btn-primary btn-sm" onClick={() => setTestingAgent(true)}>
+            🎙️ Test Agent
+          </button>
+        </div>
       </div>
 
       <TestAgentPanel
@@ -164,29 +195,124 @@ export default function AgentDetailPage() {
       />
 
       <div className="tabs">
-        <button className={`tab${tab === "overview" ? " active" : ""}`} onClick={() => setTab("overview")}>
-          Overview
-        </button>
-        <button className={`tab${tab === "behaviour" ? " active" : ""}`} onClick={() => setTab("behaviour")}>
-          Behaviour
-        </button>
-        <button className={`tab${tab === "escalation" ? " active" : ""}`} onClick={() => setTab("escalation")}>
-          Escalation
-        </button>
-        <button className={`tab${tab === "sip" ? " active" : ""}`} onClick={() => setTab("sip")}>
-          SIP
-        </button>
-        <button className={`tab${tab === "tools" ? " active" : ""}`} onClick={() => setTab("tools")}>
-          Tools
-        </button>
-        <button className={`tab${tab === "knowledge-base" ? " active" : ""}`} onClick={() => setTab("knowledge-base")}>
-          Knowledge Base
-        </button>
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            className={`tab${tab === t.key ? " active" : ""}`}
+            onClick={() => setTab(t.key)}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
 
       {saveError && <div className="error-banner">{saveError}</div>}
 
-      {tab === "overview" && (
+      {tab === "limits" && (
+        <div className="card">
+          <div className="card-hdr">
+            <div className="card-title">Limits</div>
+            <div className="card-sub">hard caps this agent runs under on every call</div>
+          </div>
+          <div className="card-body">
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">
+                  Max Call Duration <span className="hint">seconds — hard cutoff, caller hears a wrap-up line then the call ends. Blank = unlimited.</span>
+                </label>
+                <input
+                  className="form-input"
+                  style={{ fontFamily: "var(--mono)" }}
+                  type="number"
+                  min={30}
+                  max={7200}
+                  placeholder="unlimited"
+                  value={form.max_call_duration_s ?? ""}
+                  onChange={(e) =>
+                    setForm({ ...form, max_call_duration_s: e.target.value === "" ? null : Number(e.target.value) })
+                  }
+                />
+              </div>
+              <div className="form-group">
+                <label className="form-label">
+                  Goodbye Grace <span className="hint">ms — pause before hanging up after the farewell</span>
+                </label>
+                <input
+                  className="form-input"
+                  style={{ fontFamily: "var(--mono)" }}
+                  type="number"
+                  value={form.goodbye_grace_ms ?? ""}
+                  onChange={(e) => setForm({ ...form, goodbye_grace_ms: Number(e.target.value) })}
+                />
+              </div>
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">
+                Escalate after <span className="hint">consecutive guardrail triggers — requires a transfer rule under Advanced</span>
+              </label>
+              <input
+                className="form-input"
+                style={{ fontFamily: "var(--mono)", width: 80 }}
+                type="number"
+                min={1}
+                step={1}
+                value={form.escalation_threshold ?? ""}
+                onChange={(e) => {
+                  if (e.target.value === "") {
+                    setForm({ ...form, escalation_threshold: null });
+                    return;
+                  }
+                  const v = Number(e.target.value);
+                  if (Number.isInteger(v) && v >= 1) setForm({ ...form, escalation_threshold: v });
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tab === "prompt" && (
+        <div className="card">
+          <div className="card-hdr">
+            <div className="card-title">Prompt</div>
+            <div className="card-sub">what the agent says first, and the rules it runs under</div>
+          </div>
+          <div className="card-body">
+            <div className="form-group">
+              <label className="form-label">
+                Greeting <span className="hint">first thing the agent says — also mirrored onto the call flow&apos;s start step</span>
+              </label>
+              <input
+                className="form-input"
+                value={form.greeting ?? ""}
+                onChange={(e) => setForm({ ...form, greeting: e.target.value })}
+              />
+            </div>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">
+                System Prompt <span className="hint">mirrored onto the flow&apos;s always-applies step</span>
+              </label>
+              <textarea
+                className="form-textarea"
+                style={{ minHeight: 200 }}
+                value={form.system_prompt ?? ""}
+                onChange={(e) => setForm({ ...form, system_prompt: e.target.value })}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tab === "knowledge" && (
+        <>
+          <KnowledgeBaseTabs tenantId={agent.tenant_id} agentId={agent.id} />
+          <div style={{ marginTop: 16 }}>
+            <ToolsPanel tenantId={agent.tenant_id} agentId={agent.id} />
+          </div>
+        </>
+      )}
+
+      {tab === "identity" && (
         <div className="cols">
           <div className="col-main">
             <div className="card">
@@ -198,43 +324,13 @@ export default function AgentDetailPage() {
                 </div>
               </div>
               <div className="card-body">
-                <div className="form-row">
-                  <div className="form-group">
-                    <label className="form-label">
-                      Display Name <span className="required">*</span>
-                    </label>
-                    <input className="form-input" value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">
-                      Goodbye Grace <span className="hint">ms</span>
-                    </label>
-                    <input
-                      className="form-input"
-                      style={{ fontFamily: "var(--mono)" }}
-                      value={form.goodbye_grace_ms ?? ""}
-                      onChange={(e) => setForm({ ...form, goodbye_grace_ms: Number(e.target.value) })}
-                    />
-                  </div>
-                </div>
                 <div className="form-group">
                   <label className="form-label">
-                    Max Call Duration <span className="hint">seconds — hard cutoff, caller hears a wrap-up line then the call ends. Leave blank for unlimited.</span>
+                    Display Name <span className="required">*</span>
                   </label>
-                  <input
-                    className="form-input"
-                    style={{ fontFamily: "var(--mono)", maxWidth: 160 }}
-                    type="number"
-                    min={30}
-                    max={7200}
-                    placeholder="unlimited"
-                    value={form.max_call_duration_s ?? ""}
-                    onChange={(e) =>
-                      setForm({ ...form, max_call_duration_s: e.target.value === "" ? null : Number(e.target.value) })
-                    }
-                  />
+                  <input className="form-input" value={form.name || ""} onChange={(e) => setForm({ ...form, name: e.target.value })} />
                 </div>
-                <div className="form-group">
+                <div className="form-group" style={{ marginBottom: 0 }}>
                   <label className="form-label">
                     Status <span className="hint">inactive agents keep their config but stop resolving on calls</span>
                   </label>
@@ -247,7 +343,33 @@ export default function AgentDetailPage() {
                     <option value="inactive">inactive</option>
                   </select>
                 </div>
-                <div className="form-group">
+              </div>
+            </div>
+          </div>
+          <div className="col-side">
+            <div className="card">
+              <div className="card-body" style={{ fontSize: ".75rem", color: "var(--text-3)" }}>
+                <div>
+                  Account: <b style={{ color: "var(--text)" }}>{tenantSlug}</b>
+                </div>
+                <div style={{ marginTop: 6 }}>
+                  Slug: <span className="mono">{agent.slug}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tab === "voice" && (
+        <div className="cols">
+          <div className="col-main">
+            <div className="card" style={{ marginBottom: 14 }}>
+              <div className="card-hdr">
+                <div className="card-title">Language</div>
+              </div>
+              <div className="card-body">
+                <div className="form-group" style={{ marginBottom: 0 }}>
                   <label className="form-label">
                     Language <span className="hint">overrides the STT/TTS provider&apos;s own language when set</span>
                   </label>
@@ -273,65 +395,6 @@ export default function AgentDetailPage() {
                       placeholder="e.g. nl-BE"
                     />
                   )}
-                </div>
-              </div>
-            </div>
-          </div>
-          <div className="col-side">
-            <div className="card">
-              <div className="card-body" style={{ fontSize: ".75rem", color: "var(--text-3)" }}>
-                <div>
-                  Account: <b style={{ color: "var(--text)" }}>{tenantSlug}</b>
-                </div>
-                <div style={{ marginTop: 6 }}>
-                  Slug: <span className="mono">{agent.slug}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {tab === "behaviour" && (
-        <div className="cols">
-          <div className="col-main">
-            <div className="info-banner">
-              <strong>Stage prompts live in the{" "}
-              <Link href={`/workflows/${tenantSlug}/${agentSlug}`}>flow</Link>.</strong>{" "}
-              Greeting is on the start step; always-applies holds global instructions
-              (one freeform textarea — the old Personality / Environment / Tone splitter
-              is gone). End-call and transfer wording below still apply on every call.
-            </div>
-
-            <div className="card" style={{ marginBottom: 14 }}>
-              <div className="card-hdr">
-                <div className="card-title">Call ending</div>
-                <div className="card-sub">condition + verbatim farewell</div>
-              </div>
-              <div className="card-body">
-                <div className="form-group">
-                  <label className="form-label">
-                    End Call Condition <span className="hint">WHEN to end — a &quot;When the caller…&quot; clause, not what to say. Blank = default.</span>
-                  </label>
-                  <textarea
-                    className="form-textarea"
-                    style={{ minHeight: 48 }}
-                    value={form.end_call_prompt || ""}
-                    onChange={(e) => setForm({ ...form, end_call_prompt: e.target.value || null })}
-                    placeholder="When the conversation is genuinely finished (the caller says goodbye, has no more questions, or the issue is resolved)"
-                  />
-                </div>
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label">
-                    Farewell Message <span className="hint">exact words spoken when ending the call — verbatim, never paraphrased. Blank = AI chooses the wording.</span>
-                  </label>
-                  <textarea
-                    className="form-textarea"
-                    style={{ minHeight: 48 }}
-                    value={form.farewell_message || ""}
-                    onChange={(e) => setForm({ ...form, farewell_message: e.target.value || null })}
-                    placeholder="Thank you for calling. Have a wonderful day. Goodbye!"
-                  />
                 </div>
               </div>
             </div>
@@ -502,9 +565,42 @@ export default function AgentDetailPage() {
         </div>
       )}
 
-      {tab === "escalation" && (
+      {tab === "advanced" && (
         <div className="cols">
           <div className="col-main">
+            <div className="card" style={{ marginBottom: 14 }}>
+              <div className="card-hdr">
+                <div className="card-title">Call ending</div>
+                <div className="card-sub">condition + verbatim farewell</div>
+              </div>
+              <div className="card-body">
+                <div className="form-group">
+                  <label className="form-label">
+                    End Call Condition <span className="hint">WHEN to end — a &quot;When the caller…&quot; clause, not what to say. Blank = default.</span>
+                  </label>
+                  <textarea
+                    className="form-textarea"
+                    style={{ minHeight: 48 }}
+                    value={form.end_call_prompt || ""}
+                    onChange={(e) => setForm({ ...form, end_call_prompt: e.target.value || null })}
+                    placeholder="When the conversation is genuinely finished (the caller says goodbye, has no more questions, or the issue is resolved)"
+                  />
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">
+                    Farewell Message <span className="hint">exact words spoken when ending the call — verbatim, never paraphrased. Blank = AI chooses the wording.</span>
+                  </label>
+                  <textarea
+                    className="form-textarea"
+                    style={{ minHeight: 48 }}
+                    value={form.farewell_message || ""}
+                    onChange={(e) => setForm({ ...form, farewell_message: e.target.value || null })}
+                    placeholder="Thank you for calling. Have a wonderful day. Goodbye!"
+                  />
+                </div>
+              </div>
+            </div>
+
             <div className="card">
               <div className="card-hdr">
                 <div className="card-title">Human Escalation</div>
@@ -579,27 +675,8 @@ export default function AgentDetailPage() {
                     />
                   </div>
                 </div>
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label">
-                    Escalate after <span className="hint">consecutive guardrail triggers — requires a guardrail detector (not yet built) to actually fire</span>
-                  </label>
-                  <input
-                    className="form-input"
-                    style={{ fontFamily: "var(--mono)", width: 80 }}
-                    type="number"
-                    min={1}
-                    step={1}
-                    value={form.escalation_threshold ?? ""}
-                    onChange={(e) => {
-                      if (e.target.value === "") {
-                        setForm({ ...form, escalation_threshold: null });
-                        return;
-                      }
-                      const v = Number(e.target.value);
-                      if (Number.isInteger(v) && v >= 1) setForm({ ...form, escalation_threshold: v });
-                    }}
-                  />
-                </div>
+                {/* "Escalate after N triggers" lives under Limits, next to
+                    the other numeric caps — same field, one place. */}
               </div>
             </div>
 
@@ -679,11 +756,9 @@ export default function AgentDetailPage() {
 
       {tab === "sip" && <SipPanel tenantId={agent.tenant_id} agentId={agent.id} />}
 
-      {tab === "tools" && <ToolsPanel tenantId={agent.tenant_id} agentId={agent.id} />}
-
-      {tab === "knowledge-base" && <KnowledgeBaseTabs tenantId={agent.tenant_id} agentId={agent.id} />}
-
-      {tab !== "knowledge-base" && tab !== "tools" && (
+      {/* Knowledge & Tools saves through its own panels, per row — there is
+          nothing on that tab the agent-level Save bar would write. */}
+      {tab !== "knowledge" && (
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
           {saved && <span style={{ alignSelf: "center", fontSize: ".76rem", color: "var(--green)" }}>Saved ✓</span>}
           <button className="btn btn-danger btn-sm" onClick={handleDelete} disabled={deleting}>

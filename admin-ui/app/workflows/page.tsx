@@ -1,60 +1,34 @@
 "use client";
 
-// Agents list — create drops you on the canvas; voice/model/tools/number
-// live at ./[tenant]/[agent]/settings. URLs stay /workflows/*; labels say agent.
+// Call Flows — named IVR/OBD flows, each its own object (call_flows table),
+// separate from Agent Studio (/agents) which owns an agent's identity, voice
+// and knowledge.
+//
+// A flow is NOT one agent's conversation graph: it branches on a keypress,
+// it has a name and a slug of its own, and several agents can point at the
+// same one (agents.call_flow_id). The agent's own conversational graph still
+// lives at /workflows/{tenant}/{agent} — reachable from Agent Studio, not
+// listed here.
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import {
-  AgentWithTenant,
-  ApiError,
-  Tenant,
-  createAgent,
-  listAllAgents,
-  listTenants,
-} from "@/lib/api";
+import { ApiError, Tenant, listTenants } from "@/lib/api";
+import { CallFlowSummary, createCallFlow, listCallFlows } from "@/lib/callFlowApi";
 import { Modal } from "@/components/Modal";
 
-type FlowState = "live" | "unpublished" | "draft" | "none";
-
-function flowState(a: AgentWithTenant): FlowState {
-  if (a.has_workflow) return a.workflow_diverged ? "unpublished" : "live";
-  if (a.has_workflow_draft) return "draft";
-  return "none";
-}
-
-const STATE_LABEL: Record<FlowState, string> = {
-  live: "Live",
-  unpublished: "Unpublished changes",
-  draft: "Draft — not published",
-  none: "Single prompt",
-};
-
-const STATE_BADGE: Record<FlowState, string> = {
-  live: "green",
-  unpublished: "amber",
-  draft: "amber",
-  none: "gray",
-};
-
-function stepCount(a: AgentWithTenant): number | null {
-  return a.workflow_node_count ?? null;
+interface FlowRow extends CallFlowSummary {
+  tenantSlug: string;
+  tenantName: string;
 }
 
 function slugify(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
-// Non-empty global prompt so pipeline date grounding / [[END_CALL]] attach.
-const DEFAULT_GREETING = "Hello! How can I help you today?";
-const DEFAULT_SYSTEM_PROMPT =
-  "You are a helpful voice assistant on a phone call. Answer in at most 2-3 short " +
-  "spoken sentences. Plain conversational speech only — no markdown, no lists.";
-
-export default function WorkflowsPage() {
+export default function CallFlowsPage() {
   const router = useRouter();
-  const [agents, setAgents] = useState<AgentWithTenant[]>([]);
   const [tenants, setTenants] = useState<Tenant[]>([]);
+  const [flows, setFlows] = useState<FlowRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -66,19 +40,19 @@ export default function WorkflowsPage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).get("new") !== "1") return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setCreating(true);
-  }, []);
-
-  useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     listTenants()
       .then(async (ts) => {
         setTenants(ts);
         if (ts.length > 0) setNewTenant(ts[0].slug);
-        setAgents(await listAllAgents(ts));
+        const perTenant = await Promise.all(
+          ts.map(async (t) => {
+            const rows = await listCallFlows(t.slug).catch(() => [] as CallFlowSummary[]);
+            return rows.map((f) => ({ ...f, tenantSlug: t.slug, tenantName: t.name }));
+          }),
+        );
+        setFlows(perTenant.flat());
       })
       .catch((e) => setError(e instanceof ApiError ? e.detail : String(e)))
       .finally(() => setLoading(false));
@@ -87,15 +61,12 @@ export default function WorkflowsPage() {
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();
     const matched = q
-      ? agents.filter((a) => `${a.name} ${a.tenantName}`.toLowerCase().includes(q))
-      : agents;
-    const rank: Record<FlowState, number> = { live: 0, unpublished: 1, draft: 2, none: 3 };
-    return [...matched].sort(
-      (a, b) => rank[flowState(a)] - rank[flowState(b)] || a.name.localeCompare(b.name),
-    );
-  }, [agents, search]);
+      ? flows.filter((f) => `${f.name} ${f.tenantName}`.toLowerCase().includes(q))
+      : flows;
+    return [...matched].sort((a, b) => a.name.localeCompare(b.name));
+  }, [flows, search]);
 
-  const open = (a: AgentWithTenant) => router.push(`/workflows/${a.tenantSlug}/${a.slug}`);
+  const open = (f: FlowRow) => router.push(`/workflows/flows/${f.id}`);
 
   const handleCreate = async () => {
     const slug = slugify(newName);
@@ -103,13 +74,8 @@ export default function WorkflowsPage() {
     setBusy(true);
     setCreateError(null);
     try {
-      const agent = await createAgent(newTenant, {
-        slug,
-        name: newName.trim(),
-        greeting: DEFAULT_GREETING,
-        system_prompt: DEFAULT_SYSTEM_PROMPT,
-      });
-      router.push(`/workflows/${newTenant}/${agent.slug}`);
+      const flow = await createCallFlow(newTenant, { slug, name: newName.trim() });
+      router.push(`/workflows/flows/${flow.id}`);
     } catch (e) {
       setCreateError(e instanceof ApiError ? e.detail : String(e));
       setBusy(false);
@@ -120,16 +86,16 @@ export default function WorkflowsPage() {
     <>
       <div className="card">
         <div className="card-hdr">
-          <span className="card-title">Your Agents</span>
+          <span className="card-title">Call Flows</span>
           <input
             className="form-input"
             style={{ width: 200, marginLeft: "auto" }}
-            placeholder="Search agents…"
+            placeholder="Search flows…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
           <button className="btn btn-primary btn-sm" onClick={() => setCreating(true)}>
-            + New agent
+            + New flow
           </button>
         </div>
 
@@ -139,50 +105,48 @@ export default function WorkflowsPage() {
           <div className="card-body"><div className="error-banner">{error}</div></div>
         ) : rows.length === 0 ? (
           <div className="empty-state">
-            No agents yet. Create one to draw its first conversation flow.
+            No call flows yet. A flow answers the call, plays a menu and routes on a keypress —
+            create one to draw it.
           </div>
         ) : (
           <table className="tbl">
             <thead>
               <tr>
-                <th>Agent</th><th>Account</th><th>Flow</th><th>Steps</th><th />
+                <th>Flow</th><th>Account</th><th>State</th><th>Version</th><th />
               </tr>
             </thead>
             <tbody>
-              {rows.map((a) => {
-                const state = flowState(a);
-                const steps = stepCount(a);
-                return (
-                  <tr key={a.id} onClick={() => open(a)}>
-                    <td className="bold">{a.name}</td>
-                    <td>{a.tenantName}</td>
-                    <td>
-                      <span className={`badge ${STATE_BADGE[state]}`}>{STATE_LABEL[state]}</span>
-                    </td>
-                    <td className="mono">{steps === null ? "—" : steps}</td>
-                    <td style={{ textAlign: "right" }}>
-                      <button className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); open(a); }}>
-                        {state === "none" ? "Build a flow" : "Open"}
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
+              {rows.map((f) => (
+                <tr key={f.id} onClick={() => open(f)}>
+                  <td className="bold">{f.name}</td>
+                  <td>{f.tenantName}</td>
+                  <td>
+                    <span className={`badge ${f.status === "active" ? "green" : "gray"}`}>
+                      {f.status === "active" ? "Active" : "Paused"}
+                    </span>
+                  </td>
+                  <td className="mono">v{f.config_version}</td>
+                  <td style={{ textAlign: "right" }}>
+                    <button className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); open(f); }}>
+                      Open
+                    </button>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         )}
       </div>
 
       <div className="form-hint" style={{ marginTop: 10 }}>
-        A flow splits a call into steps, each with its own instructions and its own tools, so the
-        agent can&apos;t book before it has verified. Agents marked <strong>Single prompt</strong> run
-        one instruction for the whole call — which is the right choice for simple agents. Voice,
-        model, tools and phone number are under <strong>Settings</strong> inside each agent.
+        A call flow answers before any AI agent does: it plays prompts, collects keypresses, and
+        routes the caller — to a human, to an AI agent, or to hangup. Attach one to an agent from
+        that agent&apos;s <strong>Advanced</strong> tab in Agent Studio.
       </div>
 
       <Modal
         open={creating}
-        title="New agent"
+        title="New call flow"
         onClose={() => { if (!busy) setCreating(false); }}
         footer={
           <>
@@ -206,29 +170,22 @@ export default function WorkflowsPage() {
             className="form-input"
             autoFocus
             value={newName}
-            placeholder="Booking Bot"
+            placeholder="Main line IVR"
             onChange={(e) => setNewName(e.target.value)}
           />
           {newName.trim() !== "" && (
-            <div className="form-hint">
-              Address: <span className="mono">{slugify(newName) || "—"}</span>
-            </div>
+            <div className="form-hint">Address: <span className="mono">{slugify(newName) || "—"}</span></div>
           )}
         </div>
         <div className="form-group" style={{ marginBottom: 0 }}>
           <label className="form-label">Account <span className="required">*</span></label>
-          <select
-            className="form-select"
-            value={newTenant}
-            onChange={(e) => setNewTenant(e.target.value)}
-          >
+          <select className="form-select" value={newTenant} onChange={(e) => setNewTenant(e.target.value)}>
             {tenants.map((t) => (
               <option key={t.id} value={t.slug}>{t.name}</option>
             ))}
           </select>
           <div className="form-hint">
-            You land on the canvas with a starter flow drawn. Everything else — voice, model,
-            tools, number — is under Settings once it exists.
+            You land on the canvas with a starter flow drawn: answer, greet, hang up.
           </div>
         </div>
       </Modal>

@@ -36,6 +36,8 @@ _UPDATABLE_FIELDS = {
     "end_call_prompt", "transfer_prompt",
     "farewell_message", "transfer_announcement",
     "status", "max_call_duration_s",
+    # Which call flow (if any) answers ahead of this agent — see call_flows.py.
+    "call_flow_id",
 }
 
 _JSON_COLUMNS = ("workflow", "workflow_draft")
@@ -212,7 +214,15 @@ async def _validate_provider_assignments(conn: Any, tenant_id: Any, fields: dict
         )
         if row is None:
             raise ValueError(f"{field}={config_id!r} does not exist")
-        if row["tenant_id"] != tenant_id:
+        # tenant_id may arrive as a str (tenants.get_tenant() on a cache hit —
+        # cache.py round-trips through JSON, which has no UUID type) or a
+        # uuid.UUID (a fresh asyncpg row) depending on which caller resolved
+        # it; row["tenant_id"] here is always a fresh asyncpg UUID. Comparing
+        # the two directly is a type mismatch, not a tenant mismatch, and
+        # made every stt/llm/tts_config_id assignment fail immediately after
+        # the first cache hit for that tenant — same bug class as
+        # libs/tenancy.session's _split_tenant fix; same fix here.
+        if str(row["tenant_id"]) != str(tenant_id):
             raise ValueError(f"{field}={config_id!r} belongs to a different tenant")
         if row["role"] != expected_role:
             raise ValueError(f"{field}={config_id!r} has role {row['role']!r}, expected {expected_role!r}")

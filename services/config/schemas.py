@@ -71,6 +71,19 @@ class TenantConcurrencyUpdate(BaseModel):
     max_concurrent_calls: int = Field(ge=1, le=10_000)
 
 
+class SystemPromptGenerate(BaseModel):
+    name: str
+    purpose: str = ""
+    persona: str = ""
+    tone: str = ""
+    language: str | None = None
+    has_knowledge_base: bool = False
+    transfer_condition: str | None = None
+    compliance_instructions: str = ""
+    fallback_response: str = ""
+    llm_config_id: str
+
+
 class AgentCreate(BaseModel):
     slug:           str
     name:           str
@@ -122,6 +135,11 @@ class AgentUpdate(BaseModel):
     # duration_s_check) so a bad value is rejected at config time instead
     # of failing the INSERT/UPDATE.
     max_call_duration_s:  int | None = Field(default=None, ge=30, le=7200)
+    # Which call flow answers ahead of this agent (call_flows.id). Unset
+    # leaves it alone; an explicit null detaches the flow — the agent then
+    # answers directly, which is what every agent did before call flows
+    # existed.
+    call_flow_id:         str | None = None
 
 
 class WorkflowDraft(BaseModel):
@@ -146,6 +164,44 @@ class WorkflowPublish(BaseModel):
     @classmethod
     def _graph_bounds(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
         return _check_graph_bounds(value)
+
+
+class CallFlowCreate(BaseModel):
+    slug:        str
+    name:        str
+    description: str = ""
+
+
+class CallFlowUpdate(BaseModel):
+    name:        str | None = None
+    description: str | None = None
+    status:      str | None = None
+
+
+class CallFlowDraft(BaseModel):
+    graph: dict[str, Any]
+    # 409 if call_flows.config_version moved since the editor loaded (a
+    # publish won the race) — same fence as WorkflowDraft's.
+    expected_version: int | None = None
+
+    @field_validator("graph")
+    @classmethod
+    def _graph_bounds(cls, value: dict[str, Any]) -> dict[str, Any]:
+        checked = _check_graph_bounds(value)
+        assert checked is not None
+        return checked
+
+
+class CallFlowPublish(BaseModel):
+    graph: dict[str, Any]
+    note:  str | None = None
+
+    @field_validator("graph")
+    @classmethod
+    def _graph_bounds(cls, value: dict[str, Any]) -> dict[str, Any]:
+        checked = _check_graph_bounds(value)
+        assert checked is not None
+        return checked
 
 
 class ProviderConfigCreate(BaseModel):

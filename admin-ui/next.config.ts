@@ -1,20 +1,12 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // /agents/* folded into /workflows/* when the agent and its flow became one
-  // object (2026-08-30). Permanent, because these were the URLs anyone who
-  // used the product before then has bookmarked.
-  async redirects() {
-    return [
-      { source: "/agents", destination: "/workflows", permanent: true },
-      { source: "/agents/new", destination: "/workflows?new=1", permanent: true },
-      {
-        source: "/agents/:tenantSlug/:agentSlug",
-        destination: "/workflows/:tenantSlug/:agentSlug/settings",
-        permanent: true,
-      },
-    ];
-  },
+  // /agents/* is a real route again. It was folded into /workflows/* when an
+  // agent and its flow were treated as one object (2026-08-30); that model is
+  // reversed — /agents owns the agent's configuration, /workflows owns the
+  // call-flow canvas — so the old redirects are gone rather than inverted
+  // (inverting them would make /workflows/{t}/{a} bounce to config and leave
+  // the canvas unreachable).
 };
 
 export default nextConfig;

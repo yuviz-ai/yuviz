@@ -1056,3 +1056,45 @@ CREATE TABLE IF NOT EXISTS live_call_interventions (
 );
 CREATE INDEX IF NOT EXISTS idx_live_call_interventions_lookup
     ON live_call_interventions (tenant_id, session_id, created_at DESC);
+
+-- ── Call flows (IVR/OBD) ────────────────────────────────────────────────────
+-- Unlike agents.workflow (the conversational graph, 1:1 with its agent and
+-- cascade-deleted with it), a call flow is its own tenant-scoped object with
+-- a name of its own, so one flow can front several agents. Its graph model is
+-- libs/config_sdk/callflow.py — keypress branching, not LLM-condition edges.
+CREATE TABLE IF NOT EXISTS call_flows (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id      UUID NOT NULL REFERENCES tenants(id),
+    slug           TEXT NOT NULL,
+    name           TEXT NOT NULL,
+    description    TEXT NOT NULL DEFAULT '',
+    -- Same draft/published split as agents.workflow/workflow_draft: the draft
+    -- autosaves and may be invalid, the published graph is what a live call
+    -- walks. NULL published graph = never published.
+    graph          JSONB,
+    graph_draft    JSONB,
+    status         TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
+    config_version INT NOT NULL DEFAULT 1,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at     TIMESTAMPTZ,
+    UNIQUE (tenant_id, slug)
+);
+CREATE INDEX IF NOT EXISTS idx_call_flows_tenant ON call_flows (tenant_id) WHERE deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS call_flow_versions (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    call_flow_id UUID NOT NULL REFERENCES call_flows(id) ON DELETE CASCADE,
+    version      INT  NOT NULL,
+    graph        JSONB NOT NULL,
+    published_by UUID REFERENCES users(id),
+    published_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    note         TEXT,
+    UNIQUE (call_flow_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_cfv_flow ON call_flow_versions (call_flow_id, version DESC);
+
+-- Which flow (if any) answers ahead of this agent. ON DELETE SET NULL, not
+-- RESTRICT: deleting a flow must not be blocked by, or silently break, every
+-- agent pointing at it — they just go back to answering directly.
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS call_flow_id UUID REFERENCES call_flows(id) ON DELETE SET NULL;

@@ -764,3 +764,50 @@ body {
   padding: 14px; background: var(--surf); border: 1px solid var(--border); border-radius: var(--r);
 }
 @media (max-width: 1100px) { .wf-side { width: auto; } }
+
+/* ── Agent Studio: template row + agent cards ───────────────────────────── */
+.agent-template-row {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px; margin: 8px 0 22px;
+}
+.agent-template-card {
+  text-align: left; padding: 12px 14px; background: transparent; cursor: pointer;
+  border: 1px dashed var(--border); border-radius: var(--r); color: inherit;
+  transition: border-color .12s ease, background .12s ease;
+}
+.agent-template-card:hover { border-color: var(--text-3); background: var(--surf-2); }
+.agent-template-title { font-size: .82rem; font-weight: 600; margin-bottom: 4px; }
+.agent-template-blurb { font-size: .72rem; color: var(--text-2); line-height: 1.45; }
+
+.agent-card-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 14px;
+}
+.agent-card {
+  display: flex; flex-direction: column; padding: 16px;
+  background: var(--surf); border: 1px solid var(--border); border-radius: var(--r);
+}
+.agent-card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.agent-card-meta { margin-left: auto; font-size: .7rem; color: var(--text-3); }
+.agent-card-name { font-size: 1rem; font-weight: 600; margin-bottom: 6px; }
+.agent-card-blurb {
+  font-size: .75rem; color: var(--text-2); line-height: 1.5; margin-bottom: 14px;
+  /* The card shows the agent's real system prompt, which can run long —
+     clamp it rather than letting one agent's card tower over the others. */
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.agent-card-stack { margin: 0 0 12px; padding: 12px 0 0; border-top: 1px solid var(--border-2); }
+.agent-card-stack > div { display: flex; align-items: baseline; gap: 10px; padding: 2px 0; }
+.agent-card-stack dt {
+  font-size: .656rem; font-weight: 600; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--text-2);
+}
+.agent-card-stack dd {
+  margin: 0 0 0 auto; font-size: .72rem; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 62%;
+}
+.agent-card-counts {
+  font-size: .7rem; color: var(--text-3); padding-top: 10px; border-top: 1px solid var(--border-2);
+  margin-bottom: 12px;
+}
+.agent-card-actions { display: flex; gap: 8px; margin-top: auto; }
+.agent-card-actions .btn { flex: 1; justify-content: center; }

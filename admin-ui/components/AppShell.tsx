@@ -78,12 +78,6 @@ const ICONS: Record<string, React.ReactNode> = {
       <path d="M8 12.5v2M5.5 14.5h5" />
     </svg>
   ),
-  "knowledge-base": (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <path d="M2 2.5h4.5a2 2 0 012 2V14a1.5 1.5 0 00-1.5-1.5H2z" />
-      <path d="M14 2.5H9.5a2 2 0 00-2 2V14a1.5 1.5 0 011.5-1.5H14z" />
-    </svg>
-  ),
   calls: (
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
       <path d="M2 2h12v9H9l-3 3v-3H2z" />
@@ -114,9 +108,12 @@ const OVERVIEW_ITEMS = [{ href: "/dashboard", label: "Dashboard", icon: "dashboa
 
 const MANAGEMENT_ITEMS = [
   { href: "/tenants", label: "Accounts", icon: "accounts" },
-  { href: "/workflows", label: "Agents", icon: "agents" },
-  { href: "/knowledge-base", label: "Knowledge Base", icon: "knowledge-base" },
-  { href: "/knowledge-bases", label: "Knowledge bases", icon: "knowledge-bases" },
+  // Agent Studio owns the agent's own configuration; Call Flows owns the
+  // step-by-step conversation graph. One route each — /workflows used to be
+  // both, plus the settings page.
+  { href: "/agents", label: "Agent Studio", icon: "agents" },
+  { href: "/workflows", label: "Call Flows", icon: "workflows" },
+  { href: "/knowledge-bases", label: "Knowledge Base", icon: "knowledge-bases" },
   { href: "/ai-voice", label: "AI & Voice", icon: "ai-voice" },
   { href: "/phone-numbers", label: "Phone Numbers", icon: "phone-numbers" },
 ];
@@ -136,8 +133,8 @@ const PLATFORM_ITEMS = [{ href: "/settings", label: "Settings", icon: "settings"
 
 const ALL_ITEMS = [...OVERVIEW_ITEMS, ...MANAGEMENT_ITEMS, USERS_ITEM, ...CALLING_ITEMS, ...PLATFORM_ITEMS];
 
-// Agent settings live under /workflows/.../settings — second crumb for that sub-route.
-const SETTINGS_CRUMBS = ["Agents", "Settings"];
+// One agent's config page is /agents/{tenant}/{agent} — second crumb for it.
+const SETTINGS_CRUMBS = ["Agent Studio", "Configuration"];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -190,6 +187,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       .then((u) => {
         const supervisorOnItsOwnPage = u.role === "supervisor" && pathname.startsWith("/live-calls");
         if (!isConsoleRole(u.role) && !supervisorOnItsOwnPage && pathname !== "/no-access") {
+          router.push("/no-access");
+          return;
+        }
+        // /tenants is hidden from the nav for anyone but superadmin (see
+        // visibleManagement below) — a direct URL/bookmark must be turned
+        // back the same way, not just left unlinked.
+        if (u.role !== "superadmin" && pathname.startsWith("/tenants")) {
           router.push("/no-access");
           return;
         }
@@ -258,7 +262,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const canManageUsers = user?.role === "superadmin" || user?.role === "admin";
   const matches = (label: string) => label.toLowerCase().includes(search.trim().toLowerCase());
   const visibleOverview = isSupervisor ? [] : OVERVIEW_ITEMS.filter((item) => matches(item.label));
-  const visibleManagement = isSupervisor ? [] : MANAGEMENT_ITEMS.filter((item) => matches(item.label));
+  // Accounts (tenant list/create/edit/delete) is a platform-level surface —
+  // services/config/routers/tenants.py gates create/update/delete on
+  // require_role("superadmin") already; a tenant-scoped admin's GET /tenants
+  // narrows to their own single row, so the page is nothing but misleading
+  // Edit/Delete buttons for them. Hide the nav item to match.
+  const visibleManagement = isSupervisor
+    ? []
+    : MANAGEMENT_ITEMS.filter((item) => matches(item.label) && (item.href !== "/tenants" || user?.role === "superadmin"));
   const visibleUsers = !isSupervisor && canManageUsers && matches(USERS_ITEM.label);
   const visibleCalling = isSupervisor
     ? CALLING_ITEMS.filter((item) => item.href === "/live-calls")
@@ -270,8 +281,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const activeItem = [...ALL_ITEMS]
     .sort((a, b) => b.href.length - a.href.length)
     .find((item) => pathname.startsWith(item.href));
-  const inAgentSettings = /^\/workflows\/[^/]+\/[^/]+\/settings/.test(pathname);
-  const crumbs = inAgentSettings ? SETTINGS_CRUMBS : [activeItem?.label ?? "Yuviz.ai"];
+  const inAgentConfig = /^\/agents\/[^/]+\/[^/]+/.test(pathname);
+  const crumbs = inAgentConfig ? SETTINGS_CRUMBS : [activeItem?.label ?? "Yuviz.ai"];
 
   return (
     <div className="app-shell">

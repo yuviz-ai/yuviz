@@ -24,7 +24,8 @@ from libs.config_sdk.secrets import SecretEncryptionUnavailable
 from . import cache, db, email, invites
 from . import phone_numbers as phone_numbers_service
 from .routers import (
-    agent_tool_policies, agents, audit_log, auth, calls, carriers, invites as invites_router,
+    agent_tool_policies, agents, audit_log, auth, call_flows, calls, carriers,
+    invites as invites_router,
     live_calls, phone_numbers, provider_configs, telephony_configs, tenants, tool_catalog,
     tool_provider_configs, users,
 )
@@ -287,6 +288,8 @@ app.include_router(users.router)
 app.include_router(invites_router.router)
 app.include_router(tenants.router)
 app.include_router(agents.router)
+app.include_router(call_flows.tenant_scoped_router)
+app.include_router(call_flows.router)
 app.include_router(provider_configs.tenant_scoped_router)
 app.include_router(provider_configs.router)
 app.include_router(phone_numbers.tenant_scoped_router)

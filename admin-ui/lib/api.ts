@@ -256,6 +256,8 @@ export interface Agent {
   // behavior. Enforced by the Conversation Service: once exceeded, the
   // pipeline skips the LLM, speaks a fixed wrap-up line, and ends the call.
   max_call_duration_s: number | null;
+  /** Which call flow answers ahead of this agent (call_flows.id), or null. */
+  call_flow_id: string | null;
   status: AgentStatus;
   config_version: number;
   created_at: string;
@@ -294,6 +296,7 @@ export interface AgentUpdate {
   farewell_message?: string | null;
   transfer_announcement?: string | null;
   max_call_duration_s?: number | null;
+  call_flow_id?: string | null;
   status?: AgentStatus;
 }
 
@@ -304,6 +307,24 @@ export const createAgent = (tenantSlug: string, body: AgentCreate) =>
   request<Agent>(`/tenants/${tenantSlug}/agents`, { method: "POST", body: JSON.stringify(body) });
 export const updateAgent = (tenantSlug: string, agentId: string, body: AgentUpdate) =>
   request<Agent>(`/tenants/${tenantSlug}/agents/${agentId}`, { method: "PATCH", body: JSON.stringify(body) });
+
+export interface SystemPromptGenerateRequest {
+  name: string;
+  purpose?: string;
+  persona?: string;
+  tone?: string;
+  language?: string | null;
+  has_knowledge_base?: boolean;
+  transfer_condition?: string | null;
+  compliance_instructions?: string;
+  fallback_response?: string;
+  llm_config_id: string;
+}
+export const generateSystemPrompt = (tenantSlug: string, body: SystemPromptGenerateRequest) =>
+  request<{ system_prompt: string }>(`/tenants/${tenantSlug}/agents/generate-system-prompt`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 
 // There's no "list agents across all tenants" endpoint on Config Service —
 // agents are always tenant-scoped there (see routers/agents.py). Composing

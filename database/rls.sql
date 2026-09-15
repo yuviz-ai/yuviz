@@ -455,6 +455,33 @@ BEGIN
     ALTER TABLE kb_ingestion_jobs FORCE  ROW LEVEL SECURITY;
 END $$;
 
+-- ── Call flows (IVR/OBD) ────────────────────────────────────────────────────
+-- call_flows carries its own tenant_id (Wave A shape); call_flow_versions has
+-- none and is scoped through its parent (Wave B shape), exactly like
+-- agent_workflow_versions is through agents.
+
+DO $$
+BEGIN
+    DROP POLICY IF EXISTS call_flows_tenant_isolation ON call_flows;
+    CREATE POLICY call_flows_tenant_isolation ON call_flows
+        FOR ALL TO yuviz_app
+        USING      (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+        WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+    ALTER TABLE call_flows ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE call_flows FORCE  ROW LEVEL SECURITY;
+END $$;
+
+DO $$
+BEGIN
+    DROP POLICY IF EXISTS call_flow_versions_tenant_isolation ON call_flow_versions;
+    CREATE POLICY call_flow_versions_tenant_isolation ON call_flow_versions
+        FOR ALL TO yuviz_app
+        USING      (EXISTS (SELECT 1 FROM call_flows p WHERE p.id = call_flow_versions.call_flow_id))
+        WITH CHECK (EXISTS (SELECT 1 FROM call_flows p WHERE p.id = call_flow_versions.call_flow_id));
+    ALTER TABLE call_flow_versions ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE call_flow_versions FORCE  ROW LEVEL SECURITY;
+END $$;
+
 -- ── Out of scope, stated so it is not re-litigated ──────────────────────────
 -- tenants: it IS the tenant, and tenant_conn()'s own resolver reads it.
 -- conversation_node_heartbeats: infrastructure, not tenant-owned.

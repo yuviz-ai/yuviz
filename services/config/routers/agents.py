@@ -11,7 +11,11 @@ from .. import tenants as tenants_service
 from .. import workflows as workflows_service
 from ..auth import CurrentUser
 from ..deps import bind_path_tenant, get_current_user, get_or_404, require_path_tenant_access, require_role
-from ..schemas import AgentCreate, AgentUpdate, WorkflowDraft, WorkflowPublish
+from ..schemas import AgentCreate, AgentUpdate, SystemPromptGenerate, WorkflowDraft, WorkflowPublish
+from ..secret_resolver import CompositeSecretResolver
+from ..system_prompt import generate_system_prompt
+
+_secret_resolver = CompositeSecretResolver()
 
 router = APIRouter(
     prefix="/tenants/{tenant_slug}/agents",
@@ -58,6 +62,27 @@ def _validation_error(exc: workflows_service.WorkflowValidationError) -> JSONRes
 async def list_agents(tenant_slug: str, current_user: CurrentUser = Depends(get_current_user)):
     tenant = await _resolve_tenant(tenant_slug, current_user)
     return await agents_service.list_agents(tenant["id"])
+
+
+@router.post("/generate-system-prompt")
+async def generate_agent_system_prompt(
+    tenant_slug: str,
+    body: SystemPromptGenerate,
+    current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
+):
+    """Wizard's Review step — one-shot LLM draft from structured inputs.
+    Never persists anything; the caller still has to Create the agent."""
+    tenant = await _resolve_tenant(tenant_slug, current_user)
+    try:
+        text = await generate_system_prompt(
+            tenant["id"], body.llm_config_id, body.model_dump(exclude={"llm_config_id"}),
+            secret_resolver=_secret_resolver,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"system_prompt": text}
 
 
 @router.post("", status_code=201)
