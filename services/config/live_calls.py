@@ -21,6 +21,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
+from libs.tenancy import TenantUnresolved, current_tenant, tenant_conn
+
 from . import audit, db, tenants as tenants_service
 from .auth import CurrentUser
 
@@ -79,6 +81,18 @@ _TRANSCRIPT_LATERAL = """
         ORDER BY te.turn_number DESC
         LIMIT 1
     ) ts ON true
+"""
+
+# Mirrors libs/tenancy/session.py's own one-statement resolver exactly.
+# Duplicated (rather than routed through tenant_conn()) only because this
+# one call site needs a bounded pool.acquire(timeout=...) for the 5s poll's
+# connection budget (AC5) — tenant_conn()'s acquire has no timeout param.
+_RESOLVE_SCOPE_SQL = """
+    SELECT set_config('app.tenant_id',   t.id::text, true),
+           set_config('app.tenant_slug', t.slug,     true)
+      FROM tenants t
+     WHERE ($1::uuid IS NOT NULL AND t.id = $1::uuid)
+        OR ($1::uuid IS NULL AND $2::text IS NOT NULL AND t.slug = $2)
 """
 
 _ROWS_SQL_TEMPLATE = """
@@ -147,15 +161,25 @@ async def get_live_calls(
         raise LookupError(f"tenant {tenant_slug!r} not found")
     max_concurrent_calls = tenant["max_concurrent_calls"]
 
+    # current_tenant() (not the tenant_slug argument) is the independent
+    # check: it's always a UUID here (the caller's own JWT tenant_id, or the
+    # target _resolve_scope set from the same fresh tenant row) — never a
+    # slug — so it fills the resolver's UUID slot directly.
+    tenant_scope = current_tenant()
+    if tenant_scope is None:
+        raise TenantUnresolved("could not resolve a tenant for the live-calls poll")
+
     pool = await db.get_pool()
     async with pool.acquire(timeout=acquire_timeout_s) as conn:
-        kpi_row = dict(await conn.fetchrow(_KPI_SQL, tenant_slug))
-        rows_sql = _ROWS_SQL_TEMPLATE.format(
-            transcript_select="ts.snippet," if include_transcript else "NULL AS snippet,",
-            transcript_lateral=_TRANSCRIPT_LATERAL if include_transcript else "",
-            max_rows=MAX_LIVE_ROWS,
-        )
-        rows = await conn.fetch(rows_sql, tenant_slug, tenant["id"])
+        async with conn.transaction():
+            await conn.execute(_RESOLVE_SCOPE_SQL, tenant_scope, None)
+            kpi_row = dict(await conn.fetchrow(_KPI_SQL, tenant_slug))
+            rows_sql = _ROWS_SQL_TEMPLATE.format(
+                transcript_select="ts.snippet," if include_transcript else "NULL AS snippet,",
+                transcript_lateral=_TRANSCRIPT_LATERAL if include_transcript else "",
+                max_rows=MAX_LIVE_ROWS,
+            )
+            rows = await conn.fetch(rows_sql, tenant_slug, tenant["id"])
 
     live_calls = kpi_row["live_calls"]
     utilization_pct = (
@@ -216,36 +240,35 @@ async def request_intervention(
     rolls back the INSERT too, so there is never an intervention row with no
     audit trail."""
     pool = await db.get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            exists = await conn.fetchval(
-                "SELECT 1 FROM calls WHERE session_id = $1 AND tenant_id = $2 AND ended_at IS NULL",
-                session_id, tenant_slug,
-            )
-            if exists is None:
-                return None
+    async with tenant_conn(pool) as conn:
+        exists = await conn.fetchval(
+            "SELECT 1 FROM calls WHERE session_id = $1 AND tenant_id = $2 AND ended_at IS NULL",
+            session_id, tenant_slug,
+        )
+        if exists is None:
+            return None
 
-            row = await conn.fetchrow(
-                "INSERT INTO live_call_interventions "
-                "(tenant_id, session_id, action, outcome, user_id, user_email, ip_address) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *",
-                tenant_slug, session_id, action, INTERVENTION_OUTCOME, user.id, user.email, ip_address,
-            )
-            await audit.write_audit(
-                conn,
-                entity_type="live_call_intervention",
-                entity_id=tenant_id,
-                action="created",
-                user_id=user.id,
-                user_email=user.email,
-                new_value={
-                    "session_id": session_id,
-                    "requested_action": action,
-                    "outcome": INTERVENTION_OUTCOME,
-                    "detail": None,
-                },
-                ip_address=ip_address,
-            )
+        row = await conn.fetchrow(
+            "INSERT INTO live_call_interventions "
+            "(tenant_id, session_id, action, outcome, user_id, user_email, ip_address) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *",
+            tenant_slug, session_id, action, INTERVENTION_OUTCOME, user.id, user.email, ip_address,
+        )
+        await audit.write_audit(
+            conn,
+            entity_type="live_call_intervention",
+            entity_id=tenant_id,
+            action="created",
+            user_id=user.id,
+            user_email=user.email,
+            new_value={
+                "session_id": session_id,
+                "requested_action": action,
+                "outcome": INTERVENTION_OUTCOME,
+                "detail": None,
+            },
+            ip_address=ip_address,
+        )
 
     return {
         "action": action,
@@ -293,7 +316,7 @@ async def record_denied_intervention(
     if window is not None and now - window[0] < _DENIAL_AUDIT_WINDOW_S:
         window_start, audit_log_id, count = window
         new_count = count + 1
-        async with pool.acquire() as conn:
+        async with tenant_conn(pool) as conn:
             await conn.execute(
                 "UPDATE audit_log SET new_value = jsonb_set(jsonb_set(new_value, "
                 "'{count}', to_jsonb($2::int)), '{session_id}', to_jsonb($3::text)), "
@@ -307,7 +330,7 @@ async def record_denied_intervention(
         "session_id": truncated_session_id, "requested_action": None,
         "outcome": "denied", "detail": detail, "count": 1,
     }
-    async with pool.acquire() as conn:
+    async with tenant_conn(pool) as conn:
         audit_log_id = await conn.fetchval(
             "INSERT INTO audit_log (entity_type, entity_id, user_id, user_email, action, new_value, ip_address) "
             "VALUES ('live_call_intervention', $1, $2, $3, 'created', $4::jsonb, $5) RETURNING id",

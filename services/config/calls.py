@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from libs.tenancy import platform_conn, tenant_conn
+
 from . import db
 
 
@@ -67,16 +69,17 @@ async def list_calls(
         where.append(f"c.direction = ${len(params)}")
     where_clause = " AND ".join(where)
 
-    total = await pool.fetchval(f"SELECT COUNT(*) FROM calls c WHERE {where_clause}", *params)
+    async with tenant_conn(pool) as conn:
+        total = await conn.fetchval(f"SELECT COUNT(*) FROM calls c WHERE {where_clause}", *params)
 
-    params.extend([limit, offset])
-    rows = await pool.fetch(
-        f"SELECT c.*, a.name AS agent_name FROM calls c "
-        f"LEFT JOIN agents a ON a.id = c.agent_id "
-        f"WHERE {where_clause} "
-        f"ORDER BY c.started_at DESC LIMIT ${len(params) - 1} OFFSET ${len(params)}",
-        *params,
-    )
+        params.extend([limit, offset])
+        rows = await conn.fetch(
+            f"SELECT c.*, a.name AS agent_name FROM calls c "
+            f"LEFT JOIN agents a ON a.id = c.agent_id "
+            f"WHERE {where_clause} "
+            f"ORDER BY c.started_at DESC LIMIT ${len(params) - 1} OFFSET ${len(params)}",
+            *params,
+        )
     return {
         "total": total,
         "limit": limit,
@@ -93,19 +96,21 @@ async def get_call(
     """tenant_slug=None is platform-scoped (superadmin / service account)."""
     pool = await db.get_pool()
     if tenant_slug is None:
-        row = await pool.fetchrow(
-            "SELECT c.*, a.name AS agent_name FROM calls c "
-            "LEFT JOIN agents a ON a.id = c.agent_id "
-            "WHERE c.session_id = $1",
-            session_id,
-        )
+        async with platform_conn(pool, reason="calls-platform-read") as conn:
+            row = await conn.fetchrow(
+                "SELECT c.*, a.name AS agent_name FROM calls c "
+                "LEFT JOIN agents a ON a.id = c.agent_id "
+                "WHERE c.session_id = $1",
+                session_id,
+            )
     else:
-        row = await pool.fetchrow(
-            "SELECT c.*, a.name AS agent_name FROM calls c "
-            "LEFT JOIN agents a ON a.id = c.agent_id "
-            "WHERE c.session_id = $1 AND c.tenant_id = $2",
-            session_id, tenant_slug,
-        )
+        async with tenant_conn(pool) as conn:
+            row = await conn.fetchrow(
+                "SELECT c.*, a.name AS agent_name FROM calls c "
+                "LEFT JOIN agents a ON a.id = c.agent_id "
+                "WHERE c.session_id = $1 AND c.tenant_id = $2",
+                session_id, tenant_slug,
+            )
     return _decorate(dict(row)) if row is not None else None
 
 
@@ -117,18 +122,20 @@ async def get_transcript(
     """tenant_slug scopes via the owning calls row (same predicate as get_call)."""
     pool = await db.get_pool()
     if tenant_slug is None:
-        rows = await pool.fetch(
-            "SELECT * FROM transcript_entries WHERE session_id = $1 ORDER BY turn_number",
-            session_id,
-        )
+        async with platform_conn(pool, reason="calls-platform-read") as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM transcript_entries WHERE session_id = $1 ORDER BY turn_number",
+                session_id,
+            )
     else:
-        rows = await pool.fetch(
-            "SELECT te.* FROM transcript_entries te "
-            "JOIN calls c ON c.session_id = te.session_id "
-            "WHERE te.session_id = $1 AND c.tenant_id = $2 "
-            "ORDER BY te.turn_number",
-            session_id, tenant_slug,
-        )
+        async with tenant_conn(pool) as conn:
+            rows = await conn.fetch(
+                "SELECT te.* FROM transcript_entries te "
+                "JOIN calls c ON c.session_id = te.session_id "
+                "WHERE te.session_id = $1 AND c.tenant_id = $2 "
+                "ORDER BY te.turn_number",
+                session_id, tenant_slug,
+            )
     return [dict(row) for row in rows]
 
 
@@ -145,7 +152,8 @@ async def get_dashboard_stats(tenant_slug: str, *, hours: int = 24 * 30) -> dict
     live_calls (ended_at IS NULL) ignores the hours window on purpose — a
     call in progress right now is live regardless of when it started."""
     pool = await db.get_pool()
-    row = await pool.fetchrow(
+    async with tenant_conn(pool) as conn:
+        row = await conn.fetchrow(
         """
         SELECT
             COUNT(*) FILTER (WHERE started_at >= NOW() - ($2 * INTERVAL '1 hour')) AS total_calls,
@@ -228,8 +236,8 @@ async def get_dashboard_stats(tenant_slug: str, *, hours: int = 24 * 30) -> dict
                                AND close_reason LIKE 'TRANSFER%') AS prev_escalated_count
         FROM calls WHERE tenant_id = $1
         """,
-        tenant_slug, hours,
-    )
+            tenant_slug, hours,
+        )
     d = dict(row)
     d["total_minutes"] = round(d.pop("total_duration_ms") / 60000, 2)
     return d
@@ -249,37 +257,39 @@ async def get_disposition_mix(tenant_slug: str, *, hours: int = 24 * 30) -> list
     disposition yet.
     """
     pool = await db.get_pool()
-    rows = await pool.fetch(
-        """
-        SELECT COALESCE(close_reason, 'unknown') AS close_reason, COUNT(*) AS count
-        FROM calls
-        WHERE tenant_id = $1
-          AND started_at >= NOW() - ($2 * INTERVAL '1 hour')
-          AND ended_at IS NOT NULL
-        GROUP BY COALESCE(close_reason, 'unknown')
-        ORDER BY count DESC
-        """,
-        tenant_slug, hours,
-    )
+    async with tenant_conn(pool) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT COALESCE(close_reason, 'unknown') AS close_reason, COUNT(*) AS count
+            FROM calls
+            WHERE tenant_id = $1
+              AND started_at >= NOW() - ($2 * INTERVAL '1 hour')
+              AND ended_at IS NOT NULL
+            GROUP BY COALESCE(close_reason, 'unknown')
+            ORDER BY count DESC
+            """,
+            tenant_slug, hours,
+        )
     return [dict(row) for row in rows]
 
 
 async def get_usage_trend(tenant_slug: str, *, days: int = 30) -> list[dict[str, Any]]:
     """Calls + minutes per calendar day, for the Usage Trends chart."""
     pool = await db.get_pool()
-    rows = await pool.fetch(
-        """
-        SELECT
-            date_trunc('day', started_at)::date AS date,
-            COUNT(*) AS calls,
-            ROUND(COALESCE(SUM(duration_ms), 0) / 60000.0, 2) AS minutes
-        FROM calls
-        WHERE tenant_id = $1 AND started_at >= NOW() - ($2 * INTERVAL '1 day')
-        GROUP BY date_trunc('day', started_at)
-        ORDER BY date
-        """,
-        tenant_slug, days,
-    )
+    async with tenant_conn(pool) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                date_trunc('day', started_at)::date AS date,
+                COUNT(*) AS calls,
+                ROUND(COALESCE(SUM(duration_ms), 0) / 60000.0, 2) AS minutes
+            FROM calls
+            WHERE tenant_id = $1 AND started_at >= NOW() - ($2 * INTERVAL '1 day')
+            GROUP BY date_trunc('day', started_at)
+            ORDER BY date
+            """,
+            tenant_slug, days,
+        )
     return [dict(row) for row in rows]
 
 
@@ -291,18 +301,19 @@ async def get_todays_activity(tenant_slug: str) -> list[dict[str, Any]]:
     "WebRTC" is just outbound's display label today, not a separate
     channel."""
     pool = await db.get_pool()
-    rows = await pool.fetch(
-        """
-        SELECT
-            EXTRACT(HOUR FROM started_at)::int AS hour,
-            COUNT(*) FILTER (WHERE direction = 'inbound') AS inbound,
-            COUNT(*) FILTER (WHERE direction = 'outbound') AS outbound
-        FROM calls
-        WHERE tenant_id = $1 AND started_at >= date_trunc('day', NOW())
-        GROUP BY hour ORDER BY hour
-        """,
-        tenant_slug,
-    )
+    async with tenant_conn(pool) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                EXTRACT(HOUR FROM started_at)::int AS hour,
+                COUNT(*) FILTER (WHERE direction = 'inbound') AS inbound,
+                COUNT(*) FILTER (WHERE direction = 'outbound') AS outbound
+            FROM calls
+            WHERE tenant_id = $1 AND started_at >= date_trunc('day', NOW())
+            GROUP BY hour ORDER BY hour
+            """,
+            tenant_slug,
+        )
     return [{"hour": r["hour"], "inbound": r["inbound"], "outbound": r["outbound"], "web": 0} for r in rows]
 
 
@@ -319,7 +330,8 @@ async def get_latency_stats(tenant_slug: str, *, hours: int = 24) -> list[dict[s
     responses.
     """
     pool = await db.get_pool()
-    rows = await pool.fetch(
+    async with tenant_conn(pool) as conn:
+        rows = await conn.fetch(
         """
         SELECT
             c.agent_id,
@@ -344,6 +356,6 @@ async def get_latency_stats(tenant_slug: str, *, hours: int = 24) -> list[dict[s
         GROUP BY c.agent_id, a.name, te.llm_engine
         ORDER BY c.agent_id, te.llm_engine
         """,
-        tenant_slug, hours,
-    )
+            tenant_slug, hours,
+        )
     return [dict(row) for row in rows]

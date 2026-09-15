@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from libs.tenancy import platform_conn, tenant_conn
+
 from services.config.auth import CurrentUser
 from services.config.deps import is_platform_scoped
 
@@ -48,17 +50,27 @@ async def _authorize_agent_api(
     caller is not platform-scoped (`is_platform_scoped`, lesson 24).
     custom_api_id=None is the list route, which checks only the agent
     side. Runs BEFORE any INSERT/UPDATE/DELETE — every caller below calls
-    this first."""
+    this first.
+
+    RLS (libs/tenancy): the agent's tenant is unknown until this fetch, so
+    the connection is picked from `current_user` alone — its only
+    legitimate source is `is_platform_scoped(current_user)` (lesson 24),
+    never a role comparison — via `platform_conn`/`tenant_conn`."""
     pool = await db.get_pool()
-    row = await pool.fetchrow(
-        "SELECT a.id AS agent_id, a.tenant_id AS tenant_id, "
-        "       ca.id AS custom_api_id, ca.chain_levels AS chain_levels "
-        "FROM agents a "
-        "LEFT JOIN custom_apis ca "
-        "       ON ca.id = $2 AND ca.tenant_id = a.tenant_id AND ca.deleted_at IS NULL "
-        "WHERE a.id = $1 AND a.deleted_at IS NULL",
-        agent_id, custom_api_id,
+    platform_scoped = is_platform_scoped(current_user)
+    conn_cm = (
+        platform_conn(pool, reason="agent-apis-admin-by-id") if platform_scoped else tenant_conn(pool)
     )
+    async with conn_cm as conn:
+        row = await conn.fetchrow(
+            "SELECT a.id AS agent_id, a.tenant_id AS tenant_id, "
+            "       ca.id AS custom_api_id, ca.chain_levels AS chain_levels "
+            "FROM agents a "
+            "LEFT JOIN custom_apis ca "
+            "       ON ca.id = $2 AND ca.tenant_id = a.tenant_id AND ca.deleted_at IS NULL "
+            "WHERE a.id = $1 AND a.deleted_at IS NULL",
+            agent_id, custom_api_id,
+        )
     if row is None:
         raise LookupError(_NOT_FOUND_DETAIL)
     if custom_api_id is not None and row["custom_api_id"] is None:
@@ -74,31 +86,47 @@ async def _authorize_agent_api(
     return agent, custom_api
 
 
-async def _effective_max_chain_depth(agent_id: Any) -> int:
+async def _effective_max_chain_depth(agent_id: Any, *, platform_scoped: bool = False) -> int:
     """NULL agent_tool_policies.max_chain_depth = use the platform ceiling
     (graph.MAX_CHAIN_LEVELS); a set value can only LOWER the ceiling, never
     raise it — the same one-directional clamp chain_budget_ms gets at
     request time, so no per-agent override can exceed the platform-wide
-    depth backstop."""
+    depth backstop.
+
+    Called from two different scopes: `set_enabled` below (Tier 3, a flat
+    by-id route with no ambient target — `platform_scoped` must come from
+    `is_platform_scoped(current_user)`) and `executor.execute_chain`
+    (Tier 4, where `set_target_tenant(body.tenant_id)` already resolves
+    the ambient GUC — the default `platform_scoped=False` is correct
+    there, since Tier 4 is never a `platform_conn` bypass)."""
     pool = await db.get_pool()
-    row = await pool.fetchrow(
-        "SELECT max_chain_depth FROM agent_tool_policies WHERE agent_id = $1 AND tool_name = 'execute_api'",
-        agent_id,
+    conn_cm = (
+        platform_conn(pool, reason="agent-apis-admin-by-id") if platform_scoped else tenant_conn(pool)
     )
+    async with conn_cm as conn:
+        row = await conn.fetchrow(
+            "SELECT max_chain_depth FROM agent_tool_policies WHERE agent_id = $1 AND tool_name = 'execute_api'",
+            agent_id,
+        )
     if row is None or row["max_chain_depth"] is None:
         return graph.MAX_CHAIN_LEVELS
     return min(row["max_chain_depth"], graph.MAX_CHAIN_LEVELS)
 
 
 async def list_for_agent(agent_id: Any, *, current_user: CurrentUser) -> list[dict]:
+    platform_scoped = is_platform_scoped(current_user)
     await _authorize_agent_api(agent_id, None, current_user)
     pool = await db.get_pool()
-    rows = await pool.fetch(
-        "SELECT aca.*, ca.name, ca.chain_levels FROM agent_custom_apis aca "
-        "JOIN custom_apis ca ON ca.id = aca.custom_api_id AND ca.deleted_at IS NULL "
-        "WHERE aca.agent_id = $1 ORDER BY ca.name",
-        agent_id,
+    conn_cm = (
+        platform_conn(pool, reason="agent-apis-admin-by-id") if platform_scoped else tenant_conn(pool)
     )
+    async with conn_cm as conn:
+        rows = await conn.fetch(
+            "SELECT aca.*, ca.name, ca.chain_levels FROM agent_custom_apis aca "
+            "JOIN custom_apis ca ON ca.id = aca.custom_api_id AND ca.deleted_at IS NULL "
+            "WHERE aca.agent_id = $1 ORDER BY ca.name",
+            agent_id,
+        )
     return [dict(row) for row in rows]
 
 
@@ -115,11 +143,12 @@ async def set_enabled(
     the 404 for a cross-tenant custom_api_id) happens before this ever
     reaches the INSERT/UPDATE — _authorize_agent_api raises first, so a
     rejected attempt leaves agent_custom_apis's row count unchanged."""
+    platform_scoped = is_platform_scoped(current_user)
     _agent, custom_api = await _authorize_agent_api(agent_id, custom_api_id, current_user)
     assert custom_api is not None  # guaranteed once _authorize_agent_api returns for a given id
 
     if enabled:
-        effective_ceiling = await _effective_max_chain_depth(agent_id)
+        effective_ceiling = await _effective_max_chain_depth(agent_id, platform_scoped=platform_scoped)
         if custom_api["chain_levels"] > effective_ceiling:
             raise ValueError(
                 f"chain_depth_exceeds_agent_ceiling: api chain_levels={custom_api['chain_levels']} "
@@ -127,7 +156,11 @@ async def set_enabled(
             )
 
     pool = await db.get_pool()
-    async with pool.acquire() as conn:
+    conn_cm = (
+        platform_conn(pool, reason="agent-apis-admin-mutation", stamp_tenant=_agent["tenant_id"])
+        if platform_scoped else tenant_conn(pool)
+    )
+    async with conn_cm as conn:
         async with conn.transaction():
             row = await conn.fetchrow(
                 "INSERT INTO agent_custom_apis (agent_id, custom_api_id, enabled) VALUES ($1, $2, $3) "
@@ -151,9 +184,14 @@ async def detach(
     user_id: Any | None = None,
     user_email: str | None = None,
 ) -> None:
-    await _authorize_agent_api(agent_id, custom_api_id, current_user)
+    platform_scoped = is_platform_scoped(current_user)
+    agent, _custom_api = await _authorize_agent_api(agent_id, custom_api_id, current_user)
     pool = await db.get_pool()
-    async with pool.acquire() as conn:
+    conn_cm = (
+        platform_conn(pool, reason="agent-apis-admin-mutation", stamp_tenant=agent["tenant_id"])
+        if platform_scoped else tenant_conn(pool)
+    )
+    async with conn_cm as conn:
         async with conn.transaction():
             await conn.execute(
                 "DELETE FROM agent_custom_apis WHERE agent_id = $1 AND custom_api_id = $2",
@@ -180,20 +218,24 @@ async def _authorize_chain_runs(session_id: Any, current_user: CurrentUser) -> l
     session unfiltered. Indexed by idx_api_chain_runs_tenant_session."""
     pool = await db.get_pool()
     tenant_filter = None if is_platform_scoped(current_user) else current_user.tenant_id
-    run_rows = await pool.fetch(
-        "SELECT * FROM api_chain_runs WHERE session_id = $1 AND ($2::uuid IS NULL OR tenant_id = $2) "
-        "ORDER BY started_at",
-        session_id, tenant_filter,
+    conn_cm = (
+        platform_conn(pool, reason="agent-apis-chain-runs") if tenant_filter is None else tenant_conn(pool)
     )
-    if not run_rows:
-        raise LookupError(_CHAIN_RUNS_NOT_FOUND_DETAIL)
-
-    runs = []
-    for run_row in run_rows:
-        run = dict(run_row)
-        step_rows = await pool.fetch(
-            "SELECT * FROM api_chain_steps WHERE run_id = $1 ORDER BY step_index", run["id"],
+    async with conn_cm as conn:
+        run_rows = await conn.fetch(
+            "SELECT * FROM api_chain_runs WHERE session_id = $1 AND ($2::uuid IS NULL OR tenant_id = $2) "
+            "ORDER BY started_at",
+            session_id, tenant_filter,
         )
-        run["steps"] = [dict(s) for s in step_rows]
-        runs.append(run)
+        if not run_rows:
+            raise LookupError(_CHAIN_RUNS_NOT_FOUND_DETAIL)
+
+        runs = []
+        for run_row in run_rows:
+            run = dict(run_row)
+            step_rows = await conn.fetch(
+                "SELECT * FROM api_chain_steps WHERE run_id = $1 ORDER BY step_index", run["id"],
+            )
+            run["steps"] = [dict(s) for s in step_rows]
+            runs.append(run)
     return runs

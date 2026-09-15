@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from libs.tenancy import set_caller_tenant
 from services.config import provider_configs
 from services.knowledge import agent_kb as agent_kb_service
 from services.knowledge import cache, knowledge_bases as kb_service
 
 
 async def _make_kb(tenant):
+    set_caller_tenant(str(tenant["id"]))
     embedding_cfg = await provider_configs.create_provider_config(
         tenant_id=tenant["id"], name="Embed", role="embedding", engine="ollama",
     )
@@ -16,6 +18,7 @@ async def _make_kb(tenant):
 
 async def test_has_enabled_kb_false_when_nothing_assigned(tenant_agent):
     tenant, agent = tenant_agent
+    set_caller_tenant(str(tenant["id"]))
     assert await agent_kb_service.has_enabled_kb(tenant["slug"], agent["slug"]) is False
 
 

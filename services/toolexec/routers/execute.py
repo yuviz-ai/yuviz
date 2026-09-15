@@ -16,6 +16,7 @@ import os
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from libs.tenancy import set_target_tenant
 from services.config.auth import CurrentUser
 from services.config.deps import get_current_user
 
@@ -55,4 +56,8 @@ async def execute_chain(
     # only the handler has the body.
     if current_user.tenant_id is not None and current_user.tenant_id != body.tenant_id:
         raise HTTPException(status_code=403, detail="identity may not execute API chains")
+    # RLS (libs/tenancy): tenant arrives in the body, not the path, so
+    # there is no router-level bind_path_tenant to run this for us — the
+    # existing identity/body check above is what already authorizes it.
+    set_target_tenant(body.tenant_id)
     return await executor.execute_chain(body)

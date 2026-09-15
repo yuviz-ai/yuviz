@@ -22,6 +22,8 @@ from dataclasses import dataclass
 
 import asyncpg
 
+from libs.tenancy import platform_conn, tenant_conn
+
 log = logging.getLogger(__name__)
 
 
@@ -56,6 +58,12 @@ class TranscriptBuilder:
         self._chains:          dict[str, asyncio.Task] = {}
         self._turn_counts:     dict[str, int]           = {}
         self._barge_in_counts: dict[str, int]           = {}
+        # The tenant slug this session's calls row was written under —
+        # cached at begin_call() so every later write for the same
+        # session_id can scope its own connection to that tenant without a
+        # round trip to look it up (RLS review T52: per-session writes must
+        # never share a connection scoped to a different tenant).
+        self._tenant_slugs:    dict[str, str]            = {}
 
     @classmethod
     async def connect(cls, database_url: str | None, node_id: str | None = None) -> "TranscriptBuilder":
@@ -92,11 +100,12 @@ class TranscriptBuilder:
         not "run it unscoped."""
         if self._pool is None or not self._node_id:
             return 0
-        result = await self._pool.execute(
-            "UPDATE calls SET ended_at = NOW(), close_reason = 'reconciled_stale' "
-            "WHERE ended_at IS NULL AND conv_node = $1",
-            self._node_id,
-        )
+        async with platform_conn(self._pool, reason="conversation-reconcile-sweep") as conn:
+            result = await conn.execute(
+                "UPDATE calls SET ended_at = NOW(), close_reason = 'reconciled_stale' "
+                "WHERE ended_at IS NULL AND conv_node = $1",
+                self._node_id,
+            )
         count = int(result.split()[-1]) if result else 0
         if count:
             log.warning(
@@ -115,11 +124,12 @@ class TranscriptBuilder:
         if self._pool is None or not self._node_id:
             return
         try:
-            await self._pool.execute(
-                "INSERT INTO conversation_node_heartbeats (node_id, last_seen_at) VALUES ($1, NOW()) "
-                "ON CONFLICT (node_id) DO UPDATE SET last_seen_at = NOW()",
-                self._node_id,
-            )
+            async with platform_conn(self._pool, reason="conversation-reconcile-sweep") as conn:
+                await conn.execute(
+                    "INSERT INTO conversation_node_heartbeats (node_id, last_seen_at) VALUES ($1, NOW()) "
+                    "ON CONFLICT (node_id) DO UPDATE SET last_seen_at = NOW()",
+                    self._node_id,
+                )
         except Exception:
             log.exception("TranscriptBuilder: heartbeat write failed node_id=%s", self._node_id)
 
@@ -136,18 +146,19 @@ class TranscriptBuilder:
         marker, duration_ms left NULL, never fabricated."""
         if self._pool is None:
             return 0
-        result = await self._pool.execute(
-            """
-            UPDATE calls SET ended_at = NOW(), close_reason = 'reconciled_dead_node'
-            WHERE ended_at IS NULL
-              AND conv_node IS NOT NULL
-              AND conv_node NOT IN (
-                  SELECT node_id FROM conversation_node_heartbeats
-                  WHERE last_seen_at >= NOW() - ($1 * INTERVAL '1 second')
-              )
-            """,
-            stale_after_seconds,
-        )
+        async with platform_conn(self._pool, reason="conversation-reconcile-sweep") as conn:
+            result = await conn.execute(
+                """
+                UPDATE calls SET ended_at = NOW(), close_reason = 'reconciled_dead_node'
+                WHERE ended_at IS NULL
+                  AND conv_node IS NOT NULL
+                  AND conv_node NOT IN (
+                      SELECT node_id FROM conversation_node_heartbeats
+                      WHERE last_seen_at >= NOW() - ($1 * INTERVAL '1 second')
+                  )
+                """,
+                stale_after_seconds,
+            )
         count = int(result.split()[-1]) if result else 0
         if count:
             log.warning("TranscriptBuilder: reconciled %d call(s) owned by dead/silent node(s)", count)
@@ -187,19 +198,20 @@ class TranscriptBuilder:
         duration_ms never fabricated."""
         if self._pool is None:
             return 0
-        result = await self._pool.execute(
-            """
-            UPDATE calls SET ended_at = NOW(), close_reason = 'reconciled_inactive'
-            WHERE ended_at IS NULL
-              AND started_at < NOW() - ($1 * INTERVAL '1 second')
-              AND NOT EXISTS (
-                  SELECT 1 FROM transcript_entries te
-                  WHERE te.session_id = calls.session_id
-                    AND te.created_at >= NOW() - ($1 * INTERVAL '1 second')
-              )
-            """,
-            inactive_after_seconds,
-        )
+        async with platform_conn(self._pool, reason="conversation-reconcile-sweep") as conn:
+            result = await conn.execute(
+                """
+                UPDATE calls SET ended_at = NOW(), close_reason = 'reconciled_inactive'
+                WHERE ended_at IS NULL
+                  AND started_at < NOW() - ($1 * INTERVAL '1 second')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM transcript_entries te
+                      WHERE te.session_id = calls.session_id
+                        AND te.created_at >= NOW() - ($1 * INTERVAL '1 second')
+                  )
+                """,
+                inactive_after_seconds,
+            )
         count = int(result.split()[-1]) if result else 0
         if count:
             log.warning("TranscriptBuilder: reconciled %d inactive live call(s) (no activity for %ds)",
@@ -221,10 +233,15 @@ class TranscriptBuilder:
     ) -> None:
         if self._pool is None:
             return
+        # Normalized once, here, so the value cached for every later write
+        # on this session_id is byte-identical to the value actually
+        # written into calls.tenant_id below.
+        tenant_slug = tenant_id or "default"
         self._turn_counts[session_id] = 0
         self._barge_in_counts[session_id] = 0
+        self._tenant_slugs[session_id] = tenant_slug
         self._spawn(session_id, self._begin_call(
-            session_id, tenant_id, call_id, direction, caller_number, called_number,
+            session_id, tenant_slug, call_id, direction, caller_number, called_number,
             agent_id, agent_config_version,
         ))
 
@@ -244,8 +261,8 @@ class TranscriptBuilder:
         if interrupted:
             self._barge_in_counts[session_id] = self._barge_in_counts.get(session_id, 0) + 1
         self._spawn(session_id, self._record_turn(
-            session_id, turn_number, caller_text, caller_confidence, ai_response, interrupted,
-            latency or TurnLatency(),
+            session_id, self._tenant_slugs.get(session_id), turn_number, caller_text,
+            caller_confidence, ai_response, interrupted, latency or TurnLatency(),
         ))
 
     def record_workflow_outcome(
@@ -260,7 +277,7 @@ class TranscriptBuilder:
         if self._pool is None:
             return
         self._spawn(session_id, self._record_workflow_outcome(
-            session_id, nodes_visited, disposition, extracted_variables,
+            session_id, self._tenant_slugs.get(session_id), nodes_visited, disposition, extracted_variables,
         ))
 
     def record_live_stage(self, session_id: str, stage: str) -> None:
@@ -277,7 +294,7 @@ class TranscriptBuilder:
         late."""
         if self._pool is None:
             return
-        self._spawn(session_id, self._record_live_stage(session_id, stage))
+        self._spawn(session_id, self._record_live_stage(session_id, self._tenant_slugs.get(session_id), stage))
 
     def end_call(self, session_id: str, close_reason: str,
                  final_state: str | None = None) -> None:
@@ -285,8 +302,9 @@ class TranscriptBuilder:
             return
         turn_count     = self._turn_counts.pop(session_id, 0)
         barge_in_count = self._barge_in_counts.pop(session_id, 0)
+        tenant_slug    = self._tenant_slugs.pop(session_id, None)
         self._spawn(session_id, self._end_call(
-            session_id, close_reason, turn_count, barge_in_count, final_state,
+            session_id, tenant_slug, close_reason, turn_count, barge_in_count, final_state,
         ))
         # Drop the chain once this session's final write completes — nothing
         # will call _spawn() for this session_id again after end_call().
@@ -312,7 +330,7 @@ class TranscriptBuilder:
     async def _begin_call(
         self,
         session_id:    str,
-        tenant_id:     str,
+        tenant_slug:   str,
         call_id:       str,
         direction:     str,
         caller_number: str,
@@ -321,13 +339,15 @@ class TranscriptBuilder:
         agent_config_version: int | None,
     ) -> None:
         try:
-            async with self._pool.acquire() as conn:
+            async with tenant_conn(
+                self._pool, explicit_tenant=tenant_slug, reason="conversation-session-write",
+            ) as conn:
                 await conn.execute(
                     "INSERT INTO calls "
                     "(session_id, tenant_id, call_id, direction, caller_number, called_number, "
                     "agent_id, agent_config_version, conv_node) "
                     "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (session_id) DO NOTHING",
-                    session_id, tenant_id or "default", call_id or None,
+                    session_id, tenant_slug, call_id or None,
                     direction or "inbound", caller_number or None, called_number or None,
                     agent_id, agent_config_version, self._node_id,
                 )
@@ -335,11 +355,13 @@ class TranscriptBuilder:
             log.exception("TranscriptBuilder: begin_call failed session=%s", session_id)
 
     async def _record_workflow_outcome(
-        self, session_id: str, nodes_visited: list[str] | None,
+        self, session_id: str, tenant_slug: str | None, nodes_visited: list[str] | None,
         disposition: str | None, extracted_variables: dict | None,
     ) -> None:
         try:
-            async with self._pool.acquire() as conn:
+            async with tenant_conn(
+                self._pool, explicit_tenant=tenant_slug, reason="conversation-session-write",
+            ) as conn:
                 await conn.execute(
                     "UPDATE calls SET nodes_visited = $2::jsonb, disposition = $3, "
                     "extracted_variables = $4::jsonb WHERE session_id = $1",
@@ -351,9 +373,11 @@ class TranscriptBuilder:
         except Exception:
             log.exception("TranscriptBuilder: record_workflow_outcome failed session=%s", session_id)
 
-    async def _record_live_stage(self, session_id: str, stage: str) -> None:
+    async def _record_live_stage(self, session_id: str, tenant_slug: str | None, stage: str) -> None:
         try:
-            async with self._pool.acquire() as conn:
+            async with tenant_conn(
+                self._pool, explicit_tenant=tenant_slug, reason="conversation-session-write",
+            ) as conn:
                 await conn.execute(
                     "UPDATE calls SET live_stage = $2 WHERE session_id = $1",
                     session_id, stage,
@@ -364,6 +388,7 @@ class TranscriptBuilder:
     async def _record_turn(
         self,
         session_id:        str,
+        tenant_slug:        str | None,
         turn_number:        int,
         caller_text:        str,
         caller_confidence:  float,
@@ -380,7 +405,9 @@ class TranscriptBuilder:
             "tts_ms": latency.tts_ms, "voice_to_voice_ms": latency.voice_to_voice_ms,
         })
         try:
-            async with self._pool.acquire() as conn:
+            async with tenant_conn(
+                self._pool, explicit_tenant=tenant_slug, reason="conversation-session-write",
+            ) as conn:
                 await conn.execute(
                     "INSERT INTO transcript_entries "
                     "(session_id, turn_number, caller_text, caller_confidence, ai_response, interrupted, "
@@ -399,11 +426,13 @@ class TranscriptBuilder:
             )
 
     async def _end_call(
-        self, session_id: str, close_reason: str, turn_count: int, barge_in_count: int,
-        final_state: str | None = None,
+        self, session_id: str, tenant_slug: str | None, close_reason: str, turn_count: int,
+        barge_in_count: int, final_state: str | None = None,
     ) -> None:
         try:
-            async with self._pool.acquire() as conn:
+            async with tenant_conn(
+                self._pool, explicit_tenant=tenant_slug, reason="conversation-session-write",
+            ) as conn:
                 await conn.execute(
                     "UPDATE calls SET "
                     "ended_at = NOW(), "

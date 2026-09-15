@@ -14,7 +14,9 @@ Goes through the Config Service's own audited write path (services.config.*),
 not raw SQL, so these writes show up in audit_log like any real admin edit.
 
 Usage: python3 scripts/seed_default_config.py
-Requires: POSTGRES_DSN, REDIS_URL (see services/config/db.py, cache.py)
+Requires: POSTGRES_ADMIN_DSN, falling back to POSTGRES_DSN, and REDIS_URL
+(see services/config/db.py, cache.py) — connects as the superuser so it
+keeps bypassing RLS, same as create_superadmin.py/create_service_account.py.
 """
 
 from __future__ import annotations
@@ -27,7 +29,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from services.config import agents, provider_configs, tenants  # noqa: E402
+from libs.tenancy import set_target_tenant  # noqa: E402
+
+from services.config import agents, db, provider_configs, tenants  # noqa: E402
 
 TENANT_SLUG = "default"
 AGENT_SLUG = "default"
@@ -68,12 +72,17 @@ PROVIDER_DEFAULTS = [
 
 
 async def main() -> None:
+    await db.get_pool(dsn=os.environ.get("POSTGRES_ADMIN_DSN") or os.environ["POSTGRES_DSN"])
     tenant = await tenants.get_tenant(TENANT_SLUG)
     if tenant is None:
         raise RuntimeError(
             f"tenant {TENANT_SLUG!r} not found — apply database/schema.sql first "
             "(it seeds this row)."
         )
+    # No request context here to carry the tenant scope — this script IS the
+    # caller, so it sets the target itself, once, for every ambient
+    # tenant_conn() call below (agents.py/provider_configs.py).
+    set_target_tenant(str(tenant["id"]))
 
     provider_ids: dict[str, str] = {}
     for spec in PROVIDER_DEFAULTS:

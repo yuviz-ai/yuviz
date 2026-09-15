@@ -2,15 +2,30 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from libs.tenancy import set_target_tenant
+
 from .. import agents as agents_service
 from .. import carriers as carriers_service
 from .. import phone_numbers as phone_numbers_service
 from .. import tenants as tenants_service
 from ..auth import CurrentUser
-from ..deps import get_current_user, get_or_404, require_role, validate_id_exists
+from ..deps import (
+    assert_tenant_access,
+    bind_path_tenant,
+    get_current_user,
+    get_or_404,
+    is_platform_scoped,
+    require_path_tenant_access,
+    require_role,
+    validate_id_exists,
+)
 from ..schemas import PhoneNumberCreate, PhoneNumberUpdate
 
-tenant_scoped_router = APIRouter(prefix="/tenants/{tenant_id}/phone-numbers", tags=["phone_numbers"])
+tenant_scoped_router = APIRouter(
+    prefix="/tenants/{tenant_id}/phone-numbers",
+    tags=["phone_numbers"],
+    dependencies=[Depends(bind_path_tenant), Depends(require_path_tenant_access)],
+)
 router = APIRouter(prefix="/phone-numbers", tags=["phone_numbers"])
 
 
@@ -59,10 +74,14 @@ async def create_phone_number(
 
 @router.get("/{phone_number_id}")
 async def get_phone_number(phone_number_id: str, current_user: CurrentUser = Depends(get_current_user)):
-    return await get_or_404(
-        phone_numbers_service.get_phone_number(phone_number_id),
+    phone_number = await get_or_404(
+        phone_numbers_service.get_phone_number(
+            phone_number_id, platform_scoped=is_platform_scoped(current_user),
+        ),
         f"phone_number {phone_number_id!r} not found",
     )
+    await assert_tenant_access(phone_number["tenant_id"], current_user)
+    return phone_number
 
 
 @router.patch("/{phone_number_id}")
@@ -80,6 +99,14 @@ async def update_phone_number(
         await _resolve_agent_id(fields["fallback_agent_id"])
     if "carrier_id" in fields:
         await _resolve_carrier_id(fields["carrier_id"])
+    phone_number = await get_or_404(
+        phone_numbers_service.get_phone_number(
+            phone_number_id, platform_scoped=is_platform_scoped(current_user),
+        ),
+        f"phone_number {phone_number_id!r} not found",
+    )
+    await assert_tenant_access(phone_number["tenant_id"], current_user)
+    set_target_tenant(phone_number["tenant_id"])
     return await phone_numbers_service.update_phone_number(
         phone_number_id, user_id=current_user.id, user_email=current_user.email, **fields,
     )
@@ -89,6 +116,14 @@ async def update_phone_number(
 async def delete_phone_number(
     phone_number_id: str, current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
 ):
+    phone_number = await get_or_404(
+        phone_numbers_service.get_phone_number(
+            phone_number_id, platform_scoped=is_platform_scoped(current_user),
+        ),
+        f"phone_number {phone_number_id!r} not found",
+    )
+    await assert_tenant_access(phone_number["tenant_id"], current_user)
+    set_target_tenant(phone_number["tenant_id"])
     await phone_numbers_service.soft_delete_phone_number(
         phone_number_id, user_id=current_user.id, user_email=current_user.email,
     )

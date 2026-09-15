@@ -85,7 +85,7 @@ class ToolCallOrchestrator:
                 policies: list = []  # yank remotes for real, not only from schemas
             else:
                 only = only_tools() if callable(only_tools) else only_tools
-                policies = await self._policy_resolver.enabled_tools(agent_id, only=only)
+                policies = await self._policy_resolver.enabled_tools(agent_id, tenant_id, only=only)
             llm_schemas = [
                 p.definition.to_generic_schema() for p in policies if p.definition.llm_visible
             ]

@@ -21,6 +21,7 @@ import uuid
 from typing import Any
 
 from libs.config_sdk.workflow import graphs_equivalent, starter_graph
+from libs.tenancy import platform_conn, tenant_conn
 
 from . import audit, cache, db
 
@@ -129,11 +130,12 @@ async def get_agent(tenant_slug: str, agent_slug: str) -> dict[str, Any] | None:
         return cached
 
     pool = await db.get_pool()
-    row = await pool.fetchrow(
-        "SELECT a.* FROM agents a JOIN tenants t ON t.id = a.tenant_id "
-        "WHERE t.slug = $1 AND a.slug = $2 AND a.deleted_at IS NULL AND t.deleted_at IS NULL",
-        tenant_slug, agent_slug,
-    )
+    async with tenant_conn(pool) as conn:
+        row = await conn.fetchrow(
+            "SELECT a.* FROM agents a JOIN tenants t ON t.id = a.tenant_id "
+            "WHERE t.slug = $1 AND a.slug = $2 AND a.deleted_at IS NULL AND t.deleted_at IS NULL",
+            tenant_slug, agent_slug,
+        )
     if row is None:
         return None
 
@@ -142,20 +144,23 @@ async def get_agent(tenant_slug: str, agent_slug: str) -> dict[str, Any] | None:
     return result
 
 
-async def get_agent_by_id(agent_id: Any) -> dict[str, Any] | None:
+async def get_agent_by_id(agent_id: Any, *, platform_scoped: bool = False) -> dict[str, Any] | None:
     pool = await db.get_pool()
-    row = await pool.fetchrow(
-        "SELECT * FROM agents WHERE id = $1 AND deleted_at IS NULL", agent_id,
-    )
+    conn_cm = platform_conn(pool, reason="agents-by-id") if platform_scoped else tenant_conn(pool)
+    async with conn_cm as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM agents WHERE id = $1 AND deleted_at IS NULL", agent_id,
+        )
     return _public_agent(_row(row)) if row is not None else None
 
 
 async def list_agents(tenant_id: Any) -> list[dict[str, Any]]:
     pool = await db.get_pool()
-    rows = await pool.fetch(
-        "SELECT * FROM agents WHERE tenant_id = $1 AND deleted_at IS NULL ORDER BY name",
-        tenant_id,
-    )
+    async with tenant_conn(pool) as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM agents WHERE tenant_id = $1 AND deleted_at IS NULL ORDER BY name",
+            tenant_id,
+        )
     # List stays lean: badges/step counts only. Full graphs stay on GET
     # (published) and /workflow (draft+live); Conversation prewarm uses list.
     out = []
@@ -250,34 +255,33 @@ async def create_agent(
     graph_json = json.dumps(graph)
 
     pool = await db.get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await _validate_provider_assignments(
-                conn, tenant_id,
-                {"stt_config_id": stt_config_id, "llm_config_id": llm_config_id, "tts_config_id": tts_config_id},
-            )
-            row = await conn.fetchrow(
-                "INSERT INTO agents "
-                "(tenant_id, slug, name, greeting, system_prompt, "
-                "stt_config_id, llm_config_id, tts_config_id, workflow, workflow_draft) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $9::jsonb) RETURNING *",
-                tenant_id, slug, name, greeting, system_prompt,
-                stt_config_id, llm_config_id, tts_config_id, graph_json,
-            )
-            result = _row(row)
-            await append_version(
-                conn, result["id"], graph_json,
-                user_id=user_id, note="created with the agent",
-            )
-            await audit.write_audit(
-                conn,
-                entity_type="agent",
-                entity_id=result["id"],
-                action="created",
-                user_id=user_id,
-                user_email=user_email,
-                new_value=_audit_view(result),
-            )
+    async with tenant_conn(pool) as conn:
+        await _validate_provider_assignments(
+            conn, tenant_id,
+            {"stt_config_id": stt_config_id, "llm_config_id": llm_config_id, "tts_config_id": tts_config_id},
+        )
+        row = await conn.fetchrow(
+            "INSERT INTO agents "
+            "(tenant_id, slug, name, greeting, system_prompt, "
+            "stt_config_id, llm_config_id, tts_config_id, workflow, workflow_draft) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $9::jsonb) RETURNING *",
+            tenant_id, slug, name, greeting, system_prompt,
+            stt_config_id, llm_config_id, tts_config_id, graph_json,
+        )
+        result = _row(row)
+        await append_version(
+            conn, result["id"], graph_json,
+            user_id=user_id, note="created with the agent",
+        )
+        await audit.write_audit(
+            conn,
+            entity_type="agent",
+            entity_id=result["id"],
+            action="created",
+            user_id=user_id,
+            user_email=user_email,
+            new_value=_audit_view(result),
+        )
     public = _public_agent(result)
     if tenant_slug is not None:
         # Warm the cache immediately rather than leaving it for the agent's
@@ -309,79 +313,78 @@ async def update_agent(
         raise ValueError(f"update_agent() got non-updatable field(s): {unknown}")
 
     pool = await db.get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            # FOR UPDATE OF a is two fixes in one: it locks the agent row for
-            # the rest of this transaction (so a concurrent update can't read
-            # a stale "old" value for the audit log — see project memory's
-            # audit-race note), and the join against tenants scopes the
-            # lookup by tenant_slug — an agent_id that exists but belongs to
-            # a *different* tenant is indistinguishable from "doesn't exist"
-            # to this caller. Previously this was scoped by agent_id alone,
-            # which let any tenant's URL path update or delete any other
-            # tenant's agent by id (cross-tenant hijack).
-            old_row = await conn.fetchrow(
-                "SELECT a.* FROM agents a JOIN tenants t ON t.id = a.tenant_id "
-                "WHERE a.id = $1 AND t.slug = $2 FOR UPDATE OF a",
-                agent_id, tenant_slug,
+    async with tenant_conn(pool) as conn:
+        # FOR UPDATE OF a is two fixes in one: it locks the agent row for
+        # the rest of this transaction (so a concurrent update can't read
+        # a stale "old" value for the audit log — see project memory's
+        # audit-race note), and the join against tenants scopes the
+        # lookup by tenant_slug — an agent_id that exists but belongs to
+        # a *different* tenant is indistinguishable from "doesn't exist"
+        # to this caller. Previously this was scoped by agent_id alone,
+        # which let any tenant's URL path update or delete any other
+        # tenant's agent by id (cross-tenant hijack).
+        old_row = await conn.fetchrow(
+            "SELECT a.* FROM agents a JOIN tenants t ON t.id = a.tenant_id "
+            "WHERE a.id = $1 AND t.slug = $2 FOR UPDATE OF a",
+            agent_id, tenant_slug,
+        )
+        if old_row is None:
+            raise LookupError(f"agent {agent_id} not found under tenant {tenant_slug!r}")
+        old = _row(old_row)
+        await _validate_provider_assignments(conn, old["tenant_id"], fields)
+
+        set_fields = dict(fields)
+        if "greeting" in set_fields:
+            set_fields["greeting"] = _coerce_prompt(set_fields["greeting"])
+        if "system_prompt" in set_fields:
+            set_fields["system_prompt"] = _coerce_prompt(set_fields["system_prompt"])
+
+        mirrored_graph = False
+        if old.get("workflow") is not None and (
+            "greeting" in fields or "system_prompt" in fields
+        ):
+            synced_wf = _mirror_prompts_into_graph(old["workflow"], set_fields)
+            if synced_wf != old["workflow"]:
+                set_fields["workflow"] = json.dumps(synced_wf)
+                mirrored_graph = True
+            draft_src = (
+                old["workflow_draft"]
+                if old.get("workflow_draft") is not None
+                else old["workflow"]
             )
-            if old_row is None:
-                raise LookupError(f"agent {agent_id} not found under tenant {tenant_slug!r}")
-            old = _row(old_row)
-            await _validate_provider_assignments(conn, old["tenant_id"], fields)
+            synced_draft = _mirror_prompts_into_graph(draft_src, set_fields)
+            if synced_draft != draft_src:
+                set_fields["workflow_draft"] = json.dumps(synced_draft)
+                mirrored_graph = True
 
-            set_fields = dict(fields)
-            if "greeting" in set_fields:
-                set_fields["greeting"] = _coerce_prompt(set_fields["greeting"])
-            if "system_prompt" in set_fields:
-                set_fields["system_prompt"] = _coerce_prompt(set_fields["system_prompt"])
+        columns = list(set_fields.keys())
+        set_clause = ", ".join(f"{col} = ${i + 2}" for i, col in enumerate(columns))
+        new_row = await conn.fetchrow(
+            f"UPDATE agents SET {set_clause} WHERE id = $1 RETURNING *",
+            agent_id, *(set_fields[col] for col in columns),
+        )
+        new = _row(new_row)
 
-            mirrored_graph = False
-            if old.get("workflow") is not None and (
-                "greeting" in fields or "system_prompt" in fields
-            ):
-                synced_wf = _mirror_prompts_into_graph(old["workflow"], set_fields)
-                if synced_wf != old["workflow"]:
-                    set_fields["workflow"] = json.dumps(synced_wf)
-                    mirrored_graph = True
-                draft_src = (
-                    old["workflow_draft"]
-                    if old.get("workflow_draft") is not None
-                    else old["workflow"]
-                )
-                synced_draft = _mirror_prompts_into_graph(draft_src, set_fields)
-                if synced_draft != draft_src:
-                    set_fields["workflow_draft"] = json.dumps(synced_draft)
-                    mirrored_graph = True
-
-            columns = list(set_fields.keys())
-            set_clause = ", ".join(f"{col} = ${i + 2}" for i, col in enumerate(columns))
-            new_row = await conn.fetchrow(
-                f"UPDATE agents SET {set_clause} WHERE id = $1 RETURNING *",
-                agent_id, *(set_fields[col] for col in columns),
+        if mirrored_graph and isinstance(set_fields.get("workflow"), str):
+            from .workflows import append_version
+            await append_version(
+                conn, agent_id, set_fields["workflow"],
+                user_id=user_id, note="mirrored greeting/system_prompt",
             )
-            new = _row(new_row)
 
-            if mirrored_graph and isinstance(set_fields.get("workflow"), str):
-                from .workflows import append_version
-                await append_version(
-                    conn, agent_id, set_fields["workflow"],
-                    user_id=user_id, note="mirrored greeting/system_prompt",
-                )
-
-            # Mirror mutates the live graph — keep graphs in this audit row.
-            old_audit = old if mirrored_graph else _audit_view(old)
-            new_audit = new if mirrored_graph else _audit_view(new)
-            await audit.write_audit(
-                conn,
-                entity_type="agent",
-                entity_id=agent_id,
-                action="updated",
-                user_id=user_id,
-                user_email=user_email,
-                old_value=old_audit,
-                new_value=new_audit,
-            )
+        # Mirror mutates the live graph — keep graphs in this audit row.
+        old_audit = old if mirrored_graph else _audit_view(old)
+        new_audit = new if mirrored_graph else _audit_view(new)
+        await audit.write_audit(
+            conn,
+            entity_type="agent",
+            entity_id=agent_id,
+            action="updated",
+            user_id=user_id,
+            user_email=user_email,
+            old_value=old_audit,
+            new_value=new_audit,
+        )
 
     await cache.invalidate(cache_key(tenant_slug, old["slug"]))
     return _public_agent(new)
@@ -395,27 +398,26 @@ async def soft_delete_agent(
     user_email: str | None = None,
 ) -> None:
     pool = await db.get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            # See update_agent()'s comment — same tenant-scoping + row-lock fix.
-            old_row = await conn.fetchrow(
-                "SELECT a.* FROM agents a JOIN tenants t ON t.id = a.tenant_id "
-                "WHERE a.id = $1 AND t.slug = $2 FOR UPDATE OF a",
-                agent_id, tenant_slug,
-            )
-            if old_row is None:
-                raise LookupError(f"agent {agent_id} not found under tenant {tenant_slug!r}")
-            old = _row(old_row)
+    async with tenant_conn(pool) as conn:
+        # See update_agent()'s comment — same tenant-scoping + row-lock fix.
+        old_row = await conn.fetchrow(
+            "SELECT a.* FROM agents a JOIN tenants t ON t.id = a.tenant_id "
+            "WHERE a.id = $1 AND t.slug = $2 FOR UPDATE OF a",
+            agent_id, tenant_slug,
+        )
+        if old_row is None:
+            raise LookupError(f"agent {agent_id} not found under tenant {tenant_slug!r}")
+        old = _row(old_row)
 
-            await conn.execute("UPDATE agents SET deleted_at = now() WHERE id = $1", agent_id)
-            await audit.write_audit(
-                conn,
-                entity_type="agent",
-                entity_id=agent_id,
-                action="deleted",
-                user_id=user_id,
-                user_email=user_email,
-                old_value=_audit_view(old),
-            )
+        await conn.execute("UPDATE agents SET deleted_at = now() WHERE id = $1", agent_id)
+        await audit.write_audit(
+            conn,
+            entity_type="agent",
+            entity_id=agent_id,
+            action="deleted",
+            user_id=user_id,
+            user_email=user_email,
+            old_value=_audit_view(old),
+        )
 
     await cache.invalidate(cache_key(tenant_slug, old["slug"]))

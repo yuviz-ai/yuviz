@@ -19,6 +19,8 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from libs.tenancy import set_target_tenant
+
 from .. import deps
 from .. import live_calls as live_calls_service
 from .. import tenants as tenants_service
@@ -82,6 +84,7 @@ async def _resolve_scope(
             # (finding #8).
             deps.forget_authority(request.app.state, effective_user.id, scope_key)
             raise HTTPException(status_code=404, detail="tenant not found")
+        set_target_tenant(str(tenant["id"]))
         return tenant["slug"], tenant["id"], effective_user
 
     if effective_user.role != "superadmin":
@@ -92,6 +95,7 @@ async def _resolve_scope(
     if tenant is None:
         deps.forget_authority(request.app.state, effective_user.id, scope_key)
         raise HTTPException(status_code=404, detail="tenant not found")
+    set_target_tenant(str(tenant["id"]))
     return tenant["slug"], tenant["id"], effective_user
 
 

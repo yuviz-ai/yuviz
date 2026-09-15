@@ -277,3 +277,16 @@ async def test_failed_contact_retried_until_max_attempts_then_exhausted(test_ten
     contacts = await campaign_contacts.list_contacts(campaign["id"])
     assert contacts[0]["status"] == "failed"
     assert contacts[0]["attempt_count"] == 2
+
+
+# ── due-campaign scan holds no transaction between ticks (T47) ───────────
+
+async def test_tick_holds_no_transaction_between_scan_iterations(pool):
+    worker = CampaignWorker()
+
+    for _ in range(3):
+        await worker._tick()
+        idle_in_txn = await pool.fetch(
+            "SELECT pid, query FROM pg_stat_activity WHERE state = 'idle in transaction'",
+        )
+        assert idle_in_txn == []

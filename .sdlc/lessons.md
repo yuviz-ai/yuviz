@@ -191,3 +191,23 @@ Tags: [prd] [architect] [planner] [implementer] [critic] [security] [tester] [qa
 28. [tester][qa] The suite and the reviewers test what someone thought to test. Running the merged
     app against edge cases found 17 defects after three review rounds, a green security audit and 330
     passing tests — including a high. Budget QA as its own stage, not as confirmation.
+
+29. [architect][security] A design's own list of "every router/call site/module this change touches"
+    is a claim, not a fact, until something mechanical derives it. A hand-enumerated list against a
+    codebase this size is wrong the first time and stays wrong every time it's patched by hand again.
+    *Earned: an RLS design's router list went 11 (missed a 12th), then its call-site count went 67
+    (missed ~116 more), then its by-id-route count went "4-5" (missed most of 53) — three separate
+    security rounds, each catching a different omission from the same un-mechanized enumeration.
+    Should have been an `app.routes`/AST walk from round 1, with the design's prose describing the
+    walk's rule rather than its output.
+
+30. [implementer][critic] When a build is split across parallel per-service agents implementing the
+    *same* cross-cutting pattern (a shared helper's calling convention, an authorization sequence), one
+    service establishing the convention does not mean a sibling service replicates it — each agent only
+    sees its own slice, not the others' code as it lands concurrently. Diff parallel-built call sites
+    against each other explicitly, not just against the design's prose.
+    *Earned: Config's Tier 3 routers all called `set_target_tenant` after `assert_tenant_access`;
+    Knowledge's analogous `_authorize_agent`/`_authorize_kb`/`_authorize_document` helpers (built by a
+    different agent in the same parallel wave) resolved the tenant and asserted access but never called
+    `set_target_tenant` — a platform-scoped caller passed the check and then hit `TenantUnresolved`
+    on the very next line, in every one of Knowledge's by-id routes at once.

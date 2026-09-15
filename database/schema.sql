@@ -359,6 +359,32 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS audit_log_entity_idx ON audit_log(entity_type, entity_id, changed_at DESC);
 
+-- RLS (database/rls.sql): tenant_id is nullable — NULL means platform-scoped
+-- (a mutation performed under platform_conn() with no target tenant). The
+-- DEFAULT stamps the row from whichever GUC tenant_conn()/platform_conn()
+-- resolved for the surrounding transaction, so write_audit(conn, ...) and its
+-- ~40 call sites need no change at all.
+--
+-- ON DELETE SET NULL, not the default RESTRICT: audit_log is a historical
+-- trail, not a live reference — it must never be the reason a tenant delete
+-- fails. This is the same "hard-deleted parent -> NULL, not an error" rule
+-- already applied to the pre-cutover backfill (a hard-deleted entity's rows
+-- stay NULL rather than blocking); found live when tenant-fixture teardown
+-- across several services' test suites started failing with
+-- audit_log_tenant_id_fkey ForeignKeyViolationError the moment a test wrote
+-- an audit row and then tried to delete its own tenant.
+ALTER TABLE audit_log
+    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE SET NULL
+        DEFAULT NULLIF(current_setting('app.tenant_id', true), '')::uuid;
+-- Re-applying against a database where the column already existed (with the
+-- pre-fix default RESTRICT behavior) needs its own idempotent correction —
+-- ADD COLUMN IF NOT EXISTS above is a no-op once the column is present, so
+-- it alone never fixes an already-wrong constraint on a re-run.
+ALTER TABLE audit_log DROP CONSTRAINT IF EXISTS audit_log_tenant_id_fkey;
+ALTER TABLE audit_log ADD CONSTRAINT audit_log_tenant_id_fkey
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS audit_log_tenant_idx ON audit_log(tenant_id, changed_at DESC);
+
 -- ── carriers — BYOC (bring your own carrier) ─────────────────────────────────
 CREATE TABLE IF NOT EXISTS carriers (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),

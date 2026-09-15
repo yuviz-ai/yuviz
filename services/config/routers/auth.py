@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from .. import users as users_service
 from ..auth import CurrentUser, create_access_token
-from ..deps import get_authenticated_user
+from ..deps import get_authenticated_user, is_platform_scoped
 from ..schemas import BootstrapRequest, ChangePasswordRequest, LoginRequest
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -68,7 +68,10 @@ async def change_password(
     # "admin X reset user Y's password" is a materially different event from
     # "user Y changed their own password").
     ok = await users_service.change_password(
-        current_user.id, current_password=body.current_password, new_password=body.new_password,
+        current_user.id,
+        current_password=body.current_password,
+        new_password=body.new_password,
+        platform_scoped=is_platform_scoped(current_user),
     )
     if not ok:
         raise HTTPException(status_code=400, detail="current password is incorrect")

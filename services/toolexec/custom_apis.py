@@ -31,6 +31,8 @@ import socket
 from typing import Any
 from urllib.parse import urlsplit
 
+from libs.tenancy import platform_conn, tenant_conn
+
 from . import audit, auth_schemes, db, graph
 
 log = logging.getLogger(__name__)
@@ -409,17 +411,28 @@ def _merge_sensitive_literals(new_params: list[dict], old_params_by_name: dict[s
     return merged
 
 
-async def get_custom_api(custom_api_id: Any) -> dict[str, Any] | None:
+async def get_custom_api(custom_api_id: Any, *, platform_scoped: bool = False) -> dict[str, Any] | None:
+    """`platform_scoped` (RLS design, Tier 3) selects which connection this
+    flat by-id fetch runs under — its only legitimate source is
+    `deps.is_platform_scoped(current_user)` (lesson 24), never a role
+    comparison. The caller (routers/custom_apis.py's `_authorize_custom_api`)
+    still performs the post-fetch tenant check regardless of which
+    connection produced the row."""
     pool = await db.get_pool()
-    row = await pool.fetchrow(
-        "SELECT * FROM custom_apis WHERE id = $1 AND deleted_at IS NULL", custom_api_id,
+    conn_cm = (
+        platform_conn(pool, reason="custom-apis-admin-by-id") if platform_scoped
+        else tenant_conn(pool)
     )
-    if row is None:
-        return None
-    result = _decode_custom_api_row(row)
-    param_rows = await pool.fetch(
-        "SELECT * FROM custom_api_params WHERE custom_api_id = $1 ORDER BY name", custom_api_id,
-    )
+    async with conn_cm as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM custom_apis WHERE id = $1 AND deleted_at IS NULL", custom_api_id,
+        )
+        if row is None:
+            return None
+        result = _decode_custom_api_row(row)
+        param_rows = await conn.fetch(
+            "SELECT * FROM custom_api_params WHERE custom_api_id = $1 ORDER BY name", custom_api_id,
+        )
     result["params"] = _redact_sensitive_literals([_decode_param_row(p) for p in param_rows])
     return result
 
@@ -431,21 +444,26 @@ async def list_custom_apis(tenant_id: Any) -> list[dict[str, Any]]:
     not None`) — so a list response missing `params` is what makes the
     form fall back to an empty array and unknowingly wipe a real API's
     dependency edges on save, rather than the write layer itself treating
-    absent as "clear it"."""
-    pool = await db.get_pool()
-    rows = await pool.fetch(
-        "SELECT * FROM custom_apis WHERE tenant_id = $1 AND deleted_at IS NULL ORDER BY name", tenant_id,
-    )
-    apis = [_decode_custom_api_row(row) for row in rows]
+    absent as "clear it".
 
-    api_ids = [api["id"] for api in apis]
-    params_by_api: dict[str, list[dict]] = {}
-    if api_ids:
-        param_rows = await pool.fetch(
-            "SELECT * FROM custom_api_params WHERE custom_api_id = ANY($1::uuid[]) ORDER BY name", api_ids,
+    Only reached via `tenant_scoped_router` (Tier 2), whose `bind_path_tenant`
+    already set the GUC target for this tenant_id — a plain `tenant_conn()`
+    is correct here even for a platform-scoped caller."""
+    pool = await db.get_pool()
+    async with tenant_conn(pool) as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM custom_apis WHERE tenant_id = $1 AND deleted_at IS NULL ORDER BY name", tenant_id,
         )
-        for p in param_rows:
-            params_by_api.setdefault(str(p["custom_api_id"]), []).append(_decode_param_row(p))
+        apis = [_decode_custom_api_row(row) for row in rows]
+
+        api_ids = [api["id"] for api in apis]
+        params_by_api: dict[str, list[dict]] = {}
+        if api_ids:
+            param_rows = await conn.fetch(
+                "SELECT * FROM custom_api_params WHERE custom_api_id = ANY($1::uuid[]) ORDER BY name", api_ids,
+            )
+            for p in param_rows:
+                params_by_api.setdefault(str(p["custom_api_id"]), []).append(_decode_param_row(p))
 
     for api in apis:
         api["params"] = _redact_sensitive_literals(params_by_api.get(str(api["id"]), []))
@@ -480,7 +498,7 @@ async def create_custom_api(
     _validate_success_template(success_template, sensitive_response_paths, params)
 
     pool = await db.get_pool()
-    async with pool.acquire() as conn:
+    async with tenant_conn(pool) as conn:
         async with conn.transaction():
             # Serializes every create/update for this tenant so two
             # concurrent edits cannot each individually pass the depth
@@ -533,17 +551,36 @@ _UPDATABLE_FIELDS = {
 async def update_custom_api(
     custom_api_id: Any,
     *,
+    platform_scoped: bool = False,
     params: list[dict] | None = None,
     user_id: Any | None = None,
     user_email: str | None = None,
     **fields: Any,
 ) -> dict[str, Any]:
+    """`platform_scoped` (RLS design, Tier 3) — its only legitimate source
+    is `deps.is_platform_scoped(current_user)` (lesson 24) — picks the
+    connection this flat by-id write runs under: `tenant_conn()` for a
+    tenant-scoped caller (already pinned to its own tenant by the router's
+    `_authorize_custom_api` check and by `current_tenant()` itself), or
+    `platform_conn(stamp_tenant=...)` for a platform-scoped one, where
+    `stamp_tenant` is the row's OWN tenant_id (resolved via
+    `get_custom_api` below, under the same flag) so `audit_log.tenant_id`'s
+    column default still stamps the edited tenant's id, not NULL."""
     unknown = set(fields) - _UPDATABLE_FIELDS
     if unknown:
         raise ValueError(f"update_custom_api() got non-updatable field(s): {unknown}")
 
+    existing = await get_custom_api(custom_api_id, platform_scoped=platform_scoped)
+    if existing is None:
+        raise LookupError(f"custom_api {custom_api_id} not found")
+    tenant_id = existing["tenant_id"]
+
     pool = await db.get_pool()
-    async with pool.acquire() as conn:
+    conn_cm = (
+        platform_conn(pool, reason="custom-apis-admin-mutation", stamp_tenant=tenant_id) if platform_scoped
+        else tenant_conn(pool)
+    )
+    async with conn_cm as conn:
         async with conn.transaction():
             old_row = await conn.fetchrow(
                 "SELECT * FROM custom_apis WHERE id = $1 AND deleted_at IS NULL FOR UPDATE", custom_api_id,
@@ -628,10 +665,20 @@ async def update_custom_api(
 
 
 async def soft_delete_custom_api(
-    custom_api_id: Any, *, user_id: Any | None = None, user_email: str | None = None,
+    custom_api_id: Any, *, platform_scoped: bool = False,
+    user_id: Any | None = None, user_email: str | None = None,
 ) -> None:
+    """See update_custom_api's docstring for `platform_scoped`/`stamp_tenant`."""
+    existing = await get_custom_api(custom_api_id, platform_scoped=platform_scoped)
+    if existing is None:
+        raise LookupError(f"custom_api {custom_api_id} not found")
+
     pool = await db.get_pool()
-    async with pool.acquire() as conn:
+    conn_cm = (
+        platform_conn(pool, reason="custom-apis-admin-mutation", stamp_tenant=existing["tenant_id"])
+        if platform_scoped else tenant_conn(pool)
+    )
+    async with conn_cm as conn:
         async with conn.transaction():
             old_row = await conn.fetchrow(
                 "SELECT * FROM custom_apis WHERE id = $1 AND deleted_at IS NULL FOR UPDATE", custom_api_id,

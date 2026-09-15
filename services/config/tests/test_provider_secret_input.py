@@ -58,33 +58,10 @@ def test_no_credential_means_null_not_empty_string(key):
 # --- Tenant scoping on the list route -------------------------------------
 # api_key_ref used to be a pointer; an enc: ref carries the sealed credential,
 # so an unscoped list is a cross-tenant credential read.
-
-from dataclasses import dataclass
-
-import pytest as _pytest
-from fastapi import HTTPException
-
-from services.config.routers.provider_configs import _require_tenant_access
-
-
-@dataclass
-class _User:
-    role: str
-    tenant_id: str | None
-
-
-def test_a_tenant_cannot_list_another_tenants_providers():
-    with _pytest.raises(HTTPException) as exc:
-        _require_tenant_access("tenant-A", _User(role="viewer", tenant_id="tenant-B"))
-    assert exc.value.status_code == 403
-
-
-def test_a_tenant_can_list_its_own_providers():
-    _require_tenant_access("tenant-A", _User(role="viewer", tenant_id="tenant-A"))
-
-
-def test_superadmin_and_the_service_account_stay_unscoped():
-    # The Conversation Service account has tenant_id=None and serves every
-    # tenant from one process — scoping it would break live calls.
-    _require_tenant_access("tenant-A", _User(role="superadmin", tenant_id="tenant-B"))
-    _require_tenant_access("tenant-A", _User(role="viewer", tenant_id=None))
+#
+# provider_configs.py's local `_require_tenant_access` was replaced by the
+# shared `deps.assert_tenant_access` (RLS design T14) — its 403/404 shapes,
+# the platform-scoped exemption, and the deliberate narrowing off
+# role == "superadmin" onto is_platform_scoped (lesson 24) are covered in
+# full by services/config/tests/test_deps_tenant_access.py, not duplicated
+# here.

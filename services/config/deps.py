@@ -31,8 +31,11 @@ import uuid
 from collections import OrderedDict
 from typing import Any, Awaitable, Callable
 
-from fastapi import Depends, HTTPException, Header
+from fastapi import Depends, HTTPException, Header, Request
 
+from libs.tenancy import set_caller_tenant, set_target_tenant
+
+from . import tenants as tenants_service
 from . import users as users_service
 from .auth import CurrentUser, InvalidTokenError, decode_access_token
 
@@ -65,9 +68,15 @@ async def get_authenticated_user(authorization: str | None = Header(default=None
         raise HTTPException(status_code=401, detail="missing or malformed Authorization header")
     token = authorization.removeprefix("Bearer ").strip()
     try:
-        return decode_access_token(token)
+        user = decode_access_token(token)
     except InvalidTokenError:
         raise HTTPException(status_code=401, detail="invalid or expired token")
+    # RLS (libs/tenancy): records WHO this request's caller is, before any
+    # role gate runs — the ceiling current_tenant() enforces regardless of
+    # what a /tenants/{...} path later claims. Every authenticated route in
+    # every HTTP service flows through this one decode point (lesson 9).
+    set_caller_tenant(user.tenant_id)
+    return user
 
 
 async def get_current_user(user: CurrentUser = Depends(get_authenticated_user)) -> CurrentUser:
@@ -102,6 +111,77 @@ def require_role(*allowed_roles: str):
         return user
 
     return _check
+
+
+async def bind_path_tenant(request: Request) -> None:
+    """Router-level dependency for /tenants/{tenant_slug|tenant_id}/...
+    routers. Records the target tenant for RLS (libs/tenancy.
+    set_target_tenant) and nothing else: no authorization, no exception.
+    Safe to run unauthenticated and before get_current_user, because
+    current_tenant() ignores the target for any caller that already has a
+    tenant of their own (lesson 1: router-level dependencies run before
+    endpoint dependencies in FastAPI, i.e. before get_authenticated_user)."""
+    tenant = request.path_params.get("tenant_slug") or request.path_params.get("tenant_id")
+    set_target_tenant(tenant)
+
+
+async def require_path_tenant_access(
+    request: Request, current_user: CurrentUser = Depends(get_current_user),
+) -> None:
+    """Router-level dependency, paired with bind_path_tenant on every
+    /tenants/{...} router. A Request-reading wrapper over
+    assert_tenant_access below: reads whichever path segment the router
+    carries and applies the same predicate and the same 403/404 shapes."""
+    tenant = request.path_params.get("tenant_slug") or request.path_params.get("tenant_id")
+    await assert_tenant_access(tenant, current_user)
+
+
+async def assert_tenant_access(tenant: "str | uuid.UUID | None", current_user: CurrentUser) -> None:
+    """The one predicate, shared by Tier 2 (a path segment),
+    Tier 3 (a fetched row's tenant_id) and Tier 4 (a request body field), so
+    the three tiers cannot drift apart. Lifted from
+    toolexec/routers/custom_apis.py:38 (`_require_tenant_access`) for the
+    UUID case — same predicate, same 403, same detail string:
+
+        is_platform_scoped(current_user) -> allowed (tenant_id IS NULL only)
+        UUID argument, mismatch -> 403 "tenant_id does not match the caller's tenant"
+        slug argument, mismatch or unknown -> 404 f"tenant {slug!r} not found"
+
+    `tenant is None` means a platform-scoped row (a NULL-tenant user,
+    invite or audit row) and is allowed only for a platform-scoped caller.
+    A slug can't be compared without a lookup (CurrentUser carries only
+    tenant_id), so that branch resolves it via tenants.get_tenant and
+    folds "no such tenant" and "exists, but not the caller's" into the same
+    404 — a {tenant_slug} path must not become a slug oracle (agents.py's
+    existing precedent, lesson 2).
+
+    It never sets a GUC, so it is safe to call after a fetch that a cache
+    satisfied without touching Postgres — which is exactly why the cached
+    reads depend on it.
+    """
+    if is_platform_scoped(current_user):
+        return
+    if tenant is None:
+        raise HTTPException(status_code=403, detail="tenant_id does not match the caller's tenant")
+    # A fetched row's tenant_id arrives as an actual uuid.UUID (asyncpg's
+    # native type for a UUID column, e.g. row["tenant_id"]), not a string —
+    # uuid.UUID(<uuid.UUID instance>) raises AttributeError (it expects a
+    # hex string), which used to silently misroute every such caller into
+    # the slug branch below. Same bug class as libs/tenancy.session's
+    # _split_tenant fix; same fix here.
+    if isinstance(tenant, uuid.UUID):
+        if str(tenant) != current_user.tenant_id:
+            raise HTTPException(status_code=403, detail="tenant_id does not match the caller's tenant")
+        return
+    try:
+        parsed = uuid.UUID(tenant)
+    except (ValueError, AttributeError, TypeError):
+        tenant_row = await tenants_service.get_tenant(tenant)
+        if tenant_row is None or str(tenant_row["id"]) != current_user.tenant_id:
+            raise HTTPException(status_code=404, detail=f"tenant {tenant!r} not found")
+        return
+    if str(parsed) != current_user.tenant_id:
+        raise HTTPException(status_code=403, detail="tenant_id does not match the caller's tenant")
 
 
 def require_live_calls_operator():

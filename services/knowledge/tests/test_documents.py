@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import pytest
 
+from libs.tenancy import set_caller_tenant
 from services.knowledge import documents as documents_service
 from services.knowledge import knowledge_bases as kb_service
 from services.knowledge.storage import LocalStorageProvider
 
 
 async def _make_kb(tenant):
+    set_caller_tenant(str(tenant["id"]))
     return await kb_service.create_knowledge_base(tenant_id=tenant["id"], slug="policies", name="Policies")
 
 

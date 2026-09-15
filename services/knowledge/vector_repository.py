@@ -46,6 +46,7 @@ class VectorMatch:
 class IVectorRepository(Protocol):
     async def search(
         self,
+        conn: asyncpg.Connection,
         kb_ids: list[str],
         embedding: list[float],
         top_k: int,
@@ -54,11 +55,14 @@ class IVectorRepository(Protocol):
 
 
 class PgVectorRepository:
-    def __init__(self, pool: asyncpg.Pool) -> None:
-        self._pool = pool
+    """Stateless: the connection is opened by the caller (routers/retrieve.py,
+    under tenant_conn()/platform_conn()) and passed to search() rather than
+    held here, so this singleton never runs a query outside the request's
+    own resolved GUC scope (RLS design, libs/tenancy)."""
 
     async def search(
         self,
+        conn: asyncpg.Connection,
         kb_ids: list[str],
         embedding: list[float],
         top_k: int,
@@ -67,7 +71,7 @@ class PgVectorRepository:
         if not kb_ids:
             return []
         vector_literal = "[" + ",".join(repr(float(x)) for x in embedding) + "]"
-        rows = await self._pool.fetch(
+        rows = await conn.fetch(
             """
             SELECT c.id AS chunk_id, c.document_id, c.kb_id, c.content, c.token_count,
                    c.page, c.language, c.tags, c.version,

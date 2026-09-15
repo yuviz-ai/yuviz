@@ -27,6 +27,8 @@ from typing import Any
 
 import asyncpg
 
+from libs.tenancy import platform_conn, tenant_conn
+
 from . import audit, db, tenants
 from . import users as users_service
 from .auth import CurrentUser
@@ -175,81 +177,86 @@ async def create_invite(
 
     raw_token, token_hash = _new_token()
     pool = await db.get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            # Self-heal (PR #19 finding 1, amended per round-2 review): an
-            # expired invite is still status='pending' — expiry is derived,
-            # never stored — so it would otherwise squat this (tenant,
-            # lower(email)) slot in user_invites_pending_email_idx forever.
-            # The unique index guarantees at most one pending row per slot,
-            # so lock and inspect that one row rather than blind-UPDATE-ing
-            # by (tenant, email) alone: reusing may_invite against its
-            # *stored* role/tenant — exactly as revoke_invite does — means
-            # this can only reclaim a slot the actor could already revoke
-            # through POST /invites/{id}/revoke. A tenant_admin cannot use
-            # a re-invite to silently clear an expired superadmin-role
-            # invite it could never have revoked directly; that case falls
-            # through untouched and the INSERT below correctly conflicts.
-            slot = await conn.fetchrow(
-                "SELECT * FROM user_invites WHERE status = 'pending' "
-                "AND COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid) "
-                "= COALESCE($1, '00000000-0000-0000-0000-000000000000'::uuid) "
-                "AND lower(email) = $2 FOR UPDATE",
-                tenant_id, email,
+    # tenant_id is None only for a platform superadmin inviting another
+    # platform admin — the row is tenant_id IS NULL by construction and
+    # invisible to every policy, so that's the one legitimate bypass
+    # (design's Tier 4: the router already asserted body.tenant_id against
+    # the caller and set the target GUC to it for every other case).
+    conn_cm = platform_conn(pool, reason="invites-create-null-tenant") if tenant_id is None else tenant_conn(pool)
+    async with conn_cm as conn:
+        # Self-heal (PR #19 finding 1, amended per round-2 review): an
+        # expired invite is still status='pending' — expiry is derived,
+        # never stored — so it would otherwise squat this (tenant,
+        # lower(email)) slot in user_invites_pending_email_idx forever.
+        # The unique index guarantees at most one pending row per slot,
+        # so lock and inspect that one row rather than blind-UPDATE-ing
+        # by (tenant, email) alone: reusing may_invite against its
+        # *stored* role/tenant — exactly as revoke_invite does — means
+        # this can only reclaim a slot the actor could already revoke
+        # through POST /invites/{id}/revoke. A tenant_admin cannot use
+        # a re-invite to silently clear an expired superadmin-role
+        # invite it could never have revoked directly; that case falls
+        # through untouched and the INSERT below correctly conflicts.
+        slot = await conn.fetchrow(
+            "SELECT * FROM user_invites WHERE status = 'pending' "
+            "AND COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid) "
+            "= COALESCE($1, '00000000-0000-0000-0000-000000000000'::uuid) "
+            "AND lower(email) = $2 FOR UPDATE",
+            tenant_id, email,
+        )
+        if (
+            slot is not None
+            and slot["expires_at"] <= datetime.now(timezone.utc)
+            and may_invite(
+                actor_role=actor.role, actor_tenant_id=actor.tenant_id,
+                target_role=slot["role"], target_tenant_id=slot["tenant_id"],
             )
-            if (
-                slot is not None
-                and slot["expires_at"] <= datetime.now(timezone.utc)
-                and may_invite(
-                    actor_role=actor.role, actor_tenant_id=actor.tenant_id,
-                    target_role=slot["role"], target_tenant_id=slot["tenant_id"],
-                )
-            ):
-                reclaimed = await conn.fetchrow(
-                    "UPDATE user_invites SET status = 'revoked', updated_at = now() "
-                    "WHERE id = $1 RETURNING *",
-                    slot["id"],
-                )
-                # Distinct from an operator-initiated revoke (design line
-                # 206 / AC13: every mutating path audits in the same
-                # transaction) — the "reason" marker is what lets a reader
-                # tell "the system reclaimed a dead slot" from "an admin
-                # revoked this", even though both write action="updated".
-                await audit.write_audit(
-                    conn,
-                    entity_type="invite",
-                    entity_id=reclaimed["id"],
-                    action="updated",
-                    user_id=actor.id,
-                    user_email=actor.email,
-                    old_value={"status": "pending"},
-                    new_value={"status": "revoked", "reason": "expired_reclaimed_on_reinvite"},
-                )
-            try:
-                row = await conn.fetchrow(
-                    "INSERT INTO user_invites "
-                    "(tenant_id, email, role, team, token_hash, expires_at, invited_by, last_sent_at) "
-                    f"VALUES ($1, $2, $3, $4, $5, now() + interval '{INVITE_TTL}', $6, now()) "
-                    "RETURNING *",
-                    tenant_id, email, role, team, token_hash, actor.id,
-                )
-            except asyncpg.UniqueViolationError:
-                # A genuinely live pending invite for this slot — the
-                # expired case was just revoked above, so this can only be
-                # a concurrent double-send or a real, unexpired pending
-                # invite. Distinct from EmailConflict: no account exists,
-                # the remedy is "revoke the existing invite first".
-                raise PendingInviteConflict()
-            result = dict(row)
+        ):
+            reclaimed = await conn.fetchrow(
+                "UPDATE user_invites SET status = 'revoked', updated_at = now() "
+                "WHERE id = $1 RETURNING *",
+                slot["id"],
+            )
+            # Distinct from an operator-initiated revoke (design line
+            # 206 / AC13: every mutating path audits in the same
+            # transaction) — the "reason" marker is what lets a reader
+            # tell "the system reclaimed a dead slot" from "an admin
+            # revoked this", even though both write action="updated".
             await audit.write_audit(
                 conn,
                 entity_type="invite",
-                entity_id=result["id"],
-                action="created",
+                entity_id=reclaimed["id"],
+                action="updated",
                 user_id=actor.id,
                 user_email=actor.email,
-                new_value=result,
+                old_value={"status": "pending"},
+                new_value={"status": "revoked", "reason": "expired_reclaimed_on_reinvite"},
             )
+        try:
+            row = await conn.fetchrow(
+                "INSERT INTO user_invites "
+                "(tenant_id, email, role, team, token_hash, expires_at, invited_by, last_sent_at) "
+                f"VALUES ($1, $2, $3, $4, $5, now() + interval '{INVITE_TTL}', $6, now()) "
+                "RETURNING *",
+                tenant_id, email, role, team, token_hash, actor.id,
+            )
+        except asyncpg.UniqueViolationError:
+            # A genuinely live pending invite for this slot — the
+            # expired case was just revoked above, so this can only be
+            # a concurrent double-send or a real, unexpired pending
+            # invite. Distinct from EmailConflict: no account exists,
+            # the remedy is "revoke the existing invite first".
+            raise PendingInviteConflict()
+        result = dict(row)
+        await audit.write_audit(
+            conn,
+            entity_type="invite",
+            entity_id=result["id"],
+            action="created",
+            user_id=actor.id,
+            user_email=actor.email,
+            new_value=result,
+        )
     return result, raw_token
 
 
@@ -263,78 +270,88 @@ async def resend_invite(invite_id: Any, *, actor: CurrentUser) -> tuple[dict[str
     tenant's invite, or a superadmin's, is refused the same way creating one
     would be."""
     pool = await db.get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            row = await conn.fetchrow("SELECT * FROM user_invites WHERE id = $1 FOR UPDATE", invite_id)
-            if row is None:
-                raise LookupError(f"invite {invite_id} not found")
-            invite = dict(row)
-            if not may_invite(
-                actor_role=actor.role, actor_tenant_id=actor.tenant_id,
-                target_role=invite["role"], target_tenant_id=invite["tenant_id"],
-            ):
-                raise PermissionDenied()
-            if invite["status"] != "pending":
-                raise InviteNotPending()
-            if invite["last_sent_at"] is not None:
-                elapsed = (datetime.now(timezone.utc) - invite["last_sent_at"]).total_seconds()
-                if elapsed < RESEND_COOLDOWN_SECONDS:
-                    raise ResendCooldown(int(RESEND_COOLDOWN_SECONDS - elapsed) + 1)
+    async with tenant_conn(pool) as conn:
+        row = await conn.fetchrow("SELECT * FROM user_invites WHERE id = $1 FOR UPDATE", invite_id)
+        if row is None:
+            raise LookupError(f"invite {invite_id} not found")
+        invite = dict(row)
+        if not may_invite(
+            actor_role=actor.role, actor_tenant_id=actor.tenant_id,
+            target_role=invite["role"], target_tenant_id=invite["tenant_id"],
+        ):
+            raise PermissionDenied()
+        if invite["status"] != "pending":
+            raise InviteNotPending()
+        if invite["last_sent_at"] is not None:
+            elapsed = (datetime.now(timezone.utc) - invite["last_sent_at"]).total_seconds()
+            if elapsed < RESEND_COOLDOWN_SECONDS:
+                raise ResendCooldown(int(RESEND_COOLDOWN_SECONDS - elapsed) + 1)
 
-            raw_token, token_hash = _new_token()
-            updated = await conn.fetchrow(
-                "UPDATE user_invites SET token_hash = $2, last_sent_at = now(), updated_at = now(), "
-                f"expires_at = now() + interval '{INVITE_TTL}' "
-                "WHERE id = $1 RETURNING *",
-                invite_id, token_hash,
-            )
-            result = dict(updated)
-            await audit.write_audit(
-                conn,
-                entity_type="invite",
-                entity_id=invite_id,
-                action="updated",
-                user_id=actor.id,
-                user_email=actor.email,
-                old_value={"token_hash": invite["token_hash"]},
-                new_value={"token_hash": result["token_hash"]},
-            )
+        raw_token, token_hash = _new_token()
+        updated = await conn.fetchrow(
+            "UPDATE user_invites SET token_hash = $2, last_sent_at = now(), updated_at = now(), "
+            f"expires_at = now() + interval '{INVITE_TTL}' "
+            "WHERE id = $1 RETURNING *",
+            invite_id, token_hash,
+        )
+        result = dict(updated)
+        await audit.write_audit(
+            conn,
+            entity_type="invite",
+            entity_id=invite_id,
+            action="updated",
+            user_id=actor.id,
+            user_email=actor.email,
+            old_value={"token_hash": invite["token_hash"]},
+            new_value={"token_hash": result["token_hash"]},
+        )
     return result, raw_token
 
 
 async def revoke_invite(invite_id: Any, *, actor: CurrentUser) -> dict[str, Any]:
     pool = await db.get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            row = await conn.fetchrow("SELECT * FROM user_invites WHERE id = $1 FOR UPDATE", invite_id)
-            if row is None:
-                raise LookupError(f"invite {invite_id} not found")
-            invite = dict(row)
-            if not may_invite(
-                actor_role=actor.role, actor_tenant_id=actor.tenant_id,
-                target_role=invite["role"], target_tenant_id=invite["tenant_id"],
-            ):
-                raise PermissionDenied()
-            if invite["status"] != "pending":
-                raise InviteNotPending()
+    async with tenant_conn(pool) as conn:
+        row = await conn.fetchrow("SELECT * FROM user_invites WHERE id = $1 FOR UPDATE", invite_id)
+        if row is None:
+            raise LookupError(f"invite {invite_id} not found")
+        invite = dict(row)
+        if not may_invite(
+            actor_role=actor.role, actor_tenant_id=actor.tenant_id,
+            target_role=invite["role"], target_tenant_id=invite["tenant_id"],
+        ):
+            raise PermissionDenied()
+        if invite["status"] != "pending":
+            raise InviteNotPending()
 
-            updated = await conn.fetchrow(
-                "UPDATE user_invites SET status = 'revoked', updated_at = now() "
-                "WHERE id = $1 RETURNING *",
-                invite_id,
-            )
-            result = dict(updated)
-            await audit.write_audit(
-                conn,
-                entity_type="invite",
-                entity_id=invite_id,
-                action="updated",
-                user_id=actor.id,
-                user_email=actor.email,
-                old_value={"status": invite["status"]},
-                new_value={"status": result["status"]},
-            )
+        updated = await conn.fetchrow(
+            "UPDATE user_invites SET status = 'revoked', updated_at = now() "
+            "WHERE id = $1 RETURNING *",
+            invite_id,
+        )
+        result = dict(updated)
+        await audit.write_audit(
+            conn,
+            entity_type="invite",
+            entity_id=invite_id,
+            action="updated",
+            user_id=actor.id,
+            user_email=actor.email,
+            old_value={"status": invite["status"]},
+            new_value={"status": result["status"]},
+        )
     return result
+
+
+async def get_invite_by_id(invite_id: Any, *, platform_scoped: bool = False) -> dict[str, Any] | None:
+    """Tier 3 by-id resolver for the router's pre-mutation authorization
+    (resend/revoke) — same convention as every other by-id getter:
+    `platform_scoped` (deps.is_platform_scoped(current_user) only, lesson
+    24) selects platform_conn for a platform actor's read."""
+    pool = await db.get_pool()
+    conn_cm = platform_conn(pool, reason="invites-by-id") if platform_scoped else tenant_conn(pool)
+    async with conn_cm as conn:
+        row = await conn.fetchrow("SELECT * FROM user_invites WHERE id = $1", invite_id)
+    return dict(row) if row is not None else None
 
 
 async def _check_context_live(conn: Any, invite: dict[str, Any]) -> None:
@@ -377,72 +394,74 @@ async def accept_invite(*, raw_token: str, password: str) -> dict[str, Any]:
     (AC6/AC10)."""
     token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
     pool = await db.get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            row = await conn.fetchrow(
-                "SELECT * FROM user_invites WHERE token_hash = $1 FOR UPDATE", token_hash,
-            )
-            if row is None:
-                raise LookupError("invite not found")
-            invite = dict(row)
+    # Pre-auth: no actor, no JWT, and the invite/new-user row may itself be
+    # NULL-tenant (a platform admin invite) — platform_conn bypass, same as
+    # every other pre-auth path in this module.
+    async with platform_conn(pool, reason="pre-auth-invite-accept") as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM user_invites WHERE token_hash = $1 FOR UPDATE", token_hash,
+        )
+        if row is None:
+            raise LookupError("invite not found")
+        invite = dict(row)
 
-            # Classification only — the conditional UPDATE below is the
-            # actual serialisation point for a concurrent accept.
-            if invite["status"] == "revoked":
-                raise InviteRevoked()
-            if invite["status"] == "accepted":
-                raise InviteUsed()
-            if invite["expires_at"] < datetime.now(timezone.utc):
-                raise InviteExpired()
+        # Classification only — the conditional UPDATE below is the
+        # actual serialisation point for a concurrent accept.
+        if invite["status"] == "revoked":
+            raise InviteRevoked()
+        if invite["status"] == "accepted":
+            raise InviteUsed()
+        if invite["expires_at"] < datetime.now(timezone.utc):
+            raise InviteExpired()
 
-            # Re-validate the granting context is still alive — done here,
-            # holding the invite row's lock (acquired by the SELECT ... FOR
-            # UPDATE above) and before the conditional UPDATE below, so it
-            # is atomic with the accept itself and cannot race a concurrent
-            # revoke.
-            await _check_context_live(conn, invite)
+        # Re-validate the granting context is still alive — done here,
+        # holding the invite row's lock (acquired by the SELECT ... FOR
+        # UPDATE above) and before the conditional UPDATE below, so it
+        # is atomic with the accept itself and cannot race a concurrent
+        # revoke.
+        await _check_context_live(conn, invite)
 
-            updated = await conn.fetchrow(
-                "UPDATE user_invites SET status = 'accepted', accepted_at = now(), updated_at = now() "
-                "WHERE id = $1 AND status = 'pending' AND expires_at > now() "
-                "RETURNING *",
-                invite["id"],
-            )
-            if updated is None:
-                # Lost the race between the SELECT above and here — the
-                # winner's transaction already flipped this row.
-                raise InviteUsed()
+        updated = await conn.fetchrow(
+            "UPDATE user_invites SET status = 'accepted', accepted_at = now(), updated_at = now() "
+            "WHERE id = $1 AND status = 'pending' AND expires_at > now() "
+            "RETURNING *",
+            invite["id"],
+        )
+        if updated is None:
+            # Lost the race between the SELECT above and here — the
+            # winner's transaction already flipped this row.
+            raise InviteUsed()
 
-            try:
-                user = await users_service._insert_user(
-                    conn,
-                    email=invite["email"],
-                    password=password,
-                    role=invite["role"],
-                    tenant_id=invite["tenant_id"],
-                    team=invite["team"],
-                    creator_user_id=None,
-                    creator_user_email=invite["email"],
-                )
-            except asyncpg.UniqueViolationError:
-                # Squatting invite in another tenant for this email accepted
-                # first (finding 3). Rolling back leaves this invite
-                # pending — resendable/revocable — instead of burning it.
-                raise EmailTaken()
-
-            await conn.execute(
-                "UPDATE user_invites SET accepted_user_id = $2 WHERE id = $1",
-                invite["id"], user["id"],
-            )
-            await audit.write_audit(
+        try:
+            user = await users_service._insert_user(
                 conn,
-                entity_type="invite",
-                entity_id=invite["id"],
-                action="updated",
-                user_id=user["id"],
-                user_email=user["email"],
-                new_value={"status": "accepted"},
+                email=invite["email"],
+                password=password,
+                role=invite["role"],
+                tenant_id=invite["tenant_id"],
+                team=invite["team"],
+                creator_user_id=None,
+                creator_user_email=invite["email"],
             )
+        except asyncpg.UniqueViolationError:
+            # Squatting invite in another tenant for this email accepted
+            # first (finding 3). Rolling back leaves this invite
+            # pending — resendable/revocable — instead of burning it.
+            raise EmailTaken()
+
+        await conn.execute(
+            "UPDATE user_invites SET accepted_user_id = $2 WHERE id = $1",
+            invite["id"], user["id"],
+        )
+        await audit.write_audit(
+            conn,
+            entity_type="invite",
+            entity_id=invite["id"],
+            action="updated",
+            user_id=user["id"],
+            user_email=user["email"],
+            new_value={"status": "accepted"},
+        )
     return user
 
 
@@ -460,13 +479,18 @@ async def list_invites(*, tenant_id: Any | None, is_superadmin: bool) -> list[di
     function never trusts a caller-supplied value on its own (CURSOR.md:
     never trust client tenancy)."""
     pool = await db.get_pool()
-    if is_superadmin and tenant_id is None:
-        rows = await pool.fetch("SELECT * FROM user_invites ORDER BY created_at DESC")
-    else:
-        rows = await pool.fetch(
-            "SELECT * FROM user_invites WHERE tenant_id IS NOT DISTINCT FROM $1 ORDER BY created_at DESC",
-            tenant_id,
-        )
+    # tenant_id=None is, by construction, a listing no RLS policy can ever
+    # return (cross-tenant, or a NULL-tenant-scoped filter) — platform_conn
+    # regardless of is_superadmin, same rule as users.list_users.
+    conn_cm = platform_conn(pool, reason="invites-null-tenant-listing") if tenant_id is None else tenant_conn(pool)
+    async with conn_cm as conn:
+        if is_superadmin and tenant_id is None:
+            rows = await conn.fetch("SELECT * FROM user_invites ORDER BY created_at DESC")
+        else:
+            rows = await conn.fetch(
+                "SELECT * FROM user_invites WHERE tenant_id IS NOT DISTINCT FROM $1 ORDER BY created_at DESC",
+                tenant_id,
+            )
     return [dict(row) for row in rows]
 
 
@@ -480,17 +504,20 @@ async def get_invite_for_accept(*, raw_token: str) -> dict[str, Any]:
     other account (AC per design's HTTP section)."""
     token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
     pool = await db.get_pool()
-    row = await pool.fetchrow("SELECT * FROM user_invites WHERE token_hash = $1", token_hash)
-    if row is None:
-        raise LookupError("invite not found")
-    invite = dict(row)
-    if invite["status"] == "revoked":
-        raise InviteRevoked()
-    if invite["status"] == "accepted":
-        raise InviteUsed()
-    if invite["expires_at"] < datetime.now(timezone.utc):
-        raise InviteExpired()
-    await _check_context_live(pool, invite)
+    # Pre-auth, same as accept_invite: no actor, and the invite may itself
+    # be NULL-tenant.
+    async with platform_conn(pool, reason="pre-auth-invite-accept") as conn:
+        row = await conn.fetchrow("SELECT * FROM user_invites WHERE token_hash = $1", token_hash)
+        if row is None:
+            raise LookupError("invite not found")
+        invite = dict(row)
+        if invite["status"] == "revoked":
+            raise InviteRevoked()
+        if invite["status"] == "accepted":
+            raise InviteUsed()
+        if invite["expires_at"] < datetime.now(timezone.utc):
+            raise InviteExpired()
+        await _check_context_live(conn, invite)
 
     tenant_name = "platform"
     if invite["tenant_id"] is not None:

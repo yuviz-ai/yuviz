@@ -33,11 +33,12 @@ Routers are thin HTTP wrappers; business logic lives in sibling modules (`agents
 
 ## Multi-tenant model
 
-- Every owned row carries `tenant_id` (UUID FK to `tenants`). Soft deletes via `deleted_at`.
+- Every owned row carries `tenant_id` (UUID FK to `tenants`, or a slug string for `calls`/`live_call_interventions`). Soft deletes via `deleted_at`.
 - Roles: `superadmin` (platform; `tenant_id` null), `admin`, `viewer` (tenant-scoped).
 - JWT in `Authorization: Bearer …` — identity from verified token only (`services/config/auth.py`, `deps.py`). Never trust client-supplied user/tenant identity.
 - Tenant-scoped admins must only touch their own tenant; reject cross-tenant provider/agent assignment (existing tests cover this).
 - Service accounts (`is_service_account`) authenticate Conversation/Knowledge to Config like real users.
+- **Database-enforced tenant isolation (RLS) is a second, independent layer under the app-level checks above** — full detail in `docs/rls-tenant-isolation.md`. Never call `pool.fetch*`/`pool.execute` directly; always open through `libs.tenancy.session.tenant_conn()`/`platform_conn()` (`tests/test_no_bare_pool_calls.py` ASTs every service module for a bare call and fails it). The caller/target rule: `set_caller_tenant()` records who the JWT belongs to, `set_target_tenant()` records what the path/query/body names, and `current_tenant()` is `target if caller is None else caller` — a caller with its own tenant is pinned to it regardless of what the URL claims. Four tiers, all keyed off `deps.assert_tenant_access`/`deps.is_platform_scoped` (`tenant_id is None`, not `role == "superadmin"`): Tier 2 `/tenants/{...}` routers (`bind_path_tenant` + `require_path_tenant_access`), Tier 3 flat `/{id}` routers (fetch the row, then `assert_tenant_access(row["tenant_id"], ...)` before reusing that same connection's scope for any mutation), Tier 4 body-tenant service-account routes (`assert_tenant_access` on the body field, then `set_target_tenant`), and `platform_conn(reason=...)` for the enumerated bypass sites (superuser-equivalent, greppable, never silent). **As of this write-up every service still connects on the superuser DSN — RLS is live but inert; see `docs/rls-tenant-isolation.md`'s "Current cutover status" before assuming otherwise.**
 
 ## Auth & secrets
 
@@ -56,8 +57,9 @@ Routers are thin HTTP wrappers; business logic lives in sibling modules (`agents
 
 ## Database
 
-- Apply in order: `schema.sql` → `knowledge_schema.sql` → `telephony_schema.sql`.
+- Apply in order: `schema.sql` → `knowledge_schema.sql` → `telephony_schema.sql` → `rls.sql`.
 - Evolve schema by editing those idempotent SQL files (and one-off scripts under `scripts/` when needed). Do not invent a parallel migration tool.
+- A new tenant-owned table needs its RLS policy added in `rls.sql` in the same change (`tests/test_rls_coverage.py` fails a `tenant_id` column with no policy) — see `docs/rls-tenant-isolation.md`.
 - `calls.tenant_id` is a **slug string**, not a UUID FK — match existing call-path conventions.
 
 ## Commands

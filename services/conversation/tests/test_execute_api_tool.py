@@ -18,6 +18,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
+import asyncpg
+
 from services.conversation.providers.interfaces import ChatMessage
 from services.conversation.tools.executor_registry import ExecutorRegistry
 from services.conversation.tools.executors.api_exec_executor import ApiExecExecutor
@@ -50,6 +52,24 @@ class _FakeConn:
     async def fetch(self, query: str, *args):
         self.queries.append((query, args))
         return self._results.pop(0)
+
+    async def fetchrow(self, query: str, *args):
+        # tenant_conn()'s own one-statement GUC resolver (libs/tenancy) —
+        # a truthy row is all _resolve_scope_on needs to not raise
+        # TenantUnresolved; these tests are about enabled_tools()'s own
+        # query shape, not the resolver's SQL.
+        return {"set_config": None}
+
+    def transaction(self) -> "_NoopTransaction":
+        return _NoopTransaction()
+
+
+class _NoopTransaction:
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc) -> bool:
+        return False
 
 
 class _Acquire:
@@ -94,7 +114,7 @@ async def test_seven_enabled_apis_yield_exactly_one_execute_api_entry_with_a_sev
     ])
     resolver = ToolPolicyResolver(pool=_FakePool(conn), registry=ToolRegistry())
 
-    resolved = await resolver.enabled_tools("agent1")
+    resolved = await resolver.enabled_tools("agent1", "t1")
 
     execute_api_policies = [p for p in resolved if p.definition.name == "execute_api"]
     assert len(execute_api_policies) == 1
@@ -109,7 +129,7 @@ async def test_zero_enabled_apis_means_no_execute_api_entry_and_no_second_query(
     conn = _FakeConn([[]])
     resolver = ToolPolicyResolver(pool=_FakePool(conn), registry=ToolRegistry())
 
-    resolved = await resolver.enabled_tools("agent1")
+    resolved = await resolver.enabled_tools("agent1", "t1")
 
     assert all(p.definition.name != "execute_api" for p in resolved)
     assert len(conn.queries) == 1
@@ -122,7 +142,7 @@ async def test_execute_api_enabled_but_zero_custom_apis_drops_the_policy():
     ])
     resolver = ToolPolicyResolver(pool=_FakePool(conn), registry=ToolRegistry())
 
-    resolved = await resolver.enabled_tools("agent1")
+    resolved = await resolver.enabled_tools("agent1", "t1")
 
     assert all(p.definition.name != "execute_api" for p in resolved)
     assert len(conn.queries) == 2
@@ -135,7 +155,7 @@ async def test_sensitive_arg_keys_union_from_p_sensitive():
     ])
     resolver = ToolPolicyResolver(pool=_FakePool(conn), registry=ToolRegistry())
 
-    resolved = await resolver.enabled_tools("agent1")
+    resolved = await resolver.enabled_tools("agent1", "t1")
 
     execute_api_policy = next(p for p in resolved if p.definition.name == "execute_api")
     assert execute_api_policy.sensitive_arg_keys == {"national_id"}
@@ -148,7 +168,7 @@ async def test_no_sensitive_params_means_empty_sensitive_arg_keys():
     ])
     resolver = ToolPolicyResolver(pool=_FakePool(conn), registry=ToolRegistry())
 
-    resolved = await resolver.enabled_tools("agent1")
+    resolved = await resolver.enabled_tools("agent1", "t1")
 
     execute_api_policy = next(p for p in resolved if p.definition.name == "execute_api")
     assert execute_api_policy.sensitive_arg_keys == frozenset()
@@ -354,7 +374,7 @@ class _FakePolicyResolver:
     def __init__(self, policies: list[ResolvedToolPolicy]) -> None:
         self._policies = policies
 
-    async def enabled_tools(self, agent_id: str, only=None) -> list[ResolvedToolPolicy]:
+    async def enabled_tools(self, agent_id: str, tenant_slug: str, only=None) -> list[ResolvedToolPolicy]:
         return self._policies
 
 
@@ -562,7 +582,7 @@ async def test_specialize_execute_api_is_tenant_fenced_against_a_cross_tenant_ag
         # fence itself, independent of whether execute_api is even enabled.
         resolver = ToolPolicyResolver(pool=pool, registry=ToolRegistry())
         specialized = await resolver._specialize_execute_api(
-            ToolRegistry().resolve("execute_api"), str(agent_a["id"]),
+            ToolRegistry().resolve("execute_api"), str(agent_a["id"]), tenant_a["slug"],
         )
 
         # Tenant A's agent must NOT see tenant B's custom API — the fence
@@ -573,6 +593,91 @@ async def test_specialize_execute_api_is_tenant_fenced_against_a_cross_tenant_ag
         await pool.execute("DELETE FROM custom_apis WHERE tenant_id = $1", tenant_b["id"])
         await pool.execute("DELETE FROM agents WHERE tenant_id = $1", tenant_a["id"])
         await pool.execute("DELETE FROM tenants WHERE id = ANY($1)", [tenant_a["id"], tenant_b["id"]])
+        await pool.close()
+
+
+_APP_PASSWORD = "rls-test-only-password"
+
+
+def _app_dsn() -> str:
+    """Swap only the user/password component of the setup pool's DSN for
+    yuviz_app's — same convention as tests/test_rls_isolation.py."""
+    import urllib.parse as up
+    import getpass
+
+    dsn = f"postgresql://{getpass.getuser()}@localhost:5432/voiceai"
+    parts = up.urlsplit(dsn)
+    netloc = f"yuviz_app:{_APP_PASSWORD}@{parts.hostname}"
+    if parts.port:
+        netloc += f":{parts.port}"
+    return up.urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+async def test_enabled_tools_is_tenant_conn_scoped_and_cannot_read_another_tenants_row():
+    """enabled_tools()'s own connection is scoped via tenant_conn(explicit_
+    tenant=tenant_slug) (T53), which runs as yuviz_app — RLS itself, not
+    merely a SQL predicate, must keep tenant A's agent_tool_policies row
+    invisible to a call scoped to tenant B's slug, even for the same
+    agent_id."""
+    setup_pool = await _pg_pool()
+    app_pool = None
+    try:
+        tenant_a = await setup_pool.fetchrow(
+            "INSERT INTO tenants (name, slug) VALUES ($1, $2) RETURNING *",
+            "Scope Test A", f"scope-a-{uuid_hex()}",
+        )
+        tenant_b = await setup_pool.fetchrow(
+            "INSERT INTO tenants (name, slug) VALUES ($1, $2) RETURNING *",
+            "Scope Test B", f"scope-b-{uuid_hex()}",
+        )
+        agent_a = await setup_pool.fetchrow(
+            "INSERT INTO agents (tenant_id, slug, name) VALUES ($1, 'sup', 'Support') RETURNING *",
+            tenant_a["id"],
+        )
+        tool_provider_config = await setup_pool.fetchrow(
+            "INSERT INTO tool_provider_configs (tenant_id, name, tool_name, engine) "
+            "VALUES ($1, 'sms', 'send_sms', 'twilio') RETURNING *",
+            tenant_a["id"],
+        )
+        await setup_pool.execute(
+            "INSERT INTO agent_tool_policies (agent_id, tool_provider_config_id, tool_name, enabled) "
+            "VALUES ($1, $2, 'send_sms', true)",
+            agent_a["id"], tool_provider_config["id"],
+        )
+        await setup_pool.execute(f"ALTER ROLE yuviz_app PASSWORD '{_APP_PASSWORD}'")
+
+        app_pool = await asyncpg.create_pool(_app_dsn(), min_size=1, max_size=2)
+        resolver = ToolPolicyResolver(pool=app_pool, registry=ToolRegistry())
+        # Same agent_id, but scoped to tenant B's slug — the connection
+        # itself must never see tenant A's row.
+        resolved = await resolver.enabled_tools(str(agent_a["id"]), tenant_b["slug"])
+        assert resolved == []
+    finally:
+        if app_pool is not None:
+            await app_pool.close()
+        await setup_pool.execute("DELETE FROM agent_tool_policies WHERE agent_id = $1", agent_a["id"])
+        await setup_pool.execute("DELETE FROM tool_provider_configs WHERE tenant_id = $1", tenant_a["id"])
+        await setup_pool.execute("DELETE FROM agents WHERE tenant_id = $1", tenant_a["id"])
+        await setup_pool.execute("DELETE FROM tenants WHERE id = ANY($1)", [tenant_a["id"], tenant_b["id"]])
+        await setup_pool.close()
+
+
+async def test_enabled_tools_raises_tenant_unresolved_for_an_empty_slug():
+    """The legacy YAML fallback path (agent_config.py's to_runtime_config())
+    can hand enabled_tools an empty tenant_slug when Tenant.slug itself is
+    somehow empty — this must fail loudly via TenantUnresolved rather than
+    silently resolving zero tools under an unscoped connection."""
+    from libs.tenancy import TenantUnresolved
+
+    pool = await _pg_pool()
+    try:
+        resolver = ToolPolicyResolver(pool=pool, registry=ToolRegistry())
+        try:
+            await resolver.enabled_tools("some-agent-id", "")
+            assert False, "expected TenantUnresolved"
+        except TenantUnresolved:
+            pass
+    finally:
         await pool.close()
 
 

@@ -8,10 +8,15 @@ test_retrieve_end_to_end_with_real_ollama_embeddings hits real Ollama
 (nomic-embed-text, already pulled locally — see database/knowledge_schema.
 sql's dimension comment) and real pgvector — matching this project's
 "real infra when fast/available" testing convention, not mocked.
+
+retrieve()/_resolve_policy()/PgVectorRepository.search() take a connection
+rather than the pool (RLS design, libs/tenancy) — each test opens one via
+tenant_conn(pool), the same helper routers/retrieve.py opens in production.
 """
 
 from __future__ import annotations
 
+from libs.tenancy import set_caller_tenant, tenant_conn
 from services.config import provider_configs
 from services.knowledge import agent_kb as agent_kb_service
 from services.knowledge import documents as documents_service
@@ -26,7 +31,9 @@ from services.knowledge.vector_repository import PgVectorRepository
 
 async def test_resolve_policy_uses_system_default_when_nothing_set(pool, tenant_agent):
     tenant, agent = tenant_agent
-    resolved = await _resolve_policy(pool, tenant["slug"], agent["slug"], {})
+    set_caller_tenant(str(tenant["id"]))
+    async with tenant_conn(pool) as conn:
+        resolved = await _resolve_policy(conn, tenant["slug"], agent["slug"], {})
     assert resolved["top_k"] == 5
     assert resolved["max_tokens"] == 1000
     assert resolved["minimum_score"] == 0.0
@@ -35,9 +42,11 @@ async def test_resolve_policy_uses_system_default_when_nothing_set(pool, tenant_
 
 async def test_resolve_policy_agent_row_overrides_system_default(pool, tenant_agent):
     tenant, agent = tenant_agent
+    set_caller_tenant(str(tenant["id"]))
     await policy_service.upsert_policy(agent["id"], top_k=15, minimum_score=0.6)
 
-    resolved = await _resolve_policy(pool, tenant["slug"], agent["slug"], {})
+    async with tenant_conn(pool) as conn:
+        resolved = await _resolve_policy(conn, tenant["slug"], agent["slug"], {})
     assert resolved["top_k"] == 15
     assert resolved["minimum_score"] == 0.6
     assert resolved["max_tokens"] == 1000  # untouched field still falls to system default
@@ -45,14 +54,17 @@ async def test_resolve_policy_agent_row_overrides_system_default(pool, tenant_ag
 
 async def test_resolve_policy_call_override_wins_over_agent_row(pool, tenant_agent):
     tenant, agent = tenant_agent
+    set_caller_tenant(str(tenant["id"]))
     await policy_service.upsert_policy(agent["id"], top_k=15)
 
-    resolved = await _resolve_policy(pool, tenant["slug"], agent["slug"], {"top_k": 3})
+    async with tenant_conn(pool) as conn:
+        resolved = await _resolve_policy(conn, tenant["slug"], agent["slug"], {"top_k": 3})
     assert resolved["top_k"] == 3  # explicit call override beats the agent's configured 15
 
 
 async def test_retrieve_end_to_end_with_real_ollama_embeddings(pool, tenant_agent):
     tenant, agent = tenant_agent
+    set_caller_tenant(str(tenant["id"]))
     embedding_cfg = await provider_configs.create_provider_config(
         tenant_id=tenant["id"], name="Embed", role="embedding", engine="ollama",
     )
@@ -79,11 +91,12 @@ async def test_retrieve_end_to_end_with_real_ollama_embeddings(pool, tenant_agen
             document["id"], kb["id"], tenant["id"], i, text, vector_literal,
         )
 
-    vector_repo = PgVectorRepository(pool)
-    result = await retrieve(
-        pool, vector_repo, manager,
-        tenant_slug=tenant["slug"], agent_slug=agent["slug"], query="How long until I get my money back?",
-    )
+    vector_repo = PgVectorRepository()
+    async with tenant_conn(pool) as conn:
+        result = await retrieve(
+            conn, vector_repo, manager,
+            tenant_slug=tenant["slug"], agent_slug=agent["slug"], query="How long until I get my money back?",
+        )
 
     assert result is not None
     assert result["chunks"][0]["content"] == "Refunds are processed within 30 days."
@@ -93,6 +106,7 @@ async def test_retrieve_end_to_end_with_real_ollama_embeddings(pool, tenant_agen
 
 async def test_prompt_mode_document_always_included_regardless_of_query_relevance(pool, tenant_agent):
     tenant, agent = tenant_agent
+    set_caller_tenant(str(tenant["id"]))
     kb = await kb_service.create_knowledge_base(tenant_id=tenant["id"], slug="notices", name="Notices")
     await agent_kb_service.assign(agent["id"], kb["id"])
 
@@ -112,12 +126,13 @@ async def test_prompt_mode_document_always_included_regardless_of_query_relevanc
     manager = EmbeddingProviderManager(CompositeSecretResolver())
     await process_one_job(pool, LocalStorageProvider(), manager, job)
 
-    vector_repo = PgVectorRepository(pool)
-    result = await retrieve(
-        pool, vector_repo, manager,
-        tenant_slug=tenant["slug"], agent_slug=agent["slug"],
-        query="What is the weather like on Mars?",  # completely unrelated
-    )
+    vector_repo = PgVectorRepository()
+    async with tenant_conn(pool) as conn:
+        result = await retrieve(
+            conn, vector_repo, manager,
+            tenant_slug=tenant["slug"], agent_slug=agent["slug"],
+            query="What is the weather like on Mars?",  # completely unrelated
+        )
 
     assert result is not None
     assert result["chunks"][0]["content"] == "We are closed on all public holidays."
@@ -126,6 +141,7 @@ async def test_prompt_mode_document_always_included_regardless_of_query_relevanc
 
 async def test_prompt_mode_document_coexists_with_vector_search_results(pool, tenant_agent):
     tenant, agent = tenant_agent
+    set_caller_tenant(str(tenant["id"]))
     embedding_cfg = await provider_configs.create_provider_config(
         tenant_id=tenant["id"], name="Embed", role="embedding", engine="ollama",
     )
@@ -162,11 +178,12 @@ async def test_prompt_mode_document_coexists_with_vector_search_results(pool, te
         prompt_doc["id"], kb["id"], tenant["id"], "Escalate unresolved issues to manager@acme.example.",
     )
 
-    vector_repo = PgVectorRepository(pool)
-    result = await retrieve(
-        pool, vector_repo, manager,
-        tenant_slug=tenant["slug"], agent_slug=agent["slug"], query="How long until I get my money back?",
-    )
+    vector_repo = PgVectorRepository()
+    async with tenant_conn(pool) as conn:
+        result = await retrieve(
+            conn, vector_repo, manager,
+            tenant_slug=tenant["slug"], agent_slug=agent["slug"], query="How long until I get my money back?",
+        )
 
     assert result is not None
     contents = [c["content"] for c in result["chunks"]]
@@ -177,6 +194,7 @@ async def test_prompt_mode_document_coexists_with_vector_search_results(pool, te
 
 async def test_prompt_mode_document_excluded_from_ordinary_vector_search(pool, tenant_agent):
     tenant, agent = tenant_agent
+    set_caller_tenant(str(tenant["id"]))
     embedding_cfg = await provider_configs.create_provider_config(
         tenant_id=tenant["id"], name="Embed", role="embedding", engine="ollama",
     )
@@ -200,14 +218,16 @@ async def test_prompt_mode_document_excluded_from_ordinary_vector_search(pool, t
     )
 
     [query_vector] = await provider.embed(["How long until I get my money back?"])
-    vector_repo = PgVectorRepository(pool)
-    matches = await vector_repo.search([str(kb["id"])], query_vector, top_k=5, minimum_score=0.0)
+    vector_repo = PgVectorRepository()
+    async with tenant_conn(pool) as conn:
+        matches = await vector_repo.search(conn, [str(kb["id"])], query_vector, top_k=5, minimum_score=0.0)
 
     assert matches == []  # embedded, but usage_mode='prompt' — never returned by similarity search
 
 
 async def test_agent_with_prompt_only_kb_and_no_embedding_provider_still_retrieves(pool, tenant_agent):
     tenant, agent = tenant_agent
+    set_caller_tenant(str(tenant["id"]))
     # No embedding_config_id at all — a KB holding only always-include
     # documents needs no embedding provider, since none of its content is
     # ever vector-searched.
@@ -224,11 +244,12 @@ async def test_agent_with_prompt_only_kb_and_no_embedding_provider_still_retriev
     manager = EmbeddingProviderManager(CompositeSecretResolver())
     await process_one_job(pool, LocalStorageProvider(), manager, job)
 
-    vector_repo = PgVectorRepository(pool)
-    result = await retrieve(
-        pool, vector_repo, manager,
-        tenant_slug=tenant["slug"], agent_slug=agent["slug"], query="anything at all",
-    )
+    vector_repo = PgVectorRepository()
+    async with tenant_conn(pool) as conn:
+        result = await retrieve(
+            conn, vector_repo, manager,
+            tenant_slug=tenant["slug"], agent_slug=agent["slug"], query="anything at all",
+        )
 
     assert result is not None
     assert result["chunks"][0]["content"] == "Office closes early on Fridays."

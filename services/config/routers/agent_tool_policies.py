@@ -2,21 +2,34 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from libs.tenancy import set_target_tenant
+
 from .. import agent_tool_policies as agent_tool_policies_service
 from .. import agents as agents_service
 from ..auth import CurrentUser
-from ..deps import get_current_user, require_role, validate_id_exists
+from ..deps import assert_tenant_access, get_current_user, get_or_404, is_platform_scoped, require_role
 from ..schemas import AgentToolPolicyCreate, AgentToolPolicyUpdate
 
 router = APIRouter(prefix="/agents/{agent_id}/tool-policies", tags=["agent_tool_policies"])
 
 
-async def _resolve_agent_id(agent_id: str) -> None:
-    await validate_id_exists(agent_id, agents_service.get_agent_by_id, "agent")
+async def _authorize_agent(agent_id: str, current_user: CurrentUser) -> dict:
+    """agent_tool_policies has no tenant_id of its own (Wave B child table,
+    RLS-visible only via its parent agents row) — so the tenant to check
+    against is the parent agent's, fetched the same way every other Tier 3
+    resolver does (platform_scoped from deps.is_platform_scoped, lesson 24)."""
+    agent = await get_or_404(
+        agents_service.get_agent_by_id(agent_id, platform_scoped=is_platform_scoped(current_user)),
+        f"agent {agent_id!r} not found",
+    )
+    await assert_tenant_access(agent["tenant_id"], current_user)
+    return agent
 
 
 @router.get("")
 async def list_agent_tool_policies(agent_id: str, current_user: CurrentUser = Depends(get_current_user)):
+    agent = await _authorize_agent(agent_id, current_user)
+    set_target_tenant(agent["tenant_id"])
     return await agent_tool_policies_service.list_for_agent(agent_id)
 
 
@@ -26,7 +39,8 @@ async def create_agent_tool_policy(
     body: AgentToolPolicyCreate,
     current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
 ):
-    await _resolve_agent_id(agent_id)
+    agent = await _authorize_agent(agent_id, current_user)
+    set_target_tenant(agent["tenant_id"])
     try:
         return await agent_tool_policies_service.create_agent_tool_policy(
             agent_id=agent_id,
@@ -55,9 +69,11 @@ async def update_agent_tool_policy(
     body: AgentToolPolicyUpdate,
     current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
 ):
+    agent = await _authorize_agent(agent_id, current_user)
     fields = body.model_dump(exclude_unset=True)
     if not fields:
         raise HTTPException(status_code=400, detail="request body has no fields to update")
+    set_target_tenant(agent["tenant_id"])
     try:
         return await agent_tool_policies_service.update_agent_tool_policy(
             agent_id, tool_name, user_id=current_user.id, user_email=current_user.email, **fields,
@@ -72,6 +88,8 @@ async def delete_agent_tool_policy(
     tool_name: str,
     current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
 ):
+    agent = await _authorize_agent(agent_id, current_user)
+    set_target_tenant(agent["tenant_id"])
     try:
         await agent_tool_policies_service.delete_agent_tool_policy(
             agent_id, tool_name, user_id=current_user.id, user_email=current_user.email,

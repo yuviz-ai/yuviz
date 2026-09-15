@@ -393,7 +393,7 @@ fi
 
 # Blank counts as missing: auth.py's os.environ.get returns "" rather than its
 # fallback, so an empty JWT_SECRET silently becomes the signing key.
-for secret in CONFIG_SERVICE_PASSWORD:32 JWT_SECRET:48; do
+for secret in CONFIG_SERVICE_PASSWORD:32 JWT_SECRET:48 YUVIZ_APP_PASSWORD:32; do
     key=${secret%:*}; len=${secret#*:}
     if [ -n "$(grep "^${key}=" "$ENV_FILE" | cut -d= -f2-)" ]; then continue; fi
     value=$(rand "$len")

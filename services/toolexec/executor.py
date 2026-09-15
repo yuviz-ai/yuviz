@@ -41,6 +41,7 @@ from urllib.parse import quote
 import httpx
 
 from libs.config_sdk.secret_resolver import CompositeSecretResolver
+from libs.tenancy import tenant_conn
 
 from . import admission, agent_apis, auth_schemes, db, graph, redaction
 from . import custom_apis as custom_apis_module
@@ -85,18 +86,19 @@ async def _verify_ownership(tenant_id: str, agent_id: str, api_name: str) -> dic
     columns are aliased below so both survive dict(row) intact; every
     JOIN, WHERE and deleted_at filter is unchanged from the task's query."""
     pool = await db.get_pool()
-    row = await pool.fetchrow(
-        "SELECT ca.*, atp.timeout_ms AS agent_policy_timeout_ms, "
-        "       atp.max_chain_depth AS agent_policy_max_chain_depth "
-        "FROM agents a "
-        "JOIN custom_apis ca        ON ca.tenant_id = a.tenant_id AND lower(ca.name) = lower($3) "
-        "                           AND ca.deleted_at IS NULL "
-        "JOIN agent_custom_apis aca ON aca.agent_id = a.id AND aca.custom_api_id = ca.id AND aca.enabled "
-        "LEFT JOIN agent_tool_policies atp ON atp.agent_id = a.id AND atp.tool_name = 'execute_api' "
-        "                                 AND atp.enabled "
-        "WHERE a.id = $2 AND a.tenant_id = $1 AND a.deleted_at IS NULL",
-        tenant_id, agent_id, api_name,
-    )
+    async with tenant_conn(pool) as conn:
+        row = await conn.fetchrow(
+            "SELECT ca.*, atp.timeout_ms AS agent_policy_timeout_ms, "
+            "       atp.max_chain_depth AS agent_policy_max_chain_depth "
+            "FROM agents a "
+            "JOIN custom_apis ca        ON ca.tenant_id = a.tenant_id AND lower(ca.name) = lower($3) "
+            "                           AND ca.deleted_at IS NULL "
+            "JOIN agent_custom_apis aca ON aca.agent_id = a.id AND aca.custom_api_id = ca.id AND aca.enabled "
+            "LEFT JOIN agent_tool_policies atp ON atp.agent_id = a.id AND atp.tool_name = 'execute_api' "
+            "                                 AND atp.enabled "
+            "WHERE a.id = $2 AND a.tenant_id = $1 AND a.deleted_at IS NULL",
+            tenant_id, agent_id, api_name,
+        )
     return dict(row) if row is not None else None
 
 
@@ -139,9 +141,11 @@ async def _build_api_tree(tenant_id: str, target_id: str) -> tuple[dict, dict[st
     # actually reaches the poisoned api (below) is affected.
     api_rows: dict[str, dict] = {}
     poisoned: set[str] = set()
-    for r in await pool.fetch(
-        "SELECT * FROM custom_apis WHERE tenant_id = $1 AND deleted_at IS NULL", tenant_id,
-    ):
+    async with tenant_conn(pool) as conn:
+        api_query_rows = await conn.fetch(
+            "SELECT * FROM custom_apis WHERE tenant_id = $1 AND deleted_at IS NULL", tenant_id,
+        )
+    for r in api_query_rows:
         try:
             api_rows[str(r["id"])] = custom_apis_module._decode_custom_api_row(r)
         except RuntimeError:
@@ -149,12 +153,14 @@ async def _build_api_tree(tenant_id: str, target_id: str) -> tuple[dict, dict[st
             poisoned.add(str(r["id"]))
 
     params_by_api: dict[str, list[dict]] = {}
-    for r in await pool.fetch(
-        "SELECT p.* FROM custom_api_params p "
-        "JOIN custom_apis ca ON ca.id = p.custom_api_id AND ca.deleted_at IS NULL "
-        "WHERE ca.tenant_id = $1",
-        tenant_id,
-    ):
+    async with tenant_conn(pool) as conn:
+        param_query_rows = await conn.fetch(
+            "SELECT p.* FROM custom_api_params p "
+            "JOIN custom_apis ca ON ca.id = p.custom_api_id AND ca.deleted_at IS NULL "
+            "WHERE ca.tenant_id = $1",
+            tenant_id,
+        )
+    for r in param_query_rows:
         try:
             decoded = custom_apis_module._decode_param_row(r)
         except RuntimeError:
@@ -202,22 +208,23 @@ async def _claim_run(tenant_id: str, agent_id: str, target_api_id: str, request:
     or (None, existing_run_row) if a run with this (tenant_id,
     idempotency_key) already exists."""
     pool = await db.get_pool()
-    row = await pool.fetchrow(
-        "INSERT INTO api_chain_runs "
-        "(tenant_id, agent_id, call_id, session_id, turn_id, tool_call_id, idempotency_key, target_api_id, status) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'running') "
-        "ON CONFLICT (tenant_id, idempotency_key) DO NOTHING "
-        "RETURNING id",
-        tenant_id, agent_id, request.call_id, request.session_id, request.turn_id,
-        request.tool_call_id, request.idempotency_key, target_api_id,
-    )
-    if row is not None:
-        return str(row["id"]), None
+    async with tenant_conn(pool) as conn:
+        row = await conn.fetchrow(
+            "INSERT INTO api_chain_runs "
+            "(tenant_id, agent_id, call_id, session_id, turn_id, tool_call_id, idempotency_key, target_api_id, status) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'running') "
+            "ON CONFLICT (tenant_id, idempotency_key) DO NOTHING "
+            "RETURNING id",
+            tenant_id, agent_id, request.call_id, request.session_id, request.turn_id,
+            request.tool_call_id, request.idempotency_key, target_api_id,
+        )
+        if row is not None:
+            return str(row["id"]), None
 
-    existing = await pool.fetchrow(
-        "SELECT * FROM api_chain_runs WHERE tenant_id = $1 AND idempotency_key = $2",
-        tenant_id, request.idempotency_key,
-    )
+        existing = await conn.fetchrow(
+            "SELECT * FROM api_chain_runs WHERE tenant_id = $1 AND idempotency_key = $2",
+            tenant_id, request.idempotency_key,
+        )
     return None, dict(existing) if existing is not None else None
 
 
@@ -229,9 +236,10 @@ async def _response_from_existing_run(run: dict) -> ChainExecuteResponse:
     if run["status"] == "running":
         return ChainExecuteResponse(run_id=str(run["id"]), chain_status="failed", error="chain_already_running")
 
-    step_rows = await pool.fetch(
-        "SELECT * FROM api_chain_steps WHERE run_id = $1 ORDER BY step_index", run["id"],
-    )
+    async with tenant_conn(pool) as conn:
+        step_rows = await conn.fetch(
+            "SELECT * FROM api_chain_steps WHERE run_id = $1 ORDER BY step_index", run["id"],
+        )
     steps = [
         ChainStepReport(
             api_name=r["api_name"], level=r["level"], status=r["status"],
@@ -542,18 +550,19 @@ async def _claim_side_effect(tenant_id: str, custom_api_id: str, arguments_hash:
     call — never a read-then-write. Zero rows = the loser's path: a live
     claim already exists, so this step must not fire the call again."""
     pool = await db.get_pool()
-    row = await pool.fetchrow(
-        "INSERT INTO api_side_effect_claims "
-        "(tenant_id, custom_api_id, arguments_hash, run_id, session_id, status) "
-        "VALUES ($1, $2, $3, $4, $5, 'claimed') "
-        "ON CONFLICT (tenant_id, custom_api_id, arguments_hash) DO UPDATE "
-        "SET run_id = EXCLUDED.run_id, session_id = EXCLUDED.session_id, "
-        "    status = 'claimed', claimed_at = now() "
-        "WHERE api_side_effect_claims.status = 'released' "
-        "   OR api_side_effect_claims.claimed_at < now() - $6::interval "
-        "RETURNING id",
-        tenant_id, custom_api_id, arguments_hash, run_id, session_id, _claim_ttl(),
-    )
+    async with tenant_conn(pool) as conn:
+        row = await conn.fetchrow(
+            "INSERT INTO api_side_effect_claims "
+            "(tenant_id, custom_api_id, arguments_hash, run_id, session_id, status) "
+            "VALUES ($1, $2, $3, $4, $5, 'claimed') "
+            "ON CONFLICT (tenant_id, custom_api_id, arguments_hash) DO UPDATE "
+            "SET run_id = EXCLUDED.run_id, session_id = EXCLUDED.session_id, "
+            "    status = 'claimed', claimed_at = now() "
+            "WHERE api_side_effect_claims.status = 'released' "
+            "   OR api_side_effect_claims.claimed_at < now() - $6::interval "
+            "RETURNING id",
+            tenant_id, custom_api_id, arguments_hash, run_id, session_id, _claim_ttl(),
+        )
     return row is not None
 
 
@@ -563,11 +572,12 @@ async def _release_side_effect_claim(tenant_id: str, custom_api_id: str, argumen
     stays 'claimed' (fail closed — a timed-out mutation may well have
     landed)."""
     pool = await db.get_pool()
-    await pool.execute(
-        "UPDATE api_side_effect_claims SET status = 'released' "
-        "WHERE tenant_id = $1 AND custom_api_id = $2 AND arguments_hash = $3",
-        tenant_id, custom_api_id, arguments_hash,
-    )
+    async with tenant_conn(pool) as conn:
+        await conn.execute(
+            "UPDATE api_side_effect_claims SET status = 'released' "
+            "WHERE tenant_id = $1 AND custom_api_id = $2 AND arguments_hash = $3",
+            tenant_id, custom_api_id, arguments_hash,
+        )
 
 
 async def _mark_side_effect_success(tenant_id: str, custom_api_id: str, arguments_hash: str) -> None:
@@ -576,11 +586,12 @@ async def _mark_side_effect_success(tenant_id: str, custom_api_id: str, argument
     but recorded distinctly so chain history can tell a timed-out claim
     apart from one that is known to have actually gone through."""
     pool = await db.get_pool()
-    await pool.execute(
-        "UPDATE api_side_effect_claims SET status = 'success' "
-        "WHERE tenant_id = $1 AND custom_api_id = $2 AND arguments_hash = $3",
-        tenant_id, custom_api_id, arguments_hash,
-    )
+    async with tenant_conn(pool) as conn:
+        await conn.execute(
+            "UPDATE api_side_effect_claims SET status = 'success' "
+            "WHERE tenant_id = $1 AND custom_api_id = $2 AND arguments_hash = $3",
+            tenant_id, custom_api_id, arguments_hash,
+        )
 
 
 # ── steps 7-8: auth, persistence, success_template ────────────────────────
@@ -884,10 +895,11 @@ async def _run_steps(
 
 async def _finalize_run(run_id: str, chain_status: str, error: str | None) -> None:
     pool = await db.get_pool()
-    await pool.execute(
-        "UPDATE api_chain_runs SET status = $2, error = $3, finished_at = now() WHERE id = $1",
-        run_id, chain_status, error,
-    )
+    async with tenant_conn(pool) as conn:
+        await conn.execute(
+            "UPDATE api_chain_runs SET status = $2, error = $3, finished_at = now() WHERE id = $1",
+            run_id, chain_status, error,
+        )
 
 
 async def _persist_step(
@@ -898,24 +910,25 @@ async def _persist_step(
     idempotency_key: str | None, duration_ms: int | None,
 ) -> None:
     pool = await db.get_pool()
-    await pool.execute(
-        "INSERT INTO api_chain_steps "
-        "(run_id, step_index, custom_api_id, api_name, level, session_id, status, http_status, error, "
-        " arguments_redacted, response_redacted, argument_sources, arguments_hash, side_effecting, "
-        " idempotency_key, duration_ms) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12::jsonb, $13, $14, $15, $16)",
-        run_id, step_index, api_row["id"], api_row["name"], level, session_id, status, http_status, error,
-        json.dumps(arguments_redacted) if arguments_redacted is not None else None,
-        json.dumps(response_redacted) if response_redacted is not None else None,
-        json.dumps(argument_sources) if argument_sources is not None else None,
-        # The persisted flag records whether THIS row is actually
-        # hash-keyed, not merely whether the API is registered
-        # side_effecting=true. arguments_hash is only ever derived once
-        # the claim is about to be taken (executor.py's `if
-        # side_effecting:` block), so any step that never got that far —
-        # skipped, or failed before the hash existed (missing argument,
-        # endpoint/credential resolution failure) — genuinely made no
-        # side-effecting attempt and must not claim one, or it retrips
-        # api_chain_steps_side_effect_keyed (lesson 32).
-        arguments_hash, arguments_hash is not None, idempotency_key, duration_ms,
-    )
+    async with tenant_conn(pool) as conn:
+        await conn.execute(
+            "INSERT INTO api_chain_steps "
+            "(run_id, step_index, custom_api_id, api_name, level, session_id, status, http_status, error, "
+            " arguments_redacted, response_redacted, argument_sources, arguments_hash, side_effecting, "
+            " idempotency_key, duration_ms) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12::jsonb, $13, $14, $15, $16)",
+            run_id, step_index, api_row["id"], api_row["name"], level, session_id, status, http_status, error,
+            json.dumps(arguments_redacted) if arguments_redacted is not None else None,
+            json.dumps(response_redacted) if response_redacted is not None else None,
+            json.dumps(argument_sources) if argument_sources is not None else None,
+            # The persisted flag records whether THIS row is actually
+            # hash-keyed, not merely whether the API is registered
+            # side_effecting=true. arguments_hash is only ever derived once
+            # the claim is about to be taken (executor.py's `if
+            # side_effecting:` block), so any step that never got that far —
+            # skipped, or failed before the hash existed (missing argument,
+            # endpoint/credential resolution failure) — genuinely made no
+            # side-effecting attempt and must not claim one, or it retrips
+            # api_chain_steps_side_effect_keyed (lesson 32).
+            arguments_hash, arguments_hash is not None, idempotency_key, duration_ms,
+        )

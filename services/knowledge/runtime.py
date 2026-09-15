@@ -14,7 +14,6 @@ rather than reading app.state.
 
 from __future__ import annotations
 
-from . import db
 from .embedding_manager import EmbeddingProviderManager
 from .secret_resolver import CompositeSecretResolver
 from .vector_repository import PgVectorRepository
@@ -26,7 +25,7 @@ _embedding_manager: EmbeddingProviderManager | None = None
 async def get_vector_repo() -> PgVectorRepository:
     global _vector_repo
     if _vector_repo is None:
-        _vector_repo = PgVectorRepository(await db.get_pool())
+        _vector_repo = PgVectorRepository()
     return _vector_repo
 
 

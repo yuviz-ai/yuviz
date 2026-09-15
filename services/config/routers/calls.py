@@ -5,9 +5,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from .. import calls as calls_service
 from .. import tenants as tenants_service
 from ..auth import CurrentUser
-from ..deps import get_current_user, get_or_404
+from ..deps import bind_path_tenant, get_current_user, get_or_404, is_platform_scoped, require_path_tenant_access
 
-tenant_scoped_router = APIRouter(prefix="/tenants/{tenant_slug}/calls", tags=["calls"])
+tenant_scoped_router = APIRouter(
+    prefix="/tenants/{tenant_slug}/calls",
+    tags=["calls"],
+    dependencies=[Depends(bind_path_tenant), Depends(require_path_tenant_access)],
+)
 router = APIRouter(prefix="/calls", tags=["calls"])
 
 
@@ -16,9 +20,12 @@ async def _caller_tenant_slug(current_user: CurrentUser) -> str | None:
 
     calls.tenant_id is a TEXT slug, so tenant-scoped actors resolve JWT
     tenant_id (UUID) → slug before the query predicate.
+
+    The bypass predicate is `is_platform_scoped` (tenant_id IS NULL, lesson
+    24) — not role == "superadmin" — so this stays identical to the Tier 2
+    predicate the router-level dependencies above enforce.
     """
-    is_unscoped = current_user.role == "superadmin" or current_user.tenant_id is None
-    if is_unscoped:
+    if is_platform_scoped(current_user):
         return None
     tenant = await tenants_service.get_tenant_by_id(current_user.tenant_id)
     if tenant is None:

@@ -85,7 +85,7 @@ class _RecordingPolicyResolver:
     def __init__(self):
         self.seen_only: list[list[str] | None] = []
 
-    async def enabled_tools(self, agent_id, only=None):
+    async def enabled_tools(self, agent_id, tenant_slug, only=None):
         self.seen_only.append(only)
         return []
 

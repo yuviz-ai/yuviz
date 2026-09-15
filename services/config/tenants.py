@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from libs.tenancy import platform_conn
+
 from . import audit, cache, db
 
 # Columns an UPDATE is allowed to touch — deliberately not "whatever kwargs
@@ -37,9 +39,10 @@ async def get_tenant(slug: str) -> dict[str, Any] | None:
         return cached
 
     pool = await db.get_pool()
-    row = await pool.fetchrow(
-        "SELECT * FROM tenants WHERE slug = $1 AND deleted_at IS NULL", slug,
-    )
+    async with platform_conn(pool, reason="tenants-out-of-rls-scope") as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM tenants WHERE slug = $1 AND deleted_at IS NULL", slug,
+        )
     if row is None:
         return None
 
@@ -53,9 +56,10 @@ async def get_tenant_by_id(tenant_id: Any) -> dict[str, Any] | None:
     references tenants (see provider_configs router), a cold, low-frequency
     path unlike get_tenant()'s per-call hot path."""
     pool = await db.get_pool()
-    row = await pool.fetchrow(
-        "SELECT * FROM tenants WHERE id = $1 AND deleted_at IS NULL", tenant_id,
-    )
+    async with platform_conn(pool, reason="tenants-out-of-rls-scope") as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM tenants WHERE id = $1 AND deleted_at IS NULL", tenant_id,
+        )
     return dict(row) if row is not None else None
 
 
@@ -68,14 +72,15 @@ async def list_tenants(*, tenant_id: Any | None = None) -> list[dict[str, Any]]:
     the single row they're allowed to see — the router never trusts a
     client-supplied filter, only the JWT's own tenant_id."""
     pool = await db.get_pool()
-    if tenant_id is None:
-        rows = await pool.fetch(
-            "SELECT * FROM tenants WHERE deleted_at IS NULL ORDER BY name",
-        )
-    else:
-        rows = await pool.fetch(
-            "SELECT * FROM tenants WHERE id = $1 AND deleted_at IS NULL ORDER BY name", tenant_id,
-        )
+    async with platform_conn(pool, reason="tenants-out-of-rls-scope") as conn:
+        if tenant_id is None:
+            rows = await conn.fetch(
+                "SELECT * FROM tenants WHERE deleted_at IS NULL ORDER BY name",
+            )
+        else:
+            rows = await conn.fetch(
+                "SELECT * FROM tenants WHERE id = $1 AND deleted_at IS NULL ORDER BY name", tenant_id,
+            )
     return [dict(row) for row in rows]
 
 
@@ -88,22 +93,21 @@ async def create_tenant(
     user_email: str | None = None,
 ) -> dict[str, Any]:
     pool = await db.get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            row = await conn.fetchrow(
-                "INSERT INTO tenants (name, slug, region) VALUES ($1, $2, $3) RETURNING *",
-                name, slug, region,
-            )
-            result = dict(row)
-            await audit.write_audit(
-                conn,
-                entity_type="tenant",
-                entity_id=result["id"],
-                action="created",
-                user_id=user_id,
-                user_email=user_email,
-                new_value=result,
-            )
+    async with platform_conn(pool, reason="tenants-out-of-rls-scope") as conn:
+        row = await conn.fetchrow(
+            "INSERT INTO tenants (name, slug, region) VALUES ($1, $2, $3) RETURNING *",
+            name, slug, region,
+        )
+        result = dict(row)
+        await audit.write_audit(
+            conn,
+            entity_type="tenant",
+            entity_id=result["id"],
+            action="created",
+            user_id=user_id,
+            user_email=user_email,
+            new_value=result,
+        )
     return result
 
 
@@ -121,38 +125,37 @@ async def update_tenant(
         raise ValueError(f"update_tenant() got non-updatable field(s): {unknown}")
 
     pool = await db.get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            # FOR UPDATE locks the row for the rest of this transaction — a
-            # plain SELECT here would let two concurrent update_tenant() calls
-            # both read the same "old" value, so the audit_log row from
-            # whichever commits second would record a stale old_value instead
-            # of the state its own update actually changed away from.
-            old_row = await conn.fetchrow(
-                "SELECT * FROM tenants WHERE id = $1 FOR UPDATE", tenant_id,
-            )
-            if old_row is None:
-                raise LookupError(f"tenant {tenant_id} not found")
-            old = dict(old_row)
+    async with platform_conn(pool, reason="tenants-out-of-rls-scope") as conn:
+        # FOR UPDATE locks the row for the rest of this transaction — a
+        # plain SELECT here would let two concurrent update_tenant() calls
+        # both read the same "old" value, so the audit_log row from
+        # whichever commits second would record a stale old_value instead
+        # of the state its own update actually changed away from.
+        old_row = await conn.fetchrow(
+            "SELECT * FROM tenants WHERE id = $1 FOR UPDATE", tenant_id,
+        )
+        if old_row is None:
+            raise LookupError(f"tenant {tenant_id} not found")
+        old = dict(old_row)
 
-            columns = list(fields.keys())
-            set_clause = ", ".join(f"{col} = ${i + 2}" for i, col in enumerate(columns))
-            new_row = await conn.fetchrow(
-                f"UPDATE tenants SET {set_clause} WHERE id = $1 RETURNING *",
-                tenant_id, *(fields[col] for col in columns),
-            )
-            new = dict(new_row)
+        columns = list(fields.keys())
+        set_clause = ", ".join(f"{col} = ${i + 2}" for i, col in enumerate(columns))
+        new_row = await conn.fetchrow(
+            f"UPDATE tenants SET {set_clause} WHERE id = $1 RETURNING *",
+            tenant_id, *(fields[col] for col in columns),
+        )
+        new = dict(new_row)
 
-            await audit.write_audit(
-                conn,
-                entity_type="tenant",
-                entity_id=tenant_id,
-                action="updated",
-                user_id=user_id,
-                user_email=user_email,
-                old_value=old,
-                new_value=new,
-            )
+        await audit.write_audit(
+            conn,
+            entity_type="tenant",
+            entity_id=tenant_id,
+            action="updated",
+            user_id=user_id,
+            user_email=user_email,
+            old_value=old,
+            new_value=new,
+        )
 
     await cache.invalidate(_cache_key(old["slug"]))
     return new
@@ -162,26 +165,25 @@ async def soft_delete_tenant(
     tenant_id: Any, *, user_id: Any | None = None, user_email: str | None = None,
 ) -> None:
     pool = await db.get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            old_row = await conn.fetchrow(
-                "SELECT * FROM tenants WHERE id = $1 FOR UPDATE", tenant_id,
-            )
-            if old_row is None:
-                raise LookupError(f"tenant {tenant_id} not found")
-            old = dict(old_row)
+    async with platform_conn(pool, reason="tenants-out-of-rls-scope") as conn:
+        old_row = await conn.fetchrow(
+            "SELECT * FROM tenants WHERE id = $1 FOR UPDATE", tenant_id,
+        )
+        if old_row is None:
+            raise LookupError(f"tenant {tenant_id} not found")
+        old = dict(old_row)
 
-            await conn.execute(
-                "UPDATE tenants SET deleted_at = now() WHERE id = $1", tenant_id,
-            )
-            await audit.write_audit(
-                conn,
-                entity_type="tenant",
-                entity_id=tenant_id,
-                action="deleted",
-                user_id=user_id,
-                user_email=user_email,
-                old_value=old,
-            )
+        await conn.execute(
+            "UPDATE tenants SET deleted_at = now() WHERE id = $1", tenant_id,
+        )
+        await audit.write_audit(
+            conn,
+            entity_type="tenant",
+            entity_id=tenant_id,
+            action="deleted",
+            user_id=user_id,
+            user_email=user_email,
+            old_value=old,
+        )
 
     await cache.invalidate(_cache_key(old["slug"]))

@@ -22,6 +22,8 @@ import time
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
+from libs.tenancy import platform_conn
+
 from . import campaign_contacts, campaigns, db, dnc, originate
 
 log = logging.getLogger(__name__)
@@ -87,7 +89,12 @@ class CampaignWorker:
 
     async def _tick(self) -> None:
         pool = await db.get_pool()
-        running = await pool.fetch("SELECT * FROM campaigns WHERE status = 'running' AND deleted_at IS NULL")
+        # Cross-tenant scan, no request context — the loop itself stays
+        # outside the connection so it never pins a transaction snapshot
+        # for the tick's lifetime (lesson: a worker loop inside a
+        # transaction holds locks for as long as the loop runs).
+        async with platform_conn(pool, reason="campaign-worker-scan") as conn:
+            running = await conn.fetch("SELECT * FROM campaigns WHERE status = 'running' AND deleted_at IS NULL")
         for row in running:
             await self._tick_campaign(dict(row))
 

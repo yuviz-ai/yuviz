@@ -39,6 +39,8 @@ from typing import Any
 
 import asyncpg
 
+from libs.tenancy import tenant_conn
+
 from .registry import ToolRegistry
 from .types import ToolDefinition
 
@@ -92,7 +94,10 @@ class ToolPolicyResolver:
         self._pool = pool
         self._registry = registry
         self._cache_ttl_s = cache_ttl_s
-        self._cache: dict[str, tuple[float, list[ResolvedToolPolicy]]] = {}
+        # Keyed by (agent_id, tenant_slug), not agent_id alone — an agent_id
+        # collision across tenants can never serve one tenant's cached
+        # tool policy back to another.
+        self._cache: dict[tuple[str, str], tuple[float, list[ResolvedToolPolicy]]] = {}
 
     @classmethod
     async def connect(cls, database_url: str | None, registry: ToolRegistry) -> "ToolPolicyResolver":
@@ -106,18 +111,25 @@ class ToolPolicyResolver:
             await self._pool.close()
 
     async def enabled_tools(
-        self, agent_id: str, only: list[str] | None = None,
+        self, agent_id: str, tenant_slug: str, only: list[str] | None = None,
     ) -> list[ResolvedToolPolicy]:
-        """Return enabled tools for agent_id. `only` subsets by name (never
-        grants); None = unnarrowed; [] = none this stage."""
+        """Return enabled tools for agent_id, scoped to tenant_slug. `only`
+        subsets by name (never grants); None = unnarrowed; [] = none this
+        stage. tenant_slug is passed straight to tenant_conn() below — an
+        empty/unresolvable slug (the legacy YAML fallback's placeholder,
+        see agent_config.py's to_runtime_config()) raises TenantUnresolved
+        rather than silently resolving zero tools under the wrong scope."""
         if not agent_id or self._pool is None:
             return []
 
-        cached = self._cache.get(agent_id)
+        cache_key = (agent_id, tenant_slug)
+        cached = self._cache.get(cache_key)
         if cached is not None and time.monotonic() - cached[0] < self._cache_ttl_s:
             return _narrow(cached[1], only)
 
-        async with self._pool.acquire() as conn:
+        async with tenant_conn(
+            self._pool, explicit_tenant=tenant_slug, reason="conversation-tool-policy",
+        ) as conn:
             rows = await conn.fetch(
                 """
                 SELECT atp.tool_name, atp.timeout_ms, atp.max_calls_per_turn, atp.max_chain_depth,
@@ -153,14 +165,14 @@ class ToolPolicyResolver:
             ))
 
         self._add_auto_derived_companions(resolved, agent_id)
-        await self._specialize_execute_api_if_present(resolved, agent_id)
+        await self._specialize_execute_api_if_present(resolved, agent_id, tenant_slug)
 
         # Cache unnarrowed; `only` is applied on read (varies per node).
-        self._cache[agent_id] = (time.monotonic(), resolved)
+        self._cache[cache_key] = (time.monotonic(), resolved)
         return _narrow(resolved, only)
 
     async def _specialize_execute_api_if_present(
-        self, resolved: list[ResolvedToolPolicy], agent_id: str,
+        self, resolved: list[ResolvedToolPolicy], agent_id: str, tenant_slug: str,
     ) -> None:
         """Runs the execute_api specialization query only when an
         agent_tool_policies row for it is actually present (AC 9 — an agent
@@ -170,7 +182,7 @@ class ToolPolicyResolver:
         for i, policy in enumerate(resolved):
             if policy.definition.name != "execute_api":
                 continue
-            specialized = await self._specialize_execute_api(policy.definition, agent_id)
+            specialized = await self._specialize_execute_api(policy.definition, agent_id, tenant_slug)
             if specialized is None:
                 del resolved[i]
             else:
@@ -179,7 +191,7 @@ class ToolPolicyResolver:
             return
 
     async def _specialize_execute_api(
-        self, defn: ToolDefinition, agent_id: str,
+        self, defn: ToolDefinition, agent_id: str, tenant_slug: str,
     ) -> tuple[ToolDefinition, frozenset[str]] | None:
         """Returns (defn with api_name.enum + per-API leaf-input docs, the
         union of sensitive caller-param names across those APIs), or None
@@ -188,7 +200,9 @@ class ToolPolicyResolver:
         The query is the runtime tenant fence for AC 10 — an agent_custom_apis
         row can only resolve if the agent and the API share a tenant,
         independent of the write-time check in services/toolexec."""
-        async with self._pool.acquire() as conn:
+        async with tenant_conn(
+            self._pool, explicit_tenant=tenant_slug, reason="conversation-tool-policy",
+        ) as conn:
             rows = await conn.fetch(
                 """
                 SELECT ca.id, ca.name, ca.description, ca.chain_levels,

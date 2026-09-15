@@ -20,6 +20,8 @@ from typing import Any, Literal
 
 import asyncpg
 
+from libs.tenancy import platform_conn, tenant_conn
+
 from . import db
 
 _SECRET_REF_FIELDS = {"api_key_ref", "auth_token_ref", "password_hash", "token_hash"}
@@ -60,6 +62,8 @@ async def write_audit(
 
 async def list_audit_log(
     *,
+    tenant_id: str | None,
+    platform_scoped: bool = False,
     entity_type: str | None = None,
     entity_id: str | None = None,
     user_email: str | None = None,
@@ -67,6 +71,13 @@ async def list_audit_log(
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
+    """`tenant_id` + `platform_scoped` follow the `users.py:55 list_users`
+    convention: the route derives both from `deps.is_platform_scoped(current_user)`
+    (lesson 24) — a tenant-scoped superadmin gets an explicit
+    `AND tenant_id = $n` predicate on top of tenant_conn()'s own RLS scope
+    (app layer and RLS both, never RLS alone); a platform-scoped caller gets
+    `platform_conn()` with no tenant predicate, reading every tenant's rows
+    exactly as before this fix."""
     pool = await db.get_pool()
     where: list[str] = []
     params: list[Any] = []
@@ -83,17 +94,22 @@ async def list_audit_log(
     if user_email is not None:
         params.append(f"%{user_email}%")
         where.append(f"user_email ILIKE ${len(params)}")
+    if not platform_scoped:
+        params.append(tenant_id)
+        where.append(f"tenant_id = ${len(params)}")
 
     where_clause = f"WHERE {' AND '.join(where)}" if where else ""
 
-    total = await pool.fetchval(f"SELECT COUNT(*) FROM audit_log {where_clause}", *params)
+    conn_cm = platform_conn(pool, reason="audit-log-platform-read") if platform_scoped else tenant_conn(pool)
+    async with conn_cm as conn:
+        total = await conn.fetchval(f"SELECT COUNT(*) FROM audit_log {where_clause}", *params)
 
-    params.extend([limit, offset])
-    rows = await pool.fetch(
-        f"SELECT * FROM audit_log {where_clause} "
-        f"ORDER BY changed_at DESC LIMIT ${len(params) - 1} OFFSET ${len(params)}",
-        *params,
-    )
+        params.extend([limit, offset])
+        rows = await conn.fetch(
+            f"SELECT * FROM audit_log {where_clause} "
+            f"ORDER BY changed_at DESC LIMIT ${len(params) - 1} OFFSET ${len(params)}",
+            *params,
+        )
     return {
         "total": total,
         "limit": limit,

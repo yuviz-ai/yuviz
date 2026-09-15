@@ -55,8 +55,8 @@ _SYSTEM_DEFAULT_POLICY: dict[str, Any] = {
 }
 
 
-async def _agent_id_for(pool: asyncpg.Pool, tenant_slug: str, agent_slug: str) -> str | None:
-    row = await pool.fetchrow(
+async def _agent_id_for(conn: asyncpg.Connection, tenant_slug: str, agent_slug: str) -> str | None:
+    row = await conn.fetchrow(
         "SELECT a.id FROM agents a JOIN tenants t ON t.id = a.tenant_id "
         "WHERE t.slug = $1 AND a.slug = $2 AND a.deleted_at IS NULL AND t.deleted_at IS NULL",
         tenant_slug, agent_slug,
@@ -65,12 +65,12 @@ async def _agent_id_for(pool: asyncpg.Pool, tenant_slug: str, agent_slug: str) -
 
 
 async def _resolve_policy(
-    pool: asyncpg.Pool, tenant_slug: str, agent_slug: str, overrides: dict[str, Any],
+    conn: asyncpg.Connection, tenant_slug: str, agent_slug: str, overrides: dict[str, Any],
 ) -> dict[str, Any]:
-    agent_id = await _agent_id_for(pool, tenant_slug, agent_slug)
+    agent_id = await _agent_id_for(conn, tenant_slug, agent_slug)
     agent_policy_row = None
     if agent_id is not None:
-        agent_policy_row = await pool.fetchrow(
+        agent_policy_row = await conn.fetchrow(
             "SELECT * FROM agent_retrieval_policies WHERE agent_id = $1", agent_id,
         )
 
@@ -86,8 +86,8 @@ async def _resolve_policy(
     return resolved
 
 
-async def _fetch_embedding_config(pool: asyncpg.Pool, embedding_config_id: str) -> EmbeddingProviderConfig:
-    row = await pool.fetchrow(
+async def _fetch_embedding_config(conn: asyncpg.Connection, embedding_config_id: str) -> EmbeddingProviderConfig:
+    row = await conn.fetchrow(
         "SELECT * FROM provider_configs WHERE id = $1 AND deleted_at IS NULL", embedding_config_id,
     )
     if row is None:
@@ -99,11 +99,11 @@ async def _fetch_embedding_config(pool: asyncpg.Pool, embedding_config_id: str) 
     )
 
 
-async def _agent_kb_groups(pool: asyncpg.Pool, tenant_slug: str, agent_slug: str) -> dict[str, list[str]]:
+async def _agent_kb_groups(conn: asyncpg.Connection, tenant_slug: str, agent_slug: str) -> dict[str, list[str]]:
     """Returns {embedding_config_id: [kb_id, ...]} for this agent's
     enabled, active KBs — the grouping retrieve() needs before it can embed
     the query even once."""
-    rows = await pool.fetch(
+    rows = await conn.fetch(
         "SELECT kb.id AS kb_id, kb.embedding_config_id "
         "FROM agent_knowledge_bases akb "
         "JOIN agents a ON a.id = akb.agent_id AND a.deleted_at IS NULL "
@@ -118,12 +118,12 @@ async def _agent_kb_groups(pool: asyncpg.Pool, tenant_slug: str, agent_slug: str
     return groups
 
 
-async def _agent_enabled_kb_ids(pool: asyncpg.Pool, tenant_slug: str, agent_slug: str) -> list[str]:
+async def _agent_enabled_kb_ids(conn: asyncpg.Connection, tenant_slug: str, agent_slug: str) -> list[str]:
     """Every enabled, active KB attached to this agent — unlike
     _agent_kb_groups(), does NOT require embedding_config_id: a KB holding
     only usage_mode='prompt' documents needs no embedding provider at all,
     since those documents are never vector-searched."""
-    rows = await pool.fetch(
+    rows = await conn.fetch(
         "SELECT kb.id AS kb_id "
         "FROM agent_knowledge_bases akb "
         "JOIN agents a ON a.id = akb.agent_id AND a.deleted_at IS NULL "
@@ -135,7 +135,7 @@ async def _agent_enabled_kb_ids(pool: asyncpg.Pool, tenant_slug: str, agent_slug
     return [str(row["kb_id"]) for row in rows]
 
 
-async def _fetch_prompt_mode_matches(pool: asyncpg.Pool, kb_ids: list[str]) -> list[VectorMatch]:
+async def _fetch_prompt_mode_matches(conn: asyncpg.Connection, kb_ids: list[str]) -> list[VectorMatch]:
     """usage_mode='prompt' documents across kb_ids, one VectorMatch per
     document (chunks reassembled in order) — score=1.0 is a sentinel
     meaning "always relevant, not similarity-ranked", never compared
@@ -146,7 +146,7 @@ async def _fetch_prompt_mode_matches(pool: asyncpg.Pool, kb_ids: list[str]) -> l
     not a lossy average."""
     if not kb_ids:
         return []
-    rows = await pool.fetch(
+    rows = await conn.fetch(
         """
         SELECT
             (array_agg(c.id ORDER BY c.chunk_index))[1] AS chunk_id,
@@ -191,7 +191,7 @@ def _approx_token_count(text: str) -> int:
 
 
 async def retrieve(
-    pool: asyncpg.Pool,
+    conn: asyncpg.Connection,
     vector_repo: IVectorRepository,
     embedding_manager: EmbeddingProviderManager,
     *,
@@ -206,14 +206,14 @@ async def retrieve(
     include_citations: bool | None = None,
 ) -> dict[str, Any] | None:
     policy = await _resolve_policy(
-        pool, tenant_slug, agent_slug,
+        conn, tenant_slug, agent_slug,
         {
             "top_k": top_k, "max_tokens": max_tokens, "minimum_score": minimum_score,
             "rerank": rerank, "hybrid_search": hybrid_search, "include_citations": include_citations,
         },
     )
 
-    kb_ids = await _agent_enabled_kb_ids(pool, tenant_slug, agent_slug)
+    kb_ids = await _agent_enabled_kb_ids(conn, tenant_slug, agent_slug)
     if not kb_ids:
         return None
 
@@ -222,15 +222,15 @@ async def retrieve(
     # "admin's explicit choice, not silently dropped" posture the prompt-
     # mode feature is documented under — see module docstring). Fetched
     # regardless of whether any KB here has an embedding provider at all.
-    prompt_matches = await _fetch_prompt_mode_matches(pool, kb_ids)
+    prompt_matches = await _fetch_prompt_mode_matches(conn, kb_ids)
 
-    groups = await _agent_kb_groups(pool, tenant_slug, agent_slug)
+    groups = await _agent_kb_groups(conn, tenant_slug, agent_slug)
     all_matches: list[VectorMatch] = []
     for embedding_config_id, group_kb_ids in groups.items():
-        embedding_cfg = await _fetch_embedding_config(pool, embedding_config_id)
+        embedding_cfg = await _fetch_embedding_config(conn, embedding_config_id)
         provider = await embedding_manager.get(embedding_cfg)
         [query_vector] = await provider.embed([query])
-        matches = await vector_repo.search(group_kb_ids, query_vector, policy["top_k"], policy["minimum_score"])
+        matches = await vector_repo.search(conn, group_kb_ids, query_vector, policy["top_k"], policy["minimum_score"])
         all_matches.extend(matches)
 
     if not prompt_matches and not all_matches:

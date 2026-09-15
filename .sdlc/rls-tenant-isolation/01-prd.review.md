@@ -1,0 +1,6 @@
+# Review: 01-prd.md (RLS tenant isolation)
+VERDICT: GREEN
+
+No blocking findings. Claims cross-checked against the repo (schema.sql, database/knowledge_schema.sql, services/config/deps.py, services/config/db.py) all verified correct: calls.tenant_id is TEXT DEFAULT 'default', knowledge_bases/agents/provider_configs/custom_apis are UUID FKs, users.tenant_id NULL = platform account, get_pool()/acquire() pattern matches, vobiz/Conversation prewarm reference in deps.py matches. The five open questions correctly punt architect-level decisions (bypass mechanism, ownership, per-table predicate) rather than the PRD prescribing an implementation, and the AAs (1-12) are each independently testable with concrete SQL/behavioral checks.
+
+1. [minor] Constraint on `psql -f`/no-`ON_ERROR_STOP` DDL guarding (Lesson 13/14) names only `database/schema.sql`'s apply behavior; the PRD's own scope note (schema.sql:722, "later in knowledge_schema.sql") shows tenant-scoped tables are split across two schema files applied separately, and the constraint doesn't say both files need the same guard treatment — fix: add one line to the Constraints section noting `database/knowledge_schema.sql` is a second, separately-applied file subject to the same guard requirement.

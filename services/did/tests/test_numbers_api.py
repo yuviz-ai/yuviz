@@ -30,11 +30,13 @@ class _FakeProvider:
         self._purchase_raises = purchase_raises
         self._release_raises = release_raises
         self.released_sids: list[str] = []
+        self.purchased_numbers: list[str] = []
 
     async def search_available_numbers(self, country, area_code=None, limit=10):
         return self._search_results
 
     async def purchase_number(self, phone_number):
+        self.purchased_numbers.append(phone_number)
         if self._purchase_raises:
             raise self._purchase_raises
         return PurchasedNumber(phone_number=phone_number, carrier_number_sid="PN_fake_123")
@@ -58,6 +60,15 @@ def _override_provider_manager(fake_provider: _FakeProvider):
 async def client(test_superadmin):
     transport = ASGITransport(app=app)
     headers = {"Authorization": f"Bearer {test_superadmin['token']}"}
+    async with AsyncClient(transport=transport, base_url="http://test", headers=headers) as c:
+        yield c
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+async def foreign_client(foreign_tenant_admin):
+    transport = ASGITransport(app=app)
+    headers = {"Authorization": f"Bearer {foreign_tenant_admin['token']}"}
     async with AsyncClient(transport=transport, base_url="http://test", headers=headers) as c:
         yield c
     app.dependency_overrides.clear()
@@ -115,6 +126,27 @@ async def test_purchase_number_creates_purchased_numbers_row(client, test_tenant
 
     listed = await client.get(f"/tenants/{test_tenant['id']}/numbers")
     assert any(p["id"] == body["id"] for p in listed.json())
+
+
+async def test_purchase_into_foreign_tenant_is_refused_before_any_carrier_call(
+    client, foreign_client, test_tenant, test_carrier,
+):
+    """Design Q6 / test plan 4d: an admin of one tenant hitting
+    `/tenants/{other}/numbers/purchase` must be refused, and refused
+    before the billable carrier call — RLS cannot undo a purchase already
+    placed with the carrier, so the check has to happen first."""
+    fake = _FakeProvider()
+    _override_provider_manager(fake)
+
+    resp = await foreign_client.post(
+        f"/tenants/{test_tenant['id']}/numbers/purchase",
+        json={"carrier_id": str(test_carrier["id"]), "phone_number": "+14155550196"},
+    )
+    assert resp.status_code == 403
+    assert fake.purchased_numbers == []
+
+    listed = await client.get(f"/tenants/{test_tenant['id']}/numbers")
+    assert all(p["phone_number"] != "+14155550196" for p in listed.json())
 
 
 async def test_purchase_conflict_is_502(client, test_tenant, test_carrier):

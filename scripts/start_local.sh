@@ -55,6 +55,12 @@ start_data() {
   fi
 
   psql voiceai -f "$REPO/database/knowledge_schema.sql" 2>/dev/null || true
+  psql voiceai -f "$REPO/database/telephony_schema.sql" 2>/dev/null || true
+  # rls.sql is the 4th schema file: creates yuviz_app/yuviz_platform and the
+  # per-table policies. Every start_* block below stays on the superuser
+  # POSTGRES_DSN — RLS is live but inert until a later DSN cutover.
+  psql voiceai -v yuviz_app_password="${YUVIZ_APP_PASSWORD:?set this in your shell — see docs/setup.md, never commit the real value}" \
+    -f "$REPO/database/rls.sql" 2>/dev/null || true
   echo "✓ PostgreSQL + Redis running"
 }
 

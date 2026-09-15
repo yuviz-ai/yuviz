@@ -21,6 +21,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from libs.tenancy import platform_conn, tenant_conn
+
 from . import audit, cache, db
 
 log = logging.getLogger(__name__)
@@ -60,12 +62,20 @@ def _cache_key(did: str) -> str:
     return f"did:{did}"
 
 
-async def get_by_did(did: str) -> dict[str, Any] | None:
+async def get_by_did(did: str, *, platform_scoped: bool = False) -> dict[str, Any] | None:
+    """`platform_scoped=True` only for prewarm()'s startup sweep, which has
+    no request tenant to scope to; every in-request caller (post-write
+    warm below) takes the ambient tenant_conn() ceiling instead."""
     cached = await cache.get_json(_cache_key(did))
     if cached is not None:
         return cached
 
     pool = await db.get_pool()
+    conn_cm = (
+        platform_conn(pool, reason="phone-numbers-did-lookup")
+        if platform_scoped
+        else tenant_conn(pool)
+    )
     # A non-'active' phone_numbers.status routes exactly like an unrecognized
     # DID (falls through to the caller's default) — a suspended/inactive
     # number must not keep resolving to its normal agent just because the
@@ -75,18 +85,19 @@ async def get_by_did(did: str) -> dict[str, Any] | None:
     # from deleted_at), and finally to "default" if neither resolves — same
     # three-tier fallback PhoneRoute::from_redis() already applies for a
     # total miss.
-    row = await pool.fetchrow(
-        "SELECT t.slug AS tenant_slug, "
-        "       COALESCE(a.slug, fb.slug, 'default') AS agent_slug, "
-        "       COALESCE(a.config_version, fb.config_version) AS agent_config_version "
-        "FROM phone_numbers pn "
-        "JOIN tenants t ON t.id = pn.tenant_id "
-        "LEFT JOIN agents a  ON a.id = pn.agent_id AND a.deleted_at IS NULL AND a.status = 'active' "
-        "LEFT JOIN agents fb ON fb.id = pn.fallback_agent_id AND fb.deleted_at IS NULL AND fb.status = 'active' "
-        "WHERE pn.did = $1 AND pn.status = 'active' "
-        "  AND pn.deleted_at IS NULL AND t.deleted_at IS NULL",
-        did,
-    )
+    async with conn_cm as conn:
+        row = await conn.fetchrow(
+            "SELECT t.slug AS tenant_slug, "
+            "       COALESCE(a.slug, fb.slug, 'default') AS agent_slug, "
+            "       COALESCE(a.config_version, fb.config_version) AS agent_config_version "
+            "FROM phone_numbers pn "
+            "JOIN tenants t ON t.id = pn.tenant_id "
+            "LEFT JOIN agents a  ON a.id = pn.agent_id AND a.deleted_at IS NULL AND a.status = 'active' "
+            "LEFT JOIN agents fb ON fb.id = pn.fallback_agent_id AND fb.deleted_at IS NULL AND fb.status = 'active' "
+            "WHERE pn.did = $1 AND pn.status = 'active' "
+            "  AND pn.deleted_at IS NULL AND t.deleted_at IS NULL",
+            did,
+        )
     if row is None:
         return None
 
@@ -111,28 +122,32 @@ async def prewarm() -> int:
     comment). Returns the number of DIDs warmed, for startup logging.
     """
     pool = await db.get_pool()
-    rows = await pool.fetch(
-        "SELECT did FROM phone_numbers WHERE status = 'active' AND deleted_at IS NULL",
-    )
+    async with platform_conn(pool, reason="phone-numbers-prewarm") as conn:
+        rows = await conn.fetch(
+            "SELECT did FROM phone_numbers WHERE status = 'active' AND deleted_at IS NULL",
+        )
     for row in rows:
-        await get_by_did(row["did"])
+        await get_by_did(row["did"], platform_scoped=True)
     return len(rows)
 
 
-async def get_phone_number(phone_number_id: Any) -> dict[str, Any] | None:
+async def get_phone_number(phone_number_id: Any, *, platform_scoped: bool = False) -> dict[str, Any] | None:
     pool = await db.get_pool()
-    row = await pool.fetchrow(
-        "SELECT * FROM phone_numbers WHERE id = $1 AND deleted_at IS NULL", phone_number_id,
-    )
+    conn_cm = platform_conn(pool, reason="phone-numbers-by-id") if platform_scoped else tenant_conn(pool)
+    async with conn_cm as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM phone_numbers WHERE id = $1 AND deleted_at IS NULL", phone_number_id,
+        )
     return dict(row) if row is not None else None
 
 
 async def list_phone_numbers(tenant_id: Any) -> list[dict[str, Any]]:
     pool = await db.get_pool()
-    rows = await pool.fetch(
-        "SELECT * FROM phone_numbers WHERE tenant_id = $1 AND deleted_at IS NULL ORDER BY did",
-        tenant_id,
-    )
+    async with tenant_conn(pool) as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM phone_numbers WHERE tenant_id = $1 AND deleted_at IS NULL ORDER BY did",
+            tenant_id,
+        )
     return [dict(row) for row in rows]
 
 
@@ -149,24 +164,23 @@ async def create_phone_number(
     user_email: str | None = None,
 ) -> dict[str, Any]:
     pool = await db.get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            row = await conn.fetchrow(
-                "INSERT INTO phone_numbers "
-                "(tenant_id, did, agent_id, fallback_agent_id, carrier_id, region, status) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *",
-                tenant_id, did, agent_id, fallback_agent_id, carrier_id, region, status,
-            )
-            result = dict(row)
-            await audit.write_audit(
-                conn,
-                entity_type="phone_number",
-                entity_id=result["id"],
-                action="created",
-                user_id=user_id,
-                user_email=user_email,
-                new_value=result,
-            )
+    async with tenant_conn(pool) as conn:
+        row = await conn.fetchrow(
+            "INSERT INTO phone_numbers "
+            "(tenant_id, did, agent_id, fallback_agent_id, carrier_id, region, status) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *",
+            tenant_id, did, agent_id, fallback_agent_id, carrier_id, region, status,
+        )
+        result = dict(row)
+        await audit.write_audit(
+            conn,
+            entity_type="phone_number",
+            entity_id=result["id"],
+            action="created",
+            user_id=user_id,
+            user_email=user_email,
+            new_value=result,
+        )
     # Warm the cache immediately rather than lazily on first call — see this
     # module's top-of-file comment for why.
     await get_by_did(did)
@@ -187,37 +201,36 @@ async def update_phone_number(
         raise ValueError(f"update_phone_number() got non-updatable field(s): {unknown}")
 
     pool = await db.get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            # FOR UPDATE — see tenants.py's update_tenant() comment: without
-            # it, a concurrent update could make this transaction's audit
-            # entry record a stale old_value.
-            old_row = await conn.fetchrow(
-                "SELECT * FROM phone_numbers WHERE id = $1 FOR UPDATE", phone_number_id,
-            )
-            if old_row is None:
-                raise LookupError(f"phone_number {phone_number_id} not found")
-            old = dict(old_row)
+    async with tenant_conn(pool) as conn:
+        # FOR UPDATE — see tenants.py's update_tenant() comment: without
+        # it, a concurrent update could make this transaction's audit
+        # entry record a stale old_value.
+        old_row = await conn.fetchrow(
+            "SELECT * FROM phone_numbers WHERE id = $1 FOR UPDATE", phone_number_id,
+        )
+        if old_row is None:
+            raise LookupError(f"phone_number {phone_number_id} not found")
+        old = dict(old_row)
 
-            columns = list(fields.keys())
-            set_clause = ", ".join(f"{col} = ${i + 2}" for i, col in enumerate(columns))
-            new_row = await conn.fetchrow(
-                f"UPDATE phone_numbers SET {set_clause}, updated_at = now() "
-                f"WHERE id = $1 RETURNING *",
-                phone_number_id, *(fields[col] for col in columns),
-            )
-            new = dict(new_row)
+        columns = list(fields.keys())
+        set_clause = ", ".join(f"{col} = ${i + 2}" for i, col in enumerate(columns))
+        new_row = await conn.fetchrow(
+            f"UPDATE phone_numbers SET {set_clause}, updated_at = now() "
+            f"WHERE id = $1 RETURNING *",
+            phone_number_id, *(fields[col] for col in columns),
+        )
+        new = dict(new_row)
 
-            await audit.write_audit(
-                conn,
-                entity_type="phone_number",
-                entity_id=phone_number_id,
-                action="updated",
-                user_id=user_id,
-                user_email=user_email,
-                old_value=old,
-                new_value=new,
-            )
+        await audit.write_audit(
+            conn,
+            entity_type="phone_number",
+            entity_id=phone_number_id,
+            action="updated",
+            user_id=user_id,
+            user_email=user_email,
+            old_value=old,
+            new_value=new,
+        )
 
     # Write-through (see top-of-file comment). Must invalidate new["did"]'s
     # key BEFORE calling get_by_did(): if the did string itself didn't
@@ -236,26 +249,25 @@ async def soft_delete_phone_number(
     phone_number_id: Any, *, user_id: Any | None = None, user_email: str | None = None,
 ) -> None:
     pool = await db.get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            old_row = await conn.fetchrow(
-                "SELECT * FROM phone_numbers WHERE id = $1 FOR UPDATE", phone_number_id,
-            )
-            if old_row is None:
-                raise LookupError(f"phone_number {phone_number_id} not found")
-            old = dict(old_row)
+    async with tenant_conn(pool) as conn:
+        old_row = await conn.fetchrow(
+            "SELECT * FROM phone_numbers WHERE id = $1 FOR UPDATE", phone_number_id,
+        )
+        if old_row is None:
+            raise LookupError(f"phone_number {phone_number_id} not found")
+        old = dict(old_row)
 
-            await conn.execute(
-                "UPDATE phone_numbers SET deleted_at = now() WHERE id = $1", phone_number_id,
-            )
-            await audit.write_audit(
-                conn,
-                entity_type="phone_number",
-                entity_id=phone_number_id,
-                action="deleted",
-                user_id=user_id,
-                user_email=user_email,
-                old_value=old,
-            )
+        await conn.execute(
+            "UPDATE phone_numbers SET deleted_at = now() WHERE id = $1", phone_number_id,
+        )
+        await audit.write_audit(
+            conn,
+            entity_type="phone_number",
+            entity_id=phone_number_id,
+            action="deleted",
+            user_id=user_id,
+            user_email=user_email,
+            old_value=old,
+        )
 
     await cache.invalidate(_cache_key(old["did"]))

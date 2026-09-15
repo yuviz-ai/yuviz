@@ -39,7 +39,7 @@ class _FakePolicyResolver:
         self._policies = policies
 
     async def enabled_tools(
-        self, agent_id: str, only: list[str] | None = None,
+        self, agent_id: str, tenant_slug: str, only: list[str] | None = None,
     ) -> list[ResolvedToolPolicy]:
         self.last_only = only
         return self._policies

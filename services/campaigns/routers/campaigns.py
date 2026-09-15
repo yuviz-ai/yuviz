@@ -9,12 +9,23 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from services.config.auth import CurrentUser
-from services.config.deps import get_current_user, get_or_404, require_role
+from services.config.deps import (
+    assert_tenant_access,
+    bind_path_tenant,
+    get_current_user,
+    get_or_404,
+    is_platform_scoped,
+    require_path_tenant_access,
+    require_role,
+)
 
 from .. import campaign_contacts, campaigns as campaigns_service, dnc
 from ..schemas import CampaignCreate, CampaignUpdate, DncNumberCreate
 
-tenant_scoped_router = APIRouter(prefix="/tenants/{tenant_id}/campaigns", tags=["campaigns"])
+tenant_scoped_router = APIRouter(
+    prefix="/tenants/{tenant_id}/campaigns", tags=["campaigns"],
+    dependencies=[Depends(bind_path_tenant), Depends(require_path_tenant_access)],
+)
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
 
@@ -48,7 +59,12 @@ async def create_campaign(
 
 @router.get("/{campaign_id}")
 async def get_campaign(campaign_id: str, current_user: CurrentUser = Depends(get_current_user)):
-    return await get_or_404(campaigns_service.get_campaign(campaign_id), f"campaign {campaign_id!r} not found")
+    campaign = await get_or_404(
+        campaigns_service.get_campaign(campaign_id, platform_scoped=is_platform_scoped(current_user)),
+        f"campaign {campaign_id!r} not found",
+    )
+    await assert_tenant_access(campaign["tenant_id"], current_user)
+    return campaign
 
 
 @router.patch("/{campaign_id}")
@@ -56,14 +72,24 @@ async def update_campaign(
     campaign_id: str, body: CampaignUpdate,
     current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
 ):
+    campaign = await get_or_404(
+        campaigns_service.get_campaign(campaign_id, platform_scoped=is_platform_scoped(current_user)),
+        f"campaign {campaign_id!r} not found",
+    )
+    await assert_tenant_access(campaign["tenant_id"], current_user)
     return await campaigns_service.update_campaign(
-        campaign_id, body.model_dump(), user_id=current_user.id, user_email=current_user.email,
+        campaign_id, body.model_dump(),
+        platform_scoped=is_platform_scoped(current_user), user_id=current_user.id, user_email=current_user.email,
     )
 
 
 @router.get("/{campaign_id}/progress")
 async def get_progress(campaign_id: str, current_user: CurrentUser = Depends(get_current_user)):
-    await get_or_404(campaigns_service.get_campaign(campaign_id), f"campaign {campaign_id!r} not found")
+    campaign = await get_or_404(
+        campaigns_service.get_campaign(campaign_id, platform_scoped=is_platform_scoped(current_user)),
+        f"campaign {campaign_id!r} not found",
+    )
+    await assert_tenant_access(campaign["tenant_id"], current_user)
     return await campaigns_service.get_progress(campaign_id)
 
 
@@ -72,7 +98,11 @@ async def list_contacts(
     campaign_id: str, status: str | None = Query(default=None),
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    await get_or_404(campaigns_service.get_campaign(campaign_id), f"campaign {campaign_id!r} not found")
+    campaign = await get_or_404(
+        campaigns_service.get_campaign(campaign_id, platform_scoped=is_platform_scoped(current_user)),
+        f"campaign {campaign_id!r} not found",
+    )
+    await assert_tenant_access(campaign["tenant_id"], current_user)
     return await campaign_contacts.list_contacts(campaign_id, status=status)
 
 
@@ -81,7 +111,11 @@ async def upload_contacts(
     campaign_id: str, file: UploadFile,
     current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
 ):
-    campaign = await get_or_404(campaigns_service.get_campaign(campaign_id), f"campaign {campaign_id!r} not found")
+    campaign = await get_or_404(
+        campaigns_service.get_campaign(campaign_id, platform_scoped=is_platform_scoped(current_user)),
+        f"campaign {campaign_id!r} not found",
+    )
+    await assert_tenant_access(campaign["tenant_id"], current_user)
     content = await file.read()
     try:
         contacts = campaign_contacts.parse_contacts_csv(content)
@@ -100,7 +134,10 @@ async def upload_contacts(
     return {"inserted": inserted, "skipped_dnc": skipped_dnc}
 
 
-dnc_tenant_router = APIRouter(prefix="/tenants/{tenant_id}/dnc", tags=["dnc"])
+dnc_tenant_router = APIRouter(
+    prefix="/tenants/{tenant_id}/dnc", tags=["dnc"],
+    dependencies=[Depends(bind_path_tenant), Depends(require_path_tenant_access)],
+)
 
 
 @dnc_tenant_router.get("")
@@ -121,28 +158,52 @@ dnc_router = APIRouter(prefix="/dnc", tags=["dnc"])
 
 @dnc_router.delete("/{dnc_id}", status_code=204)
 async def remove_dnc_number(dnc_id: str, current_user: CurrentUser = Depends(require_role("superadmin", "admin"))):
-    await dnc.remove_number(dnc_id)
+    entry = await get_or_404(
+        dnc.get_dnc_number(dnc_id, platform_scoped=is_platform_scoped(current_user)),
+        f"dnc entry {dnc_id!r} not found",
+    )
+    await assert_tenant_access(entry["tenant_id"], current_user)
+    platform_scoped = is_platform_scoped(current_user)
+    await dnc.remove_number(
+        dnc_id, platform_scoped=platform_scoped,
+        stamp_tenant=str(entry["tenant_id"]) if platform_scoped else None,
+    )
 
 
 @router.post("/{campaign_id}/start")
 async def start_campaign(campaign_id: str, current_user: CurrentUser = Depends(require_role("superadmin", "admin"))):
-    await get_or_404(campaigns_service.get_campaign(campaign_id), f"campaign {campaign_id!r} not found")
+    campaign = await get_or_404(
+        campaigns_service.get_campaign(campaign_id, platform_scoped=is_platform_scoped(current_user)),
+        f"campaign {campaign_id!r} not found",
+    )
+    await assert_tenant_access(campaign["tenant_id"], current_user)
     return await campaigns_service.set_status(
-        campaign_id, "running", user_id=current_user.id, user_email=current_user.email,
+        campaign_id, "running",
+        platform_scoped=is_platform_scoped(current_user), user_id=current_user.id, user_email=current_user.email,
     )
 
 
 @router.post("/{campaign_id}/pause")
 async def pause_campaign(campaign_id: str, current_user: CurrentUser = Depends(require_role("superadmin", "admin"))):
-    await get_or_404(campaigns_service.get_campaign(campaign_id), f"campaign {campaign_id!r} not found")
+    campaign = await get_or_404(
+        campaigns_service.get_campaign(campaign_id, platform_scoped=is_platform_scoped(current_user)),
+        f"campaign {campaign_id!r} not found",
+    )
+    await assert_tenant_access(campaign["tenant_id"], current_user)
     return await campaigns_service.set_status(
-        campaign_id, "paused", user_id=current_user.id, user_email=current_user.email,
+        campaign_id, "paused",
+        platform_scoped=is_platform_scoped(current_user), user_id=current_user.id, user_email=current_user.email,
     )
 
 
 @router.post("/{campaign_id}/resume")
 async def resume_campaign(campaign_id: str, current_user: CurrentUser = Depends(require_role("superadmin", "admin"))):
-    await get_or_404(campaigns_service.get_campaign(campaign_id), f"campaign {campaign_id!r} not found")
+    campaign = await get_or_404(
+        campaigns_service.get_campaign(campaign_id, platform_scoped=is_platform_scoped(current_user)),
+        f"campaign {campaign_id!r} not found",
+    )
+    await assert_tenant_access(campaign["tenant_id"], current_user)
     return await campaigns_service.set_status(
-        campaign_id, "running", user_id=current_user.id, user_email=current_user.email,
+        campaign_id, "running",
+        platform_scoped=is_platform_scoped(current_user), user_id=current_user.id, user_email=current_user.email,
     )

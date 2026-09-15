@@ -26,11 +26,12 @@ from ..transcript_builder import TranscriptBuilder  # noqa: E402
 from .test_pipeline import _make_handler, _make_llm, _make_stt, _make_tts  # noqa: E402
 
 
-async def _insert_live_call(pool, session_id: str) -> None:
-    await pool.execute(
-        "INSERT INTO calls (session_id, tenant_id, direction) VALUES ($1, 'default', 'inbound')",
-        session_id,
-    )
+async def _insert_live_call(builder: TranscriptBuilder, session_id: str) -> None:
+    # begin_call (not a raw insert) so the cached tenant slug the transfer
+    # hooks' own record_live_stage() write scopes its connection to is
+    # populated, matching how every real call reaches these hooks.
+    builder.begin_call(session_id, "default", "call-1")
+    await builder._chains[session_id]
 
 
 async def _make_session_with_real_transcripts(builder: TranscriptBuilder, session_id: str):
@@ -46,7 +47,7 @@ async def test_on_transfer_initiated_sets_waiting_for_human():
     builder = await TranscriptBuilder.connect(os.environ["POSTGRES_DSN"])
     pool = builder._pool
     session_id = f"test-stage-init-{uuid.uuid4().hex[:8]}"
-    await _insert_live_call(pool, session_id)
+    await _insert_live_call(builder, session_id)
     session = await _make_session_with_real_transcripts(builder, session_id)
 
     session.on_transfer_initiated("cold", "+15551234567", "escalation_threshold_exceeded")
@@ -63,7 +64,7 @@ async def test_on_transfer_completed_sets_human_connected():
     builder = await TranscriptBuilder.connect(os.environ["POSTGRES_DSN"])
     pool = builder._pool
     session_id = f"test-stage-completed-{uuid.uuid4().hex[:8]}"
-    await _insert_live_call(pool, session_id)
+    await _insert_live_call(builder, session_id)
     session = await _make_session_with_real_transcripts(builder, session_id)
 
     session.on_transfer_initiated("cold", "+15551234567", "x")
@@ -82,7 +83,7 @@ async def test_on_transfer_failed_reverts_to_ai():
     builder = await TranscriptBuilder.connect(os.environ["POSTGRES_DSN"])
     pool = builder._pool
     session_id = f"test-stage-failed-{uuid.uuid4().hex[:8]}"
-    await _insert_live_call(pool, session_id)
+    await _insert_live_call(builder, session_id)
     session = await _make_session_with_real_transcripts(builder, session_id)
 
     session.on_transfer_initiated("cold", "+15551234567", "x")
@@ -101,7 +102,7 @@ async def test_on_transfer_cancelled_reverts_to_ai():
     builder = await TranscriptBuilder.connect(os.environ["POSTGRES_DSN"])
     pool = builder._pool
     session_id = f"test-stage-cancelled-{uuid.uuid4().hex[:8]}"
-    await _insert_live_call(pool, session_id)
+    await _insert_live_call(builder, session_id)
     session = await _make_session_with_real_transcripts(builder, session_id)
 
     # A real prior attempt, then the NEXT one gets barged-in before

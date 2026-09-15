@@ -50,3 +50,22 @@ async def test_superadmin(pool):
     token = config_auth.create_access_token(user)
     yield {"user": user, "token": token}
     await pool.execute("UPDATE users SET deleted_at = now() WHERE id = $1", user["id"])
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def foreign_tenant_admin(pool):
+    """A tenant admin scoped to a tenant OTHER than `test_tenant` — the
+    actor design Q6 names as the DID purchase hole: `require_role`-only
+    routes let any tenant admin purchase into another tenant's path."""
+    slug = f"test-foreign-{uuid.uuid4().hex[:8]}"
+    tenant = dict(await pool.fetchrow(
+        "INSERT INTO tenants (name, slug) VALUES ($1, $2) RETURNING *", f"Foreign Tenant {slug}", slug,
+    ))
+    email = f"test-foreign-admin-{uuid.uuid4().hex[:8]}@example.com"
+    user = await users_service.create_user(
+        email=email, password="test-password-not-real", role="admin", tenant_id=tenant["id"],
+    )
+    token = config_auth.create_access_token(user)
+    yield {"user": user, "token": token, "tenant": tenant}
+    await pool.execute("DELETE FROM users WHERE id = $1", user["id"])
+    await pool.execute("DELETE FROM tenants WHERE id = $1", tenant["id"])

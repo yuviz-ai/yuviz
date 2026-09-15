@@ -10,10 +10,14 @@ from .. import agents as agents_service
 from .. import tenants as tenants_service
 from .. import workflows as workflows_service
 from ..auth import CurrentUser
-from ..deps import get_current_user, get_or_404, require_role
+from ..deps import bind_path_tenant, get_current_user, get_or_404, require_path_tenant_access, require_role
 from ..schemas import AgentCreate, AgentUpdate, WorkflowDraft, WorkflowPublish
 
-router = APIRouter(prefix="/tenants/{tenant_slug}/agents", tags=["agents"])
+router = APIRouter(
+    prefix="/tenants/{tenant_slug}/agents",
+    tags=["agents"],
+    dependencies=[Depends(bind_path_tenant), Depends(require_path_tenant_access)],
+)
 
 # Postgres name for UNIQUE (tenant_id, slug) on agents — don't map other
 # unique violations (e.g. agent_workflow_versions) to the slug message.

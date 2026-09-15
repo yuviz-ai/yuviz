@@ -10,6 +10,8 @@ import csv
 import io
 from typing import Any
 
+from libs.tenancy import tenant_conn
+
 from . import db
 
 
@@ -43,24 +45,26 @@ async def bulk_insert_contacts(campaign_id: Any, contacts: list[dict[str, str]])
     if not contacts:
         return 0
     pool = await db.get_pool()
-    await pool.executemany(
-        "INSERT INTO campaign_contacts (campaign_id, phone_number, name) VALUES ($1, $2, $3)",
-        [(campaign_id, c["phone_number"], c.get("name") or None) for c in contacts],
-    )
+    async with tenant_conn(pool) as conn:
+        await conn.executemany(
+            "INSERT INTO campaign_contacts (campaign_id, phone_number, name) VALUES ($1, $2, $3)",
+            [(campaign_id, c["phone_number"], c.get("name") or None) for c in contacts],
+        )
     return len(contacts)
 
 
 async def list_contacts(campaign_id: Any, *, status: str | None = None) -> list[dict[str, Any]]:
     pool = await db.get_pool()
-    if status is not None:
-        rows = await pool.fetch(
-            "SELECT * FROM campaign_contacts WHERE campaign_id = $1 AND status = $2 ORDER BY created_at",
-            campaign_id, status,
-        )
-    else:
-        rows = await pool.fetch(
-            "SELECT * FROM campaign_contacts WHERE campaign_id = $1 ORDER BY created_at", campaign_id,
-        )
+    async with tenant_conn(pool) as conn:
+        if status is not None:
+            rows = await conn.fetch(
+                "SELECT * FROM campaign_contacts WHERE campaign_id = $1 AND status = $2 ORDER BY created_at",
+                campaign_id, status,
+            )
+        else:
+            rows = await conn.fetch(
+                "SELECT * FROM campaign_contacts WHERE campaign_id = $1 ORDER BY created_at", campaign_id,
+            )
     return [dict(row) for row in rows]
 
 
@@ -71,28 +75,28 @@ async def claim_next_pending(campaign_id: Any) -> dict[str, Any] | None:
     project, just via SKIP LOCKED so a locked row is passed over instead
     of blocking the whole worker tick on it."""
     pool = await db.get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            row = await conn.fetchrow(
-                "SELECT * FROM campaign_contacts WHERE campaign_id = $1 AND status = 'pending' "
-                "ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED",
-                campaign_id,
-            )
-            if row is None:
-                return None
-            updated = await conn.fetchrow(
-                "UPDATE campaign_contacts SET status = 'calling', attempt_count = attempt_count + 1, "
-                "last_attempted_at = now() WHERE id = $1 RETURNING *",
-                row["id"],
-            )
-            return dict(updated)
+    async with tenant_conn(pool) as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM campaign_contacts WHERE campaign_id = $1 AND status = 'pending' "
+            "ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED",
+            campaign_id,
+        )
+        if row is None:
+            return None
+        updated = await conn.fetchrow(
+            "UPDATE campaign_contacts SET status = 'calling', attempt_count = attempt_count + 1, "
+            "last_attempted_at = now() WHERE id = $1 RETURNING *",
+            row["id"],
+        )
+        return dict(updated)
 
 
 async def mark_contact_status(
     contact_id: Any, status: str, *, call_session_id: str | None = None,
 ) -> None:
     pool = await db.get_pool()
-    await pool.execute(
-        "UPDATE campaign_contacts SET status = $2, call_session_id = COALESCE($3, call_session_id) WHERE id = $1",
-        contact_id, status, call_session_id,
-    )
+    async with tenant_conn(pool) as conn:
+        await conn.execute(
+            "UPDATE campaign_contacts SET status = $2, call_session_id = COALESCE($3, call_session_id) WHERE id = $1",
+            contact_id, status, call_session_id,
+        )

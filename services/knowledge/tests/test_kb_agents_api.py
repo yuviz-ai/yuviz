@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from libs.tenancy import set_caller_tenant
 from services.knowledge import agent_kb as agent_kb_service
 from services.knowledge import knowledge_bases as kb_service
 from services.knowledge.app import app
@@ -22,6 +23,7 @@ async def client():
 
 
 async def _make_kb(tenant):
+    set_caller_tenant(str(tenant["id"]))
     return await kb_service.create_knowledge_base(tenant_id=tenant["id"], slug="policies", name="Policies")
 
 

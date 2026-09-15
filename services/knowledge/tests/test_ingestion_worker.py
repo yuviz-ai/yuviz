@@ -7,6 +7,7 @@ convention for infra that's fast/available locally.
 
 from __future__ import annotations
 
+from libs.tenancy import set_caller_tenant
 from services.config import provider_configs
 from services.knowledge import documents as documents_service
 from services.knowledge import knowledge_bases as kb_service
@@ -18,6 +19,7 @@ from services.knowledge.storage import LocalStorageProvider
 
 async def test_process_one_job_success_produces_ready_document_and_chunks(tenant_agent, pool):
     tenant, _ = tenant_agent
+    set_caller_tenant(str(tenant["id"]))
     embedding_cfg = await provider_configs.create_provider_config(
         tenant_id=tenant["id"], name="Embed", role="embedding", engine="ollama",
     )
@@ -62,6 +64,7 @@ async def test_process_one_job_success_produces_ready_document_and_chunks(tenant
 
 async def test_tiny_document_auto_inlines_and_skips_embedding(tenant_agent, pool):
     tenant, _ = tenant_agent
+    set_caller_tenant(str(tenant["id"]))
     embedding_cfg = await provider_configs.create_provider_config(
         tenant_id=tenant["id"], name="Embed", role="embedding", engine="ollama",
     )
@@ -89,6 +92,7 @@ async def test_tiny_document_auto_inlines_and_skips_embedding(tenant_agent, pool
 
 async def test_manual_prompt_override_survives_reingestion_of_large_document(tenant_agent, pool):
     tenant, _ = tenant_agent
+    set_caller_tenant(str(tenant["id"]))
     embedding_cfg = await provider_configs.create_provider_config(
         tenant_id=tenant["id"], name="Embed", role="embedding", engine="ollama",
     )
@@ -114,6 +118,7 @@ async def test_manual_prompt_override_survives_reingestion_of_large_document(ten
 
 async def test_process_one_job_unsupported_content_type_marks_failed(tenant_agent, pool):
     tenant, _ = tenant_agent
+    set_caller_tenant(str(tenant["id"]))
     embedding_cfg = await provider_configs.create_provider_config(
         tenant_id=tenant["id"], name="Embed", role="embedding", engine="ollama",
     )
@@ -136,3 +141,16 @@ async def test_process_one_job_unsupported_content_type_marks_failed(tenant_agen
 
     updated_job = await pool.fetchrow("SELECT * FROM kb_ingestion_jobs WHERE id = $1", job["id"])
     assert updated_job["status"] == "failed"
+
+
+# ── job claim holds no transaction between poll ticks (T50) ─────────────
+
+async def test_claim_holds_no_transaction_between_poll_ticks(pool):
+    from services.knowledge.ingestion_worker import _claim_next_job
+
+    for _ in range(3):
+        await _claim_next_job(pool)
+        idle_in_txn = await pool.fetch(
+            "SELECT pid, query FROM pg_stat_activity WHERE state = 'idle in transaction'",
+        )
+        assert idle_in_txn == []

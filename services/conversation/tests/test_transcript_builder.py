@@ -356,13 +356,40 @@ async def test_reconcile_inactive_calls_is_a_noop_when_persistence_disabled():
     assert await builder.reconcile_inactive_calls(inactive_after_seconds=300) == 0
 
 
+# ── RLS: sweeps hold no open transaction between iterations (T52) ────────
+# platform_conn() opens a transaction for exactly the one UPDATE each sweep
+# issues and closes it before the method returns — never spans the interval
+# between one timer tick and the next (see __main__.py's heartbeat loop).
+# This would fail if a sweep method leaked its transaction past return, e.g.
+# by acquiring the connection outside the `async with platform_conn(...)`
+# block that's supposed to bound it.
+async def test_reconcile_sweeps_leave_no_open_transaction_between_iterations():
+    node_id = f"test-sweep-{uuid.uuid4().hex[:8]}"
+    builder = await TranscriptBuilder.connect(os.environ["POSTGRES_DSN"], node_id=node_id)
+    pool = builder._pool
+
+    for _ in range(3):
+        await builder.reconcile_stale_calls()
+        await builder.reconcile_dead_nodes(stale_after_seconds=45)
+        await builder.reconcile_inactive_calls(inactive_after_seconds=45)
+        idle_in_txn = await pool.fetch(
+            "SELECT pid, query FROM pg_stat_activity WHERE state = 'idle in transaction'",
+        )
+        assert idle_in_txn == []
+
+    await builder.close()
+
+
 # ── record_live_stage (Live Calls Monitoring, T18/T19) ───────────────────
 
 async def test_record_live_stage_is_fire_and_forget_and_updates_the_column():
     builder = await TranscriptBuilder.connect(os.environ["POSTGRES_DSN"])
     pool = builder._pool
     session_id = f"test-live-stage-{uuid.uuid4().hex[:8]}"
-    await _insert_live_call(pool, session_id, conv_node=None)
+    # begin_call (not the raw-insert helper) so the cached tenant slug
+    # record_live_stage's own write scopes its connection to is populated,
+    # matching how every real call reaches this hook.
+    builder.begin_call(session_id, "default", "call-1")
 
     builder.record_live_stage(session_id, "waiting_for_human")
     # The call above returned synchronously with no `await` — proving it
@@ -397,14 +424,17 @@ async def test_record_live_stage_serializes_per_session_a_later_call_is_never_ov
     builder = await TranscriptBuilder.connect(os.environ["POSTGRES_DSN"])
     pool = builder._pool
     session_id = f"test-live-stage-order-{uuid.uuid4().hex[:8]}"
-    await _insert_live_call(pool, session_id, conv_node=None)
+    # begin_call (not the raw-insert helper) so the cached tenant slug
+    # record_live_stage's own write scopes its connection to is populated,
+    # matching how every real call reaches this hook.
+    builder.begin_call(session_id, "default", "call-1")
 
     original_write = builder._record_live_stage
 
-    async def _slow_for_waiting_for_human(sid, stage):
+    async def _slow_for_waiting_for_human(sid, tenant_slug, stage):
         if stage == "waiting_for_human":
             await asyncio.sleep(0.2)
-        await original_write(sid, stage)
+        await original_write(sid, tenant_slug, stage)
 
     monkeypatch.setattr(builder, "_record_live_stage", _slow_for_waiting_for_human)
 

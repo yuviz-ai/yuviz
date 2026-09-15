@@ -317,7 +317,9 @@ async def serve(port: int, args: argparse.Namespace) -> None:
             # booking," which is actively confusing (and contradicts a
             # reception-only agent's own "you cannot book" instruction) if
             # book_appointment isn't actually enabled for it.
-            enabled_policies = await tool_policy_resolver.enabled_tools(runtime_config.agent.id)
+            enabled_policies = await tool_policy_resolver.enabled_tools(
+                runtime_config.agent.id, runtime_config.tenant.slug,
+            )
             has_booking_tool = any(p.definition.name == "book_appointment" for p in enabled_policies)
 
             return PipelineConversationHandler(

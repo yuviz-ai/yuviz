@@ -17,6 +17,8 @@ from __future__ import annotations
 import json as _json
 from typing import Any
 
+from libs.tenancy import platform_conn, tenant_conn
+
 from . import audit, db
 from .provider_configs import resolve_api_key_input
 
@@ -36,12 +38,18 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
     return result
 
 
-async def get_tool_provider_config(tool_provider_config_id: Any) -> dict[str, Any] | None:
+async def get_tool_provider_config(
+    tool_provider_config_id: Any, *, platform_scoped: bool = False,
+) -> dict[str, Any] | None:
     pool = await db.get_pool()
-    row = await pool.fetchrow(
-        "SELECT * FROM tool_provider_configs WHERE id = $1 AND deleted_at IS NULL",
-        tool_provider_config_id,
+    conn_cm = (
+        platform_conn(pool, reason="tool-provider-configs-by-id") if platform_scoped else tenant_conn(pool)
     )
+    async with conn_cm as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM tool_provider_configs WHERE id = $1 AND deleted_at IS NULL",
+            tool_provider_config_id,
+        )
     return _row_to_dict(row) if row is not None else None
 
 
@@ -53,10 +61,11 @@ async def list_tool_provider_configs(tenant_id: Any, *, tool_name: str | None = 
         params.append(tool_name)
         conditions.append(f"tool_name = ${len(params)}")
 
-    rows = await pool.fetch(
-        f"SELECT * FROM tool_provider_configs WHERE {' AND '.join(conditions)} ORDER BY name",
-        *params,
-    )
+    async with tenant_conn(pool) as conn:
+        rows = await conn.fetch(
+            f"SELECT * FROM tool_provider_configs WHERE {' AND '.join(conditions)} ORDER BY name",
+            *params,
+        )
     return [_row_to_dict(row) for row in rows]
 
 
@@ -75,25 +84,24 @@ async def create_tool_provider_config(
     api_key_ref = resolve_api_key_input(api_key, api_key_ref)
 
     pool = await db.get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            row = await conn.fetchrow(
-                "INSERT INTO tool_provider_configs "
-                "(tenant_id, name, tool_name, engine, api_key_ref, extra) "
-                "VALUES ($1, $2, $3, $4, $5, $6::jsonb) RETURNING *",
-                tenant_id, name, tool_name, engine, api_key_ref,
-                _json.dumps(extra) if extra is not None else None,
-            )
-            result = _row_to_dict(row)
-            await audit.write_audit(
-                conn,
-                entity_type="tool_provider_config",
-                entity_id=result["id"],
-                action="created",
-                user_id=user_id,
-                user_email=user_email,
-                new_value=result,
-            )
+    async with tenant_conn(pool) as conn:
+        row = await conn.fetchrow(
+            "INSERT INTO tool_provider_configs "
+            "(tenant_id, name, tool_name, engine, api_key_ref, extra) "
+            "VALUES ($1, $2, $3, $4, $5, $6::jsonb) RETURNING *",
+            tenant_id, name, tool_name, engine, api_key_ref,
+            _json.dumps(extra) if extra is not None else None,
+        )
+        result = _row_to_dict(row)
+        await audit.write_audit(
+            conn,
+            entity_type="tool_provider_config",
+            entity_id=result["id"],
+            action="created",
+            user_id=user_id,
+            user_email=user_email,
+            new_value=result,
+        )
     return result
 
 
@@ -123,41 +131,40 @@ async def update_tool_provider_config(
         fields = {**fields, "extra": _json.dumps(fields["extra"])}
 
     pool = await db.get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            old_row = await conn.fetchrow(
-                "SELECT * FROM tool_provider_configs WHERE id = $1 FOR UPDATE", tool_provider_config_id,
-            )
-            if old_row is None:
-                raise LookupError(f"tool_provider_config {tool_provider_config_id} not found")
-            old = _row_to_dict(old_row)
+    async with tenant_conn(pool) as conn:
+        old_row = await conn.fetchrow(
+            "SELECT * FROM tool_provider_configs WHERE id = $1 FOR UPDATE", tool_provider_config_id,
+        )
+        if old_row is None:
+            raise LookupError(f"tool_provider_config {tool_provider_config_id} not found")
+        old = _row_to_dict(old_row)
 
-            columns = list(fields.keys())
-            set_parts = []
-            for i, col in enumerate(columns):
-                cast = "::jsonb" if col == "extra" else ""
-                set_parts.append(f"{col} = ${i + 2}{cast}")
-            new_row = await conn.fetchrow(
-                f"UPDATE tool_provider_configs SET {', '.join(set_parts)}, updated_at = now() "
-                f"WHERE id = $1 RETURNING *",
-                tool_provider_config_id, *(fields[col] for col in columns),
-            )
-            new = _row_to_dict(new_row)
+        columns = list(fields.keys())
+        set_parts = []
+        for i, col in enumerate(columns):
+            cast = "::jsonb" if col == "extra" else ""
+            set_parts.append(f"{col} = ${i + 2}{cast}")
+        new_row = await conn.fetchrow(
+            f"UPDATE tool_provider_configs SET {', '.join(set_parts)}, updated_at = now() "
+            f"WHERE id = $1 RETURNING *",
+            tool_provider_config_id, *(fields[col] for col in columns),
+        )
+        new = _row_to_dict(new_row)
 
-            # Scoped to the written columns, not the full row — otherwise
-            # api_key_ref (redacted either way) rides along on every update
-            # and the UI can't tell "redacted, unchanged" from "redacted,
-            # changed."
-            await audit.write_audit(
-                conn,
-                entity_type="tool_provider_config",
-                entity_id=tool_provider_config_id,
-                action="updated",
-                user_id=user_id,
-                user_email=user_email,
-                old_value={col: old[col] for col in columns},
-                new_value={col: new[col] for col in columns},
-            )
+        # Scoped to the written columns, not the full row — otherwise
+        # api_key_ref (redacted either way) rides along on every update
+        # and the UI can't tell "redacted, unchanged" from "redacted,
+        # changed."
+        await audit.write_audit(
+            conn,
+            entity_type="tool_provider_config",
+            entity_id=tool_provider_config_id,
+            action="updated",
+            user_id=user_id,
+            user_email=user_email,
+            old_value={col: old[col] for col in columns},
+            new_value={col: new[col] for col in columns},
+        )
     return new
 
 
@@ -165,24 +172,23 @@ async def soft_delete_tool_provider_config(
     tool_provider_config_id: Any, *, user_id: Any | None = None, user_email: str | None = None,
 ) -> None:
     pool = await db.get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            old_row = await conn.fetchrow(
-                "SELECT * FROM tool_provider_configs WHERE id = $1 FOR UPDATE", tool_provider_config_id,
-            )
-            if old_row is None:
-                raise LookupError(f"tool_provider_config {tool_provider_config_id} not found")
-            old = dict(old_row)
+    async with tenant_conn(pool) as conn:
+        old_row = await conn.fetchrow(
+            "SELECT * FROM tool_provider_configs WHERE id = $1 FOR UPDATE", tool_provider_config_id,
+        )
+        if old_row is None:
+            raise LookupError(f"tool_provider_config {tool_provider_config_id} not found")
+        old = dict(old_row)
 
-            await conn.execute(
-                "UPDATE tool_provider_configs SET deleted_at = now() WHERE id = $1", tool_provider_config_id,
-            )
-            await audit.write_audit(
-                conn,
-                entity_type="tool_provider_config",
-                entity_id=tool_provider_config_id,
-                action="deleted",
-                user_id=user_id,
-                user_email=user_email,
-                old_value=old,
-            )
+        await conn.execute(
+            "UPDATE tool_provider_configs SET deleted_at = now() WHERE id = $1", tool_provider_config_id,
+        )
+        await audit.write_audit(
+            conn,
+            entity_type="tool_provider_config",
+            entity_id=tool_provider_config_id,
+            action="deleted",
+            user_id=user_id,
+            user_email=user_email,
+            old_value=old,
+        )

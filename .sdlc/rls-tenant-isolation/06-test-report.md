@@ -1,0 +1,16 @@
+# Test report
+
+COMMAND: `source venv/bin/activate && source .env && python -m pytest tests/test_tenant_conn.py tests/test_rls_isolation.py tests/test_rls_coverage.py tests/test_cross_tenant_admin.py tests/test_no_bare_pool_calls.py services/did/tests/test_numbers_api.py -q`
+
+RESULT: 71 passed, 0 failed
+
+- test_tenant_conn.py (17 cases: precedence, slug/UUID ambiguity, pool-reuse leak AC8, fail-closed-on-unresolved AC9, explicit-override guard, ingestion-worker no held transaction) — protects the ContextVar precedence rule and connection-leak/fail-closed behaviour the whole design hangs on — pass
+- test_rls_isolation.py (cross-tenant read empty AC3, no-GUC empty AC4, cross-tenant write rejected AC5, calls TEXT-slug AC10, platform bypass restores today's answers AC6) — protects the database layer holding independently of any app code — pass
+- test_rls_coverage.py (every tenant_id table has RLS+FORCE+policy, every /tenants/{...} router has both Tier-2 dependencies, Tier-3/4 route classification, reason= literal inventory, stamp_tenant on platform mutations, cache-key tenancy) — protects against a new table/router/route landing without its control — pass
+- test_cross_tenant_admin.py (AC6 matrix across 12 Tier-2 routers incl. did/numbers, 17 Tier-3 flat routers, 3 Tier-4 sites; RLS-alone case 3b with app layer monkeypatched out; negative control case 5; users self-promotion/cross-tenant-move refusal) — protects the actual blocking finding from the security review — pass
+- test_no_bare_pool_calls.py (AST tripwire on `.fetch*/.execute*` against a Pool-typed receiver) — protects against the 116-call-site regression class the hand-written inventory twice missed — pass
+- **test_purchase_into_foreign_tenant_is_refused_before_any_carrier_call** (new, `services/did/tests/test_numbers_api.py`) — protects design test-plan item 4d: an admin of one tenant posting to `/tenants/{other}/numbers/purchase` gets 403 and the fake carrier's `purchase_number` is never invoked (asserted on the mock, not just on the DB row) — pass
+
+FAILURES: None
+
+UNCOVERED: None of the PRD's 12 acceptance criteria lack a test. One design test-plan item (4d, DID purchase specifically — "no carrier call is made" asserted on the mocked provider) had no test before this session; `services/did/tests/test_numbers_api.py::test_purchase_into_foreign_tenant_is_refused_before_any_carrier_call` was added to close it and is now green. Two known, already-filed, intentionally-out-of-scope gaps (not new findings): T62 (flipping production `POSTGRES_DSN`) is deferred pending a real staging environment; pre-existing per-service unit suites that call service-layer functions directly (no HTTP request, so no ambient scope is ever set) fail with `TenantUnresolved` under `yuviz_app` per `.sdlc/rls-tenant-isolation/04-t59-test-suite-finding.md` — a real, already-filed finding this task was told not to re-litigate. The two AMBER-accepted minor findings in `05-review.md` (cross-tenant `kb_id` on KB assignment; divergent `_authorize_kb` 403/404 shapes, invisible once RLS is live) remain untested by design — they are accepted findings, not acceptance criteria, and fixing/testing them was explicitly out of this task's scope.

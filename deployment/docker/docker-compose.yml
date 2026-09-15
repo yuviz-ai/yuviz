@@ -64,6 +64,7 @@ services:
     command: ["bash", "/app/deployment/sh/init.sh"]
     environment:
       POSTGRES_DSN: ${POSTGRES_DSN}
+      YUVIZ_APP_PASSWORD: ${YUVIZ_APP_PASSWORD}
       REDIS_URL: ${REDIS_URL}
       JWT_SECRET: ${JWT_SECRET}
       CONFIG_SERVICE_EMAIL: ${CONFIG_SERVICE_EMAIL}

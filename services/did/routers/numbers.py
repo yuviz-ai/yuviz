@@ -21,8 +21,17 @@ Service talks to carriers, Config Service records DID->agent routing):
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from libs.tenancy import set_target_tenant
 from services.config.auth import CurrentUser
-from services.config.deps import get_current_user, get_or_404, require_role
+from services.config.deps import (
+    assert_tenant_access,
+    bind_path_tenant,
+    get_current_user,
+    get_or_404,
+    is_platform_scoped,
+    require_path_tenant_access,
+    require_role,
+)
 
 from .. import purchased_numbers as purchased_numbers_service
 from ..carriers import get_carrier_by_id
@@ -31,7 +40,11 @@ from ..providers.interface import DidProviderError
 from ..runtime import get_provider_manager
 from ..schemas import PurchaseNumberRequest
 
-tenant_scoped_router = APIRouter(prefix="/tenants/{tenant_id}/numbers", tags=["numbers"])
+tenant_scoped_router = APIRouter(
+    prefix="/tenants/{tenant_id}/numbers",
+    tags=["numbers"],
+    dependencies=[Depends(bind_path_tenant), Depends(require_path_tenant_access)],
+)
 router = APIRouter(prefix="/numbers", tags=["numbers"])
 
 
@@ -110,10 +123,13 @@ async def assign_purchased_number(
     already created via Config Service — see module docstring, step 3.
     This endpoint does not create or validate the phone_numbers row
     itself; that's Config Service's job."""
-    await get_or_404(
-        purchased_numbers_service.get_purchased_number(purchased_number_id),
+    platform_scoped = is_platform_scoped(current_user)
+    purchased = await get_or_404(
+        purchased_numbers_service.get_purchased_number(purchased_number_id, platform_scoped=platform_scoped),
         f"purchased_number {purchased_number_id!r} not found",
     )
+    await assert_tenant_access(str(purchased["tenant_id"]), current_user)
+    set_target_tenant(str(purchased["tenant_id"]))
     await purchased_numbers_service.record_assignment(purchased_number_id, phone_number_id)
     return await purchased_numbers_service.get_purchased_number(purchased_number_id)
 
@@ -124,10 +140,13 @@ async def release_number(
     current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
     provider_manager: DidProviderManager = Depends(get_provider_manager),
 ):
+    platform_scoped = is_platform_scoped(current_user)
     purchased = await get_or_404(
-        purchased_numbers_service.get_purchased_number(purchased_number_id),
+        purchased_numbers_service.get_purchased_number(purchased_number_id, platform_scoped=platform_scoped),
         f"purchased_number {purchased_number_id!r} not found",
     )
+    await assert_tenant_access(str(purchased["tenant_id"]), current_user)
+    set_target_tenant(str(purchased["tenant_id"]))
     carrier = await _resolve_carrier(str(purchased["carrier_id"]))
     try:
         provider = await provider_manager.get(carrier)
