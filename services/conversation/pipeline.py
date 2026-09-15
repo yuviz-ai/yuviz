@@ -8,8 +8,9 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from libs.config_sdk import RuntimeConfig, validate_transfer_timeout_ms
 from libs.knowledge_sdk import IKnowledgeProvider, RetrievalPolicy
@@ -23,8 +24,10 @@ from .directives import (
     TransferRequest,
     strip_markdown_chars,
 )
+from .fillers import FillerSelector
 from .guardrails import GuardrailCounter, GuardrailDetector
 from .metrics import IMetrics, NullMetrics
+from .tool_latency import ToolLatencyStore
 from .provider_bundle import ProviderBundle
 from .providers.interfaces import ChatMessage, SttResult
 from .session import HandlerResponse, NodeChanged
@@ -60,9 +63,8 @@ class _SessionState:
     pending_transfer:                "TransferRequest | None" = None
     transfer_requested:              bool = False
     pending_recovery_turns:          list[tuple[str, str, bool]] = field(default_factory=list)
-    tool_call_filler_index:          int = 0
+    tool_call_filler_last_phrase:    str | None = None
     tool_call_filler_last_spoken:    float | None = None
-    first_turn_filler_spoken:        bool = False
     fabrication_triggered_transfer:  bool = False
     confirmed_booking_slot:          str | None = None
     phone_number_confirmed:          bool = False
@@ -87,13 +89,48 @@ _END_CALL_INSTRUCTION = (
 )
 
 
-def _build_current_date_context() -> str:
-    """Fresh UTC date grounding so relative dates ("tomorrow") resolve correctly."""
-    now = datetime.now(timezone.utc)
+_DATE_LOOKUP_DAYS = 8  # today + the next 7 — covers "tomorrow" through "next <weekday>"
+
+
+def _build_current_date_context(calendar_timezone: str = "UTC") -> str:
+    """Nothing tells the LLM what "today" is by default, and models
+    reliably miscompute relative dates ("tomorrow") when asked to do the
+    arithmetic themselves — a cross-model weakness, not one provider's bug.
+    Fixed by computing dates in code and handing the model a lookup table
+    for the near term instead of asking it to add/subtract days.
+
+    "Today" is computed in the booking calendar's own timezone
+    (policy.extra["timezone"], same field _make_cal_com reads), not UTC —
+    near midnight UTC can already be the next calendar day in a business's
+    local timezone, so UTC's "today" can lag the caller's and business's
+    real local day. Falls back to UTC only if the configured zone name
+    doesn't exist. Computed fresh per call (not baked into agent config)
+    so it's always accurate regardless of how long the process has run."""
+    effective_timezone = calendar_timezone
+    try:
+        tz = ZoneInfo(calendar_timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        log.warning("Unknown calendar_timezone=%r — falling back to UTC for date grounding", calendar_timezone)
+        tz = timezone.utc
+        effective_timezone = "UTC"
+    now = datetime.now(tz)
+    lookup = "\n".join(
+        f"  {(now + timedelta(days=offset)).strftime('%Y-%m-%d')} = "
+        f"{'today' if offset == 0 else 'tomorrow' if offset == 1 else (now + timedelta(days=offset)).strftime('%A')}"
+        for offset in range(_DATE_LOOKUP_DAYS)
+    )
     return (
-        f"\n\nToday's date is {now.strftime('%Y-%m-%d')} ({now.strftime('%A')}), UTC. "
-        "Use this to resolve any relative date the caller mentions (e.g. \"tomorrow\", "
-        "\"next Monday\", \"in two weeks\") into an exact date yourself before calling any tool."
+        # Label the timezone actually used, not the (possibly invalid)
+        # configured one — otherwise a misconfigured zone silently computed
+        # the lookup table in UTC while telling the model it was in the
+        # business's real timezone, which is a wrong label on every date
+        # in the table, not just a cosmetic mismatch.
+        f"\n\nToday's date is {now.strftime('%Y-%m-%d')} ({now.strftime('%A')}), {effective_timezone} time — "
+        "the business's own local time, which is what matters for scheduling. "
+        "Do not compute relative dates yourself — use this exact lookup table instead:\n"
+        f"{lookup}\n"
+        "For anything beyond this table (e.g. \"in two weeks\"), compute carefully from "
+        "today's date above rather than guessing."
     )
 
 
@@ -193,6 +230,10 @@ _BOOKING_SUBJECT_RE = re.compile(
     r"\b(appointment|demo|booking|meeting|slot)\b", re.IGNORECASE,
 )
 
+# Either tool call is a legitimate reason to use booked/scheduled/rescheduled
+# wording — see the fabrication-claim gate's own comment.
+_CALENDAR_MUTATION_TOOLS = frozenset({"book_appointment", "reschedule_appointment"})
+
 
 def _claims_booking_without_tool_call(assistant_text: str) -> bool:
     """Heuristic backstop for fabricated booking claims (false-negatives OK)."""
@@ -214,21 +255,24 @@ _MAX_DURATION_GOODBYE = (
 # Cover dead air when LLM/tool stream raises mid-turn (exception already swallowed).
 _FALLBACK_LLM_ERROR = "Sorry, I'm having a little trouble right now. Could you say that again?"
 
-# Rotate during slow tool calls; spaced by _TOOL_CALL_FILLER_MIN_GAP_S.
-_TOOL_CALL_FILLERS = (
-    "Let me check that for you.",
-    "One moment.",
-    "Just a second.",
-    "Give me a moment.",
-)
-
-# One filler per rapid tool-call burst (orchestrator while-loop).
+# Collapses a rapid-fire tool-call burst (no real user speech between
+# calls — see orchestrator.py's run_turn() while-loop) down to one filler
+# instead of several stacked back to back. Phrase wording/sizing itself
+# lives in fillers.py (FillerSelector) — see this handler's own
+# _fillers/_latency_store fields.
 _TOOL_CALL_FILLER_MIN_GAP_S = 4.0
 
-# Mask turn-1 LLM latency before generation starts.
-_FIRST_TURN_FILLER = "Mm-hmm, one moment."
-
-# Escape-hatch transfer wording; graph transfer steps own the natural handoff.
+# [[TRANSFER ...]] is detected the same streaming-safe way [[END_CALL]] is
+# — via StreamBuffer+DirectiveParser, buffered and stripped mid-stream so a
+# directive tag never reaches TTS.
+#
+# The instruction below is auto-appended to the system prompt whenever the
+# agent's policies configure a transfer (see __init__) — operators only
+# set transfer_type/transfer_destination (Escalation tab in the admin
+# UI), never prompt text, so the destination has a single source of
+# truth. servicer.py sends the resulting TransferRequest to the gateway
+# (held until the acknowledgment turn's audio finishes playing), and the
+# gateway executes it over ESL (uuid_transfer).
 _TRANSFER_CONDITION = (
     "If the caller explicitly asks to speak to a human agent or "
     "representative"
@@ -312,6 +356,9 @@ class PipelineConversationHandler:
         has_booking_tool: bool = False,
         use_workflow_draft: bool = False,
         text_only:     bool = False,
+        calendar_timezone: str = "UTC",
+        latency_store: ToolLatencyStore | None = None,
+        filler_selector: FillerSelector | None = None,
     ) -> None:
         self._stt          = provider_bundle.stt
         self._llm          = provider_bundle.llm
@@ -332,7 +379,13 @@ class PipelineConversationHandler:
         # Prompt suffix = date / optional ANI context / fixed directive tokens.
         self._has_booking_tool = has_booking_tool
         self._prompt_suffix = (
-            _build_current_date_context()
+            # calendar_timezone is already sourced from whichever calendar
+            # tool is enabled (book_appointment or reschedule_appointment —
+            # see __main__.py) and defaults to "UTC" when neither is, so no
+            # has_booking_tool gate is needed here. The caller-number block
+            # stays booking-specific — a reschedule-only agent's flow
+            # doesn't need the caller-ID confirmation before booking.
+            _build_current_date_context(calendar_timezone)
             + (_build_caller_number_context(self._caller_number) if has_booking_tool else "")
             + _END_CALL_INSTRUCTION
         )
@@ -382,6 +435,17 @@ class PipelineConversationHandler:
         self._metrics = metrics if metrics is not None else NullMetrics()
         # None → plain llm.generate(); unused tools still cheap (policy cache).
         self._tool_orchestrator = tool_orchestrator
+        # Dynamic call fillers: same opt-in, defaults-to-inert posture as
+        # knowledge/metrics above. `latency_store` calibrates the tool-call
+        # filler's length; empty store (the default) means every tool call
+        # is uncalibrated (fillers.py's _DEFAULT_TARGET_S), identical to
+        # today's behavior.
+        self._latency_store = latency_store if latency_store is not None else ToolLatencyStore()
+        self._fillers = filler_selector if filler_selector is not None else FillerSelector()
+        # Phase 6: the single arbiter of *when* to transfer — see
+        # transfer_engine.py. Stateless; this handler still owns all
+        # per-session state it reads (guardrail count) and produces
+        # (_pending_transfer, _transfer_requested below).
         self._transfer_engine = TransferDecisionEngine(self._metrics)
         self._guardrail_counter = GuardrailCounter()
         # Separate from caller-frustration counter (that resets on polite turns).
@@ -389,7 +453,18 @@ class PipelineConversationHandler:
         self._sessions: dict[str, _SessionState] = {}
         self._last_reported_node_id: str | None = None
         self._draft_fell_back = False
-        now = datetime.now(timezone.utc)
+        # Conversation workflow — graph_for() falls back to starter, never None.
+        # Same timezone _build_current_date_context() uses below, not UTC —
+        # these {{current_date}}/{{current_time}} template variables are
+        # dormant (no starter/default node prompt references them today),
+        # but a future custom node prompt that does reference them must not
+        # silently get the wrong day the same way the lookup table did
+        # before this session's fix.
+        try:
+            _tz = ZoneInfo(calendar_timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            _tz = timezone.utc
+        now = datetime.now(_tz)
         self._extractor = VariableExtractor(self._llm, self._on_variables_extracted)
         # Tie summary threshold to max_history (else summarization never fires).
         self._summarizer = ContextSummarizer(
@@ -460,7 +535,24 @@ class PipelineConversationHandler:
         text = self._workflow.greeting() or ""
         if not text:
             return []
-        return [chunk async for chunk in self._synthesize_sentence_stream(text, session_id)]
+        # Only record the greeting in history once synthesis actually
+        # produced audio — _synthesize_sentence_stream swallows a TTS
+        # failure internally (logs, then the generator just ends with zero
+        # chunks), so appending unconditionally beforehand let the model
+        # believe it had greeted the caller even when the caller heard
+        # nothing at all, and it would answer straight into the caller's
+        # next question with no introduction. Barge-in interrupting
+        # otherwise-successful playback is fine to still record — this is
+        # scripted, not generated, so the intended line is what the LLM
+        # "said," and history needs the LLM's own record, not a transcript
+        # of exactly how much audio reached the caller's ear.
+        # text_only always yields zero chunks by design (never touches
+        # TTS) — that's not a failure signal there, so it's exempted from
+        # the gate and always recorded, matching every other spoken line.
+        chunks = [chunk async for chunk in self._synthesize_sentence_stream(text, session_id)]
+        if chunks or self._text_only:
+            self._get_history(session_id).append(ChatMessage(role="assistant", content=text))
+        return chunks
 
     async def on_audio(self, session_id: str, payload: bytes) -> HandlerResponse:
         # Audio is also accumulated by ConversationSession (still the source
@@ -635,23 +727,21 @@ class PipelineConversationHandler:
 
         # ── 2. LLM ─────────────────────────────────────────────────────────────
         history = self._get_history(session_id)
-        # Prepend per-agent system prompt as the first message if configured.
-        # history[0] is always the active node's composed prompt —
-        # _refresh_node_prompt inserts it when the history is empty and
-        # replaces it every turn after that.
-        is_first_turn = not history
+        # history[0] is the active node's prompt — refreshed every turn so a
+        # mid-call transition lands before the next generation.
         self._refresh_node_prompt(history)
         history.append(ChatMessage(role="user", content=user_text))
 
-        # First-turn filler; skip in text_only (would become a chat bubble).
-        if (
-            is_first_turn
-            and not self._text_only
-            and not self._session(session_id).first_turn_filler_spoken
-        ):
-            self._session(session_id).first_turn_filler_spoken = True
-            async for response in self._speak(_FIRST_TURN_FILLER, session_id):
-                yield response
+        # There's no filler for a plain conversational LLM response, on
+        # turn 1 or any other turn — nothing to mask latency-wise, and it
+        # would just be stilted small talk. A tool-call filler is different
+        # and applies from turn 1 onward: if the caller's very first
+        # utterance is a direct request that needs a tool call (e.g. "book
+        # me tomorrow at 2pm"), the tool call is real backend latency that
+        # needs masking regardless of how little rapport exists yet —
+        # silence right after the caller just spoke reads as a dropped
+        # call, not politeness. See fillers.py's select_tool_filler and
+        # the ToolCallStartedEvent handling below.
 
         # One retrieve per turn; splice into this turn only (not history).
         messages_for_llm = history
@@ -724,10 +814,17 @@ class PipelineConversationHandler:
             _confirmed_slot is not None
             and _claim_matches_confirmed_slot(assistant_text, _confirmed_slot)
         )
+        # The claim regex explicitly matches "rescheduled"/"moved" wording
+        # too (see _BOOKING_CLAIM_RE's comment), so a genuine
+        # reschedule_appointment call must clear this gate the same way a
+        # genuine book_appointment call does — checking only for
+        # book_appointment let a real reschedule (correctly reporting
+        # multiple_bookings_found) get flagged as fabricated.
+        real_calendar_mutation = not _CALENDAR_MUTATION_TOOLS.isdisjoint(tool_calls_made)
         fabricated_booking_claim = (
             self._has_booking_tool
             and not recap_of_real_booking
-            and "book_appointment" not in tool_calls_made
+            and not real_calendar_mutation
             and _claims_booking_without_tool_call(assistant_text)
         )
 
@@ -740,16 +837,16 @@ class PipelineConversationHandler:
             history.append(ChatMessage(role="assistant", content=assistant_text))
             if fabricated_booking_claim:
                 log.warning(
-                    "Possible fabricated booking claim (no book_appointment call this turn) "
-                    "session=%s text=%r", session_id, assistant_text,
+                    "Possible fabricated booking claim (no book_appointment/reschedule_appointment "
+                    "call this turn) session=%s text=%r", session_id, assistant_text,
                 )
                 history.append(ChatMessage(
                     role="system",
                     content=(
-                        "Correction: nothing was actually booked, confirmed, or scheduled just "
-                        "now — you did not call book_appointment. If the caller still wants an "
-                        "appointment, call book_appointment for real before saying anything is "
-                        "booked or confirmed."
+                        "Correction: nothing was actually booked, rescheduled, or confirmed just "
+                        "now — you did not call book_appointment or reschedule_appointment. If the "
+                        "caller still wants that, call the correct tool for real before saying "
+                        "anything is booked, moved, or confirmed."
                     ),
                 ))
                 self.record_booking_fabrication(session_id)
@@ -1239,22 +1336,35 @@ class PipelineConversationHandler:
                                 first = False
                     continue
                 if isinstance(item, ToolCallStartedEvent):
-                    # Rotates through _TOOL_CALL_FILLERS, gap-suppressed by
-                    # _TOOL_CALL_FILLER_MIN_GAP_S — see both constants' own
-                    # comments for why neither alone was enough.
+                    # Sized against this (tenant, agent, tool)'s calibrated
+                    # average — see fillers.py's select_tool_filler and
+                    # tool_latency.py — gap-suppressed by
+                    # _TOOL_CALL_FILLER_MIN_GAP_S so a burst of tool calls
+                    # in one turn speaks only once.
                     now = time.monotonic()
                     state = self._session(session_id)
                     last_spoken = state.tool_call_filler_last_spoken
                     if last_spoken is None or (now - last_spoken) >= _TOOL_CALL_FILLER_MIN_GAP_S:
                         state.tool_call_filler_last_spoken = now
-                        idx = state.tool_call_filler_index
-                        state.tool_call_filler_index = idx + 1
-                        phrase = _TOOL_CALL_FILLERS[idx % len(_TOOL_CALL_FILLERS)]
                         # text_only: fillers would pollute assistant history.
                         if self._text_only:
                             continue
+                        average_ms = self._latency_store.average_ms(
+                            self._tenant_id, self._agent_id or "", item.tool_name,
+                        )
+                        phrase = self._fillers.select_tool_filler(
+                            item.tool_name, state.tool_call_filler_last_phrase, average_ms,
+                        )
+                        state.tool_call_filler_last_phrase = phrase
                         any_filler_chunk = False
                         async for chunk in self._synthesize_sentence_stream(phrase, session_id):
+                            if cancel_event.is_set():
+                                # A barge-in during the filler itself must
+                                # interrupt it, same as any other spoken
+                                # text — without this check, the longest
+                                # filler phrase (~2.4s) was a window where
+                                # the caller's interruption went unheard.
+                                break
                             if not any_filler_chunk:
                                 any_filler_chunk = True
                                 log.info(

@@ -200,7 +200,6 @@ async def test_a_blank_turn_leaves_the_session_usable():
 
 async def test_text_only_tool_fillers_do_not_enter_assistant_history():
     """Voice fillers yield ("", tts); text must not put the phrase in full_response."""
-    from services.conversation.pipeline import _TOOL_CALL_FILLERS
     from services.conversation.tools.llm_adapter import TokenEvent, ToolCallStartedEvent
     from .test_pipeline import _FakeToolOrchestrator
 
@@ -216,7 +215,6 @@ async def test_text_only_tool_fillers_do_not_enter_assistant_history():
     history = handler._session("s1").history
     assistant = [m.content for m in history if m.role == "assistant"]
     assert assistant == ["You're booked."]
-    assert not any(f in "".join(assistant) for f in _TOOL_CALL_FILLERS)
 
 
 async def test_use_workflow_draft_runs_the_draft_graph_not_published():

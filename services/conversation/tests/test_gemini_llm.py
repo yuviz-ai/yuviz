@@ -147,6 +147,42 @@ async def test_generate_with_tools_sends_function_declarations():
     assert seen_payload["tools"] == [{"functionDeclarations": schemas}]
 
 
+async def test_generate_with_tools_normalizes_nullable_types_for_gemini():
+    """registry.py's tool schemas use JSON Schema's own union form
+    ({"type": ["string", "null"]}) for optional fields — every other
+    provider accepts that as-is, but Gemini rejects a type array outright
+    and wants a single type plus nullable=true instead."""
+    seen_payload = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_payload.update(json.loads(request.content))
+        return httpx.Response(200, content=_sse_body("ok"))
+
+    llm = _make_llm(handler)
+    schemas = [{
+        "name": "book_appointment",
+        "description": "Book it",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "attendee_name": {"type": ["string", "null"], "description": "name"},
+                "requested_datetime": {"type": "string", "description": "when"},
+                "notes": {"type": ["string", "null"]},
+            },
+            "required": ["requested_datetime"],
+        },
+    }]
+    _ = [e async for e in llm.generate_with_tools([ChatMessage(role="user", content="hi")], schemas)]
+
+    sent_params = seen_payload["tools"][0]["functionDeclarations"][0]["parameters"]
+    assert sent_params["properties"]["attendee_name"] == {"type": "string", "nullable": True, "description": "name"}
+    assert sent_params["properties"]["notes"] == {"type": "string", "nullable": True}
+    # Non-nullable field untouched.
+    assert sent_params["properties"]["requested_datetime"] == {"type": "string", "description": "when"}
+    # The caller's own schemas list is never mutated in place.
+    assert schemas[0]["parameters"]["properties"]["attendee_name"]["type"] == ["string", "null"]
+
+
 async def test_generate_with_tools_yields_tool_call_event():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=_sse_tool_call_body("book_appointment", {"start_time": "2026-07-23T15:00:00"}))

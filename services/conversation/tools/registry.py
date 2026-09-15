@@ -44,6 +44,33 @@ _BOOK_APPOINTMENT = ToolDefinition(
         "then wait for a clear yes (or a corrected number, read back the "
         "same way) before calling this tool again. Do not call this tool "
         "again until you have that clear confirmation. "
+        "If missing_fields includes requested_datetime with "
+        "reason=date_not_confirmed, the day-of-month you used does not match "
+        "any number the caller actually said — you likely miscalculated it. "
+        "Ask the caller to state the date again, then call this tool again "
+        "with a day-of-month that matches what they say. "
+        "If missing_fields includes requested_datetime with "
+        "reason=date_in_past, the date you used has already passed — ask the "
+        "caller which upcoming date they mean and call this tool again with "
+        "a future date. "
+        "If missing_fields includes requested_datetime with "
+        "reason=date_too_far_out, you likely miscalculated the year — ask the "
+        "caller to confirm the date again and call this tool again with a "
+        "date within the next year. "
+        "If missing_fields includes requested_datetime with "
+        "reason=time_not_confirmed, the caller has not actually told you a "
+        "time of day yet — even if they gave a date (e.g. \"tomorrow\"), a "
+        "date alone is not enough. Ask specifically what time works for "
+        "them, get a real answer (a clock time, or morning/afternoon/"
+        "evening), and only then call this tool again. Never invent a time "
+        "the caller didn't say. "
+        "If missing_fields includes requested_datetime with "
+        "reason=invalid_date_format, the value you sent was not a real "
+        "date — e.g. leaving a placeholder like \"YYYY\" instead of an "
+        "actual year, or otherwise malformed ISO 8601. Never write a "
+        "placeholder token in place of a real number. Recompute the actual "
+        "date and time from what the caller said and call this tool again "
+        "with a fully resolved, real value. "
         "If booked=false with an available_slots list, the requested time "
         "was not available — that is not a booking. Offer one or two of "
         "those slots, and once the caller picks a new time, call this tool "
@@ -51,11 +78,20 @@ _BOOK_APPOINTMENT = ToolDefinition(
         "RECENT call to this tool returned booked=true — repeating an "
         "earlier booked=true after a later attempt failed is the same "
         "error as never calling the tool. "
-        "If you offered the caller more than one time option, a bare "
-        "'yes'/'sure' does not say which one they mean — restate the ONE "
-        "specific time you're about to book and wait for a reply that "
-        "clearly confirms that time before calling. Skip this only when "
-        "the caller already named one single, unambiguous time themselves. "
+        "Before every call to this tool, restate the full resolved date back "
+        "to the caller using the day name and calendar date together (e.g. "
+        "\"just to confirm, that's Thursday, September 11th at 2 PM\") using "
+        "the lookup table above, and wait for a clear yes before calling — "
+        "the same way you confirm a phone number digit by digit. This "
+        "catches your own date mistakes before they reach the calendar: "
+        "confirmed live, this model has silently miscalculated a caller's "
+        "stated date before (heard \"11th\", called this tool with the "
+        "13th) — restating the date back is what would have caught that. "
+        "Skip this only when the caller, in their very last turn, already "
+        "repeated back the exact same day name and calendar date you're "
+        "about to use. If you offered the caller more than one time option, "
+        "a bare 'yes'/'sure' does not say which one they mean either — the "
+        "same restate-and-wait rule applies. "
         "You must actually invoke this function to book anything — never "
         "say an appointment is booked, confirmed, or scheduled unless this "
         "function was called and returned that result; describing a "
@@ -65,11 +101,11 @@ _BOOK_APPOINTMENT = ToolDefinition(
         "type": "object",
         "properties": {
             "attendee_name": {
-                "type": "string",
+                "type": ["string", "null"],
                 "description": "The caller's name, if given.",
             },
             "attendee_phone": {
-                "type": "string",
+                "type": ["string", "null"],
                 "description": (
                     "The caller's phone number — only needed if the tool tells you it's required "
                     "and you don't already have one on file for this call, or if a previous attempt "
@@ -87,7 +123,7 @@ _BOOK_APPOINTMENT = ToolDefinition(
                 ),
             },
             "notes": {
-                "type": "string",
+                "type": ["string", "null"],
                 "description": "Any relevant detail the caller mentioned about the appointment.",
             },
         },
@@ -124,7 +160,7 @@ _CANCEL_APPOINTMENT = ToolDefinition(
                 "description": "The phone number the caller booked with — required to find their appointment.",
             },
             "requested_datetime_hint": {
-                "type": "string",
+                "type": ["string", "null"],
                 "description": (
                     "The date/time the caller believes their appointment is for, if they mention one — "
                     "helps disambiguate when they have more than one upcoming appointment. Optional."
@@ -147,8 +183,39 @@ _RESCHEDULE_APPOINTMENT = ToolDefinition(
     name="reschedule_appointment",
     description=(
         "Move the caller's existing appointment to a new date/time. Always ask for the phone number "
-        "they booked with, even if you already know the number they're calling from now, and confirm "
-        "the new date/time before calling this."
+        "they booked with, even if you already know the number they're calling from now. "
+        "Before every call to this tool, restate the full resolved new date back to the caller using "
+        "the day name and calendar date together (e.g. \"just to confirm, that's Thursday, September "
+        "11th at 2 PM\") using the current-date lookup table, and wait for a clear yes before calling "
+        "— the same way you confirm a phone number digit by digit. This catches your own date "
+        "mistakes before they reach the calendar. Skip this only when the caller, in their very last "
+        "turn, already repeated back the exact same day name and calendar date you're about to use. "
+        "If missing_fields includes new_requested_datetime with reason=date_not_confirmed, the "
+        "day-of-month you used does not match any number the caller actually said — ask them to state "
+        "the date again and call this tool again with a day-of-month that matches. If "
+        "missing_fields includes new_requested_datetime with reason=date_in_past, the date you used "
+        "has already passed — ask which upcoming date they mean and call this again with a future date. "
+        "If missing_fields includes new_requested_datetime with reason=date_too_far_out, you likely "
+        "miscalculated the year — ask the caller to confirm the date again and call this again with a "
+        "date within the next year. "
+        "If missing_fields includes new_requested_datetime with reason=time_not_confirmed, the caller "
+        "has not actually told you a new time of day yet — even if they gave a date, a date alone is "
+        "not enough. Ask specifically what time works for them and only then call this again. Never "
+        "invent a time the caller didn't say. "
+        "If missing_fields includes new_requested_datetime with reason=invalid_date_format, the value "
+        "you sent was not a real date — e.g. leaving a placeholder like \"YYYY\" instead of an actual "
+        "year. Never write a placeholder token in place of a real number — recompute the actual date "
+        "and time from what the caller said and call this again with a fully resolved, real value. "
+        "If rescheduled=false with reason=requested_time_unavailable and an available_slots list, the "
+        "new time was not free — offer one or two of those slots and call this again once the caller "
+        "picks one. If reason=no_upcoming_booking, tell the caller you couldn't find an appointment "
+        "under that number and ask them to double-check it. If reason=multiple_bookings_found, read "
+        "back the upcoming_bookings dates and ask which one they mean, then call this again with a "
+        "requested_datetime_hint. "
+        "You must actually invoke this function to move anything — never say an appointment has been "
+        "moved, rescheduled, or confirmed for a new time unless the MOST RECENT call to this function "
+        "returned rescheduled=true; describing a reschedule in words instead, or repeating an earlier "
+        "rescheduled=true after a later attempt failed, is a serious error."
     ),
     parameters_schema={
         "type": "object",
@@ -166,7 +233,7 @@ _RESCHEDULE_APPOINTMENT = ToolDefinition(
                 ),
             },
             "requested_datetime_hint": {
-                "type": "string",
+                "type": ["string", "null"],
                 "description": (
                     "The date/time the caller believes their CURRENT appointment is for, if they mention "
                     "one — helps disambiguate when they have more than one upcoming appointment. Optional."

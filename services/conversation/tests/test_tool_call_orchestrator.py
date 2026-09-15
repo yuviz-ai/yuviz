@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -23,6 +24,31 @@ from services.conversation.tools.orchestrator import ToolCallOrchestrator
 from services.conversation.tools.policy_resolver import ResolvedToolPolicy
 from services.conversation.tools.registry import ToolRegistry
 from services.conversation.tools.types import ToolDefinition, ToolResult, ToolStatus
+
+
+def _future_iso(days: int = 45, hour: int = 10, minute: int = 0, z: bool = False) -> str:
+    """A date safely inside date_sanity.py's accepted window (not in the
+    past, not too far out) regardless of what day this suite actually runs
+    on — unlike a hardcoded far-future year (e.g. 2099), which stopped
+    being universally valid once is_too_far_out() was added to reject a
+    wrong year in the future, not just the past."""
+    dt = datetime.now(timezone.utc) + timedelta(days=days)
+    s = dt.strftime(f"%Y-%m-%dT{hour:02d}:{minute:02d}:00")
+    return s + "Z" if z else s
+
+
+def _future_iso_on_day(day: int, hour: int = 10, minute: int = 0) -> str:
+    """Same accepted-window guarantee as _future_iso, but lands on a
+    specific day-of-month — for tests exercising stated_day_mismatch,
+    where the caller utterance names a specific day that must (or must
+    not) match the tool call's date. Every month has a given day<=28, so
+    this always finds one well within date_sanity.py's forward window."""
+    dt = datetime.now(timezone.utc) + timedelta(days=1)
+    for _ in range(60):
+        if dt.day == day:
+            return dt.strftime(f"%Y-%m-%dT{hour:02d}:{minute:02d}:00")
+        dt += timedelta(days=1)
+    raise ValueError(f"no date with day={day} found within 60 days")  # pragma: no cover
 
 
 def _policy(tool_name: str = "book_appointment") -> ResolvedToolPolicy:
@@ -123,7 +149,10 @@ async def test_companion_tool_provider_is_resolved_and_passed_to_executor():
     it into the executor factory's second argument, generically, with no
     tool name hardcoded in the orchestrator itself."""
     llm = _ScriptedLLM([
-        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment", arguments={"requested_datetime": "x"})],
+        [ToolCallEvent(
+            tool_call_id="c1", tool_name="book_appointment",
+            arguments={"requested_datetime": _future_iso_on_day(15, hour=15)},
+        )],
         [TokenEvent(text="You're booked!")],
     ])
     sms_policy = ResolvedToolPolicy(
@@ -152,7 +181,7 @@ async def test_companion_tool_provider_is_resolved_and_passed_to_executor():
     )
 
     _ = [e async for e in orchestrator.run_turn(
-        "agent1", "t1", "c1", "s1", [ChatMessage(role="user", content="book me tomorrow at 3")],
+        "agent1", "t1", "c1", "s1", [ChatMessage(role="user", content="book me on the 15th at 3pm")],
     )]
 
     assert seen_companions == ["provider:cfg2"]
@@ -175,7 +204,10 @@ async def test_plain_text_turn_with_no_tools_enabled_never_touches_executor():
 
 async def test_tool_call_executes_folds_result_and_continues_to_final_answer():
     llm = _ScriptedLLM([
-        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment", arguments={"requested_datetime": "x"})],
+        [ToolCallEvent(
+            tool_call_id="c1", tool_name="book_appointment",
+            arguments={"requested_datetime": _future_iso_on_day(15, hour=15)},
+        )],
         [TokenEvent(text="You're booked!")],
     ])
     executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True, "booking_id": "b1"}))
@@ -189,7 +221,7 @@ async def test_tool_call_executes_folds_result_and_continues_to_final_answer():
         executor_registry=registry,
     )
 
-    history = [ChatMessage(role="user", content="book me tomorrow at 3")]
+    history = [ChatMessage(role="user", content="book me on the 15th at 3pm")]
     events = [e async for e in orchestrator.run_turn("agent1", "t1", "c1", "s1", history)]
 
     assert events == [
@@ -198,7 +230,7 @@ async def test_tool_call_executes_folds_result_and_continues_to_final_answer():
     ]
     assert llm.call_count == 2
     assert len(executor.calls) == 1
-    assert executor.calls[0].arguments == {"requested_datetime": "x"}
+    assert executor.calls[0].arguments == {"requested_datetime": _future_iso_on_day(15, hour=15)}
 
     # History was mutated in place with the tool call + result.
     assert history[1].role == "assistant" and history[1].tool_calls[0]["name"] == "book_appointment"
@@ -214,7 +246,10 @@ async def test_phone_number_confirmed_reaches_tool_execution_context():
     reach ToolExecutionContext — CalendarExecutor's deterministic
     confirmation gate reads it from there, not from history itself."""
     llm = _ScriptedLLM([
-        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment", arguments={"requested_datetime": "x"})],
+        [ToolCallEvent(
+            tool_call_id="c1", tool_name="book_appointment",
+            arguments={"requested_datetime": _future_iso_on_day(15, hour=15)},
+        )],
         [TokenEvent(text="You're booked!")],
     ])
     executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True, "booking_id": "b1"}))
@@ -228,7 +263,7 @@ async def test_phone_number_confirmed_reaches_tool_execution_context():
         executor_registry=registry,
     )
 
-    history = [ChatMessage(role="user", content="book me tomorrow at 3")]
+    history = [ChatMessage(role="user", content="book me on the 15th at 3pm")]
     [e async for e in orchestrator.run_turn(
         "agent1", "t1", "c1", "s1", history, phone_number_confirmed=True,
     )]
@@ -244,7 +279,7 @@ async def test_force_tool_name_forces_tool_choice_on_first_call_only():
     NOT be re-forced on a second iteration within the same turn (e.g. a
     forced call that itself needed a follow-up plain-text wrap-up)."""
     llm = _ScriptedLLM([
-        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment", arguments={"requested_datetime": "x"})],
+        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment", arguments={"requested_datetime": _future_iso()})],
         [TokenEvent(text="booked")],
     ])
     executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True}))
@@ -288,7 +323,10 @@ async def test_deterministic_response_short_circuits_llm_narration():
     that letting the LLM narrate a tool result at all is exactly how a
     real success gets fabricated into a false one on a later turn."""
     llm = _ScriptedLLM([
-        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment", arguments={"requested_datetime": "x"})],
+        [ToolCallEvent(
+            tool_call_id="c1", tool_name="book_appointment",
+            arguments={"requested_datetime": _future_iso_on_day(15, hour=15)},
+        )],
         [TokenEvent(text="should never be requested")],
     ])
     executor = _FixedExecutor(ToolResult(
@@ -306,7 +344,7 @@ async def test_deterministic_response_short_circuits_llm_narration():
     )
 
     events = [e async for e in orchestrator.run_turn(
-        "agent1", "t1", "c1", "s1", [ChatMessage(role="user", content="book me tomorrow at 3")],
+        "agent1", "t1", "c1", "s1", [ChatMessage(role="user", content="book me on the 15th at 3pm")],
     )]
 
     assert events == [
@@ -321,8 +359,8 @@ async def test_max_tool_iterations_forces_final_generation_without_tools():
     # after max_tool_iterations, the orchestrator must stop offering tools
     # so the final call is forced to answer in plain text.
     llm = _ScriptedLLM([
-        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment", arguments={"requested_datetime": "x"})],
-        [ToolCallEvent(tool_call_id="c2", tool_name="book_appointment", arguments={"requested_datetime": "y"})],
+        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment", arguments={"requested_datetime": _future_iso()})],
+        [ToolCallEvent(tool_call_id="c2", tool_name="book_appointment", arguments={"requested_datetime": _future_iso()})],
         [TokenEvent(text="Sorry, having trouble booking that.")],
     ])
     executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": False, "available_slots": []}))
@@ -337,7 +375,7 @@ async def test_max_tool_iterations_forces_final_generation_without_tools():
         max_tool_iterations=2,
     )
 
-    events = [e async for e in orchestrator.run_turn("agent1", "t1", "c1", "s1", [ChatMessage(role="user", content="book")])]
+    events = [e async for e in orchestrator.run_turn("agent1", "t1", "c1", "s1", [ChatMessage(role="user", content="book me tomorrow at 3pm")])]
 
     assert events == [
         ToolCallStartedEvent(tool_name="book_appointment"),
@@ -396,7 +434,10 @@ async def test_cancel_event_stops_waiting_on_an_in_flight_tool_call():
     should stop waiting on it the moment cancel_event is set, not before,
     not after."""
     llm = _ScriptedLLM([
-        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment", arguments={"requested_datetime": "x"})],
+        [ToolCallEvent(
+            tool_call_id="c1", tool_name="book_appointment",
+            arguments={"requested_datetime": _future_iso_on_day(15, hour=15)},
+        )],
     ])
     executor = _SlowExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True}))
     registry = ExecutorRegistry()
@@ -410,7 +451,7 @@ async def test_cancel_event_stops_waiting_on_an_in_flight_tool_call():
     )
 
     cancel_event = asyncio.Event()
-    history = [ChatMessage(role="user", content="book me tomorrow at 3")]
+    history = [ChatMessage(role="user", content="book me on the 15th at 3pm")]
 
     async def _collect():
         return [e async for e in orchestrator.run_turn(
@@ -437,7 +478,10 @@ async def test_cancel_event_stops_waiting_on_an_in_flight_tool_call():
 
 async def test_cancel_event_set_before_the_tool_call_even_starts_still_stops_the_turn():
     llm = _ScriptedLLM([
-        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment", arguments={"requested_datetime": "x"})],
+        [ToolCallEvent(
+            tool_call_id="c1", tool_name="book_appointment",
+            arguments={"requested_datetime": _future_iso_on_day(15, hour=15)},
+        )],
     ])
     executor = _SlowExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True}))
     registry = ExecutorRegistry()
@@ -452,7 +496,7 @@ async def test_cancel_event_set_before_the_tool_call_even_starts_still_stops_the
 
     cancel_event = asyncio.Event()
     cancel_event.set()  # already cancelled before run_turn is even called
-    history = [ChatMessage(role="user", content="book me tomorrow at 3")]
+    history = [ChatMessage(role="user", content="book me on the 15th at 3pm")]
 
     events = [e async for e in orchestrator.run_turn(
         "agent1", "t1", "c1", "s1", history, cancel_event=cancel_event,
@@ -470,7 +514,7 @@ async def test_no_cancel_event_behaves_exactly_as_before():
     behave exactly like the pre-existing await-to-completion path, not
     silently change behavior for every caller that hasn't been updated."""
     llm = _ScriptedLLM([
-        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment", arguments={"requested_datetime": "x"})],
+        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment", arguments={"requested_datetime": _future_iso()})],
         [TokenEvent(text="You're booked!")],
     ])
     executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True, "booking_id": "b1"}))
@@ -484,7 +528,7 @@ async def test_no_cancel_event_behaves_exactly_as_before():
         executor_registry=registry,
     )
 
-    history = [ChatMessage(role="user", content="book me tomorrow at 3")]
+    history = [ChatMessage(role="user", content="book me tomorrow at 3pm")]
     events = [e async for e in orchestrator.run_turn("agent1", "t1", "c1", "s1", history)]
 
     assert events == [
@@ -543,7 +587,7 @@ async def test_a_local_tool_does_not_consume_a_tool_iteration():
     llm = _ScriptedLLM([
         [ToolCallEvent(tool_call_id="c1", tool_name="caller_verified", arguments={})],
         [ToolCallEvent(tool_call_id="c2", tool_name="book_appointment",
-                       arguments={"requested_datetime": "2026-01-01T10:00:00Z"})],
+                       arguments={"requested_datetime": _future_iso(hour=10, z=True)})],
         [TokenEvent(text="Booked.")],
     ])
     local_tools, _ = _local()
@@ -561,7 +605,7 @@ async def test_a_local_tool_does_not_consume_a_tool_iteration():
     events = [
         e async for e in orchestrator.run_turn(
             "agent1", "t1", "c1", "s1",
-            [ChatMessage(role="user", content="book me in")], local_tools=local_tools,
+            [ChatMessage(role="user", content="book me in at 10am")], local_tools=local_tools,
         )
     ]
 
@@ -630,7 +674,7 @@ async def test_past_local_cap_does_not_burn_a_remote_iteration():
         [[ToolCallEvent(tool_call_id=f"c{i}", tool_name="caller_verified", arguments={})]
          for i in range(4)]
         + [[ToolCallEvent(tool_call_id="book", tool_name="book_appointment",
-                          arguments={"requested_datetime": "2026-01-01T10:00:00Z"})],
+                          arguments={"requested_datetime": _future_iso(hour=10, z=True)})],
            [TokenEvent(text="Booked.")]]
     )
     executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True}))
@@ -644,7 +688,7 @@ async def test_past_local_cap_does_not_burn_a_remote_iteration():
         max_local_tool_calls=3,
         max_tool_iterations=1,
     )
-    history = [ChatMessage(role="user", content="hi")]
+    history = [ChatMessage(role="user", content="hi, book me at 10am")]
 
     events = [
         e async for e in orchestrator.run_turn(
@@ -852,9 +896,9 @@ async def test_past_remote_cap_hallucinated_remote_does_not_execute():
     local_tools, _ = _local()
     llm = _ScriptedLLM([
         [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment",
-                       arguments={"requested_datetime": "2026-01-01T10:00:00Z"})],
+                       arguments={"requested_datetime": _future_iso(hour=10, z=True)})],
         [ToolCallEvent(tool_call_id="c2", tool_name="book_appointment",
-                       arguments={"requested_datetime": "2026-01-01T11:00:00Z"})],
+                       arguments={"requested_datetime": _future_iso(hour=11, z=True)})],
         [TokenEvent(text="ok")],
     ])
     executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True}))
@@ -867,7 +911,7 @@ async def test_past_remote_cap_hallucinated_remote_does_not_execute():
         executor_registry=registry,
         max_tool_iterations=1,
     )
-    history = [ChatMessage(role="user", content="book me")]
+    history = [ChatMessage(role="user", content="book me at 10am")]
 
     [e async for e in orchestrator.run_turn(
         "agent1", "t1", "c1", "s1", history, local_tools=local_tools,
@@ -910,3 +954,326 @@ async def test_local_tool_lookup_uses_definition_name_not_dict_key():
     assert calls == [{}]
     assert LocalToolCompletedEvent(tool_name="caller_verified") in events
     assert TokenEvent(text="Thanks!") in events
+
+
+# ---------------------------------------------------------------------------
+# Date sanity checks (date_sanity.py) — confirmed live 2026-09-09: a
+# prompt-only "restate and confirm" instruction did not reliably stop the
+# LLM from calling book_appointment/reschedule_appointment with a date that
+# doesn't match what the caller actually said, or with a date already in
+# the past. These checks run in _execute_tool_call before the executor, so
+# a bad date never reaches a real calendar API call.
+# ---------------------------------------------------------------------------
+
+async def test_stated_day_mismatch_rejects_before_executor_runs():
+    """Caller said "the 20th"; the LLM used day 15 — rejected, executor
+    never touched, LLM gets an INVALID_ARGUMENT/date_not_confirmed payload
+    to react to (see registry.py's book_appointment description)."""
+    llm = _ScriptedLLM([
+        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment",
+                       arguments={"requested_datetime": _future_iso_on_day(15, hour=10)})],
+        [TokenEvent(text="ok")],
+    ])
+    executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True}))
+    registry = ExecutorRegistry()
+    registry.register("book_appointment", lambda provider, companion=None: executor)
+    orchestrator = ToolCallOrchestrator(
+        llm_adapter=LLMAdapter(llm),
+        policy_resolver=_FakePolicyResolver([_policy()]),
+        provider_manager=_FakeProviderManager(),
+        executor_registry=registry,
+    )
+    history = [ChatMessage(role="user", content="Book it for the 20th please")]
+
+    [e async for e in orchestrator.run_turn("agent1", "t1", "c1", "s1", history)]
+
+    assert executor.calls == []
+    tool_messages = [m for m in history if m.role == "tool"]
+    payload = json.loads(tool_messages[0].content)
+    assert payload["reason"] == "date_not_confirmed"
+
+
+async def test_stated_day_match_lets_executor_run():
+    """Caller said "the 15th"; the LLM used day 15 — passes straight through."""
+    llm = _ScriptedLLM([
+        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment",
+                       arguments={"requested_datetime": _future_iso_on_day(15, hour=10)})],
+        [TokenEvent(text="ok")],
+    ])
+    executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True}))
+    registry = ExecutorRegistry()
+    registry.register("book_appointment", lambda provider, companion=None: executor)
+    orchestrator = ToolCallOrchestrator(
+        llm_adapter=LLMAdapter(llm),
+        policy_resolver=_FakePolicyResolver([_policy()]),
+        provider_manager=_FakeProviderManager(),
+        executor_registry=registry,
+    )
+    history = [ChatMessage(role="user", content="Book it for the 15th of March at 10am please")]
+
+    [e async for e in orchestrator.run_turn("agent1", "t1", "c1", "s1", history)]
+
+    assert len(executor.calls) == 1
+
+
+async def test_relative_phrase_with_no_digit_skips_the_day_check():
+    """"Tomorrow" has no digit to cross-check — that's the current-date
+    lookup table's job (pipeline.py), not this check's. Must not block."""
+    llm = _ScriptedLLM([
+        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment",
+                       arguments={"requested_datetime": _future_iso(hour=10)})],
+        [TokenEvent(text="ok")],
+    ])
+    executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True}))
+    registry = ExecutorRegistry()
+    registry.register("book_appointment", lambda provider, companion=None: executor)
+    orchestrator = ToolCallOrchestrator(
+        llm_adapter=LLMAdapter(llm),
+        policy_resolver=_FakePolicyResolver([_policy()]),
+        provider_manager=_FakeProviderManager(),
+        executor_registry=registry,
+    )
+    history = [ChatMessage(role="user", content="Tomorrow at 10am would be great, thanks")]
+
+    [e async for e in orchestrator.run_turn("agent1", "t1", "c1", "s1", history)]
+
+    assert len(executor.calls) == 1
+
+
+async def test_past_date_rejected_even_when_the_day_matches_the_transcript():
+    """The past-date check runs independently of the transcript-digit
+    check — a date that's already gone is rejected even if its day-of-month
+    happens to match what the caller said."""
+    llm = _ScriptedLLM([
+        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment",
+                       arguments={"requested_datetime": "2020-01-01T10:00:00"})],
+        [TokenEvent(text="ok")],
+    ])
+    executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True}))
+    registry = ExecutorRegistry()
+    registry.register("book_appointment", lambda provider, companion=None: executor)
+    orchestrator = ToolCallOrchestrator(
+        llm_adapter=LLMAdapter(llm),
+        policy_resolver=_FakePolicyResolver([_policy()]),
+        provider_manager=_FakeProviderManager(),
+        executor_registry=registry,
+    )
+    history = [ChatMessage(role="user", content="the 1st of January please")]
+
+    [e async for e in orchestrator.run_turn("agent1", "t1", "c1", "s1", history)]
+
+    assert executor.calls == []
+    tool_messages = [m for m in history if m.role == "tool"]
+    payload = json.loads(tool_messages[0].content)
+    assert payload["reason"] == "date_in_past"
+
+
+async def test_wrong_year_close_to_now_is_corrected_not_rejected():
+    """Confirmed live, repeatedly (2026-09): a small local model reliably
+    gets the day-of-month and time right when the caller states them but
+    reliably guesses the wrong YEAR by a couple of years (e.g. 2023/2024
+    instead of the real 2026) — this must be silently corrected and
+    booked, not bounced back for another round of "that date's already
+    passed" the caller has already answered correctly once."""
+    near_past_year = datetime.now().year - 2
+    llm = _ScriptedLLM([
+        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment",
+                       arguments={"requested_datetime": f"{near_past_year}-12-31T10:00:00"})],
+        [TokenEvent(text="ok")],
+    ])
+    executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True}))
+    registry = ExecutorRegistry()
+    registry.register("book_appointment", lambda provider, companion=None: executor)
+    orchestrator = ToolCallOrchestrator(
+        llm_adapter=LLMAdapter(llm),
+        policy_resolver=_FakePolicyResolver([_policy()]),
+        provider_manager=_FakeProviderManager(),
+        executor_registry=registry,
+    )
+    history = [ChatMessage(role="user", content="the 31st of December at 10am please")]
+
+    [e async for e in orchestrator.run_turn("agent1", "t1", "c1", "s1", history)]
+
+    assert len(executor.calls) == 1
+    corrected = executor.calls[0].arguments["requested_datetime"]
+    assert corrected.startswith(str(datetime.now().year))
+
+
+async def test_wrong_year_far_from_now_still_rejected():
+    """A guessed year far enough off that it's not the specific
+    "can't compute the current year" failure mode (see date_sanity.py's
+    _MAX_YEAR_CORRECTION_GAP) is a genuinely bogus date and must still be
+    rejected outright, not silently rewritten to some future occurrence."""
+    far_past_year = datetime.now().year - 10
+    llm = _ScriptedLLM([
+        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment",
+                       arguments={"requested_datetime": f"{far_past_year}-12-31T10:00:00"})],
+        [TokenEvent(text="ok")],
+    ])
+    executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True}))
+    registry = ExecutorRegistry()
+    registry.register("book_appointment", lambda provider, companion=None: executor)
+    orchestrator = ToolCallOrchestrator(
+        llm_adapter=LLMAdapter(llm),
+        policy_resolver=_FakePolicyResolver([_policy()]),
+        provider_manager=_FakeProviderManager(),
+        executor_registry=registry,
+    )
+    history = [ChatMessage(role="user", content="the 31st of December at 10am please")]
+
+    [e async for e in orchestrator.run_turn("agent1", "t1", "c1", "s1", history)]
+
+    assert executor.calls == []
+    tool_messages = [m for m in history if m.role == "tool"]
+    payload = json.loads(tool_messages[0].content)
+    assert payload["reason"] == "date_in_past"
+
+
+async def test_reschedule_appointment_date_check_uses_its_own_argument_name():
+    """reschedule_appointment's date lives in new_requested_datetime, not
+    requested_datetime — date_sanity.py must key off the right field."""
+    llm = _ScriptedLLM([
+        [ToolCallEvent(tool_call_id="c1", tool_name="reschedule_appointment",
+                       arguments={"attendee_phone": "+15551234567",
+                                  "new_requested_datetime": _future_iso_on_day(15, hour=10)})],
+        [TokenEvent(text="ok")],
+    ])
+    executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"rescheduled": True}))
+    registry = ExecutorRegistry()
+    registry.register("reschedule_appointment", lambda provider, companion=None: executor)
+    orchestrator = ToolCallOrchestrator(
+        llm_adapter=LLMAdapter(llm),
+        policy_resolver=_FakePolicyResolver([_policy("reschedule_appointment")]),
+        provider_manager=_FakeProviderManager(),
+        executor_registry=registry,
+    )
+    history = [ChatMessage(role="user", content="move it to the 20th instead")]
+
+    [e async for e in orchestrator.run_turn("agent1", "t1", "c1", "s1", history)]
+
+    assert executor.calls == []
+    tool_messages = [m for m in history if m.role == "tool"]
+    payload = json.loads(tool_messages[0].content)
+    assert payload["reason"] == "date_not_confirmed"
+
+
+async def test_calendar_timezone_is_used_for_the_past_date_check():
+    """A date that's "tomorrow" in UTC but already "today" (not past) in a
+    timezone ahead of UTC must not be rejected — calendar_timezone must
+    actually be threaded through, not silently defaulted to UTC."""
+    from datetime import datetime, timedelta, timezone as dt_timezone
+
+    # A date that's still "today or later" almost everywhere — comfortably
+    # future regardless of timezone, so this only exercises the wiring
+    # (calendar_timezone reaches is_in_the_past), not edge-of-day timing.
+    future = (datetime.now(dt_timezone.utc) + timedelta(days=2)).strftime("%Y-%m-%dT10:00:00")
+    llm = _ScriptedLLM([
+        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment",
+                       arguments={"requested_datetime": future})],
+        [TokenEvent(text="ok")],
+    ])
+    executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True}))
+    registry = ExecutorRegistry()
+    registry.register("book_appointment", lambda provider, companion=None: executor)
+    orchestrator = ToolCallOrchestrator(
+        llm_adapter=LLMAdapter(llm),
+        policy_resolver=_FakePolicyResolver([_policy()]),
+        provider_manager=_FakeProviderManager(),
+        executor_registry=registry,
+        calendar_timezone="Asia/Kolkata",
+    )
+    history = [ChatMessage(role="user", content="10am works")]
+
+    [e async for e in orchestrator.run_turn("agent1", "t1", "c1", "s1", history)]
+
+    assert len(executor.calls) == 1
+
+
+async def test_book_appointment_rejected_when_caller_never_stated_a_time():
+    """Confirmed live 2026-09-09: a caller who only ever said "tomorrow"
+    (never any time) still got a real booking at a time the LLM invented
+    on its own. The digit-cross-check alone can't catch this — there's no
+    stated time to be wrong about — so this needs its own gate."""
+    llm = _ScriptedLLM([
+        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment",
+                       arguments={"requested_datetime": _future_iso(hour=9)})],
+        [TokenEvent(text="ok")],
+    ])
+    executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True}))
+    registry = ExecutorRegistry()
+    registry.register("book_appointment", lambda provider, companion=None: executor)
+    orchestrator = ToolCallOrchestrator(
+        llm_adapter=LLMAdapter(llm),
+        policy_resolver=_FakePolicyResolver([_policy()]),
+        provider_manager=_FakeProviderManager(),
+        executor_registry=registry,
+    )
+    history = [
+        ChatMessage(role="user", content="I'm interested"),
+        ChatMessage(role="assistant", content="Great, when would you like to come in?"),
+        ChatMessage(role="user", content="tomorrow would be good"),
+    ]
+
+    [e async for e in orchestrator.run_turn("agent1", "t1", "c1", "s1", history)]
+
+    assert executor.calls == []
+    tool_messages = [m for m in history if m.role == "tool"]
+    payload = json.loads(tool_messages[0].content)
+    assert payload["reason"] == "time_not_confirmed"
+
+
+async def test_book_appointment_allowed_once_a_time_was_stated_several_turns_earlier():
+    """The time doesn't have to be in the same turn as the tool call — it
+    just has to have been said at some point in the call so far."""
+    llm = _ScriptedLLM([
+        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment",
+                       arguments={"requested_datetime": _future_iso(hour=9)})],
+        [TokenEvent(text="ok")],
+    ])
+    executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True}))
+    registry = ExecutorRegistry()
+    registry.register("book_appointment", lambda provider, companion=None: executor)
+    orchestrator = ToolCallOrchestrator(
+        llm_adapter=LLMAdapter(llm),
+        policy_resolver=_FakePolicyResolver([_policy()]),
+        provider_manager=_FakeProviderManager(),
+        executor_registry=registry,
+    )
+    history = [
+        ChatMessage(role="user", content="how about 9am tomorrow"),
+        ChatMessage(role="assistant", content="Sure — can I get your phone number?"),
+        ChatMessage(role="user", content="yes that's correct"),
+    ]
+
+    [e async for e in orchestrator.run_turn("agent1", "t1", "c1", "s1", history)]
+
+    assert len(executor.calls) == 1
+
+
+async def test_book_appointment_allowed_when_agent_proposed_the_time_and_caller_agreed():
+    """An agent-proposed slot the caller accepts with a bare "yes" never
+    puts a time in the caller's own words — no_time_stated must also look
+    at what the agent said, not just the caller."""
+    llm = _ScriptedLLM([
+        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment",
+                       arguments={"requested_datetime": _future_iso(hour=14)})],
+        [TokenEvent(text="ok")],
+    ])
+    executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True}))
+    registry = ExecutorRegistry()
+    registry.register("book_appointment", lambda provider, companion=None: executor)
+    orchestrator = ToolCallOrchestrator(
+        llm_adapter=LLMAdapter(llm),
+        policy_resolver=_FakePolicyResolver([_policy()]),
+        provider_manager=_FakeProviderManager(),
+        executor_registry=registry,
+    )
+    history = [
+        ChatMessage(role="user", content="I'd like to book tomorrow"),
+        ChatMessage(role="assistant", content="How about 2 PM?"),
+        ChatMessage(role="user", content="yes"),
+    ]
+
+    [e async for e in orchestrator.run_turn("agent1", "t1", "c1", "s1", history)]
+
+    assert len(executor.calls) == 1

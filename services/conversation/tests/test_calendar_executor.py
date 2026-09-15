@@ -9,7 +9,7 @@ sessions with no ANI at all (e.g. a webcall/browser test).
 
 from __future__ import annotations
 
-from services.conversation.tools.executors.calendar_executor import CalendarExecutor
+from services.conversation.tools.executors.calendar_executor import CalendarExecutor, _to_e164
 from services.conversation.tools.providers.calendar.interface import (
     AttendeeInfo, AvailabilitySlot, BookingResult, CalendarProviderError,
     InvalidAttendeePhoneError, SlotUnavailableError,
@@ -413,3 +413,30 @@ async def test_find_available_slots_failure_after_unavailable_degrades_to_empty_
     assert result.status == ToolStatus.SUCCESS
     assert result.payload["booked"] is False
     assert result.payload["available_slots"] == []
+
+
+def test_to_e164_borrows_the_country_code_when_ani_matches():
+    assert _to_e164("9876543210", "+919876543210") == "+919876543210"
+
+
+def test_to_e164_does_not_splice_a_short_fragment_onto_the_ani():
+    # A truncated/mistranscribed value ("extension 8") must not become the
+    # caller's full ANI just because it happens to be a numeric suffix.
+    assert _to_e164("8", "+919876543218") == "8"
+
+
+def test_to_e164_does_not_return_the_ani_verbatim_for_a_non_numeric_value():
+    # digits == "" for a value with no digits at all ("n/a") — "".endswith("")
+    # is always True, so without a minimum-length guard this returned the
+    # caller's ANI outright regardless of what was actually said.
+    assert _to_e164("n/a", "+919876543218") == "n/a"
+
+
+def test_to_e164_rejects_a_same_length_match_as_a_different_number():
+    # Same digit count as the ANI's national number — not "no country code
+    # was given," a different number was stated.
+    assert _to_e164("919876543218", "+919876543218") == "919876543218"
+
+
+def test_to_e164_rejects_when_digits_too_short_to_be_a_national_number():
+    assert _to_e164("543218", "+919876543218") == "543218"

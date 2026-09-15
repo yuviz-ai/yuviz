@@ -40,6 +40,32 @@ from ..interfaces import ChatMessage
 from . import build_chat_messages, raise_with_body_logged
 from ...tools.llm_adapter import TokenEvent, ToolCallEvent, TurnEvent
 
+
+def _gemini_nullable_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Every other provider (OpenAI/Ollama/Anthropic) accepts JSON Schema's
+    own union-type form ({"type": ["string", "null"]}) for an optional
+    field — registry.py's tool definitions use exactly that shape. Gemini's
+    functionDeclarations schema doesn't: it wants a single `type` string
+    plus a separate `nullable: true`, and rejects a type array outright.
+    Recurses into `properties` (object) and `items` (array) since a nullable
+    field can appear nested, not just at the top level. Gemini-only — the
+    generic schema handed to every other provider is untouched."""
+    out = dict(schema)
+    type_value = out.get("type")
+    if isinstance(type_value, list):
+        non_null = [t for t in type_value if t != "null"]
+        if non_null:
+            out["type"] = non_null[0] if len(non_null) == 1 else non_null
+        else:
+            out.pop("type", None)
+        if "null" in type_value:
+            out["nullable"] = True
+    if isinstance(out.get("properties"), dict):
+        out["properties"] = {k: _gemini_nullable_schema(v) for k, v in out["properties"].items()}
+    if isinstance(out.get("items"), dict):
+        out["items"] = _gemini_nullable_schema(out["items"])
+    return out
+
 log = logging.getLogger(__name__)
 
 _DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com"
@@ -218,10 +244,14 @@ class GeminiLLM:
         forcing one specific function call instead of leaving it optional."""
         system_instruction, contents = self._shape_contents(messages)
 
+        gemini_schemas = [
+            {**s, "parameters": _gemini_nullable_schema(s["parameters"])} if "parameters" in s else s
+            for s in schemas
+        ]
         payload: dict = {
             "contents": contents,
             "generationConfig": {"temperature": self._temperature},
-            "tools": [{"functionDeclarations": schemas}],
+            "tools": [{"functionDeclarations": gemini_schemas}],
         }
         if isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
             forced_name = tool_choice.get("function", {}).get("name")

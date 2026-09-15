@@ -8,22 +8,26 @@ from __future__ import annotations
 
 import asyncio
 
+from services.conversation.tool_latency import ToolLatencyStore
 from services.conversation.tools.executor_registry import ExecutorRegistry
 from services.conversation.tools.middleware import (
-    CircuitBreakerMiddleware, MiddlewareChain, RetryMiddleware, TimeoutMiddleware, build_default_chain,
+    CircuitBreakerMiddleware, LatencyRecorderMiddleware, MiddlewareChain, RetryMiddleware,
+    TimeoutMiddleware, build_default_chain,
 )
 from services.conversation.tools.types import ToolExecutionContext, ToolExecutionRequest, ToolResult, ToolStatus
 
 
-def _ctx() -> ToolExecutionContext:
+def _ctx(tenant_id: str = "t1", agent_id: str = "a1") -> ToolExecutionContext:
     return ToolExecutionContext(
-        tenant_id="t1", agent_id="a1", call_id="c1", session_id="s1",
+        tenant_id=tenant_id, agent_id=agent_id, call_id="c1", session_id="s1",
         turn_id="turn1", tool_iteration=0, deadline=0.0, request_id="r1",
     )
 
 
-def _request() -> ToolExecutionRequest:
-    return ToolExecutionRequest(tool_call_id="call1", tool_name="book_appointment", arguments={}, context=_ctx())
+def _request(context: ToolExecutionContext | None = None) -> ToolExecutionRequest:
+    return ToolExecutionRequest(
+        tool_call_id="call1", tool_name="book_appointment", arguments={}, context=context or _ctx(),
+    )
 
 
 class _FixedExecutor:
@@ -126,3 +130,60 @@ async def test_executor_registry_resolves_factory_with_provider():
 async def test_executor_registry_unknown_tool_returns_none():
     registry = ExecutorRegistry()
     assert registry.resolve("send_email", provider=object()) is None
+
+
+async def test_latency_recorder_records_success():
+    store = ToolLatencyStore()
+    executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={}))
+    chain = build_default_chain(executor, timeout_ms=1000, latency_store=store)
+
+    await chain.execute(_request())
+
+    assert store.average_ms("t1", "a1", "book_appointment") is None  # below _MIN_SAMPLES
+    for _ in range(2):
+        await chain.execute(_request())
+    assert store.average_ms("t1", "a1", "book_appointment") is not None
+
+
+async def test_latency_recorder_records_timeout():
+    store = ToolLatencyStore()
+    executor = _FixedExecutor(delay_s=0.2)
+    chain = MiddlewareChain(executor, [LatencyRecorderMiddleware(store), TimeoutMiddleware(timeout_ms=50)])
+
+    for _ in range(3):
+        result = await chain.execute(_request())
+    assert result.status == ToolStatus.TIMEOUT
+    assert store.average_ms("t1", "a1", "book_appointment") is not None
+
+
+async def test_latency_recorder_records_nothing_for_unavailable():
+    store = ToolLatencyStore()
+    executor = _FixedExecutor(ToolResult(status=ToolStatus.UNAVAILABLE, error="circuit_breaker_open"))
+    chain = MiddlewareChain(executor, [LatencyRecorderMiddleware(store)])
+
+    for _ in range(3):
+        await chain.execute(_request())
+
+    assert store.average_ms("t1", "a1", "book_appointment") is None
+
+
+async def test_latency_recorder_records_nothing_for_empty_identity():
+    store = ToolLatencyStore()
+    executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={}))
+    chain = MiddlewareChain(executor, [LatencyRecorderMiddleware(store)])
+
+    for _ in range(3):
+        await chain.execute(_request(_ctx(tenant_id="", agent_id="")))
+
+    assert store.average_ms("", "", "book_appointment") is None
+
+
+async def test_default_chain_without_store_behaves_identically():
+    executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True}))
+    chain = build_default_chain(executor, timeout_ms=1000)
+
+    result = await chain.execute(_request())
+
+    assert result.status == ToolStatus.SUCCESS
+    assert result.payload == {"booked": True}
+    assert executor.call_count == 1

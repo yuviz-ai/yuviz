@@ -220,7 +220,7 @@ class TestPrewarm:
 class TestRealOllamaFactory:
     async def test_get_llm_creates_real_ollama_instance(self):
         manager = AIProviderManager(FakeSecretResolver())  # real default registry
-        cfg = ProviderConfig(id="llm-1", role="llm", engine="ollama", model="llama3.2")
+        cfg = ProviderConfig(id="llm-1", role="llm", engine="ollama", model="gemma4:e2b")
 
         instance = await manager.get_llm(cfg)
         assert type(instance).__name__ == "OllamaLLM"
@@ -229,7 +229,7 @@ class TestRealOllamaFactory:
         from ..providers.interfaces import ChatMessage
 
         manager = AIProviderManager(FakeSecretResolver())
-        cfg = ProviderConfig(id="llm-1", role="llm", engine="ollama", model="llama3.2")
+        cfg = ProviderConfig(id="llm-1", role="llm", engine="ollama", model="gemma4:e2b")
         llm = await manager.get_llm(cfg)
 
         tokens = []

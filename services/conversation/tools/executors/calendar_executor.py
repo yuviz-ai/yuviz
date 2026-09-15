@@ -24,6 +24,44 @@ from ..types import ToolExecutionRequest, ToolResult, ToolStatus
 
 log = logging.getLogger(__name__)
 
+
+def _to_e164(phone: str, caller_number: str | None) -> str:
+    """Prepends a country code to a bare national number the LLM collected
+    digit-by-digit from the caller, using the caller's own ANI as the
+    source of the code — Cal.com's /v2/bookings requires E.164
+    (attendee.phoneNumber), but a caller stating their number aloud never
+    includes one. A correctly-transcribed, correctly-confirmed national
+    number sent with no country code comes back invalid_number from
+    Cal.com even though nothing was wrong with the number itself — it was
+    a formatting gap, not a phone-number-accuracy problem. The prefix is
+    only borrowed when the ANI actually ends with the digits the caller
+    stated — i.e. it is the same number, just spoken without its country
+    code. Any other number (an alternate contact, a mistranscription) has
+    no reliable prefix to borrow, so the raw value is returned unchanged
+    rather than guessing a country wrong silently."""
+    if not phone or phone.startswith("+"):
+        return phone
+    digits = "".join(c for c in phone if c.isdigit())
+    # A short or empty digit string matches almost any ANI by chance (an
+    # empty string is a suffix of everything) — that's not "the same
+    # number spoken without its country code," it's a coincidence. No real
+    # national number is shorter than this; below it, treat as unresolvable
+    # rather than splice a fragment onto someone else's country code.
+    if len(digits) < 7:
+        return phone
+    if not caller_number or not caller_number.startswith("+"):
+        return phone
+    caller_digits = "".join(c for c in caller_number if c.isdigit())
+    # The borrowed prefix must actually look like a country code (1-3
+    # digits) — a same-length or near-length match isn't "no country code
+    # was given," it's a different number entirely, and a huge gap means
+    # `digits` is too short to be a real national number in the first place.
+    prefix_len = len(caller_digits) - len(digits)
+    if not 1 <= prefix_len <= 3 or not caller_digits.endswith(digits):
+        return phone
+    country_code = caller_digits[:prefix_len]
+    return f"+{country_code}{digits}"
+
 # Holds references to in-flight fire-and-forget SMS sends — asyncio only
 # weakly tracks a task once nothing else holds it, so without this a task
 # can be garbage-collected mid-send under GC pressure, silently dropping
@@ -106,6 +144,7 @@ class CalendarExecutor:
         # already-rejected ANI, ignoring whatever real number the caller
         # had just stated — the retry path could never actually succeed.
         attendee_phone = (args.get("attendee_phone") or request.context.caller_number or "").strip()
+        attendee_phone = _to_e164(attendee_phone, request.context.caller_number)
 
         # Deterministic gate (not just a prompt instruction) — an LLM can
         # silently skip confirming the ANI and book anyway. Only applies

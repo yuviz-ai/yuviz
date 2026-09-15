@@ -24,6 +24,7 @@ import time
 from typing import Awaitable, Callable
 
 from ..metrics import IMetrics, NullMetrics
+from ..tool_latency import ToolLatencyStore
 from .types import ToolExecutionRequest, ToolResult, ToolStatus
 
 log = logging.getLogger(__name__)
@@ -64,6 +65,29 @@ class MetricsMiddleware:
         elapsed_ms = (time.monotonic() - t0) * 1000
         self._metrics.increment(f"tool_call_total.{request.tool_name}.{result.status.value}")
         self._metrics.observe(f"tool_call_latency_ms.{request.tool_name}", elapsed_ms)
+        return result
+
+
+class LatencyRecorderMiddleware:
+    """Feeds ToolLatencyStore from the exact measurement point MetricsMiddleware
+    already proves correct. Records SUCCESS/FAILED/TIMEOUT — a tool that
+    usually times out genuinely does make the caller wait that long, and
+    excluding failures would bias the average low exactly when the filler
+    matters most. UNAVAILABLE (CircuitBreakerMiddleware's fail-fast short
+    circuit) is not recorded: no work happened, so the near-zero elapsed
+    measures nothing about how long the tool takes."""
+
+    def __init__(self, store: ToolLatencyStore) -> None:
+        self._store = store
+
+    async def __call__(self, request: ToolExecutionRequest, call_next: NextCall) -> ToolResult:
+        t0 = time.monotonic()
+        result = await call_next(request)
+        if result.status != ToolStatus.UNAVAILABLE:
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            self._store.record(
+                request.context.tenant_id, request.context.agent_id, request.tool_name, elapsed_ms,
+            )
         return result
 
 
@@ -165,14 +189,20 @@ def _bind(middleware, next_call: NextCall) -> NextCall:
     return bound
 
 
-def build_default_chain(executor, timeout_ms: int = 6000, metrics: IMetrics | None = None) -> MiddlewareChain:
+def build_default_chain(
+    executor, timeout_ms: int = 6000, metrics: IMetrics | None = None,
+    latency_store: ToolLatencyStore | None = None,
+) -> MiddlewareChain:
     """The standard chain every tool gets unless a specific tool has a
-    reason to deviate — Logging, Metrics, CircuitBreaker, Retry(disabled by
-    default), Timeout, in that order (see module docstring)."""
-    return MiddlewareChain(executor, [
-        LoggingMiddleware(),
-        MetricsMiddleware(metrics),
+    reason to deviate — Logging, Metrics, (Latency, if a store is given),
+    CircuitBreaker, Retry(disabled by default), Timeout, in that order (see
+    module docstring)."""
+    middlewares = [LoggingMiddleware(), MetricsMiddleware(metrics)]
+    if latency_store is not None:
+        middlewares.append(LatencyRecorderMiddleware(latency_store))
+    middlewares += [
         CircuitBreakerMiddleware(),
         RetryMiddleware(),
         TimeoutMiddleware(timeout_ms=timeout_ms),
-    ])
+    ]
+    return MiddlewareChain(executor, middlewares)

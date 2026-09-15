@@ -40,13 +40,14 @@ from ..directives import (
 from .. import pipeline as pipeline_module
 from ..pipeline import (
     PipelineConversationHandler,
+    _build_current_date_context,
     _END_CALL_MARKER,
     _FALLBACK_GOODBYE,
-    _FIRST_TURN_FILLER,
     _TOOL_CALL_FILLER_MIN_GAP_S,
-    _TOOL_CALL_FILLERS,
     _TRANSFER_FAILED_FALLBACK,
 )
+from ..fillers import _TOOL_FILLERS, FillerSelector
+from ..tool_latency import ToolLatencyStore
 from ..provider_bundle import ProviderBundle
 from ..providers.interfaces import ChatMessage, SttResult
 from ..session import CallFsmState, ConversationSession, HandlerResponse, SessionContext
@@ -157,6 +158,8 @@ def _make_handler(
     node_knowledge: list[str] | None = None, text_only: bool = False,
     workflow_draft: dict | None = None,
     use_workflow_draft: bool = False,
+    latency_store=None, filler_selector=None, tenant_id: str = "t1", agent_id: str = "a1",
+    calendar_timezone: str = "UTC",
 ) -> PipelineConversationHandler:
     """Builds the minimal (RuntimeConfig, ProviderBundle) pair these tests
     need — PipelineConversationHandler's real constructor contract now (see
@@ -186,7 +189,7 @@ def _make_handler(
         if node_knowledge is not None:
             start["data"]["knowledge_base_ids"] = node_knowledge
     agent = Agent(
-        id="a1", slug="test-agent", tenant_id="t1", name="Test Agent",
+        id=agent_id, slug="test-agent", tenant_id="t1", name="Test Agent",
         greeting=greeting, system_prompt=system_prompt, goodbye_grace_ms=goodbye_grace_ms,
         stt_config_id=None, llm_config_id=None, tts_config_id=None,
         status="active", config_version=1, updated_at=now,
@@ -218,7 +221,9 @@ def _make_handler(
     return PipelineConversationHandler(
         runtime_config, bundle, knowledge=knowledge, tool_orchestrator=tool_orchestrator,
         has_booking_tool=has_booking_tool, text_only=text_only,
-        use_workflow_draft=use_workflow_draft,
+        use_workflow_draft=use_workflow_draft, tenant_id=tenant_id,
+        latency_store=latency_store, filler_selector=filler_selector,
+        calendar_timezone=calendar_timezone,
     )
 
 
@@ -277,34 +282,137 @@ async def test_pipeline_produces_stt_then_tts():
 
 
 @pytest.mark.asyncio
-async def test_first_turn_filler_spoken_before_the_real_response():
-    stt = _make_stt("hi there")
-    llm = _make_llm(["Real", " response", "."])
+async def test_greeting_is_recorded_in_history():
+    """Confirmed live 2026-09-09: the scripted greeting was spoken but
+    never recorded anywhere the LLM could see, so its very first real turn
+    started with zero memory of having already introduced itself."""
+    stt = _make_stt("hi")
+    llm = _make_llm(["ok"])
     tts = _make_tts()
+    handler = _make_handler(stt, llm, tts, greeting="Hi, this is Mia calling from Yuviz.ai.")
 
-    handler = _make_handler(stt, llm, tts, system_prompt="Be helpful.")
-    async for _ in handler.on_speech_ended("s1", _silence(), 200, -20.0):
-        pass
+    await handler.greeting("s1")
 
-    spoken_texts = [call.args[0] for call in tts.synthesize.await_args_list]
-    assert spoken_texts[0] == _FIRST_TURN_FILLER
-    assert spoken_texts.count(_FIRST_TURN_FILLER) == 1
+    history = handler._get_history("s1")
+    assert [m for m in history if m.role == "assistant" and m.content == "Hi, this is Mia calling from Yuviz.ai."]
+
+
+async def test_greeting_not_recorded_when_tts_produces_no_audio():
+    """If TTS fails (or, same observable shape, synthesizes nothing), the
+    caller hears no greeting at all — recording it in history anyway would
+    make the model believe it had already introduced itself and answer
+    straight into the caller's next question with no introduction."""
+    stt = _make_stt("hi")
+    llm = _make_llm(["ok"])
+    tts = _make_tts(pcm=b"")  # falsy audio -> _synthesize_sentence_stream yields zero chunks
+    handler = _make_handler(stt, llm, tts, greeting="Hi, this is Mia calling from Yuviz.ai.")
+
+    chunks = await handler.greeting("s1")
+
+    assert chunks == []
+    history = handler._get_history("s1")
+    assert not [m for m in history if m.role == "assistant" and m.content == "Hi, this is Mia calling from Yuviz.ai."]
+
+
+async def test_greeting_still_recorded_in_text_only_mode_despite_zero_chunks():
+    """text_only never touches TTS at all (by design, not failure) — zero
+    chunks there must not be mistaken for a synthesis failure and skip
+    recording the greeting the chat UI is actively displaying."""
+    stt = _make_stt("hi")
+    llm = _make_llm(["ok"])
+    tts = _make_tts()
+    handler = _make_handler(
+        stt, llm, tts, greeting="Hi, this is Mia calling from Yuviz.ai.", text_only=True,
+    )
+
+    chunks = await handler.greeting("s1")
+
+    assert chunks == []
+    history = handler._get_history("s1")
+    assert [m for m in history if m.role == "assistant" and m.content == "Hi, this is Mia calling from Yuviz.ai."]
 
 
 @pytest.mark.asyncio
-async def test_first_turn_filler_not_repeated_on_later_turns():
-    stt = _make_stt("hi there")
+async def test_greeting_recorded_before_greeting_reaches_the_llm_on_the_first_real_turn():
+    """The seeded greeting message must actually reach generate() on the
+    caller's first turn — not just sit in history unused."""
+    seen_messages: list = []
+
+    async def _gen(messages):
+        seen_messages.append(list(messages))
+        yield "ok"
+
+    stt = _make_stt("hi")
+    llm = MagicMock()
+    llm.generate = _gen
+    tts = _make_tts()
+    handler = _make_handler(stt, llm, tts, greeting="Hi, this is Mia calling from Yuviz.ai.")
+
+    await handler.greeting("s1")
+    async for _ in handler.on_speech_ended("s1", _silence(), 200, -20.0):
+        pass
+
+    sent_contents = [m.content for m in seen_messages[0]]
+    assert "Hi, this is Mia calling from Yuviz.ai." in sent_contents
+
+
+def test_date_context_labels_the_utc_fallback_as_utc_not_the_invalid_zone():
+    """A malformed timezone (e.g. a trailing slash, which raises ValueError
+    rather than ZoneInfoNotFoundError) makes the lookup table compute in
+    UTC — the prompt text must say "UTC", not echo the invalid configured
+    name back as if the table were actually in that timezone."""
+    text = _build_current_date_context("Asia/Kolkata/")
+    assert "UTC time" in text
+    assert "Asia/Kolkata/ time" not in text
+    assert "Asia/Kolkata" not in text
+
+
+def test_date_context_uses_real_timezone_even_without_booking_tool():
+    """A reschedule-only agent has has_booking_tool=False (that flag stays
+    booking-specific, gating only the caller-ID confirmation block) but
+    must still get its real calendar_timezone in the date-grounding prompt
+    — previously this silently fell back to UTC for any agent without
+    book_appointment specifically, including reschedule-only ones."""
+    stt = _make_stt("hi")
+    llm = _make_llm(["ok"])
+    tts = _make_tts()
+    handler = _make_handler(
+        stt, llm, tts, has_booking_tool=False, calendar_timezone="Asia/Kolkata",
+    )
+
+    assert "Asia/Kolkata" in handler._prompt_suffix
+    assert "UTC" not in handler._prompt_suffix.split("Do not compute")[0]
+
+
+def test_current_date_template_variable_uses_calendar_timezone_not_utc():
+    """{{current_date}}/{{current_time}} are dormant (no starter/default
+    node prompt references them today), but a future custom node prompt
+    that does must not silently get the wrong day the same way the
+    date-lookup-table suffix did before this session's fix."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    stt = _make_stt("hi")
+    llm = _make_llm(["ok"])
+    tts = _make_tts()
+    handler = _make_handler(stt, llm, tts, calendar_timezone="Asia/Kolkata")
+
+    ist_today = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d")
+    assert handler._workflow._vars["current_date"] == ist_today
+
+
+@pytest.mark.asyncio
+async def test_no_filler_spoken_on_first_turn_even_for_a_question():
+    stt = _make_stt("What does your AI agent do?")
     llm = _make_llm(["Real", " response", "."])
     tts = _make_tts()
 
     handler = _make_handler(stt, llm, tts, system_prompt="Be helpful.")
     async for _ in handler.on_speech_ended("s1", _silence(), 200, -20.0):
         pass
-    async for _ in handler.on_speech_ended("s1", _silence(), 200, -20.0):
-        pass
 
     spoken_texts = [call.args[0] for call in tts.synthesize.await_args_list]
-    assert spoken_texts.count(_FIRST_TURN_FILLER) == 1
+    assert spoken_texts == ["Real response."]
 
 
 @pytest.mark.asyncio
@@ -1898,10 +2006,6 @@ async def test_a_token_only_transfer_dispatches_without_audio():
         stt, llm, tts, system_prompt="You are Alex.",
         transfer_type="cold", transfer_destination="1001",
     )
-    # Not this test's concern — see _FIRST_TURN_FILLER's own tests — so
-    # treat this as a turn beyond the first, keeping this test isolated to
-    # the announcement/no-announcement transfer-audio question it's for.
-    handler._session("s1").first_turn_filler_spoken = True
     responses = [r async for r in handler.on_speech_ended("s1", _silence(), 300, -20.0)]
     assert any(r.transfer_request for r in responses)
     assert not any(r.tts_payloads for r in responses)
@@ -1994,7 +2098,8 @@ async def test_local_tool_completed_event_does_not_crash_the_pipeline():
 
     assert any(r.tts_payloads for r in responses)
     spoken_texts = [call.args[0] for call in tts.synthesize.await_args_list]
-    assert not any(t in _TOOL_CALL_FILLERS for t in spoken_texts)
+    tool_filler_texts = {t for t, _ in _TOOL_FILLERS}
+    assert not any(t in tool_filler_texts for t in spoken_texts)
 
 
 @pytest.mark.asyncio
@@ -2020,7 +2125,8 @@ async def test_tool_call_filler_burst_within_one_turn_speaks_only_once():
         pass
 
     spoken_texts = [call.args[0] for call in tts.synthesize.await_args_list]
-    filler_count = sum(1 for t in spoken_texts if t in _TOOL_CALL_FILLERS)
+    tool_filler_texts = {t for t, _ in _TOOL_FILLERS}
+    filler_count = sum(1 for t in spoken_texts if t in tool_filler_texts)
     assert filler_count == 1
 
 
@@ -2028,7 +2134,7 @@ async def test_tool_call_filler_burst_within_one_turn_speaks_only_once():
 async def test_tool_call_filler_rotates_across_separate_tool_calls(monkeypatch):
     """Two tool calls on two separate, well-spaced turns (the real case —
     a caller replying between them) each get a filler, and they aren't the
-    same phrase — see _TOOL_CALL_FILLERS."""
+    same phrase — see fillers.py's _TOOL_FILLERS."""
     from ..tools.llm_adapter import ToolCallStartedEvent
 
     clock = {"t": 0.0}
@@ -2049,9 +2155,199 @@ async def test_tool_call_filler_rotates_across_separate_tool_calls(monkeypatch):
         pass
 
     spoken_texts = [call.args[0] for call in tts.synthesize.await_args_list]
-    fillers_spoken = [t for t in spoken_texts if t in _TOOL_CALL_FILLERS]
+    tool_filler_texts = {t for t, _ in _TOOL_FILLERS}
+    fillers_spoken = [t for t in spoken_texts if t in tool_filler_texts]
     assert len(fillers_spoken) == 2
     assert fillers_spoken[0] != fillers_spoken[1]
+
+
+# ---------------------------------------------------------------------------
+# AC 5 end-to-end: real ToolCallOrchestrator + middleware chain + a real
+# ToolLatencyStore, driven through __main__.py's own wiring shape (the
+# store passed to both the orchestrator and the handler) — proves the
+# pipeline's read key and the middleware's write key actually agree.
+# ---------------------------------------------------------------------------
+
+class _SleepingExecutor:
+    """~400ms tool round-trip, simulated by advancing the same monkeypatched
+    clock LatencyRecorderMiddleware reads via time.monotonic() — a real
+    asyncio.sleep() here would deadlock, since freezing pipeline_module.time
+    freezes the real `time` module (the same object asyncio's own event
+    loop times against)."""
+
+    def __init__(self, clock: dict) -> None:
+        self._clock = clock
+
+    async def execute(self, request):
+        from ..tools.types import ToolResult, ToolStatus
+        self._clock["t"] += 0.4
+        return ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True})
+
+
+class _FixedPolicyResolver:
+    def __init__(self, policies):
+        self._policies = policies
+
+    async def enabled_tools(self, agent_id, only=None):
+        return self._policies
+
+
+class _FixedProviderManager:
+    async def get(self, policy):
+        return object()
+
+
+class _ScriptedToolCallLLM:
+    """Alternates ToolCallEvent → TokenEvent, one pair per turn, matching
+    ToolCallOrchestrator's own two-generate()-calls-per-tool-call shape
+    (see test_tool_call_orchestrator.py's _ScriptedLLM)."""
+
+    def __init__(self, n_turns: int):
+        from ..tools.llm_adapter import TokenEvent as ToolTokenEvent
+        from ..tools.llm_adapter import ToolCallEvent
+        self._scripts = []
+        for i in range(n_turns):
+            self._scripts.append([ToolCallEvent(tool_call_id=f"c{i}", tool_name="book_appointment", arguments={})])
+            self._scripts.append([ToolTokenEvent(text="Done.")])
+        self._i = 0
+
+    async def generate_with_tools(self, messages, schemas, tool_choice=None):
+        events = self._scripts[self._i]
+        self._i += 1
+        for e in events:
+            yield e
+
+
+def _make_real_orchestrator(n_turns: int, store, clock: dict):
+    from ..tools.executor_registry import ExecutorRegistry
+    from ..tools.llm_adapter import LLMAdapter
+    from ..tools.orchestrator import ToolCallOrchestrator
+    from ..tools.policy_resolver import ResolvedToolPolicy
+    from ..tools.registry import ToolRegistry
+
+    policy = ResolvedToolPolicy(
+        definition=ToolRegistry().resolve("book_appointment"),
+        tool_provider_config_id="cfg1", engine="cal_com", api_key_ref="env:X",
+        extra={}, timeout_ms=5000, max_calls_per_turn=None,
+    )
+    registry = ExecutorRegistry()
+    registry.register("book_appointment", lambda provider, companion=None: _SleepingExecutor(clock))
+    return ToolCallOrchestrator(
+        llm_adapter=LLMAdapter(_ScriptedToolCallLLM(n_turns)),
+        policy_resolver=_FixedPolicyResolver([policy]),
+        provider_manager=_FixedProviderManager(),
+        executor_registry=registry,
+        latency_store=store,
+    )
+
+
+async def _run_calibration_calls(handler, count: int, clock: dict) -> None:
+    for _ in range(count):
+        async for _r in handler.on_speech_ended("s1", _silence(), 300, -20.0):
+            pass
+        clock["t"] += 0.1
+
+
+@pytest.mark.asyncio
+async def test_ac5_calibration_selects_shorter_filler_than_uncalibrated(monkeypatch):
+    from ..tool_latency import _MIN_SAMPLES
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(pipeline_module.time, "monotonic", lambda: clock["t"])
+
+    store = ToolLatencyStore()
+    orchestrator = _make_real_orchestrator(_MIN_SAMPLES + 1, store, clock)
+    stt = _make_stt("book something")
+    tts = _make_tts(b"\x00" * 640)
+    handler = _make_handler(
+        stt, _make_llm(["unused"]), tts, system_prompt="You are a scheduler.",
+        tool_orchestrator=orchestrator, latency_store=store, tenant_id="tenant-a",
+    )
+
+    await _run_calibration_calls(handler, _MIN_SAMPLES, clock)
+    clock["t"] += _TOOL_CALL_FILLER_MIN_GAP_S + 1.0
+    async for _ in handler.on_speech_ended("s1", _silence(), 300, -20.0):
+        pass
+
+    tool_filler_lengths = {t: s for t, s in _TOOL_FILLERS}
+    spoken_texts = [call.args[0] for call in tts.synthesize.await_args_list]
+    calibrated_filler = next(t for t in reversed(spoken_texts) if t in tool_filler_lengths)
+
+    # Baseline: identical shape, empty store — the uncalibrated call.
+    baseline_store = ToolLatencyStore()
+    baseline_orchestrator = _make_real_orchestrator(1, baseline_store, clock)
+    baseline_handler = _make_handler(
+        _make_stt("book something"), _make_llm(["unused"]), _make_tts(b"\x00" * 640),
+        system_prompt="You are a scheduler.", tool_orchestrator=baseline_orchestrator,
+        latency_store=baseline_store, tenant_id="tenant-a",
+    )
+    async for _ in baseline_handler.on_speech_ended("s1", _silence(), 300, -20.0):
+        pass
+    baseline_tts = baseline_handler._tts
+    baseline_spoken = [call.args[0] for call in baseline_tts.synthesize.await_args_list]
+    uncalibrated_filler = next(t for t in reversed(baseline_spoken) if t in tool_filler_lengths)
+
+    assert tool_filler_lengths[calibrated_filler] < tool_filler_lengths[uncalibrated_filler]
+
+
+@pytest.mark.asyncio
+async def test_ac5_cross_tenant_negative_uses_uncalibrated_phrase(monkeypatch):
+    """A second handler for a different tenant_id, sharing the same store
+    as a warmed tenant, still selects the uncalibrated phrase."""
+    from ..tool_latency import _MIN_SAMPLES
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(pipeline_module.time, "monotonic", lambda: clock["t"])
+
+    store = ToolLatencyStore()
+    orchestrator_a = _make_real_orchestrator(_MIN_SAMPLES, store, clock)
+    handler_a = _make_handler(
+        _make_stt("book something"), _make_llm(["unused"]), _make_tts(b"\x00" * 640),
+        system_prompt="You are a scheduler.", tool_orchestrator=orchestrator_a,
+        latency_store=store, tenant_id="tenant-a",
+    )
+    await _run_calibration_calls(handler_a, _MIN_SAMPLES, clock)
+
+    orchestrator_b = _make_real_orchestrator(1, store, clock)
+    tts_b = _make_tts(b"\x00" * 640)
+    handler_b = _make_handler(
+        _make_stt("book something"), _make_llm(["unused"]), tts_b,
+        system_prompt="You are a scheduler.", tool_orchestrator=orchestrator_b,
+        latency_store=store, tenant_id="tenant-b",
+    )
+    async for _ in handler_b.on_speech_ended("s1", _silence(), 300, -20.0):
+        pass
+
+    tool_filler_lengths = {t: s for t, s in _TOOL_FILLERS}
+    spoken_texts_b = [call.args[0] for call in tts_b.synthesize.await_args_list]
+    filler_b = next(t for t in reversed(spoken_texts_b) if t in tool_filler_lengths)
+    uncalibrated_filler = FillerSelector().select_tool_filler("book_appointment", None, None)
+    assert tool_filler_lengths[filler_b] == tool_filler_lengths[uncalibrated_filler]
+
+
+@pytest.mark.asyncio
+async def test_ac5_legacy_path_negative_uses_uncalibrated_phrase(monkeypatch):
+    """A legacy-path handler (runtime_config.agent.id empty, so
+    self._agent_id is None) selects the uncalibrated phrase regardless of
+    call count — it never resolves to a real key in the shared store."""
+    clock = {"t": 0.0}
+    monkeypatch.setattr(pipeline_module.time, "monotonic", lambda: clock["t"])
+
+    store = ToolLatencyStore()
+    orchestrator = _make_real_orchestrator(4, store, clock)
+    tts = _make_tts(b"\x00" * 640)
+    handler = _make_handler(
+        _make_stt("book something"), _make_llm(["unused"]), tts,
+        system_prompt="You are a scheduler.", tool_orchestrator=orchestrator,
+        latency_store=store, tenant_id="tenant-a", agent_id="",
+    )
+    await _run_calibration_calls(handler, 4, clock)
+
+    tool_filler_lengths = {t: s for t, s in _TOOL_FILLERS}
+    spoken_texts = [call.args[0] for call in tts.synthesize.await_args_list]
+    filler = next(t for t in reversed(spoken_texts) if t in tool_filler_lengths)
+    uncalibrated_filler = FillerSelector().select_tool_filler("book_appointment", None, None)
+    assert tool_filler_lengths[filler] == tool_filler_lengths[uncalibrated_filler]
 
 
 @pytest.mark.asyncio
@@ -2436,6 +2732,35 @@ async def test_real_booking_tool_call_is_not_flagged_as_fabricated():
     orchestrator = _FakeToolOrchestrator([
         ToolCallStartedEvent(tool_name="book_appointment"),
         ToolTokenEvent(text="Booked! Your appointment is confirmed."),
+    ])
+    handler = _make_handler(
+        stt, llm, tts, system_prompt="You are a scheduler.",
+        tool_orchestrator=orchestrator, has_booking_tool=True,
+    )
+
+    [r async for r in handler.on_speech_ended("s1", _silence(), 300, -20.0)]
+
+    history = handler._get_history("s1")
+    assert history[-1].role == "assistant"
+
+
+@pytest.mark.asyncio
+async def test_real_reschedule_tool_call_is_not_flagged_as_fabricated():
+    """Confirmed live 2026-09-09: a genuine reschedule_appointment call
+    (correctly reporting multiple_bookings_found and asking the caller to
+    disambiguate) still got the correction appended, because the gate only
+    ever checked for book_appointment. The claim regex explicitly matches
+    "rescheduled"/"moved" wording (see _BOOKING_CLAIM_RE), so a real
+    reschedule_appointment call must clear the gate the same way a real
+    book_appointment call does."""
+    from ..tools.llm_adapter import TokenEvent as ToolTokenEvent, ToolCallStartedEvent
+
+    stt = _make_stt("move my appointment to 3")
+    llm = _make_llm(["should never be called"])
+    tts = _make_tts(b"\x00" * 640)
+    orchestrator = _FakeToolOrchestrator([
+        ToolCallStartedEvent(tool_name="reschedule_appointment"),
+        ToolTokenEvent(text="Sure, let's move it to 2:00 PM. Which appointment do you mean?"),
     ])
     handler = _make_handler(
         stt, llm, tts, system_prompt="You are a scheduler.",

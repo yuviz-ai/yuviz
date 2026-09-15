@@ -32,6 +32,7 @@ from .agent_resolver import resolve_handler_deps
 from .ai_provider_manager import AIProviderManager
 from .provider_config_subscriber import ProviderConfigSubscriber
 from .echo import EchoConversationHandler
+from .fillers import FillerSelector
 from .pipeline import PipelineConversationHandler
 from .pipeline_config import PipelineConfig
 from .provider_bundle import ProviderRegistry
@@ -49,6 +50,7 @@ from .tools.orchestrator import ToolCallOrchestrator
 from .tools.policy_resolver import ToolPolicyResolver
 from .tools.provider_manager import ToolProviderManager
 from .tools.registry import ToolRegistry
+from .tool_latency import ToolLatencyStore
 from .transcript_builder import TranscriptBuilder
 from .workflow import graph_for
 from .generated.voiceai.v1 import conversation_pb2_grpc as pb_grpc
@@ -235,6 +237,13 @@ async def serve(port: int, args: argparse.Namespace) -> None:
         os.environ.get("POSTGRES_DSN"), tool_registry,
     )
 
+    # Dynamic call fillers: one process-scoped store/selector, shared across
+    # every stream — calibration must survive across calls, and both are
+    # safe to share because the store's keys are tenant/agent-scoped and its
+    # eviction budget is per tenant (see tool_latency.py).
+    tool_latency_store = ToolLatencyStore()
+    filler_selector = FillerSelector()
+
     # Providers (STT/LLM/TTS) are shared across streams because they are stateless
     # or internally thread-safe. Only the handler (which holds per-session history
     # and cancel state) is constructed fresh per Converse() stream.
@@ -306,13 +315,6 @@ async def serve(port: int, args: argparse.Namespace) -> None:
                     ),
                 )
 
-            tool_orchestrator = ToolCallOrchestrator(
-                llm_adapter=LLMAdapter(bundle.llm),
-                policy_resolver=tool_policy_resolver,
-                provider_manager=tool_provider_manager,
-                executor_registry=executor_registry,
-            )
-
             # Whether the caller-ID-confirmation prompt block makes any
             # sense for this agent at all — it talks about "before
             # booking," which is actively confusing (and contradicts a
@@ -320,6 +322,29 @@ async def serve(port: int, args: argparse.Namespace) -> None:
             # book_appointment isn't actually enabled for it.
             enabled_policies = await tool_policy_resolver.enabled_tools(runtime_config.agent.id)
             has_booking_tool = any(p.definition.name == "book_appointment" for p in enabled_policies)
+            booking_policy = next((p for p in enabled_policies if p.definition.name == "book_appointment"), None)
+            reschedule_policy = next(
+                (p for p in enabled_policies if p.definition.name == "reschedule_appointment"), None,
+            )
+            # Same field _make_cal_com reads (provider_manager.py) — not a
+            # new timezone convention, just reused for date grounding too.
+            # Sourced from whichever calendar tool is actually enabled — a
+            # reschedule-only agent has no booking_policy, so gating this on
+            # has_booking_tool alone silently used UTC for its date
+            # grounding and requested-date validation. has_booking_tool
+            # itself stays booking-specific below (caller-ID confirmation
+            # prompt), which genuinely doesn't apply to reschedule.
+            calendar_policy = booking_policy or reschedule_policy
+            calendar_timezone = (calendar_policy.extra.get("timezone") if calendar_policy else None) or "UTC"
+
+            tool_orchestrator = ToolCallOrchestrator(
+                llm_adapter=LLMAdapter(bundle.llm),
+                policy_resolver=tool_policy_resolver,
+                provider_manager=tool_provider_manager,
+                executor_registry=executor_registry,
+                latency_store=tool_latency_store,
+                calendar_timezone=calendar_timezone,
+            )
 
             return PipelineConversationHandler(
                 runtime_config, bundle,
@@ -338,6 +363,9 @@ async def serve(port: int, args: argparse.Namespace) -> None:
                 use_workflow_draft=ctx.use_workflow_draft,
                 # Admin-UI chat: skip STT/TTS.
                 text_only=ctx.text_only,
+                calendar_timezone=calendar_timezone,
+                latency_store=tool_latency_store,
+                filler_selector=filler_selector,
             )
 
     # grpc.aio.server() defaults to SO_REUSEPORT, which lets a second process
