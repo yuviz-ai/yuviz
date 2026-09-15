@@ -90,11 +90,31 @@ async def create_call_flow(
     current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
 ):
     tenant = await _resolve_tenant(tenant_slug, current_user)
+    if body.clone_from_id is not None:
+        # Authorize the clone SOURCE the way any other by-id read is
+        # authorized, before it is copied — otherwise "clone" would be a way
+        # to read a flow the caller cannot open.
+        source = await _authorize_flow(body.clone_from_id, current_user)
+        # Cloning across tenants would copy one tenant's flow into another,
+        # so it is refused outright rather than left to RLS to fail opaquely.
+        if str(source["tenant_id"]) != str(tenant["id"]):
+            raise HTTPException(
+                status_code=400, detail="a call flow can only be cloned within its own account",
+            )
+        # _authorize_flow pinned the RLS target to the source flow; the
+        # INSERT below belongs to the path tenant, so restore it.
+        set_target_tenant(tenant["id"])
     try:
         return await call_flows_service.create_call_flow(
             tenant_id=tenant["id"], slug=body.slug, name=body.name,
-            description=body.description, user_id=current_user.id, user_email=current_user.email,
+            description=body.description, direction=body.direction,
+            clone_from_id=body.clone_from_id, graph=body.graph,
+            user_id=current_user.id, user_email=current_user.email,
         )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except call_flows_service.CallFlowValidationError as exc:
+        return _validation_error(exc)
     except asyncpg.UniqueViolationError as exc:
         if exc.constraint_name == _CALL_FLOWS_SLUG_UNIQUE:
             raise HTTPException(status_code=409, detail=f"call flow {body.slug!r} already exists")

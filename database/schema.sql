@@ -1074,6 +1074,11 @@ CREATE TABLE IF NOT EXISTS call_flows (
     graph          JSONB,
     graph_draft    JSONB,
     status         TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
+    -- Which call legs this flow is built for. Not enforcement — it shapes the
+    -- steps the builder offers and is what an operator filters the list by;
+    -- nothing stops an 'inbound' flow being attached to an outbound agent.
+    direction      TEXT NOT NULL DEFAULT 'inbound'
+                       CHECK (direction IN ('inbound', 'outbound', 'both')),
     config_version INT NOT NULL DEFAULT 1,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -1098,3 +1103,12 @@ CREATE INDEX IF NOT EXISTS idx_cfv_flow ON call_flow_versions (call_flow_id, ver
 -- RESTRICT: deleting a flow must not be blocked by, or silently break, every
 -- agent pointing at it — they just go back to answering directly.
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS call_flow_id UUID REFERENCES call_flows(id) ON DELETE SET NULL;
+
+-- CREATE TABLE ... IF NOT EXISTS is a no-op on a database that already has
+-- call_flows from the first version of this table, so `direction` needs its
+-- own idempotent ALTER to reach one (same reason audit_log.tenant_id's FK fix
+-- needed one).
+ALTER TABLE call_flows ADD COLUMN IF NOT EXISTS direction TEXT NOT NULL DEFAULT 'inbound';
+ALTER TABLE call_flows DROP CONSTRAINT IF EXISTS call_flows_direction_check;
+ALTER TABLE call_flows ADD CONSTRAINT call_flows_direction_check
+    CHECK (direction IN ('inbound', 'outbound', 'both'));

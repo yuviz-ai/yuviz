@@ -1,36 +1,36 @@
 "use client";
 
-// The seven IVR step renderers. Same card anatomy and the same wf-node-*
-// classes as components/workflow/nodes.tsx, deliberately — the two canvases
-// should feel like one product — but a separate file because the vocabulary
-// is different: these steps branch on a keypress, not on an LLM's reading of
-// a natural-language condition.
+// Call-flow step cards.
+//
+// Own styles (cf-*), not the agent canvas's wf-node: that card is 300px with
+// a large prompt block because a conversation stage IS its prompt. An IVR
+// step is mostly structure — what kind of step, what it says in one line,
+// where it goes — so these are compact and scannable, and a flow of a dozen
+// steps fits on screen instead of three.
 
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { CallFlowNodeData, CallFlowNodeType } from "@/lib/callFlowApi";
 
 const TYPE_LABEL: Record<CallFlowNodeType, string> = {
-  start: "Start",
-  play: "Play message",
+  start: "Entry",
+  play: "Play",
   menu: "Menu",
-  collect: "Collect digits",
+  collect: "Collect",
   dial: "Transfer",
-  agent: "AI agent",
-  hangup: "Hang up",
+  agent: "Agent",
+  hangup: "End",
 };
 
 const TYPE_HINT: Record<CallFlowNodeType, string> = {
   start: "The call is answered here",
   play: "Speaks, then continues",
-  menu: "Plays options, branches on a keypress",
-  collect: "Collects digits into a value",
-  dial: "Sends the call to a number or SIP address",
-  agent: "Hands the call to an AI agent",
+  menu: "Branches on a keypress",
+  collect: "Collects digits",
+  dial: "Sends the call to a human",
+  agent: "Hands over to an AI agent",
   hangup: "Ends the call",
 };
 
-// Terminal steps take the call out of the flow, so they have an input but no
-// output handle — the canvas itself makes "nothing follows this" obvious.
 const TERMINAL: CallFlowNodeType[] = ["dial", "agent", "hangup"];
 
 function missingField(type: CallFlowNodeType, data: CallFlowNodeData): string | null {
@@ -43,49 +43,37 @@ function missingField(type: CallFlowNodeType, data: CallFlowNodeData): string | 
   return null;
 }
 
-export function CallFlowNode({ data, type, selected }: NodeProps) {
+/** One line under the title: the step's own substance, not its type. */
+function subtitle(type: CallFlowNodeType, data: CallFlowNodeData): string {
+  if (type === "dial") return data.destination?.trim() || TYPE_HINT[type];
+  if (type === "collect") {
+    const v = data.variable?.trim();
+    return v ? `→ ${v} · ${data.min_digits ?? 1}–${data.max_digits ?? 10} digits` : TYPE_HINT[type];
+  }
+  if (data.prompt?.trim()) return data.prompt.trim();
+  return TYPE_HINT[type];
+}
+
+export function CallFlowNode({ id, data, type, selected }: NodeProps) {
   const d = (data || {}) as CallFlowNodeData;
   const t = type as CallFlowNodeType;
   const todo = missingField(t, d);
 
   return (
-    <div className={`wf-node wf-node-${t === "hangup" ? "end" : t === "dial" ? "transfer" : t}${selected ? " selected" : ""}${todo ? " wf-node-todo" : ""}`}>
-      {t !== "start" && <Handle type="target" position={Position.Top} />}
+    <div className={`cf-node cf-node-${t}${selected ? " selected" : ""}${todo ? " todo" : ""}`}>
+      {t !== "start" && <Handle type="target" position={Position.Left} />}
 
-      <div className="wf-node-pill">{TYPE_LABEL[t]}</div>
-      <div className="wf-node-hdr">
-        <div className="wf-node-name">{d.name || TYPE_LABEL[t]}</div>
+      <div className="cf-node-top">
+        <span className={`cf-node-pill cf-pill-${t}`}>{TYPE_LABEL[t]}</span>
+        <span className="cf-node-id">{id.length > 10 ? `${id.slice(0, 9)}…` : id}</span>
       </div>
 
-      <div className="wf-node-body">
-        {d.prompt?.trim() ? (
-          <>
-            <div className="wf-node-label">Says</div>
-            <div className="wf-node-prompt">{d.prompt}</div>
-          </>
-        ) : (
-          <div className="wf-node-prompt" style={{ opacity: 0.6 }}>{TYPE_HINT[t]}</div>
-        )}
+      <div className="cf-node-name">{d.name || TYPE_LABEL[t]}</div>
+      <div className="cf-node-sub">{subtitle(t, d)}</div>
 
-        {t === "collect" && d.variable && (
-          <div className="wf-badges">
-            <span className="wf-badge">→ {d.variable}</span>
-            <span className="wf-badge">{d.min_digits ?? 1}–{d.max_digits ?? 10} digits</span>
-          </div>
-        )}
-        {t === "dial" && d.destination && (
-          <div className="wf-badges"><span className="wf-badge">{d.destination}</span></div>
-        )}
-        {t === "menu" && (
-          <div className="wf-badges">
-            <span className="wf-badge">{(d.timeout_ms ?? 5000) / 1000}s to answer</span>
-            <span className="wf-badge">{d.max_retries ?? 2} retries</span>
-          </div>
-        )}
-        {todo && <div className="wf-badges"><span className="wf-badge wf-check">{todo}</span></div>}
-      </div>
+      {todo && <div className="cf-node-todo">{todo}</div>}
 
-      {!TERMINAL.includes(t) && <Handle type="source" position={Position.Bottom} />}
+      {!TERMINAL.includes(t) && <Handle type="source" position={Position.Right} />}
     </div>
   );
 }

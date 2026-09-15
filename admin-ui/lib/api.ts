@@ -190,6 +190,31 @@ export interface ElevenLabsVoice {
   verified_languages: ElevenLabsVoiceVerifiedLanguage[];
 }
 
+/** Speak `text` in this provider's voice. Returns WAV audio; the API key
+ *  stays server-side (services/config/voice_preview.py). Engines that need a
+ *  local model (macos, kokoro) return a 400 explaining why. */
+export const previewVoice = async (providerId: string, text: string): Promise<Blob> => {
+  const token = getToken();
+  const res = await fetch(`${BASE_URL}/providers/${providerId}/preview`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      detail = ((await res.json())?.detail as string) || detail;
+    } catch {
+      // not JSON — keep statusText
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return res.blob();
+};
+
 export const listElevenLabsVoices = (providerId: string) =>
   request<ElevenLabsVoice[]>(`/providers/${providerId}/voices`);
 

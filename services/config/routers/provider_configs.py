@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from libs.tenancy import set_target_tenant
 
 from .. import provider_configs as provider_configs_service
 from .. import tenants as tenants_service
+from .. import voice_preview
 from ..auth import CurrentUser
 from ..deps import (
     assert_tenant_access,
@@ -19,7 +20,7 @@ from ..deps import (
     require_role,
     validate_id_exists,
 )
-from ..schemas import ProviderConfigCreate, ProviderConfigUpdate
+from ..schemas import ProviderConfigCreate, ProviderConfigUpdate, VoicePreview
 from ..secret_resolver import CompositeSecretResolver
 
 tenant_scoped_router = APIRouter(
@@ -154,4 +155,31 @@ async def list_provider_voices(provider_id: str, current_user: CurrentUser = Dep
     set_target_tenant(cfg["tenant_id"])
     return await provider_configs_service.list_elevenlabs_voices(
         provider_id, secret_resolver=_secret_resolver,
+    )
+
+
+@router.post("/{provider_id}/preview")
+async def preview_provider_voice(
+    provider_id: str,
+    body: VoicePreview,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Speak the caller's own text in this voice. Same Tier 3 authorization
+    and same one-place-resolves-the-secret rule as /voices above — the key is
+    used for one outbound call and never reaches the admin UI."""
+    cfg = await _authorize_provider(provider_id, current_user)
+    set_target_tenant(cfg["tenant_id"])
+    try:
+        wav = await voice_preview.synthesize_preview(
+            cfg, body.text, secret_resolver=_secret_resolver,
+        )
+    except voice_preview.PreviewUnavailable as exc:
+        raise HTTPException(status_code=400, detail=exc.detail)
+    return Response(
+        content=wav,
+        media_type="audio/wav",
+        # A preview is regenerated whenever the text changes, and the text is
+        # in the request body rather than the URL, so caching it would serve
+        # the previous line for a changed prompt.
+        headers={"Cache-Control": "no-store"},
     )

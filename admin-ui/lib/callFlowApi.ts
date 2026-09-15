@@ -7,6 +7,7 @@
 import { request } from "./api";
 
 export type CallFlowStatus = "active" | "inactive";
+export type CallFlowDirection = "inbound" | "outbound" | "both";
 
 export type CallFlowNodeType = "start" | "play" | "menu" | "collect" | "dial" | "agent" | "hangup";
 
@@ -24,6 +25,8 @@ export interface CallFlowNodeData {
   terminator?: string;
   destination?: string;
   agent_id?: string;
+  /** Start step only: the voice every spoken step in this flow uses. */
+  tts_config_id?: string;
 }
 
 export interface CallFlowGraphNode {
@@ -53,6 +56,7 @@ export interface CallFlowSummary {
   name: string;
   description: string;
   status: CallFlowStatus;
+  direction: CallFlowDirection;
   config_version: number;
   created_at: string;
   updated_at: string;
@@ -85,7 +89,16 @@ export const listCallFlows = (tenantSlug: string) =>
 
 export const createCallFlow = (
   tenantSlug: string,
-  body: { slug: string; name: string; description?: string },
+  body: {
+    slug: string;
+    name: string;
+    description?: string;
+    direction?: CallFlowDirection;
+    /** Copy another flow in the same account; resolved server-side. */
+    clone_from_id?: string;
+    /** Scaffold from the step picker; ignored when clone_from_id is set. */
+    graph?: CallFlowGraph;
+  },
 ) =>
   request<CallFlow>(`/tenants/${tenantSlug}/call-flows`, {
     method: "POST",
@@ -96,7 +109,7 @@ export const getCallFlow = (callFlowId: string) => request<CallFlow>(`/call-flow
 
 export const updateCallFlow = (
   callFlowId: string,
-  body: { name?: string; description?: string; status?: CallFlowStatus },
+  body: { name?: string; description?: string; status?: CallFlowStatus; direction?: CallFlowDirection },
 ) => request<CallFlow>(`/call-flows/${callFlowId}`, { method: "PATCH", body: JSON.stringify(body) });
 
 export const deleteCallFlow = (callFlowId: string) =>

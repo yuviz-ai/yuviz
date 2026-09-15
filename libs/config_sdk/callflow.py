@@ -93,6 +93,11 @@ class CallFlowNode:
     min_digits:   int = 1
     max_digits:   int = 10
     terminator:   str = "#"
+    # start only — the voice every speaking step in this flow uses. Held on
+    # the start node rather than on the call_flows row because it is part of
+    # the graph the runtime walks: a published version then carries the voice
+    # it was published with, and a rollback restores that too.
+    tts_config_id: str | None = None
     # dial only
     destination:  str | None = None
     # agent only — which conversational agent picks the call up
@@ -130,6 +135,8 @@ class CallFlowGraph:
                     variable=n.variable, min_digits=n.min_digits,
                     max_digits=n.max_digits, terminator=n.terminator,
                 )
+            if n.type == "start" and n.tts_config_id:
+                data["tts_config_id"] = n.tts_config_id
             if n.type == "dial":
                 data["destination"] = n.destination
             if n.type == "agent":
@@ -258,6 +265,7 @@ def parse_graph(raw: dict[str, Any]) -> CallFlowGraph:
             terminator=str(d.get("terminator") or "#"),
             destination=d.get("destination"),
             agent_id=d.get("agent_id"),
+            tts_config_id=d.get("tts_config_id"),
         )
         nodes[nid] = node
         errs.extend(_node_errors(rn, node))
@@ -318,6 +326,12 @@ def graph_warnings(graph: CallFlowGraph) -> list[CallFlowError]:
                 "node", node.id, None,
                 "No branch for an unrecognised keypress.",
             ))
+
+    if graph.start.tts_config_id is None and any(n.speaks for n in graph.nodes.values()):
+        warns.append(CallFlowError(
+            "node", graph.start_node_id, "tts_config_id",
+            "No voice picked for this flow — spoken steps will fall back to the account's default.",
+        ))
 
     if not any(n.is_terminal for n in graph.nodes.values()):
         warns.append(CallFlowError("flow", None, None,

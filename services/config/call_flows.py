@@ -30,7 +30,7 @@ from libs.tenancy import platform_conn, tenant_conn
 
 from . import audit, db
 
-_UPDATABLE_FIELDS = {"name", "description", "status"}
+_UPDATABLE_FIELDS = {"name", "description", "status", "direction"}
 _JSON_COLUMNS = ("graph", "graph_draft")
 
 
@@ -74,7 +74,7 @@ async def list_call_flows(tenant_id: Any) -> list[dict[str, Any]]:
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         rows = await conn.fetch(
-            "SELECT id, tenant_id, slug, name, description, status, config_version, "
+            "SELECT id, tenant_id, slug, name, description, status, direction, config_version, "
             "       created_at, updated_at, "
             "       (graph IS NOT NULL) AS is_published, "
             "       (graph_draft IS NOT NULL) AS has_draft "
@@ -98,32 +98,63 @@ async def get_call_flow(call_flow_id: Any, *, platform_scoped: bool = False) -> 
 
 async def create_call_flow(
     *, tenant_id: Any, slug: str, name: str, description: str = "",
+    direction: str = "inbound", clone_from_id: Any | None = None,
+    graph: dict[str, Any] | None = None,
     user_id: Any | None = None, user_email: str | None = None,
 ) -> dict[str, Any]:
-    """A new flow starts on the starter graph and is published immediately —
-    an unpublished flow an agent could already point at would answer calls
-    with nothing at all."""
-    graph = starter_graph()
-    await validate(graph)
+    """Its graph comes from one of three places, in order: a clone of another
+    flow, a caller-supplied scaffold (what the builder's step picker
+    produces), or the built-in starter. Cloning reads through tenant_conn, so
+    a clone_from_id belonging to another tenant resolves to nothing and is
+    reported as not-found rather than silently copied across the boundary.
+
+    A valid graph is published on creation; an incomplete scaffold lands as a
+    draft (see below).
+    """
+    if clone_from_id is not None:
+        source = await get_call_flow(clone_from_id)
+        if source is None:
+            raise LookupError(f"call_flow {clone_from_id} not found")
+        graph = source["graph"] or source["graph_draft"] or starter_graph()
+    elif graph is None:
+        graph = starter_graph()
+
+    # A scaffold from the builder's step picker is expected to have blanks —
+    # "hand to an AI agent" can't name the agent until you pick one, and the
+    # picker is not the place to do that. So an invalid graph lands as a
+    # draft (unpublished, nothing points at it, the canvas shows what to
+    # fix) instead of failing creation outright. The starter and any clone
+    # are always valid and still publish immediately, which is what keeps an
+    # attachable flow from ever answering a call with nothing.
+    try:
+        await validate(graph)
+        publishable = True
+    except CallFlowValidationError:
+        publishable = False
+
     graph_json = json.dumps(graph)
 
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         row = await conn.fetchrow(
-            "INSERT INTO call_flows (tenant_id, slug, name, description, graph, graph_draft) "
-            "VALUES ($1, $2, $3, $4, $5::jsonb, $5::jsonb) RETURNING *",
-            tenant_id, slug, name, description, graph_json,
+            "INSERT INTO call_flows (tenant_id, slug, name, description, direction, graph, graph_draft) "
+            "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb) RETURNING *",
+            tenant_id, slug, name, description, direction,
+            graph_json if publishable else None, graph_json,
         )
         result = _row(row)
-        await conn.execute(
-            "INSERT INTO call_flow_versions (call_flow_id, version, graph, published_by, note) "
-            "VALUES ($1, 1, $2::jsonb, $3, $4)",
-            result["id"], graph_json, user_id, "created with the flow",
-        )
+        if publishable:
+            await conn.execute(
+                "INSERT INTO call_flow_versions (call_flow_id, version, graph, published_by, note) "
+                "VALUES ($1, 1, $2::jsonb, $3, $4)",
+                result["id"], graph_json, user_id, "created with the flow",
+            )
         await audit.write_audit(
             conn, entity_type="call_flow", entity_id=result["id"], action="created",
             user_id=user_id, user_email=user_email,
-            new_value={"slug": slug, "name": name},
+            new_value={"slug": slug, "name": name, "direction": direction,
+                       "published": publishable,
+                       "cloned_from": str(clone_from_id) if clone_from_id else None},
         )
     return result
 

@@ -13,31 +13,22 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ApiError, Tenant, listTenants } from "@/lib/api";
-import { CallFlowSummary, createCallFlow, listCallFlows } from "@/lib/callFlowApi";
-import { Modal } from "@/components/Modal";
+import { CallFlowSummary, deleteCallFlow, listCallFlows } from "@/lib/callFlowApi";
 
 interface FlowRow extends CallFlowSummary {
   tenantSlug: string;
   tenantName: string;
 }
 
-function slugify(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-}
-
 export default function CallFlowsPage() {
   const router = useRouter();
-  const [tenants, setTenants] = useState<Tenant[]>([]);
+  const [, setTenants] = useState<Tenant[]>([]);
   const [flows, setFlows] = useState<FlowRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [deleting, setDeleting] = useState<string | null>(null);
 
-  const [creating, setCreating] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [newTenant, setNewTenant] = useState("");
-  const [createError, setCreateError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -45,7 +36,6 @@ export default function CallFlowsPage() {
     listTenants()
       .then(async (ts) => {
         setTenants(ts);
-        if (ts.length > 0) setNewTenant(ts[0].slug);
         const perTenant = await Promise.all(
           ts.map(async (t) => {
             const rows = await listCallFlows(t.slug).catch(() => [] as CallFlowSummary[]);
@@ -68,17 +58,19 @@ export default function CallFlowsPage() {
 
   const open = (f: FlowRow) => router.push(`/workflows/flows/${f.id}`);
 
-  const handleCreate = async () => {
-    const slug = slugify(newName);
-    if (!slug || !newTenant) return;
-    setBusy(true);
-    setCreateError(null);
+  const remove = async (f: FlowRow) => {
+    const msg =
+      `Delete "${f.name}"? Any agents attached to it go back to answering directly, ` +
+      `and its published versions go with it.`;
+    if (!window.confirm(msg)) return;
+    setDeleting(f.id);
     try {
-      const flow = await createCallFlow(newTenant, { slug, name: newName.trim() });
-      router.push(`/workflows/flows/${flow.id}`);
+      await deleteCallFlow(f.id);
+      setFlows((fs) => fs.filter((x) => x.id !== f.id));
     } catch (e) {
-      setCreateError(e instanceof ApiError ? e.detail : String(e));
-      setBusy(false);
+      setError(e instanceof ApiError ? e.detail : String(e));
+    } finally {
+      setDeleting(null);
     }
   };
 
@@ -94,7 +86,7 @@ export default function CallFlowsPage() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
-          <button className="btn btn-primary btn-sm" onClick={() => setCreating(true)}>
+          <button className="btn btn-primary btn-sm" onClick={() => router.push("/workflows/new")}>
             + New flow
           </button>
         </div>
@@ -112,7 +104,7 @@ export default function CallFlowsPage() {
           <table className="tbl">
             <thead>
               <tr>
-                <th>Flow</th><th>Account</th><th>State</th><th>Version</th><th />
+                <th>Flow</th><th>Account</th><th>Type</th><th>State</th><th>Version</th><th />
               </tr>
             </thead>
             <tbody>
@@ -120,6 +112,7 @@ export default function CallFlowsPage() {
                 <tr key={f.id} onClick={() => open(f)}>
                   <td className="bold">{f.name}</td>
                   <td>{f.tenantName}</td>
+                  <td className="mono" style={{ textTransform: "capitalize" }}>{f.direction}</td>
                   <td>
                     <span className={`badge ${f.status === "active" ? "green" : "gray"}`}>
                       {f.status === "active" ? "Active" : "Paused"}
@@ -129,6 +122,13 @@ export default function CallFlowsPage() {
                   <td style={{ textAlign: "right" }}>
                     <button className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); open(f); }}>
                       Open
+                    </button>{" "}
+                    <button
+                      className="btn btn-danger btn-sm"
+                      disabled={deleting === f.id}
+                      onClick={(e) => { e.stopPropagation(); remove(f); }}
+                    >
+                      {deleting === f.id ? "Deleting…" : "Delete"}
                     </button>
                   </td>
                 </tr>
@@ -140,55 +140,10 @@ export default function CallFlowsPage() {
 
       <div className="form-hint" style={{ marginTop: 10 }}>
         A call flow answers before any AI agent does: it plays prompts, collects keypresses, and
-        routes the caller — to a human, to an AI agent, or to hangup. Attach one to an agent from
-        that agent&apos;s <strong>Advanced</strong> tab in Agent Studio.
+        routes the caller — to a human, to an AI agent, or to hangup. Open a flow to pick which
+        agents answer behind it.
       </div>
 
-      <Modal
-        open={creating}
-        title="New call flow"
-        onClose={() => { if (!busy) setCreating(false); }}
-        footer={
-          <>
-            <button className="btn btn-ghost" disabled={busy} onClick={() => setCreating(false)}>
-              Cancel
-            </button>
-            <button
-              className="btn btn-primary"
-              disabled={busy || !slugify(newName) || !newTenant}
-              onClick={handleCreate}
-            >
-              {busy ? "Creating…" : "Create"}
-            </button>
-          </>
-        }
-      >
-        {createError && <div className="error-banner">{createError}</div>}
-        <div className="form-group">
-          <label className="form-label">Name <span className="required">*</span></label>
-          <input
-            className="form-input"
-            autoFocus
-            value={newName}
-            placeholder="Main line IVR"
-            onChange={(e) => setNewName(e.target.value)}
-          />
-          {newName.trim() !== "" && (
-            <div className="form-hint">Address: <span className="mono">{slugify(newName) || "—"}</span></div>
-          )}
-        </div>
-        <div className="form-group" style={{ marginBottom: 0 }}>
-          <label className="form-label">Account <span className="required">*</span></label>
-          <select className="form-select" value={newTenant} onChange={(e) => setNewTenant(e.target.value)}>
-            {tenants.map((t) => (
-              <option key={t.id} value={t.slug}>{t.name}</option>
-            ))}
-          </select>
-          <div className="form-hint">
-            You land on the canvas with a starter flow drawn: answer, greet, hang up.
-          </div>
-        </div>
-      </Modal>
     </>
   );
 }

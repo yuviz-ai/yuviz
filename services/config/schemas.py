@@ -166,16 +166,35 @@ class WorkflowPublish(BaseModel):
         return _check_graph_bounds(value)
 
 
+class VoicePreview(BaseModel):
+    """Text to speak in a provider_config's voice. The length cap lives in
+    voice_preview.MAX_CHARS too — this one keeps an oversized body from
+    reaching the vendor at all."""
+    text: str = Field(min_length=1, max_length=600)
+
+
 class CallFlowCreate(BaseModel):
     slug:        str
     name:        str
     description: str = ""
+    direction:   Literal["inbound", "outbound", "both"] = "inbound"
+    # Exactly one seeds the graph, or neither for the built-in starter:
+    # clone_from_id copies another flow in the same tenant, graph is the
+    # scaffold the builder's step picker produced.
+    clone_from_id: str | None = None
+    graph:         dict[str, Any] | None = None
+
+    @field_validator("graph")
+    @classmethod
+    def _graph_bounds(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        return _check_graph_bounds(value)
 
 
 class CallFlowUpdate(BaseModel):
     name:        str | None = None
     description: str | None = None
-    status:      str | None = None
+    status:      Literal["active", "inactive"] | None = None
+    direction:   Literal["inbound", "outbound", "both"] | None = None
 
 
 class CallFlowDraft(BaseModel):

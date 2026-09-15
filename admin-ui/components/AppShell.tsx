@@ -142,6 +142,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [theme, setTheme] = useState<"dark" | "light">("light");
   const [search, setSearch] = useState("");
   const [collapsed, setCollapsed] = useState(false);
+  // Off-canvas nav on phones/tablets. Separate from `collapsed` (the
+  // desktop icon-rail toggle) — the two mean different things and a
+  // narrow screen should not inherit whichever the user last chose.
+  const [navOpen, setNavOpen] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [tenants, setTenants] = useState<Tenant[]>([]);
@@ -151,6 +155,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
+
+  useEffect(() => {
+    setNavOpen(false);
+  }, [pathname]);
 
   // Auth guard: /login and /invite render standalone (no sidebar, nothing
   // to guard — see the early return below). /invite hosts invite acceptance
@@ -285,7 +293,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const crumbs = inAgentConfig ? SETTINGS_CRUMBS : [activeItem?.label ?? "Yuviz.ai"];
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${navOpen ? " nav-open" : ""}`}>
+      <button
+        className="nav-scrim"
+        aria-label="Close menu"
+        onClick={() => setNavOpen(false)}
+      />
       <aside className={`sidebar${collapsed ? " collapsed" : ""}`}>
         <div className="logo">
           <div className="logo-icon" aria-hidden="true">
@@ -414,6 +427,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <div className="main">
         <div className="topbar">
+          <button
+            className="nav-toggle"
+            aria-label="Menu"
+            aria-expanded={navOpen}
+            onClick={() => setNavOpen((o) => !o)}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6">
+              <path d="M2 4h12M2 8h12M2 12h12" />
+            </svg>
+          </button>
           {user?.role === "superadmin" ? (
             tenants.length > 0 && (
               <div className="tenant-switch">
