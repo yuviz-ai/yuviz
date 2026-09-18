@@ -181,6 +181,10 @@ export function TestAgentPanel({
   };
 
   const handleStart = async () => {
+    // Close any prior WS/mic first. Otherwise "Test again" during the
+    // end_call farewell delay bumps sessionGen and skips the deferred
+    // teardown — orphaned sockets keep holding webcall session slots.
+    teardown();
     sessionGenRef.current += 1;
     setState("connecting");
     setErrorMsg(null);
@@ -296,7 +300,10 @@ export function TestAgentPanel({
             break;
           case "error":
             setErrorMsg(msg.message || "The agent reported an error.");
-            if (msg.fatal) setState("error");
+            if (msg.fatal) {
+              setState("error");
+              teardown();
+            }
             break;
         }
       };

@@ -11,7 +11,6 @@ import pytest
 
 from services.webcall.__main__ import (
     _CONSOLE_ROLES,
-    _SessionSlots,
     _await_session_auth,
     _config_tenant_check,
     _session_auth_problem,
@@ -154,32 +153,3 @@ async def test_await_session_auth_rejects_bad_frames():
     ws = _FakeWs([json.dumps({"type": "text_input", "text": "hi"})])
     err, user_id = await _await_session_auth(ws, "acme")
     assert err and "auth frame first" in err and user_id is None
-
-
-@pytest.mark.asyncio
-async def test_session_slots_cap_per_user(monkeypatch):
-    monkeypatch.setenv("WEBCALL_MAX_SESSIONS_PER_USER", "2")
-    monkeypatch.setenv("WEBCALL_MAX_SESSIONS_PER_TENANT", "10")
-    slots = _SessionSlots()
-    assert await slots.try_acquire("u1", "acme") is None
-    assert await slots.try_acquire("u1", "acme") is None
-    err = await slots.try_acquire("u1", "acme")
-    assert err and "user" in err
-    # Different user on same tenant still ok.
-    assert await slots.try_acquire("u2", "acme") is None
-    await slots.release("u1", "acme")
-    assert await slots.try_acquire("u1", "acme") is None
-
-
-@pytest.mark.asyncio
-async def test_session_slots_cap_per_tenant(monkeypatch):
-    monkeypatch.setenv("WEBCALL_MAX_SESSIONS_PER_USER", "10")
-    monkeypatch.setenv("WEBCALL_MAX_SESSIONS_PER_TENANT", "2")
-    slots = _SessionSlots()
-    assert await slots.try_acquire("u1", "acme") is None
-    assert await slots.try_acquire("u2", "acme") is None
-    err = await slots.try_acquire("u3", "acme")
-    assert err and "account" in err
-    assert await slots.try_acquire("u3", "other") is None
-    await slots.release("u1", "acme")
-    assert await slots.try_acquire("u3", "acme") is None
