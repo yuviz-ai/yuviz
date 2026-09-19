@@ -161,11 +161,11 @@ class OpenAILLM:
         # booking claims: the model sometimes just declines to call the
         # tool even on the exact turn it obviously should. tool_choice is
         # the caller's lever to force it on that one specific turn (e.g.
-        # {"type": "function", "function": {"name": "book_appointment"}}
-        # right after the caller confirms their phone number) — see
-        # pipeline.py's _message_reads_back_phone_number for where that
-        # decision is actually made; this class only forwards whatever
-        # the caller passes.
+        # {"type": "function", "function": {"name": "execute_api"}}), passed
+        # through ToolCallOrchestrator.run_turn(force_tool_name=...). No
+        # caller sets it today — the phone-confirmation trigger that used
+        # to went away with the calendar built-ins — so every turn is
+        # currently "auto". This class only forwards whatever it is given.
         if tool_choice is not None:
             payload["tool_choice"] = tool_choice
 
