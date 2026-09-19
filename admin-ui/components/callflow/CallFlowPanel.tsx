@@ -368,7 +368,7 @@ function Canvas({ flow, tenantSlug }: { flow: CallFlow; tenantSlug: string }) {
     <div className="wf-root">
       <div className="cf-header">
         <button className="btn btn-ghost btn-sm" onClick={() => router.push("/workflows")}>
-          ← Call Flows
+          ← IVR Flows
         </button>
         <div className="cf-header-title">
           <h1>{flow.name}</h1>

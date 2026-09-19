@@ -1,6 +1,6 @@
 "use client";
 
-// Call Flows — named IVR/OBD flows, each its own object (call_flows table),
+// IVR Flows — named IVR/OBD flows, each its own object (call_flows table),
 // separate from Agent Studio (/agents) which owns an agent's identity, voice
 // and knowledge.
 //
@@ -80,7 +80,7 @@ export default function CallFlowsPage() {
     <>
       <div className="card">
         <div className="card-hdr">
-          <span className="card-title">Call Flows</span>
+          <span className="card-title">IVR Flows</span>
           <input
             className="form-input"
             style={{ width: 200, marginLeft: "auto" }}

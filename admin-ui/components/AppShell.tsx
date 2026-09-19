@@ -108,11 +108,11 @@ const OVERVIEW_ITEMS = [{ href: "/dashboard", label: "Dashboard", icon: "dashboa
 
 const MANAGEMENT_ITEMS = [
   { href: "/tenants", label: "Accounts", icon: "accounts" },
-  // Agent Studio owns the agent's own configuration; Call Flows owns the
+  // Agent Studio owns the agent's own configuration; IVR Flows owns the
   // step-by-step conversation graph. One route each — /workflows used to be
   // both, plus the settings page.
   { href: "/agents", label: "Agent Studio", icon: "agents" },
-  { href: "/workflows", label: "Call Flows", icon: "workflows" },
+  { href: "/workflows", label: "IVR Flows", icon: "workflows" },
   { href: "/knowledge-bases", label: "Knowledge Base", icon: "knowledge-bases" },
   { href: "/ai-voice", label: "AI & Voice", icon: "ai-voice" },
   { href: "/phone-numbers", label: "Phone Numbers", icon: "phone-numbers" },
