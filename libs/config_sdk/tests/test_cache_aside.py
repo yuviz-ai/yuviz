@@ -23,10 +23,11 @@ class FakeRepo:
     counts calls so tests can assert the HTTP fallback was (or wasn't)
     reached."""
 
-    def __init__(self, tenants=None, agents=None, providers=None):
+    def __init__(self, tenants=None, agents=None, providers=None, call_flows=None):
         self.tenants = tenants or {}
         self.agents = agents or {}
         self.providers = providers or {}
+        self.call_flows = call_flows or {}
         self.calls: list[str] = []
         self.closed = False
 
@@ -44,6 +45,10 @@ class FakeRepo:
     async def fetch_provider_config(self, provider_id):
         self.calls.append(f"provider:{provider_id}")
         return self.providers.get(provider_id)
+
+    async def fetch_call_flow(self, tenant_slug, call_flow_id):
+        self.calls.append(f"callflow:{tenant_slug}:{call_flow_id}")
+        return self.call_flows.get((tenant_slug, call_flow_id))
 
 
 def _tenant_row(slug, **overrides):
@@ -67,6 +72,15 @@ def _agent_row(slug, **overrides):
 
 def _provider_row(provider_id, role, engine, **overrides):
     return {"id": provider_id, "role": role, "engine": engine, "extra": "{}", **overrides}
+
+
+def _call_flow_row(flow_id, tenant_slug, **overrides):
+    return {
+        "id": flow_id, "tenant_slug": tenant_slug, "config_version": 1,
+        "graph": {"version": 1, "nodes": [], "edges": []},
+        "agent_slugs": {}, "resolved_tts_config_id": None,
+        **overrides,
+    }
 
 
 async def test_get_tenant_hits_redis_and_skips_http():
@@ -416,3 +430,36 @@ async def test_runtime_config_transfer_timeout_out_of_bounds_falls_back_to_defau
 
     rc = await provider.get_runtime_config("acme", "sup")
     assert rc.policies.transfer_timeout_ms == 45_000
+
+
+async def test_get_call_flow_hits_redis_and_skips_http():
+    redis_repo = FakeRepo(call_flows={("acme", "flow1"): _call_flow_row("flow1", "acme")})
+    http_repo = FakeRepo()
+    provider = CacheAsideConfigProvider(redis_repo, http_repo)
+
+    flow = await provider.get_call_flow("acme", "flow1")
+    assert flow is not None and flow.id == "flow1" and flow.tenant_slug == "acme"
+    assert http_repo.calls == []  # never reached
+
+
+async def test_get_call_flow_falls_through_to_http_on_redis_miss():
+    redis_repo = FakeRepo()
+    http_repo = FakeRepo(call_flows={("acme", "flow1"): _call_flow_row("flow1", "acme")})
+    provider = CacheAsideConfigProvider(redis_repo, http_repo)
+
+    flow = await provider.get_call_flow("acme", "flow1")
+    assert flow is not None and flow.id == "flow1"
+    assert http_repo.calls == ["callflow:acme:flow1"]
+
+
+async def test_get_call_flow_both_miss_returns_none():
+    provider = CacheAsideConfigProvider(FakeRepo(), FakeRepo())
+    assert await provider.get_call_flow("acme", "no-such-flow") is None
+
+
+async def test_agent_row_maps_call_flow_id():
+    redis_repo = FakeRepo(agents={("acme", "sup"): _agent_row("sup", call_flow_id="flow1")})
+    provider = CacheAsideConfigProvider(redis_repo, FakeRepo())
+
+    agent = await provider.get_agent("acme", "sup")
+    assert agent is not None and agent.call_flow_id == "flow1"

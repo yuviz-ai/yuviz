@@ -211,9 +211,90 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
                         )
                     )
 
+        async def _emit_response(response) -> AsyncIterator[pb.ServiceMessage]:
+            """Out-of-band egress for a HandlerResponse with no inbound
+            message driving it (a call-flow menu timeout — see
+            callflow/handler.py's out_responses queue). Reproduces the
+            speech_ended branch's exact order — TtsStarted -> TtsChunks ->
+            terminal empty is_final=True chunk -> EndCall / held
+            TransferRequest — but unconditionally, not gated on whether this
+            turn had any tts_payloads: a hangup node with no prompt must
+            still emit the terminal empty chunk before EndCall, or the
+            gateway (which only consumes a pending end-call once that turn's
+            TTS finishes playing) never gets the signal and the call hangs
+            open until its own timeout."""
+            nonlocal tts_seq, pending_transfer
+
+            yield pb.ServiceMessage(tts_started=pb.TtsStarted(session_id=sid))
+            for payload_bytes in response.tts_payloads:
+                tts_seq += 1
+                yield pb.ServiceMessage(
+                    tts_chunk=pb.TtsChunk(
+                        session_id=sid,
+                        sequence_num=tts_seq,
+                        codec=pb.AUDIO_CODEC_PCM_S16LE,
+                        sample_rate=16000,
+                        payload=payload_bytes,
+                        is_final=False,
+                    )
+                )
+            tts_seq += 1
+            yield pb.ServiceMessage(
+                tts_chunk=pb.TtsChunk(
+                    session_id=sid,
+                    sequence_num=tts_seq,
+                    codec=pb.AUDIO_CODEC_PCM_S16LE,
+                    sample_rate=16000,
+                    payload=b"",
+                    is_final=True,
+                )
+            )
+
+            if response.end_call:
+                yield pb.ServiceMessage(
+                    end_call=pb.EndCall(
+                        session_id=sid,
+                        reason="agent_ended_call",
+                        grace_period_ms=response.end_call_grace_period_ms,
+                    )
+                )
+
+            if response.transfer_request:
+                tr = response.transfer_request
+                # Out-of-band responses always sent TTS above (unconditionally,
+                # unlike the in-turn branch), so a transfer here always waits
+                # for that playback to finish — same reasoning as the
+                # speech_ended branch's pending_transfer.
+                pending_transfer = tr
+                log.info(
+                    "Converse: TransferRequest held until playback finishes "
+                    "(out-of-band) session=%s", sid,
+                )
+
+        msg_fut: asyncio.Future | None = None
+        out_fut: asyncio.Future | None = None
+
         try:
             while True:
-                msg = await msg_q.get()
+                if session.out_responses is not None:
+                    if msg_fut is None:
+                        msg_fut = asyncio.ensure_future(msg_q.get())
+                    if out_fut is None:
+                        out_fut = asyncio.ensure_future(session.out_responses.get())
+                    done, _ = await asyncio.wait(
+                        {msg_fut, out_fut}, return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if out_fut in done:
+                        out_response = out_fut.result()
+                        out_fut = None
+                        async for out_msg in _emit_response(out_response):
+                            yield out_msg
+                        continue  # msg_fut (if any) stays pending for next iteration
+                    msg = msg_fut.result()
+                    msg_fut = None
+                else:
+                    msg = await msg_q.get()
+
                 if msg is None:
                     break  # gRPC stream closed
 
@@ -485,6 +566,12 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
                             if out is not None:
                                 yield out
 
+                elif payload_case == "dtmf":
+                    # Never log the digit value (see the SDK's "digit values
+                    # are never logged" rule) — arm name and session_id only.
+                    log.info("Converse: dtmf session=%s", sid)
+                    await session.push_dtmf(msg.dtmf.digit)
+
                 elif payload_case == "cancel_generation":
                     await session.cancel()
                     yield pb.ServiceMessage(
@@ -615,6 +702,9 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
 
         # ── 4. Teardown ────────────────────────────────────────────────────────
         finally:
+            for pending_fut in (msg_fut, out_fut):
+                if pending_fut is not None and not pending_fut.done():
+                    pending_fut.cancel()
             reader_task.cancel()
             try:
                 await reader_task

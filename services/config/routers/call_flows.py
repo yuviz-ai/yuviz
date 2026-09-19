@@ -83,6 +83,25 @@ async def list_call_flows(tenant_slug: str, current_user: CurrentUser = Depends(
     return await call_flows_service.list_call_flows(tenant["id"])
 
 
+@tenant_scoped_router.get("/{call_flow_id}/published")
+async def get_published_call_flow(
+    tenant_slug: str, call_flow_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """The runtime read for the conversation service (IConfigProvider.
+    get_call_flow()) — deliberately NOT _authorize_flow(), which resolves
+    the row first and pins RLS to the row's own tenant. Here {tenant_slug}
+    is the DID-resolved tenant and IS the RLS target (bind_path_tenant, on
+    the router above) before the row is ever looked up, so a call_flow_id
+    naming another tenant's row is invisible rather than rejected. Every
+    negative case is the same bare 404 (lesson 2)."""
+    _parse_id(call_flow_id)
+    payload = await call_flows_service.get_published_for_runtime(tenant_slug, call_flow_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail=f"call_flow {call_flow_id!r} not found")
+    return payload
+
+
 @tenant_scoped_router.post("", status_code=201)
 async def create_call_flow(
     tenant_slug: str,

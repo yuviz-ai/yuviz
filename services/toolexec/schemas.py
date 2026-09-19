@@ -106,7 +106,12 @@ class ChainExecuteResponse(BaseModel):
     failed_step: ChainStepReport | None = None
     # Redacted projection of the FINAL step only, populated only when
     # chain_status == "success".
-    data: dict[str, Any] = {}
+    #
+    # A JSON array is as valid a response body as an object, and list
+    # endpoints (GET /users, GET /comments) return one — typing this as
+    # dict-only made the chain run correctly and then fail to serialize its
+    # own result, turning a successful call into a 500.
+    data: dict[str, Any] | list[Any] = {}
     missing_fields: list[dict] = []
     deterministic_response: str | None = None
     error: str | None = None

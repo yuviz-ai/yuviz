@@ -16,10 +16,10 @@ class IToolExecutor(Protocol):
     async def execute(self, request: ToolExecutionRequest) -> ToolResult: ...
 
 
-# Second positional arg is an optional companion provider (see
-# ToolDefinition.companion_tool_name) — None for every factory that
-# doesn't declare one; only book_appointment's uses it today.
-ExecutorFactory = Callable[[Any, Any], IToolExecutor]
+# One positional arg: the provider this tool's policy resolved to. The
+# old second "companion provider" slot went away with the calendar
+# built-ins (book_appointment -> send_sms was its only user).
+ExecutorFactory = Callable[[Any], IToolExecutor]
 
 
 class ExecutorRegistry:
@@ -29,8 +29,8 @@ class ExecutorRegistry:
     def register(self, tool_name: str, factory: ExecutorFactory) -> None:
         self._factories[tool_name] = factory
 
-    def resolve(self, tool_name: str, provider: Any, companion: Any = None) -> IToolExecutor | None:
+    def resolve(self, tool_name: str, provider: Any) -> IToolExecutor | None:
         factory = self._factories.get(tool_name)
         if factory is None:
             return None
-        return factory(provider, companion)
+        return factory(provider)

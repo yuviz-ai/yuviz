@@ -62,3 +62,21 @@ async def test_fetch_provider_config_uses_correct_key_format():
     await client.delete(f"provider:{provider_id}")
     await client.aclose()
     await repo.close()
+
+
+async def test_fetch_call_flow_uses_correct_key_format():
+    tenant_slug = f"test-{uuid.uuid4().hex[:8]}"
+    call_flow_id = str(uuid.uuid4())
+    client = redis.from_url(REDIS_URL, decode_responses=True)
+    await client.set(
+        f"callflow:{tenant_slug}:{call_flow_id}",
+        json.dumps({"id": call_flow_id, "tenant_slug": tenant_slug}),
+    )
+
+    repo = RedisConfigRepository(REDIS_URL)
+    result = await repo.fetch_call_flow(tenant_slug, call_flow_id)
+    assert result == {"id": call_flow_id, "tenant_slug": tenant_slug}
+
+    await client.delete(f"callflow:{tenant_slug}:{call_flow_id}")
+    await client.aclose()
+    await repo.close()

@@ -35,10 +35,13 @@ from services.conversation.tools.types import ToolExecutionContext, ToolExecutio
 
 
 def test_registry_tripwire_every_tool_name_is_accounted_for():
+    # The agent has exactly two tools, and only this one is DB-gated;
+    # search_knowledge is local (see registry.py). A new name appearing
+    # here means someone added a first-class tool per capability again —
+    # which is the shape this design deliberately left behind. A new
+    # capability belongs in custom_apis, routed by its description.
     names = {d.name for d in ToolRegistry().all()}
-    assert names == {
-        "book_appointment", "cancel_appointment", "reschedule_appointment", "send_sms", "execute_api",
-    }
+    assert names == {"execute_api"}
 
 
 # ── ToolPolicyResolver._specialize_execute_api / enabled_tools() ─────────
@@ -99,9 +102,13 @@ def _atp_row(tool_name: str, tool_provider_config_id: str = "cfg1", max_chain_de
     }
 
 
-def _api_row(name: str, param_name=None, param_sensitive=False) -> dict:
+def _api_row(name: str, param_name=None, param_sensitive=False, is_intermediate=False) -> dict:
+    """One row of the specialization query. is_intermediate marks an API
+    that is some OTHER enabled API's upstream — the chain runs it
+    automatically, so it must never be offered to the model."""
     return {
-        "id": name, "name": name, "description": f"{name} description", "chain_levels": 1,
+        "id": name, "name": name, "description": f"{name} description",
+        "is_intermediate": is_intermediate,
         "param_name": param_name, "param_description": "a param", "json_type": "string",
         "required": True, "param_sensitive": param_sensitive,
     }
@@ -172,6 +179,109 @@ async def test_no_sensitive_params_means_empty_sensitive_arg_keys():
 
     execute_api_policy = next(p for p in resolved if p.definition.name == "execute_api")
     assert execute_api_policy.sensitive_arg_keys == frozenset()
+
+
+# ── Which APIs the model is allowed to pick, and what it is told they take ──
+#
+# Both regressions below came from one live symptom: the agent kept
+# calling the wrong API. The flat per-API query offered every enabled API
+# including pure chain steps, and documented a terminal API's caller
+# inputs as empty because those inputs belong to its upstream leaf. The
+# model was then picking the only name that advertised somewhere to put
+# what the caller had just said — correctly, given what it was shown.
+
+
+async def test_an_api_that_is_another_apis_upstream_is_never_offered():
+    conn = _FakeConn([
+        [_atp_row("execute_api")],
+        [
+            # get_product_details depends on search_products, so toolexec
+            # runs search_products automatically as step 1.
+            _api_row("get_product_details", param_name="q"),
+            _api_row("search_products", param_name="q", is_intermediate=True),
+        ],
+    ])
+    resolver = ToolPolicyResolver(pool=_FakePool(conn), registry=ToolRegistry())
+
+    resolved = await resolver.enabled_tools("agent1", "t1")
+
+    policy = next(p for p in resolved if p.definition.name == "execute_api")
+    enum = policy.definition.parameters_schema["properties"]["api_name"]["enum"]
+    assert enum == ["get_product_details"]
+    assert "search_products" not in policy.definition.description
+
+
+async def test_a_terminal_apis_caller_params_come_from_its_whole_chain():
+    # get_product_details declares no caller param of its own — `q` lives
+    # on search_products, the leaf it depends on. The model must still be
+    # told get_product_details takes `q`, or it has nowhere to put the
+    # product the caller named.
+    conn = _FakeConn([
+        [_atp_row("execute_api")],
+        [
+            _api_row("get_product_details", param_name="q"),
+            _api_row("search_products", param_name="q", is_intermediate=True),
+        ],
+    ])
+    resolver = ToolPolicyResolver(pool=_FakePool(conn), registry=ToolRegistry())
+
+    resolved = await resolver.enabled_tools("agent1", "t1")
+
+    description = next(p for p in resolved if p.definition.name == "execute_api").definition.description
+    assert "- get_product_details:" in description
+    assert "* q (string, required)" in description
+
+
+async def test_a_param_reached_twice_through_a_diamond_is_documented_once():
+    conn = _FakeConn([
+        [_atp_row("execute_api")],
+        [
+            _api_row("report", param_name="email"),
+            _api_row("report", param_name="email"),  # same leaf, two paths
+        ],
+    ])
+    resolver = ToolPolicyResolver(pool=_FakePool(conn), registry=ToolRegistry())
+
+    resolved = await resolver.enabled_tools("agent1", "t1")
+
+    description = next(p for p in resolved if p.definition.name == "execute_api").definition.description
+    assert description.count("* email (string, required)") == 1
+
+
+async def test_all_apis_intermediate_falls_back_to_offering_them_all():
+    # Only reachable through a cycle in the data. An empty enum would be
+    # strictly worse than an imperfect one — resolve_order() still refuses
+    # the cycle downstream, with a real error the model can report.
+    conn = _FakeConn([
+        [_atp_row("execute_api")],
+        [
+            _api_row("a", param_name="x", is_intermediate=True),
+            _api_row("b", param_name="y", is_intermediate=True),
+        ],
+    ])
+    resolver = ToolPolicyResolver(pool=_FakePool(conn), registry=ToolRegistry())
+
+    resolved = await resolver.enabled_tools("agent1", "t1")
+
+    policy = next(p for p in resolved if p.definition.name == "execute_api")
+    assert policy.definition.parameters_schema["properties"]["api_name"]["enum"] == ["a", "b"]
+
+
+async def test_sensitive_keys_only_count_apis_that_are_actually_offered():
+    conn = _FakeConn([
+        [_atp_row("execute_api")],
+        [
+            _api_row("public_lookup", param_name="order_id"),
+            _api_row("internal_step", param_name="national_id",
+                     param_sensitive=True, is_intermediate=True),
+        ],
+    ])
+    resolver = ToolPolicyResolver(pool=_FakePool(conn), registry=ToolRegistry())
+
+    resolved = await resolver.enabled_tools("agent1", "t1")
+
+    policy = next(p for p in resolved if p.definition.name == "execute_api")
+    assert policy.sensitive_arg_keys == frozenset()
 
 
 # ── ApiExecExecutor: chain_status -> ToolStatus ──────────────────────────

@@ -252,6 +252,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       // Private-mode/blocked storage: the selection just won't survive a
       // reload, which is a strictly worse-but-safe fallback, not a crash.
     }
+    // Tell open pages to re-query. Without this the switcher only took
+    // effect on the next full page load, which reads as it not working.
+    window.dispatchEvent(new CustomEvent("yuviz:active-tenant", { detail: t.slug }));
   };
 
   const handleLogout = () => {

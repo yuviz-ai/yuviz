@@ -15,19 +15,16 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import {
-  AgentWithTenant,
-  ApiError,
-  ProviderConfig,
-  Tenant,
-  listAllAgents,
-  listProviders,
-  listTenants,
-} from "@/lib/api";
+import { Agent, ApiError, ProviderConfig, listAgents, listProviders } from "@/lib/api";
+import { useActiveTenant } from "@/lib/useActiveTenant";
 import { listAgentKnowledgeBases } from "@/lib/knowledgeApi";
 import { listAgentCustomApis } from "@/lib/toolexecApi";
 import { AGENT_TEMPLATES } from "@/lib/agentTemplates";
-import { TestAgentPanel } from "@/components/TestAgentPanel";
+
+interface AgentRow extends Agent {
+  tenantName: string;
+  tenantSlug: string;
+}
 
 interface Attachments {
   sources: number | null; // null = the lookup failed; render "—", never 0
@@ -36,28 +33,36 @@ interface Attachments {
 
 export default function AgentsPage() {
   const router = useRouter();
-  const [agents, setAgents] = useState<AgentWithTenant[]>([]);
+  const { tenant, isPlatformScoped, loading: tenantLoading } = useActiveTenant();
+  const [agents, setAgents] = useState<AgentRow[]>([]);
   const [providersById, setProvidersById] = useState<Record<string, ProviderConfig>>({});
   const [attachments, setAttachments] = useState<Record<string, Attachments>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [testing, setTesting] = useState<AgentWithTenant | null>(null);
 
+  // Scoped to the account selected in the header switcher. Querying every
+  // tenant instead (one request each) is what made this page fail outright
+  // on a platform with hundreds of accounts.
   useEffect(() => {
+    if (tenantLoading) return;
+    if (!tenant) {
+      setAgents([]);
+      setLoading(false);
+      return;
+    }
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
-    listTenants()
-      .then(async (ts: Tenant[]) => {
-        const list = await listAllAgents(ts);
+    listAgents(tenant.slug)
+      .then(async (found) => {
+        const list: AgentRow[] = found.map((a) => ({
+          ...a, tenantName: tenant.name, tenantSlug: tenant.slug,
+        }));
         setAgents(list);
         setLoading(false);
 
-        // Provider names: one request per tenant, not per agent.
-        const provs = await Promise.all(
-          ts.map((t) => listProviders(t.id).catch(() => [] as ProviderConfig[])),
-        );
-        setProvidersById(Object.fromEntries(provs.flat().map((p) => [p.id, p])));
+        const provs = await listProviders(tenant.id).catch(() => [] as ProviderConfig[]);
+        setProvidersById(Object.fromEntries(provs.map((p) => [p.id, p])));
 
         // Attachment counts are per-agent by necessity (both junction tables
         // are keyed by agent_id with no bulk endpoint). Failures degrade to
@@ -77,7 +82,7 @@ export default function AgentsPage() {
         setError(e instanceof ApiError ? e.detail : String(e));
         setLoading(false);
       });
-  }, []);
+  }, [tenant, tenantLoading]);
 
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -97,12 +102,11 @@ export default function AgentsPage() {
     return p.model || p.voice || p.engine;
   };
 
-  const accountLine =
-    agents.length > 0
-      ? `${agents.length} agent${agents.length === 1 ? "" : "s"} across ${
-          new Set(agents.map((a) => a.tenantSlug)).size
-        } account${new Set(agents.map((a) => a.tenantSlug)).size === 1 ? "" : "s"}. Each carries its own voice stack, knowledge and guardrails.`
-      : "Each agent carries its own voice stack, knowledge and guardrails.";
+  const accountLine = tenant
+    ? `${agents.length} agent${agents.length === 1 ? "" : "s"} in ${tenant.name}.` +
+      (isPlatformScoped ? " Switch accounts from the header." : "") +
+      " Each carries its own voice stack, knowledge and guardrails."
+    : "Each agent carries its own voice stack, knowledge and guardrails.";
 
   return (
     <>
@@ -186,7 +190,10 @@ export default function AgentsPage() {
                   >
                     View &amp; edit
                   </button>
-                  <button className="btn btn-primary btn-sm" onClick={() => setTesting(a)}>
+                  <button
+                    className="btn btn-primary btn-sm"
+                    onClick={() => router.push(`/agents/${a.tenantSlug}/${a.slug}/test`)}
+                  >
                     Test
                   </button>
                 </div>
@@ -196,14 +203,6 @@ export default function AgentsPage() {
         </div>
       )}
 
-      {testing && (
-        <TestAgentPanel
-          open
-          onClose={() => setTesting(null)}
-          tenantSlug={testing.tenantSlug}
-          agentSlug={testing.slug}
-        />
-      )}
     </>
   );
 }

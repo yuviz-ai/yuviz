@@ -93,6 +93,10 @@ class CallFlowNode:
     min_digits:   int = 1
     max_digits:   int = 10
     terminator:   str = "#"
+    # collect only — when true, the collected value never leaves the
+    # runtime: it is not seeded into a handed-off agent's variables, the
+    # transcript, or any log line.
+    sensitive:    bool = False
     # start only — the voice every speaking step in this flow uses. Held on
     # the start node rather than on the call_flows row because it is part of
     # the graph the runtime walks: a published version then carries the voice
@@ -134,6 +138,7 @@ class CallFlowGraph:
                 data.update(
                     variable=n.variable, min_digits=n.min_digits,
                     max_digits=n.max_digits, terminator=n.terminator,
+                    sensitive=n.sensitive,
                 )
             if n.type == "start" and n.tts_config_id:
                 data["tts_config_id"] = n.tts_config_id
@@ -263,6 +268,7 @@ def parse_graph(raw: dict[str, Any]) -> CallFlowGraph:
             min_digits=int(d.get("min_digits") or 1),
             max_digits=int(d.get("max_digits") or 10),
             terminator=str(d.get("terminator") or "#"),
+            sensitive=bool(d.get("sensitive") or False),
             destination=d.get("destination"),
             agent_id=d.get("agent_id"),
             tts_config_id=d.get("tts_config_id"),

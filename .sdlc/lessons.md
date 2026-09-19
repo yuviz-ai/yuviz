@@ -20,9 +20,14 @@ Tags: [prd] [architect] [planner] [implementer] [critic] [security] [tester] [qa
 
 2. [architect][critic][security] Any response that differs across a tenant boundary is an
    information leak. This includes status codes (403 vs 404), error text, and latency — not just
-   response bodies.
+   response bodies. The property is **per-caller invariance**: for one fixed principal, the response
+   must not vary with the target's existence or state. It is NOT cross-caller equality — two
+   different principals legitimately hit different guards, so a test asserting byte-identical bodies
+   across two principals can neither fail on a real leak nor pass on correct code.
    *Earned: a 409 conflict named the tenant an existing account belonged to, letting any
-   tenant_admin probe an email and learn which customer employs that person.*
+   tenant_admin probe an email and learn which customer employs that person. Sharpened when a test
+   asserted a tenant-B admin's router-tier 404 body equalled a platform service account's route-tier
+   404 body — a comparison no attacker can make, which stayed red while the code was correct.*
 
 3. [architect][critic] When a design relies on a UNIQUE index or CHECK constraint, state its scope
    explicitly. An index that is unscoped across tenants is a cross-tenant denial-of-service.
@@ -75,8 +80,12 @@ Tags: [prd] [architect] [planner] [implementer] [critic] [security] [tester] [qa
     say the check was not exercised.
     Recurring shapes on this repo: asserting a value is absent when it has no code path to that
     place at all; a compound assertion with an `or` arm that is unconditionally true; asserting
-    `!= <error code>` instead of the expected code, which also passes on a different error; and a
-    "did we cover every case" tripwire that cannot trip when a new case is added.
+    `!= <error code>` instead of the expected code, which also passes on a different error; a
+    "did we cover every case" tripwire that cannot trip when a new case is added; an enumeration
+    helper whose return value the assertion never uses, so the check computes the right set and then
+    asserts over a hand-written list; and a mechanical enumeration that silently skips what it cannot
+    classify — vacuous for exactly the new case it was built to catch, so assert the enumeration's
+    own size or its residue, not just its members.
     *Earned: "applied twice, both succeeded" on an empty database, reported as idempotency proof for
     statements whose failure mode only appears when live rows exist.*
 
@@ -211,3 +220,67 @@ Tags: [prd] [architect] [planner] [implementer] [critic] [security] [tester] [qa
     different agent in the same parallel wave) resolved the tenant and asserted access but never called
     `set_target_tenant` — a platform-scoped caller passed the check and then hit `TenantUnresolved`
     on the very next line, in every one of Knowledge's by-id routes at once.
+
+31. [architect][security] When a tenant-authored document (a call-flow graph, a workflow node, a
+    prompt template, a campaign spec) names another tenant-owned row by id, the runtime must receive
+    only a server-resolved twin, arriving as a parameter the call site cannot construct without it.
+    If the unvalidated original is still in scope at that call site, the control does not exist yet.
+    *Earned: a call-flow's `start.tts_config_id` stayed on the parsed graph while the validated
+    `resolved_tts_config_id` had no channel into `CallFlowRunner` — and `get_provider_config(id)` is
+    tenant-unscoped with no `tenant_id` on the DTO, so tenant A's flow would have driven calls
+    through tenant B's TTS config and its `api_key_ref` secret. The design asserted the control in
+    prose for two rounds while the interface made the unvalidated id the only reachable value.*
+
+32. [architect][critic] A design that states the same signature in two places has two sources of
+    truth, and the implementer reads the row for the file they are editing. Where a security control
+    depends on a value arriving somewhere, write the literal call expression at the one site that
+    must satisfy it — and note that making a parameter *required* only forces the implementer to find
+    *a* value, which is the unvalidated one when the validated one was never passed down.
+    *Earned: the same cross-tenant TTS hole reopened one round after being fixed, because the Changes
+    table still typed `resolve_call_flow() -> CallFlowGraph | None` while the Interfaces block said
+    `-> tuple[CallFlowGraph, CallFlow] | None`, leaving an implementer with no `CallFlow` in scope
+    and `graph.start.tts_config_id` as the only id a now-required keyword could be fed.*
+
+33. [architect][implementer][security] When a feature gives new meaning to data that already flows
+    through an existing log line, metric label, variable dict or persistence column, every sink that
+    pipe already has is part of this change's blast radius. Enumerate the terminal sinks — log, DB
+    column, third-party vendor — before calling the review surface new-code-only.
+    *Earned: routing caller DTMF into `collect` nodes turned two harmless existing pipes into
+    credential leaks: `bridge.py`'s `log.info("dtmf digit=%s")` made a keyed-in PIN reconstructable
+    from logs, and the existing `variables` → `extracted_variables()` → `conversation_sessions`
+    jsonb channel persisted it and rendered it into an LLM prompt. Neither was in the feature's own
+    new code, which is exactly why a diff-scoped review would have missed both.*
+
+34. [architect][implementer] If a design arms a timer task alongside an event handler over shared
+    per-session state, it has two writers by default. Say which single task mutates the state: the
+    timer may only enqueue, and a late event must identify the **arm** it belongs to, not the state —
+    a node that replays itself re-enters the identical id, so bump a monotonic per-arm generation and
+    drop a mismatch. Give the test a timeout long enough that the replay's own real timer cannot
+    mature inside it, or it passes for the wrong reason.
+    *Earned: a `Listen` node's timeout task and `on_dtmf` from the servicer loop both mutated the
+    same `CallFlowRunner` across awaits — a double advance, a `Handoff` plus a `Hangup`, or the
+    wrong node. `services/conversation` is full of paired producers (servicer loop, audio delay
+    pump, VAD), so this is the default shape there, not an unlucky one.*
+
+35. [implementer][critic] After adding a method or branch to an existing file, re-read the whole
+    enclosing function. A new `def` inserted inside another function's body silently adopts that
+    function's trailing statements, and neither the type checker, the linter nor the suite will catch
+    it — a diff-scoped review reads the added lines, not the function they landed in.
+    *Earned: an `on_dtmf()` pasted inside `PipelineConversationHandler.on_cancel()` stole its last
+    statement, so `_interrupt_workflow_background_llm()` ran on a keypress documented as inert and
+    stopped running on barge-in — silently regressing every ordinary conversational call, with a
+    dead `pass` above it as the only visible trace.*
+
+36. [architect][implementer][security][tester] RLS is not a verifiable control while the app
+    connects as a BYPASSRLS role — and on this repo every service still uses the superuser DSN
+    (`scripts/start_local.sh:59-62`: "RLS is live but inert"). So a tenant-scoped read whose only
+    protection is RLS has an isolation test that cannot fire. Give such a read an explicit
+    `tenant_id` predicate as well: the layers stay independent, and the one you can actually
+    exercise goes red the moment the predicate is deleted.
+    *Earned: the call-flow runtime read relied solely on RLS for a platform-scoped service account
+    that passes `assert_tenant_access` for every slug, so the feature's single most important
+    assertion — tenant B cannot load tenant A's flow — was red under the only DB role anyone ran and
+    untested under the one nobody could. Adding `tenant_id = $2` to the three reads made two of the
+    three cross-tenant tests pass on the predicate alone. Related: [[31]] — `agents.call_flow_id`
+    was a bare `REFERENCES call_flows(id)` with nothing stopping it pointing at another tenant's
+    flow, fixed with a composite FK onto `(id, tenant_id)`.*

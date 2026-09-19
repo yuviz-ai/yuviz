@@ -1,10 +1,15 @@
 """
-ToolPolicyResolver._add_auto_derived_companions / _narrow tests — pure
-in-memory logic, no Postgres needed (neither touches self._pool). Covers
-the 2026-07-23 design decision (cancel_appointment/reschedule_appointment
-are never independently configured, both are derived from
-book_appointment's own tool_provider_config) and workflow per-node tool
+ToolPolicyResolver._narrow tests — pure in-memory logic, no Postgres
+needed (it never touches self._pool). Covers workflow per-node tool
 scoping.
+
+The auto-derived-companion tests that used to live here went away on
+2026-09-18 with the mechanism itself: book_appointment silently granting
+cancel_appointment/reschedule_appointment only made sense while those
+were built-in tools sharing one Cal.com provider config. execute_api is
+now the only DB-gated tool, and one custom API never implies another —
+that relationship is an upstream edge in custom_api_params, resolved by
+services/toolexec.
 """
 
 from __future__ import annotations
@@ -17,12 +22,12 @@ from services.conversation.tools.policy_resolver import (
 from services.conversation.tools.registry import ToolRegistry
 
 
-def _policy(tool_name: str, tool_provider_config_id: str = "cfg1") -> ResolvedToolPolicy:
+def _policy(tool_name: str = "execute_api", tool_provider_config_id: str = "cfg1") -> ResolvedToolPolicy:
     defn = ToolRegistry().resolve(tool_name)
+    assert defn is not None, f"{tool_name!r} is not in the registry"
     return ResolvedToolPolicy(
-        definition=defn, tool_provider_config_id=tool_provider_config_id, engine="cal_com",
-        api_key_ref="env:CAL_API_KEY",
-        extra={"event_type_id": 123}, timeout_ms=None, max_calls_per_turn=None,
+        definition=defn, tool_provider_config_id=tool_provider_config_id, engine="toolexec",
+        api_key_ref=None, extra={}, timeout_ms=None, max_calls_per_turn=None,
     )
 
 
@@ -30,85 +35,36 @@ def _resolver() -> ToolPolicyResolver:
     return ToolPolicyResolver(pool=None, registry=ToolRegistry())
 
 
-def test_book_appointment_present_derives_both_companions():
-    resolver = _resolver()
-    resolved = [_policy("book_appointment", tool_provider_config_id="cfg-abc")]
-
-    resolver._add_auto_derived_companions(resolved, agent_id="a1")
-
-    names = {p.definition.name for p in resolved}
-    assert names == {"book_appointment", "cancel_appointment", "reschedule_appointment"}
-    for derived_name in ("cancel_appointment", "reschedule_appointment"):
-        derived = next(p for p in resolved if p.definition.name == derived_name)
-        # Reuses book_appointment's own config — never a separate one.
-        assert derived.tool_provider_config_id == "cfg-abc"
-        assert derived.api_key_ref == "env:CAL_API_KEY"
-        assert derived.extra == {"event_type_id": 123}
-
-
-def test_no_book_appointment_means_no_derived_companions():
-    resolver = _resolver()
-    resolved: list[ResolvedToolPolicy] = []
-
-    resolver._add_auto_derived_companions(resolved, agent_id="a1")
-
-    assert resolved == []
-
-
-def test_explicit_companion_row_is_never_overridden():
-    """An explicit agent_tool_policies row for a derived tool (however it
-    got there) always wins over the derived one — this only fills a gap,
-    never clobbers real configuration."""
-    resolver = _resolver()
-    explicit_cancel = _policy("cancel_appointment", tool_provider_config_id="cfg-explicit")
-    resolved = [_policy("book_appointment", tool_provider_config_id="cfg-abc"), explicit_cancel]
-
-    resolver._add_auto_derived_companions(resolved, agent_id="a1")
-
-    cancel_policies = [p for p in resolved if p.definition.name == "cancel_appointment"]
-    assert len(cancel_policies) == 1
-    assert cancel_policies[0].tool_provider_config_id == "cfg-explicit"
-    # reschedule_appointment still gets derived normally alongside the
-    # explicit cancel_appointment override.
-    reschedule_policies = [p for p in resolved if p.definition.name == "reschedule_appointment"]
-    assert len(reschedule_policies) == 1
-    assert reschedule_policies[0].tool_provider_config_id == "cfg-abc"
-
-
-def test_disabling_book_appointment_removes_both_derived_companions():
-    """Simulates the DB query already filtering out a disabled
-    book_appointment row before this method ever runs — neither derived
-    tool gets derived because there's nothing to derive them from."""
-    resolver = _resolver()
-    resolved: list[ResolvedToolPolicy] = []  # book_appointment row excluded upstream (enabled=false)
-
-    resolver._add_auto_derived_companions(resolved, agent_id="a1")
-
-    assert resolved == []
-
-
-# ── _narrow ─────────────────────────────────────────────────────────────
-
-
 def test_only_none_leaves_the_agents_tools_alone():
-    resolved = [_policy("book_appointment")]
+    resolved = [_policy()]
     assert _narrow(resolved, None) == resolved
 
 
 def test_a_node_can_narrow_the_agents_tools():
-    resolved = [_policy("book_appointment")]
+    resolved = [_policy()]
     assert _narrow(resolved, []) == []
 
 
 def test_a_node_cannot_grant_a_tool_the_agent_does_not_have():
     # `only` subsets only — never grants a tool the agent lacks.
-    assert _narrow([], ["book_appointment"]) == []
+    assert _narrow([], ["execute_api"]) == []
 
 
-def test_a_narrowed_book_appointment_keeps_its_companions():
+def test_a_named_tool_survives_narrowing():
+    resolved = [_policy()]
+    assert {p.definition.name for p in _narrow(resolved, ["execute_api"])} == {"execute_api"}
+
+
+def test_narrowing_no_longer_drags_companions_along():
+    # The old _narrow expanded `only` with _AUTO_DERIVED_COMPANIONS before
+    # filtering. Nothing expands it now: what you name is what you get.
+    resolved = [_policy()]
+    assert _narrow(resolved, ["some_other_tool"]) == []
+
+
+async def test_enabled_tools_without_a_pool_resolves_nothing():
+    # No Postgres configured (the YAML-fallback path) must degrade to "no
+    # tools", never raise — search_knowledge is unaffected either way,
+    # since it is a local tool that never comes through this resolver.
     resolver = _resolver()
-    resolved = [_policy("book_appointment")]
-    resolver._add_auto_derived_companions(resolved, agent_id="a1")
-
-    names = {p.definition.name for p in _narrow(resolved, ["book_appointment"])}
-    assert names == {"book_appointment", "cancel_appointment", "reschedule_appointment"}
+    assert await resolver.enabled_tools("agent1", "tenant-a") == []

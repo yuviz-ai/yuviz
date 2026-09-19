@@ -23,6 +23,8 @@ export interface CallFlowNodeData {
   min_digits?: number;
   max_digits?: number;
   terminator?: string;
+  /** Collect step only: don't store or forward the collected value. */
+  sensitive?: boolean;
   destination?: string;
   agent_id?: string;
   /** Start step only: the voice every spoken step in this flow uses. */

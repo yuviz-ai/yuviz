@@ -15,6 +15,7 @@ import logging
 import signal
 import socket
 import sys
+from datetime import datetime, timezone
 
 import grpc.aio
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
@@ -31,10 +32,13 @@ from .agent_config import load_agent, to_runtime_config
 from .agent_resolver import resolve_handler_deps
 from .ai_provider_manager import AIProviderManager
 from .provider_config_subscriber import ProviderConfigSubscriber
+from .callflow.handler import CallFlowConversationHandler
+from .callflow.resolver import resolve_call_flow
+from .callflow.runner import CallFlowRunner
 from .echo import EchoConversationHandler
 from .pipeline import PipelineConversationHandler
 from .pipeline_config import PipelineConfig
-from .provider_bundle import ProviderRegistry
+from .provider_bundle import ProviderRegistry, _to_ai_provider_config
 from .providers.stt.faster_whisper import FasterWhisperSTT
 from .providers.llm.ollama import OllamaLLM
 from .secret_resolver import CompositeSecretResolver
@@ -42,9 +46,6 @@ from .servicer import ConversationServicer
 from .session import SessionContext
 from .tools.executor_registry import ExecutorRegistry
 from .tools.executors.api_exec_executor import ApiExecExecutor
-from .tools.executors.calendar_executor import CalendarExecutor
-from .tools.executors.cancel_appointment_executor import CancelAppointmentExecutor
-from .tools.executors.reschedule_appointment_executor import RescheduleAppointmentExecutor
 from .tools.llm_adapter import LLMAdapter
 from .tools.orchestrator import ToolCallOrchestrator
 from .tools.policy_resolver import ToolPolicyResolver
@@ -228,28 +229,20 @@ async def serve(port: int, args: argparse.Namespace) -> None:
     # since different tenants/agents can resolve to different LLM engines.
     tool_registry = ToolRegistry()
     executor_registry = ExecutorRegistry()
-    # Booking-confirmation SMS is its own independently configured tool
-    # ("send_sms", engine="twilio") — ToolCallOrchestrator resolves it as
-    # book_appointment's companion (see ToolDefinition.companion_tool_name)
-    # and passes it here as the second argument.
-    executor_registry.register(
-        "book_appointment",
-        lambda provider, companion=None: CalendarExecutor(provider, sms_provider=companion),
-    )
-    executor_registry.register("cancel_appointment", lambda provider, companion=None: CancelAppointmentExecutor(provider))
-    executor_registry.register("reschedule_appointment", lambda provider, companion=None: RescheduleAppointmentExecutor(provider))
-    # execute_api's provider is a ToolExecClient (provider_manager.py's
-    # _make_toolexec, reading TOOLEXEC_SERVICE_URL). Unlike the three
-    # calendar executors above, ApiExecExecutor's max_chain_depth is NOT
-    # baked in here: this factory is registered once at process startup,
-    # shared by every tenant/agent, so a per-agent override cannot live in
-    # a constructor arg closed over here — orchestrator.py threads
-    # policy.max_chain_depth into ToolExecutionContext per call instead,
-    # and ApiExecExecutor reads it from request.context there.
-    executor_registry.register(
-        "execute_api",
-        lambda provider, companion=None: ApiExecExecutor(provider),
-    )
+    # execute_api is the ONLY DB-gated tool, and so the only entry here —
+    # the agent's other tool, search_knowledge, is an in-process local tool
+    # supplied by pipeline.py and never reaches an executor factory (see
+    # registry.py's SEARCH_KNOWLEDGE for why it is local).
+    #
+    # Its provider is a ToolExecClient (provider_manager.py's
+    # _make_toolexec, reading TOOLEXEC_SERVICE_URL). ApiExecExecutor's
+    # max_chain_depth is deliberately NOT baked in here: this factory is
+    # registered once at process startup, shared by every tenant/agent, so
+    # a per-agent override cannot live in a constructor arg closed over
+    # here — orchestrator.py threads policy.max_chain_depth into
+    # ToolExecutionContext per call instead, and ApiExecExecutor reads it
+    # from request.context there.
+    executor_registry.register("execute_api", lambda provider: ApiExecExecutor(provider))
     tool_provider_manager = ToolProviderManager(CompositeSecretResolver())
     tool_policy_resolver = await ToolPolicyResolver.connect(
         os.environ.get("POSTGRES_DSN"), tool_registry,
@@ -284,6 +277,52 @@ async def serve(port: int, args: argparse.Namespace) -> None:
         )
         tts = _build_tts(cfg)
 
+        async def _build_pipeline_handler(
+            ctx: SessionContext, runtime_config, bundle,
+            *, initial_variables: dict | None = None,
+        ) -> PipelineConversationHandler:
+            """The tool-orchestrator/has_booking_tool/construction block
+            both the ordinary path and a call flow's `agent`-node handoff
+            need — factored out so a handoff builds the exact same kind of
+            handler a directly-dialed agent would, just with
+            initial_variables seeded from the flow (see callflow/handler.py)."""
+            tool_orchestrator = ToolCallOrchestrator(
+                llm_adapter=LLMAdapter(bundle.llm),
+                policy_resolver=tool_policy_resolver,
+                provider_manager=tool_provider_manager,
+                executor_registry=executor_registry,
+            )
+
+            # Whether this agent can DO anything (as opposed to only
+            # answering questions), which gates two things in the handler:
+            # the caller-ID block in the prompt suffix, and the fabricated-
+            # booking-claim guard. Since the calendar built-ins were
+            # removed, "can act" means execute_api is enabled — the tenant's
+            # own APIs are the only way an agent performs a real action now,
+            # and their names are per tenant so nothing here can look for a
+            # specific one.
+            enabled_policies = await tool_policy_resolver.enabled_tools(
+                runtime_config.agent.id, runtime_config.tenant.slug,
+            )
+            has_booking_tool = any(p.definition.name == "execute_api" for p in enabled_policies)
+
+            return PipelineConversationHandler(
+                runtime_config, bundle,
+                sample_rate=cfg.sample_rate,
+                max_history=cfg.max_history,
+                default_system_prompt=cfg.llm.system,
+                transcripts=transcripts,
+                tenant_id=ctx.tenant_id,
+                call_id=ctx.call_id,
+                direction=ctx.direction,
+                tool_orchestrator=tool_orchestrator,
+                caller_number=ctx.caller_did,
+                called_number=ctx.called_did,
+                knowledge=knowledge,
+                has_booking_tool=has_booking_tool,
+                initial_variables=initial_variables,
+            )
+
         async def handler_factory(ctx: SessionContext) -> PipelineConversationHandler:
             # Live path: one Config SDK call resolves tenant + agent + all
             # three provider roles into an immutable RuntimeConfig (Redis-
@@ -305,37 +344,66 @@ async def serve(port: int, args: argparse.Namespace) -> None:
                     agent, ctx.tenant_id or "default", ctx.script_id or "default", stt, llm, tts,
                 )
 
-            tool_orchestrator = ToolCallOrchestrator(
-                llm_adapter=LLMAdapter(bundle.llm),
-                policy_resolver=tool_policy_resolver,
-                provider_manager=tool_provider_manager,
-                executor_registry=executor_registry,
+            if not runtime_config.agent.call_flow_id:
+                return await _build_pipeline_handler(ctx, runtime_config, bundle)
+
+            # AC 27/28 (OQ4, proposed pending sign-off): a resolution
+            # failure here falls through to the ordinary conversational
+            # agent — the DID already resolved a working agent, so the
+            # config-plane hiccup should not cost the call. Reversing this
+            # default is a one-branch change confined to this `if`.
+            resolved_flow = await resolve_call_flow(runtime_config, config)
+            if resolved_flow is None:
+                return await _build_pipeline_handler(ctx, runtime_config, bundle)
+            graph, flow = resolved_flow
+
+            now = datetime.now(timezone.utc)
+            call_context_variables = {
+                "caller_number": ctx.caller_did,
+                "called_number": ctx.called_did,
+                "direction":     ctx.direction,
+                "agent_name":    runtime_config.agent.name,
+                "business_name": runtime_config.tenant.name,
+                "current_date":  now.strftime("%Y-%m-%d"),
+                "current_time":  now.strftime("%H:%M"),
+            }
+            runner = CallFlowRunner(
+                graph, tts_config_id=flow.resolved_tts_config_id, variables=call_context_variables,
             )
 
-            # Whether the caller-ID-confirmation prompt block makes any
-            # sense for this agent at all — it talks about "before
-            # booking," which is actively confusing (and contradicts a
-            # reception-only agent's own "you cannot book" instruction) if
-            # book_appointment isn't actually enabled for it.
-            enabled_policies = await tool_policy_resolver.enabled_tools(
-                runtime_config.agent.id, runtime_config.tenant.slug,
-            )
-            has_booking_tool = any(p.definition.name == "book_appointment" for p in enabled_policies)
+            async def handoff(agent_slug: str, variables: dict) -> PipelineConversationHandler | None:
+                target = await resolve_handler_deps(
+                    runtime_config.tenant.slug, agent_slug, provider_registry, config,
+                )
+                if target is None:
+                    return None
+                target_runtime_config, target_bundle = target
+                return await _build_pipeline_handler(
+                    ctx, target_runtime_config, target_bundle, initial_variables=variables,
+                )
 
-            return PipelineConversationHandler(
-                runtime_config, bundle,
+            async def voice_for(tts_config_id: str):
+                # get_provider_config() takes no tenant argument (see
+                # libs/config_sdk/providers/cache_aside.py) — safe here only
+                # because tts_config_id is flow.resolved_tts_config_id, which
+                # Config Service already validated same-tenant/role='tts'
+                # before this process ever saw it (see the Data section of
+                # the design and CallFlowRunner's own docstring).
+                provider_config = await config.get_provider_config(tts_config_id)
+                if provider_config is None:
+                    return None
+                return await provider_manager.get(_to_ai_provider_config(provider_config))
+
+            return CallFlowConversationHandler(
+                runner,
+                tts=bundle.tts,
                 sample_rate=cfg.sample_rate,
-                max_history=cfg.max_history,
-                default_system_prompt=cfg.llm.system,
-                transcripts=transcripts,
+                session_id=ctx.session_id,
                 tenant_id=ctx.tenant_id,
                 call_id=ctx.call_id,
-                direction=ctx.direction,
-                tool_orchestrator=tool_orchestrator,
-                caller_number=ctx.caller_did,
-                called_number=ctx.called_did,
-                knowledge=knowledge,
-                has_booking_tool=has_booking_tool,
+                handoff=handoff,
+                voice_for=voice_for,
+                agent_slugs=flow.agent_slugs,
             )
 
     # grpc.aio.server() defaults to SO_REUSEPORT, which lets a second process

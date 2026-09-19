@@ -25,10 +25,10 @@ from services.conversation.tools.registry import ToolRegistry
 from services.conversation.tools.types import ToolDefinition, ToolResult, ToolStatus
 
 
-def _policy(tool_name: str = "book_appointment") -> ResolvedToolPolicy:
+def _policy(tool_name: str = "execute_api") -> ResolvedToolPolicy:
     defn = ToolRegistry().resolve(tool_name)
     return ResolvedToolPolicy(
-        definition=defn, tool_provider_config_id="cfg1", engine="cal_com",
+        definition=defn, tool_provider_config_id="cfg1", engine="toolexec",
         api_key_ref="env:X",
         extra={}, timeout_ms=None, max_calls_per_turn=None,
     )
@@ -94,18 +94,23 @@ class _ScriptedLLM:
 
 
 async def test_llm_invisible_tool_is_configurable_but_never_offered_to_the_llm():
-    """send_sms (llm_visible=False) can be enabled for an agent like any
-    other tool, but must never appear in the schemas list the LLM sees —
-    it's a deterministic side effect book_appointment's own executor
-    triggers, never something the model decides to call."""
+    """A tool with llm_visible=False can be enabled for an agent like any
+    other, but must never appear in the schemas list the LLM sees. Nothing
+    ships with llm_visible=False today (send_sms, its only user, went away
+    with the calendar built-ins) — this covers the seam itself, which is
+    how any future deterministic side effect would be wired."""
     llm = _ScriptedLLM([[TokenEvent(text="Hi")]])
-    sms_policy = ResolvedToolPolicy(
-        definition=ToolRegistry().resolve("send_sms"), tool_provider_config_id="cfg2",
-        engine="twilio", api_key_ref="env:Y", extra={}, timeout_ms=None, max_calls_per_turn=None,
+    hidden_policy = ResolvedToolPolicy(
+        definition=ToolDefinition(
+            name="hidden_side_effect", description="never offered", parameters_schema={},
+            llm_visible=False,
+        ),
+        tool_provider_config_id="cfg2", engine="toolexec", api_key_ref=None,
+        extra={}, timeout_ms=None, max_calls_per_turn=None,
     )
     orchestrator = ToolCallOrchestrator(
         llm_adapter=LLMAdapter(llm),
-        policy_resolver=_FakePolicyResolver([_policy(), sms_policy]),
+        policy_resolver=_FakePolicyResolver([_policy(), hidden_policy]),
         provider_manager=_FakeProviderManager(),
         executor_registry=ExecutorRegistry(),
     )
@@ -113,49 +118,7 @@ async def test_llm_invisible_tool_is_configurable_but_never_offered_to_the_llm()
     _ = [e async for e in orchestrator.run_turn("agent1", "t1", "c1", "s1", [ChatMessage(role="user", content="hi")])]
 
     seen_names = {s["name"] for s in llm.seen_schemas[0]}
-    assert seen_names == {"book_appointment"}
-
-
-async def test_companion_tool_provider_is_resolved_and_passed_to_executor():
-    """book_appointment's ToolDefinition declares companion_tool_name=
-    "send_sms" (see registry.py) — when an agent also has send_sms
-    enabled, ToolCallOrchestrator must resolve ITS provider too and pass
-    it into the executor factory's second argument, generically, with no
-    tool name hardcoded in the orchestrator itself."""
-    llm = _ScriptedLLM([
-        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment", arguments={"requested_datetime": "x"})],
-        [TokenEvent(text="You're booked!")],
-    ])
-    sms_policy = ResolvedToolPolicy(
-        definition=ToolRegistry().resolve("send_sms"), tool_provider_config_id="cfg2",
-        engine="twilio", api_key_ref="env:Y", extra={}, timeout_ms=None, max_calls_per_turn=None,
-    )
-
-    class _RecordingProviderManager:
-        async def get(self, policy: ResolvedToolPolicy):
-            return f"provider:{policy.tool_provider_config_id}"
-
-    seen_companions = []
-
-    def _factory(provider, companion=None):
-        seen_companions.append(companion)
-        return _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True, "booking_id": "b1"}))
-
-    registry = ExecutorRegistry()
-    registry.register("book_appointment", _factory)
-
-    orchestrator = ToolCallOrchestrator(
-        llm_adapter=LLMAdapter(llm),
-        policy_resolver=_FakePolicyResolver([_policy(), sms_policy]),
-        provider_manager=_RecordingProviderManager(),
-        executor_registry=registry,
-    )
-
-    _ = [e async for e in orchestrator.run_turn(
-        "agent1", "t1", "c1", "s1", [ChatMessage(role="user", content="book me tomorrow at 3")],
-    )]
-
-    assert seen_companions == ["provider:cfg2"]
+    assert seen_names == {"execute_api"}
 
 
 async def test_plain_text_turn_with_no_tools_enabled_never_touches_executor():
@@ -175,12 +138,12 @@ async def test_plain_text_turn_with_no_tools_enabled_never_touches_executor():
 
 async def test_tool_call_executes_folds_result_and_continues_to_final_answer():
     llm = _ScriptedLLM([
-        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment", arguments={"requested_datetime": "x"})],
+        [ToolCallEvent(tool_call_id="c1", tool_name="execute_api", arguments={"api_name": "x"})],
         [TokenEvent(text="You're booked!")],
     ])
     executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True, "booking_id": "b1"}))
     registry = ExecutorRegistry()
-    registry.register("book_appointment", lambda provider, companion=None: executor)
+    registry.register("execute_api", lambda provider: executor)
 
     orchestrator = ToolCallOrchestrator(
         llm_adapter=LLMAdapter(llm),
@@ -193,15 +156,15 @@ async def test_tool_call_executes_folds_result_and_continues_to_final_answer():
     events = [e async for e in orchestrator.run_turn("agent1", "t1", "c1", "s1", history)]
 
     assert events == [
-        ToolCallStartedEvent(tool_name="book_appointment"),
+        ToolCallStartedEvent(tool_name="execute_api"),
         TokenEvent(text="You're booked!"),
     ]
     assert llm.call_count == 2
     assert len(executor.calls) == 1
-    assert executor.calls[0].arguments == {"requested_datetime": "x"}
+    assert executor.calls[0].arguments == {"api_name": "x"}
 
     # History was mutated in place with the tool call + result.
-    assert history[1].role == "assistant" and history[1].tool_calls[0]["name"] == "book_appointment"
+    assert history[1].role == "assistant" and history[1].tool_calls[0]["name"] == "execute_api"
     assert history[2].role == "tool"
     assert json.loads(history[2].content) == {"status": "success", "booked": True, "booking_id": "b1"}
 
@@ -209,47 +172,20 @@ async def test_tool_call_executes_folds_result_and_continues_to_final_answer():
     assert len(llm.seen_messages[1]) == 3
 
 
-async def test_phone_number_confirmed_reaches_tool_execution_context():
-    """run_turn()'s phone_number_confirmed param (set by pipeline.py) must
-    reach ToolExecutionContext — CalendarExecutor's deterministic
-    confirmation gate reads it from there, not from history itself."""
-    llm = _ScriptedLLM([
-        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment", arguments={"requested_datetime": "x"})],
-        [TokenEvent(text="You're booked!")],
-    ])
-    executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True, "booking_id": "b1"}))
-    registry = ExecutorRegistry()
-    registry.register("book_appointment", lambda provider, companion=None: executor)
-
-    orchestrator = ToolCallOrchestrator(
-        llm_adapter=LLMAdapter(llm),
-        policy_resolver=_FakePolicyResolver([_policy()]),
-        provider_manager=_FakeProviderManager(),
-        executor_registry=registry,
-    )
-
-    history = [ChatMessage(role="user", content="book me tomorrow at 3")]
-    [e async for e in orchestrator.run_turn(
-        "agent1", "t1", "c1", "s1", history, phone_number_confirmed=True,
-    )]
-
-    assert executor.calls[0].context.phone_number_confirmed is True
-
-
 async def test_force_tool_name_forces_tool_choice_on_first_call_only():
-    """force_tool_name (set by pipeline.py on the one narrow condition
-    where the caller just confirmed their phone number — see
-    _caller_just_confirmed_phone_number) must reach the LLM as a real
-    tool_choice on the turn's first generate_with_tools() call, and must
-    NOT be re-forced on a second iteration within the same turn (e.g. a
-    forced call that itself needed a follow-up plain-text wrap-up)."""
+    """force_tool_name must reach the LLM as a real tool_choice on the
+    turn's first generate_with_tools() call, and must NOT be re-forced on
+    a second iteration within the same turn (e.g. a forced call that
+    itself needed a follow-up plain-text wrap-up). No caller sets it
+    today — the phone-confirmation trigger went away with the calendar
+    built-ins — but it stays as a generic orchestrator capability."""
     llm = _ScriptedLLM([
-        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment", arguments={"requested_datetime": "x"})],
+        [ToolCallEvent(tool_call_id="c1", tool_name="execute_api", arguments={"api_name": "x"})],
         [TokenEvent(text="booked")],
     ])
     executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True}))
     registry = ExecutorRegistry()
-    registry.register("book_appointment", lambda provider, companion=None: executor)
+    registry.register("execute_api", lambda provider: executor)
 
     orchestrator = ToolCallOrchestrator(
         llm_adapter=LLMAdapter(llm),
@@ -270,11 +206,11 @@ async def test_force_tool_name_forces_tool_choice_on_first_call_only():
 
     [e async for e in orchestrator.run_turn(
         "agent1", "t1", "c1", "s1", [ChatMessage(role="user", content="yes")],
-        force_tool_name="book_appointment",
+        force_tool_name="execute_api",
     )]
 
     assert seen_tool_choices == [
-        {"type": "function", "function": {"name": "book_appointment"}},
+        {"type": "function", "function": {"name": "execute_api"}},
         None,
     ]
 
@@ -288,7 +224,7 @@ async def test_deterministic_response_short_circuits_llm_narration():
     that letting the LLM narrate a tool result at all is exactly how a
     real success gets fabricated into a false one on a later turn."""
     llm = _ScriptedLLM([
-        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment", arguments={"requested_datetime": "x"})],
+        [ToolCallEvent(tool_call_id="c1", tool_name="execute_api", arguments={"api_name": "x"})],
         [TokenEvent(text="should never be requested")],
     ])
     executor = _FixedExecutor(ToolResult(
@@ -296,7 +232,7 @@ async def test_deterministic_response_short_circuits_llm_narration():
         deterministic_response="You're all set — I've booked your appointment for Friday at 3 PM.",
     ))
     registry = ExecutorRegistry()
-    registry.register("book_appointment", lambda provider, companion=None: executor)
+    registry.register("execute_api", lambda provider: executor)
 
     orchestrator = ToolCallOrchestrator(
         llm_adapter=LLMAdapter(llm),
@@ -310,7 +246,7 @@ async def test_deterministic_response_short_circuits_llm_narration():
     )]
 
     assert events == [
-        ToolCallStartedEvent(tool_name="book_appointment"),
+        ToolCallStartedEvent(tool_name="execute_api"),
         DeterministicSpokenEvent(text="You're all set — I've booked your appointment for Friday at 3 PM."),
     ]
     assert llm.call_count == 1  # never asked to narrate the result
@@ -321,13 +257,13 @@ async def test_max_tool_iterations_forces_final_generation_without_tools():
     # after max_tool_iterations, the orchestrator must stop offering tools
     # so the final call is forced to answer in plain text.
     llm = _ScriptedLLM([
-        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment", arguments={"requested_datetime": "x"})],
-        [ToolCallEvent(tool_call_id="c2", tool_name="book_appointment", arguments={"requested_datetime": "y"})],
+        [ToolCallEvent(tool_call_id="c1", tool_name="execute_api", arguments={"api_name": "x"})],
+        [ToolCallEvent(tool_call_id="c2", tool_name="execute_api", arguments={"api_name": "y"})],
         [TokenEvent(text="Sorry, having trouble booking that.")],
     ])
     executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": False, "available_slots": []}))
     registry = ExecutorRegistry()
-    registry.register("book_appointment", lambda provider, companion=None: executor)
+    registry.register("execute_api", lambda provider: executor)
 
     orchestrator = ToolCallOrchestrator(
         llm_adapter=LLMAdapter(llm),
@@ -340,8 +276,8 @@ async def test_max_tool_iterations_forces_final_generation_without_tools():
     events = [e async for e in orchestrator.run_turn("agent1", "t1", "c1", "s1", [ChatMessage(role="user", content="book")])]
 
     assert events == [
-        ToolCallStartedEvent(tool_name="book_appointment"),
-        ToolCallStartedEvent(tool_name="book_appointment"),
+        ToolCallStartedEvent(tool_name="execute_api"),
+        ToolCallStartedEvent(tool_name="execute_api"),
         TokenEvent(text="Sorry, having trouble booking that."),
     ]
     assert llm.call_count == 3
@@ -396,11 +332,11 @@ async def test_cancel_event_stops_waiting_on_an_in_flight_tool_call():
     should stop waiting on it the moment cancel_event is set, not before,
     not after."""
     llm = _ScriptedLLM([
-        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment", arguments={"requested_datetime": "x"})],
+        [ToolCallEvent(tool_call_id="c1", tool_name="execute_api", arguments={"api_name": "x"})],
     ])
     executor = _SlowExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True}))
     registry = ExecutorRegistry()
-    registry.register("book_appointment", lambda provider, companion=None: executor)
+    registry.register("execute_api", lambda provider: executor)
 
     orchestrator = ToolCallOrchestrator(
         llm_adapter=LLMAdapter(llm),
@@ -424,7 +360,7 @@ async def test_cancel_event_stops_waiting_on_an_in_flight_tool_call():
     cancel_event.set()
     events = await asyncio.wait_for(task, timeout=1.0)
 
-    assert events == [ToolCallStartedEvent(tool_name="book_appointment")]
+    assert events == [ToolCallStartedEvent(tool_name="execute_api")]
     assert json.loads(history[2].content)["status"] == "failed"
     assert json.loads(history[2].content)["error"] == "cancelled"
     assert llm.call_count == 1  # never asked the LLM what to do next — the turn is stale
@@ -437,11 +373,11 @@ async def test_cancel_event_stops_waiting_on_an_in_flight_tool_call():
 
 async def test_cancel_event_set_before_the_tool_call_even_starts_still_stops_the_turn():
     llm = _ScriptedLLM([
-        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment", arguments={"requested_datetime": "x"})],
+        [ToolCallEvent(tool_call_id="c1", tool_name="execute_api", arguments={"api_name": "x"})],
     ])
     executor = _SlowExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True}))
     registry = ExecutorRegistry()
-    registry.register("book_appointment", lambda provider, companion=None: executor)
+    registry.register("execute_api", lambda provider: executor)
 
     orchestrator = ToolCallOrchestrator(
         llm_adapter=LLMAdapter(llm),
@@ -458,7 +394,7 @@ async def test_cancel_event_set_before_the_tool_call_even_starts_still_stops_the
         "agent1", "t1", "c1", "s1", history, cancel_event=cancel_event,
     )]
 
-    assert events == [ToolCallStartedEvent(tool_name="book_appointment")]
+    assert events == [ToolCallStartedEvent(tool_name="execute_api")]
     assert json.loads(history[2].content)["error"] == "cancelled"
 
     executor.release_event.set()
@@ -470,12 +406,12 @@ async def test_no_cancel_event_behaves_exactly_as_before():
     behave exactly like the pre-existing await-to-completion path, not
     silently change behavior for every caller that hasn't been updated."""
     llm = _ScriptedLLM([
-        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment", arguments={"requested_datetime": "x"})],
+        [ToolCallEvent(tool_call_id="c1", tool_name="execute_api", arguments={"api_name": "x"})],
         [TokenEvent(text="You're booked!")],
     ])
     executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True, "booking_id": "b1"}))
     registry = ExecutorRegistry()
-    registry.register("book_appointment", lambda provider, companion=None: executor)
+    registry.register("execute_api", lambda provider: executor)
 
     orchestrator = ToolCallOrchestrator(
         llm_adapter=LLMAdapter(llm),
@@ -488,7 +424,7 @@ async def test_no_cancel_event_behaves_exactly_as_before():
     events = [e async for e in orchestrator.run_turn("agent1", "t1", "c1", "s1", history)]
 
     assert events == [
-        ToolCallStartedEvent(tool_name="book_appointment"),
+        ToolCallStartedEvent(tool_name="execute_api"),
         TokenEvent(text="You're booked!"),
     ]
 
@@ -542,14 +478,14 @@ async def test_a_local_tool_executes_without_touching_policy_or_provider():
 async def test_a_local_tool_does_not_consume_a_tool_iteration():
     llm = _ScriptedLLM([
         [ToolCallEvent(tool_call_id="c1", tool_name="caller_verified", arguments={})],
-        [ToolCallEvent(tool_call_id="c2", tool_name="book_appointment",
+        [ToolCallEvent(tool_call_id="c2", tool_name="execute_api",
                        arguments={"requested_datetime": "2026-01-01T10:00:00Z"})],
         [TokenEvent(text="Booked.")],
     ])
     local_tools, _ = _local()
     executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True}))
     registry = ExecutorRegistry()
-    registry.register("book_appointment", lambda provider, companion=None: executor)
+    registry.register("execute_api", lambda provider: executor)
     orchestrator = ToolCallOrchestrator(
         llm_adapter=LLMAdapter(llm),
         policy_resolver=_FakePolicyResolver([_policy()]),
@@ -593,7 +529,7 @@ async def test_local_tool_schemas_are_offered_alongside_policy_tools():
         local_tools=local_tools,
     )]
 
-    assert [s["name"] for s in seen[0]] == ["book_appointment", "caller_verified"]
+    assert [s["name"] for s in seen[0]] == ["execute_api", "caller_verified"]
 
 
 async def test_local_tools_are_capped_so_a_cyclic_workflow_cannot_spin_forever():
@@ -629,13 +565,13 @@ async def test_past_local_cap_does_not_burn_a_remote_iteration():
     llm = _ScriptedLLM(
         [[ToolCallEvent(tool_call_id=f"c{i}", tool_name="caller_verified", arguments={})]
          for i in range(4)]
-        + [[ToolCallEvent(tool_call_id="book", tool_name="book_appointment",
+        + [[ToolCallEvent(tool_call_id="book", tool_name="execute_api",
                           arguments={"requested_datetime": "2026-01-01T10:00:00Z"})],
            [TokenEvent(text="Booked.")]]
     )
     executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True}))
     registry = ExecutorRegistry()
-    registry.register("book_appointment", lambda provider, companion=None: executor)
+    registry.register("execute_api", lambda provider: executor)
     orchestrator = ToolCallOrchestrator(
         llm_adapter=LLMAdapter(llm),
         policy_resolver=_FakePolicyResolver([_policy()]),
@@ -842,24 +778,24 @@ async def test_only_tools_is_passed_through_to_the_policy_resolver():
 
     [e async for e in orchestrator.run_turn(
         "agent1", "t1", "c1", "s1", [ChatMessage(role="user", content="hi")],
-        only_tools=["book_appointment"],
+        only_tools=["execute_api"],
     )]
 
-    assert resolver.last_only == ["book_appointment"]
+    assert resolver.last_only == ["execute_api"]
 
 
 async def test_past_remote_cap_hallucinated_remote_does_not_execute():
     local_tools, _ = _local()
     llm = _ScriptedLLM([
-        [ToolCallEvent(tool_call_id="c1", tool_name="book_appointment",
+        [ToolCallEvent(tool_call_id="c1", tool_name="execute_api",
                        arguments={"requested_datetime": "2026-01-01T10:00:00Z"})],
-        [ToolCallEvent(tool_call_id="c2", tool_name="book_appointment",
+        [ToolCallEvent(tool_call_id="c2", tool_name="execute_api",
                        arguments={"requested_datetime": "2026-01-01T11:00:00Z"})],
         [TokenEvent(text="ok")],
     ])
     executor = _FixedExecutor(ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True}))
     registry = ExecutorRegistry()
-    registry.register("book_appointment", lambda provider, companion=None: executor)
+    registry.register("execute_api", lambda provider: executor)
     orchestrator = ToolCallOrchestrator(
         llm_adapter=LLMAdapter(llm),
         policy_resolver=_FakePolicyResolver([_policy()]),

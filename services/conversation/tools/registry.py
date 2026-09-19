@@ -7,192 +7,80 @@ Whether a given agent may actually USE a registered tool is
 ToolPolicyResolver's job (policy_resolver.py), not this class's — see the
 Tool Execution Framework design's review point 7 for why that split exists.
 
-Adding a new tool means adding one entry to _DEFAULT_TOOLS here — never
-touching ToolCallOrchestrator, ExecutorRegistry, or any ILLM implementation.
+THE AGENT HAS EXACTLY TWO TOOLS (2026-09-18). Both are defined in this
+file, and the LLM's whole job is to pick between them from what the caller
+just said:
+
+  search_knowledge  — read the business's own documents (RAG).
+  execute_api       — call the business's own systems (services/toolexec).
+
+Neither is a per-capability tool, and no third one should be added. A new
+capability is a new row in custom_apis, whose `description` is what routes
+the model to it — never a new entry here. That is the point of the split:
+the tool surface is fixed and small, so the model's choice is a two-way
+decision it can make reliably, while the long tail of what a tenant can
+actually do lives in data the tenant controls.
+
+The Cal.com/Twilio built-ins (book_appointment, cancel_appointment,
+reschedule_appointment, send_sms) were removed in this same change. They
+were a first-class tool per capability, which is exactly the shape this
+module no longer has; appointment booking is now an ordinary custom API
+chain like any other integration.
 """
 
 from __future__ import annotations
 
 from .types import ToolDefinition
 
-# book_appointment — the only calendar-shaped tool the LLM ever sees.
-# check_availability/find_available_slots are NOT here: they're private
-# ICalendarProvider methods CalendarExecutor calls internally (see
-# providers/calendar/ and executors/calendar_executor.py). event_type is
-# deliberately absent too — one Cal.com event type per agent, configured in
-# tool_provider_configs.extra.event_type_id, not an LLM decision in v1 (see
-# the design doc's "intent -> event_type mapping" v2+ deferral).
+# search_knowledge — the RAG half of the two-tool surface.
 #
-# Phone-first identity (2026-07-27): attendee_phone is NOT required in this
-# schema — CalendarExecutor uses the live call's own ANI automatically (see
-# ToolExecutionContext.caller_number) and never asks. It only appears here
-# as a fallback for sessions with no ANI at all (a webcall/browser test).
-_BOOK_APPOINTMENT = ToolDefinition(
-    name="book_appointment",
+# Supplied as an in-process LOCAL tool by pipeline.py, NOT through
+# agent_tool_policies, so it is deliberately absent from _DEFAULT_TOOLS
+# below (ToolPolicyResolver would never resolve it — there is no provider
+# config to resolve). It lives here anyway so both tools the model can
+# ever see are defined in one file.
+#
+# Local rather than DB-gated for two concrete reasons:
+#   1. It needs no credential and no provider — the knowledge provider is
+#      already constructed in __main__.py and already scoped per agent by
+#      its KB links, so a tool_provider_configs row would be pure
+#      ceremony and a second, redundant enablement gate.
+#   2. Local tools do not burn the remote tool-iteration budget (see
+#      orchestrator.py's `iteration += 1  # remote only`). A caller asking
+#      something that needs a document lookup AND a live API call still
+#      gets both inside one turn.
+#
+# The description carries the anti-hallucination contract directly,
+# because this is the tool whose absence of a result is most likely to be
+# filled in from the model's own general knowledge.
+SEARCH_KNOWLEDGE = ToolDefinition(
+    name="search_knowledge",
     description=(
-        "Book a calendar appointment. Call this only once you know the date "
-        "and time; ask first if either is missing. Never ask for email or "
-        "phone number up front — the caller's number is already known from "
-        "the call. "
-        "If missing_fields includes attendee_phone with "
-        "reason=invalid_phone_number, the number on file was invalid — ask "
-        "the caller for a different one and call this tool again with it. "
-        "If missing_fields includes attendee_phone with "
-        "reason=phone_not_confirmed, you have not actually gotten the "
-        "caller to confirm their number on file yet — state it back one "
-        "digit at a time and ask if it's the best number to reach them, "
-        "then wait for a clear yes (or a corrected number, read back the "
-        "same way) before calling this tool again. Do not call this tool "
-        "again until you have that clear confirmation. "
-        "If booked=false with an available_slots list, the requested time "
-        "was not available — that is not a booking. Offer one or two of "
-        "those slots, and once the caller picks a new time, call this tool "
-        "again with it. Never say something is booked unless the MOST "
-        "RECENT call to this tool returned booked=true — repeating an "
-        "earlier booked=true after a later attempt failed is the same "
-        "error as never calling the tool. "
-        "If you offered the caller more than one time option, a bare "
-        "'yes'/'sure' does not say which one they mean — restate the ONE "
-        "specific time you're about to book and wait for a reply that "
-        "clearly confirms that time before calling. Skip this only when "
-        "the caller already named one single, unambiguous time themselves. "
-        "You must actually invoke this function to book anything — never "
-        "say an appointment is booked, confirmed, or scheduled unless this "
-        "function was called and returned that result; describing a "
-        "booking in words instead is a serious error."
+        "Search this business's own documents for the answer to what the caller asked. "
+        "Use it for anything the business would have written down — policies, hours, "
+        "pricing rules, services, eligibility, terms, how something works. "
+        "Prefer this over answering from memory: your general knowledge is not this "
+        "business's, and a plausible-sounding answer that did not come from these "
+        "documents is wrong even when it happens to be true. "
+        "If it returns no passages, tell the caller you don't have that information "
+        "and offer to connect them — never fill the gap yourself."
     ),
     parameters_schema={
         "type": "object",
         "properties": {
-            "attendee_name": {
-                "type": "string",
-                "description": "The caller's name, if given.",
-            },
-            "attendee_phone": {
+            "query": {
                 "type": "string",
                 "description": (
-                    "The caller's phone number — only needed if the tool tells you it's required "
-                    "and you don't already have one on file for this call, or if a previous attempt "
-                    "was rejected for reason=invalid_phone_number (ask for a different number in "
-                    "that case, not the same one again). Never ask for this up front."
-                ),
-            },
-            "requested_datetime": {
-                "type": "string",
-                "description": (
-                    "ISO 8601 date and time the caller wants, e.g. 2026-07-23T15:00:00 — always in "
-                    "the business's own local time, never the caller's. This is an in-person "
-                    "appointment at a single physical location; what timezone the caller happens to "
-                    "be calling from is irrelevant to when the appointment actually happens."
-                ),
-            },
-            "notes": {
-                "type": "string",
-                "description": "Any relevant detail the caller mentioned about the appointment.",
-            },
-        },
-        "required": ["requested_datetime"],
-    },
-    category="calendar",
-    # If this agent also has "send_sms" enabled, CalendarExecutor gets that
-    # provider too — see ToolCallOrchestrator's generic companion
-    # resolution and ToolDefinition.companion_tool_name's own docstring.
-    companion_tool_name="send_sms",
-)
-
-
-# cancel_appointment (2026-07-23, phone-based since 2026-07-27) — resolves
-# "cancel my appointment" into a concrete booking via a caller-STATED phone
-# number (see CancelAppointmentExecutor); never exposes booking_id/uid to
-# the LLM, since a real caller never has that memorized. Deliberately
-# always asks — never silently uses the live call's own ANI, since a
-# caller may be phoning in from a different number than the one they
-# booked with. requested_datetime_hint is optional, only useful to
-# disambiguate when the caller has more than one upcoming booking.
-_CANCEL_APPOINTMENT = ToolDefinition(
-    name="cancel_appointment",
-    description=(
-        "Cancel an existing appointment for the caller. Always ask for the phone number "
-        "they booked with, even if you already know the number they're calling from now — "
-        "it may not be the same one."
-    ),
-    parameters_schema={
-        "type": "object",
-        "properties": {
-            "attendee_phone": {
-                "type": "string",
-                "description": "The phone number the caller booked with — required to find their appointment.",
-            },
-            "requested_datetime_hint": {
-                "type": "string",
-                "description": (
-                    "The date/time the caller believes their appointment is for, if they mention one — "
-                    "helps disambiguate when they have more than one upcoming appointment. Optional."
+                    "What to look up, in the caller's own words. Keep the caller's "
+                    "phrasing rather than rewriting it into your own terms."
                 ),
             },
         },
-        "required": ["attendee_phone"],
+        "required": ["query"],
     },
-    category="calendar",
+    category="knowledge",
 )
 
-
-# reschedule_appointment (2026-07-23, phone-based since 2026-07-27) — same
-# find-by-phone resolution as cancel_appointment (same "always ask, never
-# trust the live ANI" reasoning), plus a new_requested_datetime for where
-# to move it to. Cal.com's reschedule is atomic (one API call, see
-# providers/calendar/interface.py's module docstring), so this executor
-# doesn't compose cancel+book itself.
-_RESCHEDULE_APPOINTMENT = ToolDefinition(
-    name="reschedule_appointment",
-    description=(
-        "Move the caller's existing appointment to a new date/time. Always ask for the phone number "
-        "they booked with, even if you already know the number they're calling from now, and confirm "
-        "the new date/time before calling this."
-    ),
-    parameters_schema={
-        "type": "object",
-        "properties": {
-            "attendee_phone": {
-                "type": "string",
-                "description": "The phone number the caller booked with — required to find their appointment.",
-            },
-            "new_requested_datetime": {
-                "type": "string",
-                "description": (
-                    "ISO 8601 date and time the caller wants to move their appointment to, e.g. "
-                    "2026-07-23T15:00:00 — always in the business's own local time, never the caller's "
-                    "(see book_appointment's requested_datetime for why)."
-                ),
-            },
-            "requested_datetime_hint": {
-                "type": "string",
-                "description": (
-                    "The date/time the caller believes their CURRENT appointment is for, if they mention "
-                    "one — helps disambiguate when they have more than one upcoming appointment. Optional."
-                ),
-            },
-        },
-        "required": ["attendee_phone", "new_requested_datetime"],
-    },
-    category="calendar",
-)
-
-# send_sms is admin-configurable (its own tool_provider_config/
-# agent_tool_policies row, same as book_appointment) but llm_visible=False
-# keeps it out of the schemas list orchestrator.py offers the LLM — it's a
-# deterministic side effect CalendarExecutor triggers itself after a
-# successful booking, never something the model decides to call. This
-# entry exists only so ToolPolicyResolver.enabled_tools()'s registry
-# lookup for tool_name="send_sms" succeeds; its schema content is never
-# read since it never reaches an LLM.
-_SEND_SMS = ToolDefinition(
-    name="send_sms",
-    description="Internal — never LLM-callable; sends a booking confirmation text.",
-    parameters_schema={},
-    category="notifications",
-    llm_visible=False,
-)
 
 # execute_api — the ONE LLM-facing entry for every tenant-registered custom
 # API (services/toolexec/). api_name's enum is empty here; ToolPolicyResolver
@@ -200,13 +88,21 @@ _SEND_SMS = ToolDefinition(
 # agent's enabled APIs (and appends their leaf-input docs to the
 # description) — see policy_resolver.py. An agent with zero enabled custom
 # APIs never gets this tool at all, so the LLM never sees an empty enum.
+#
+# Which API to call is decided ENTIRELY by the per-API `description` text
+# injected at specialization time, never by anything written here. Those
+# descriptions are therefore written as instructions ("Call this whenever
+# the caller asks what something costs...") rather than as nouns.
 _EXECUTE_API = ToolDefinition(
     name="execute_api",
     description=(
-        "Call one of this business's own systems. Pick api_name from the list below and "
-        "supply only the inputs it says come from the caller; anything a prior system must "
-        "provide is fetched automatically — never ask the caller for it and never claim a "
-        "result this function did not return."
+        "Call one of this business's own systems to look something up or to do something "
+        "for the caller. Use it for live, caller-specific facts — an order, an account, a "
+        "price, stock, an appointment — anything that changes per caller or per day and so "
+        "could not be written in a document. Pick api_name from the list below and supply "
+        "only the inputs it says come from the caller; anything a prior system must provide "
+        "is fetched automatically — never ask the caller for it and never claim a result "
+        "this function did not return."
     ),
     parameters_schema={
         "type": "object",
@@ -219,11 +115,10 @@ _EXECUTE_API = ToolDefinition(
     category="custom_api",
 )
 
+# DB-gated tools only — what ToolPolicyResolver can resolve an
+# agent_tool_policies row against. search_knowledge is intentionally not
+# here; see its own comment above.
 _DEFAULT_TOOLS: dict[str, ToolDefinition] = {
-    _BOOK_APPOINTMENT.name: _BOOK_APPOINTMENT,
-    _CANCEL_APPOINTMENT.name: _CANCEL_APPOINTMENT,
-    _RESCHEDULE_APPOINTMENT.name: _RESCHEDULE_APPOINTMENT,
-    _SEND_SMS.name: _SEND_SMS,
     _EXECUTE_API.name: _EXECUTE_API,
 }
 

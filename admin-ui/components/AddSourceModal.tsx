@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { ApiError, Tenant } from "@/lib/api";
-import { createKnowledgeBase, KnowledgeBase, uploadDocument } from "@/lib/knowledgeApi";
+import { createKnowledgeBase, deleteKnowledgeBase, KnowledgeBase, uploadDocument } from "@/lib/knowledgeApi";
 import { Modal } from "@/components/Modal";
 
 // Only "Upload files" is wired up (AC5-AC7) — the other three cards exist so
@@ -97,16 +97,29 @@ export function AddSourceModal({
     if (!file) return;
     setSubmitting(true);
     setSubmitError(null);
+    // A knowledge base has to exist before a document can be uploaded into
+    // it, so "new" creates the container first. If the upload then fails,
+    // roll that container back — otherwise every failed upload leaves an
+    // empty knowledge base behind that nothing points at and nobody asked
+    // for (this is exactly how stray empty KBs were appearing).
+    let createdKbId: string | null = null;
     try {
       const kb =
         target === "new"
           ? await createKnowledgeBase(tenantId, { slug: newSlug, name: newName })
           : { id: target };
+      if (target === "new") createdKbId = kb.id;
       await uploadDocument(kb.id, file, file.name);
       onCreated();
       onClose();
     } catch (e) {
       setSubmitError(e instanceof ApiError ? e.detail : String(e));
+      if (createdKbId) {
+        await deleteKnowledgeBase(createdKbId).catch(() => {
+          // Best effort: the upload error above is the one worth showing,
+          // and the leftover is visible on the Knowledge page either way.
+        });
+      }
     } finally {
       setSubmitting(false);
     }

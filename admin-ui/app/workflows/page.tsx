@@ -12,7 +12,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ApiError, Tenant, listTenants } from "@/lib/api";
+import { ApiError } from "@/lib/api";
+import { useActiveTenant } from "@/lib/useActiveTenant";
 import { CallFlowSummary, deleteCallFlow, listCallFlows } from "@/lib/callFlowApi";
 
 interface FlowRow extends CallFlowSummary {
@@ -22,7 +23,7 @@ interface FlowRow extends CallFlowSummary {
 
 export default function CallFlowsPage() {
   const router = useRouter();
-  const [, setTenants] = useState<Tenant[]>([]);
+  const { tenant, loading: tenantLoading } = useActiveTenant();
   const [flows, setFlows] = useState<FlowRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -30,23 +31,24 @@ export default function CallFlowsPage() {
   const [deleting, setDeleting] = useState<string | null>(null);
 
 
+  // One account at a time — the header switcher picks which. Fanning out
+  // across every tenant is what broke this page at scale.
   useEffect(() => {
+    if (tenantLoading) return;
+    if (!tenant) {
+      setFlows([]);
+      setLoading(false);
+      return;
+    }
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
-    listTenants()
-      .then(async (ts) => {
-        setTenants(ts);
-        const perTenant = await Promise.all(
-          ts.map(async (t) => {
-            const rows = await listCallFlows(t.slug).catch(() => [] as CallFlowSummary[]);
-            return rows.map((f) => ({ ...f, tenantSlug: t.slug, tenantName: t.name }));
-          }),
-        );
-        setFlows(perTenant.flat());
-      })
+    listCallFlows(tenant.slug)
+      .then((rows) =>
+        setFlows(rows.map((f) => ({ ...f, tenantSlug: tenant.slug, tenantName: tenant.name }))),
+      )
       .catch((e) => setError(e instanceof ApiError ? e.detail : String(e)))
       .finally(() => setLoading(false));
-  }, []);
+  }, [tenant, tenantLoading]);
 
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();

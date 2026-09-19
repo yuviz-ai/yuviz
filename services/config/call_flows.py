@@ -28,7 +28,8 @@ from libs.config_sdk.callflow import (
 )
 from libs.tenancy import platform_conn, tenant_conn
 
-from . import audit, db
+from . import audit, cache, db
+from . import tenants as tenants_service
 
 _UPDATABLE_FIELDS = {"name", "description", "status", "direction"}
 _JSON_COLUMNS = ("graph", "graph_draft")
@@ -94,6 +95,91 @@ async def get_call_flow(call_flow_id: Any, *, platform_scoped: bool = False) -> 
             "SELECT * FROM call_flows WHERE id = $1 AND deleted_at IS NULL", call_flow_id,
         )
     return _row(row)
+
+
+def _runtime_cache_key(tenant_slug: str, call_flow_id: Any) -> str:
+    return f"callflow:{tenant_slug}:{call_flow_id}"
+
+
+async def get_published_for_runtime(tenant_slug: str, call_flow_id: Any) -> dict[str, Any] | None:
+    """The read behind GET /published — built for the conversation service's
+    IConfigProvider.get_call_flow(), never for the editor. tenant_conn's
+    ambient target is already the path tenant (bind_path_tenant), and RLS
+    scopes every statement below to it — but the conversation service
+    account is platform-scoped (`tenant_id IS NULL`) and so passes
+    `assert_tenant_access` for *any* path tenant, meaning RLS is the only
+    thing stopping a wrong-tenant `call_flow_id`/`agent_id`/
+    `tts_config_id` from resolving here. Defence in depth, not a
+    replacement: every one of the three reads below also carries an
+    explicit `tenant_id = $N` predicate, so a caller connected as a
+    non-BYPASSRLS role AND a caller connected as a role that bypasses RLS
+    entirely both get the same tenant-scoped result from the SQL itself."""
+    key = _runtime_cache_key(tenant_slug, call_flow_id)
+    cached = await cache.get_json(key)
+    if cached is not None:
+        return cached
+
+    tenant = await tenants_service.get_tenant(tenant_slug)
+    if tenant is None:
+        return None
+    tenant_id = tenant["id"]
+
+    pool = await db.get_pool()
+    async with tenant_conn(pool) as conn:
+        row = await conn.fetchrow(
+            "SELECT id, config_version, status, direction, graph FROM call_flows "
+            " WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL "
+            "   AND graph IS NOT NULL AND direction = 'inbound'",
+            call_flow_id, tenant_id,
+        )
+        if row is None:
+            return None
+        graph = row["graph"]
+        graph = json.loads(graph) if isinstance(graph, str) else graph
+
+        agent_ids = [
+            aid for n in (graph.get("nodes") or [])
+            if n.get("type") == "agent" and (aid := (n.get("data") or {}).get("agent_id"))
+        ]
+        agent_slugs: dict[str, str] = {}
+        if agent_ids:
+            agent_rows = await conn.fetch(
+                "SELECT id, slug FROM agents "
+                " WHERE id = ANY($1::uuid[]) AND tenant_id = $2 "
+                "   AND deleted_at IS NULL AND status = 'active'",
+                agent_ids, tenant_id,
+            )
+            agent_slugs = {str(r["id"]): r["slug"] for r in agent_rows}
+
+        start_node = next((n for n in graph.get("nodes") or [] if n.get("type") == "start"), None)
+        tts_config_id = (start_node.get("data") or {}).get("tts_config_id") if start_node else None
+        resolved_tts_config_id: str | None = None
+        if tts_config_id:
+            tts_row = await conn.fetchrow(
+                "SELECT id FROM provider_configs WHERE id = $1 AND tenant_id = $2 AND role = 'tts'",
+                tts_config_id, tenant_id,
+            )
+            if tts_row is not None:
+                resolved_tts_config_id = str(tts_row["id"])
+
+    payload = {
+        "id": str(row["id"]),
+        "tenant_slug": tenant_slug,
+        "config_version": row["config_version"],
+        "status": row["status"],
+        "direction": row["direction"],
+        "graph": graph,
+        "agent_slugs": agent_slugs,
+        "resolved_tts_config_id": resolved_tts_config_id,
+    }
+    await cache.set_json(key, payload)
+    return payload
+
+
+async def _invalidate_runtime_cache(call_flow_id: Any, tenant_id: Any) -> None:
+    tenant = await tenants_service.get_tenant_by_id(tenant_id)
+    if tenant is not None:
+        await cache.invalidate(_runtime_cache_key(tenant["slug"], call_flow_id))
 
 
 async def create_call_flow(
@@ -185,6 +271,7 @@ async def update_call_flow(
             user_id=user_id, user_email=user_email,
             old_value={k: _row(old)[k] for k in fields}, new_value=fields,
         )
+    await _invalidate_runtime_cache(call_flow_id, result["tenant_id"])
     return result
 
 
@@ -198,7 +285,7 @@ async def delete_call_flow(
     async with tenant_conn(pool) as conn:
         row = await conn.fetchrow(
             "UPDATE call_flows SET deleted_at = now() "
-            " WHERE id = $1 AND deleted_at IS NULL RETURNING id", call_flow_id,
+            " WHERE id = $1 AND deleted_at IS NULL RETURNING id, tenant_id", call_flow_id,
         )
         if row is None:
             return False
@@ -207,6 +294,7 @@ async def delete_call_flow(
             conn, entity_type="call_flow", entity_id=call_flow_id, action="deleted",
             user_id=user_id, user_email=user_email,
         )
+    await _invalidate_runtime_cache(call_flow_id, row["tenant_id"])
     return True
 
 
@@ -266,7 +354,9 @@ async def publish(
             user_id=user_id, user_email=user_email,
             new_value={"version": next_version, "note": note},
         )
-    return _row(row)
+    result = _row(row)
+    await _invalidate_runtime_cache(call_flow_id, result["tenant_id"])
+    return result
 
 
 async def list_versions(call_flow_id: Any) -> list[dict[str, Any]]:

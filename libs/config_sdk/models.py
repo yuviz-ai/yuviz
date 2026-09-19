@@ -155,6 +155,10 @@ class Agent:
     # carries published on RuntimeConfig; draft stripped from public agent until PR10.
     workflow: dict[str, Any] | None = None
     workflow_draft: dict[str, Any] | None = None
+    # agents.call_flow_id — non-null pins this agent to a published call
+    # flow's IVR runtime instead of its own conversational workflow (see
+    # docs/call-flows.md's Runtime section). None is today's behavior.
+    call_flow_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -285,6 +289,24 @@ class Policies:
     # gateway TenantConfig::from_redis). Bounds enforced by
     # validate_transfer_timeout_ms() above.
     transfer_timeout_ms: int = TRANSFER_TIMEOUT_DEFAULT_MS
+
+
+@dataclass(frozen=True)
+class CallFlow:
+    """Return type of IConfigProvider.get_call_flow() — the published call
+    flow payload Config Service builds under the flow tenant's RLS (see
+    services/config/call_flows.py's get_published_for_runtime()).
+    agent_slugs and resolved_tts_config_id are server-validated: an
+    agent-node id that doesn't resolve to a same-tenant, active, non-deleted
+    agent row is simply absent, and resolved_tts_config_id is null unless
+    start.tts_config_id names a same-tenant 'tts' provider_configs row —
+    the conversation side never receives an id it could resolve itself."""
+    id: str
+    tenant_slug: str
+    config_version: int
+    graph: dict[str, Any]
+    agent_slugs: dict[str, str] = field(default_factory=dict)
+    resolved_tts_config_id: str | None = None
 
 
 @dataclass(frozen=True)

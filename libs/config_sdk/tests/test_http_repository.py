@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 
+import httpx
 import pytest
 from httpx import ASGITransport
 
@@ -94,3 +95,23 @@ async def test_fetch_agent_and_provider_config(service_account, pool):
     await pool.execute("DELETE FROM agents WHERE tenant_id = $1", tenant["id"])
     await pool.execute("DELETE FROM provider_configs WHERE tenant_id = $1", tenant["id"])
     await pool.execute("DELETE FROM tenants WHERE id = $1", tenant["id"])
+
+
+async def test_fetch_call_flow_requests_exact_path_and_404_is_none():
+    seen_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/auth/login":
+            return httpx.Response(200, json={"access_token": "tok"})
+        seen_paths.append(request.url.path)
+        return httpx.Response(404)
+
+    repo = HttpConfigRepository(
+        base_url="http://test", service_email="svc@example.com", service_password="pw",
+        transport=httpx.MockTransport(handler),
+    )
+    result = await repo.fetch_call_flow("acme", "flow-1")
+    assert result is None
+    assert seen_paths == ["/tenants/acme/call-flows/flow-1/published"]
+
+    await repo.close()

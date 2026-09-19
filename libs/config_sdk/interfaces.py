@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from .models import Agent, Prompt, ProviderConfig, RuntimeConfig, Tenant, ToolSpec
+from .models import Agent, CallFlow, Prompt, ProviderConfig, RuntimeConfig, Tenant, ToolSpec
 
 
 class IConfigProvider(Protocol):
@@ -43,6 +43,8 @@ class IConfigProvider(Protocol):
 
     async def get_tools(self, tenant_slug: str, agent_slug: str) -> list[ToolSpec]: ...
 
+    async def get_call_flow(self, tenant_slug: str, call_flow_id: str) -> CallFlow | None: ...
+
     async def close(self) -> None: ...
 
 
@@ -56,5 +58,7 @@ class IConfigRepository(Protocol):
     async def fetch_agent(self, tenant_slug: str, agent_slug: str) -> dict[str, Any] | None: ...
 
     async def fetch_provider_config(self, provider_id: str) -> dict[str, Any] | None: ...
+
+    async def fetch_call_flow(self, tenant_slug: str, call_flow_id: str) -> dict[str, Any] | None: ...
 
     async def close(self) -> None: ...

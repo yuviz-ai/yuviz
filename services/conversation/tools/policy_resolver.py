@@ -48,22 +48,13 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_CACHE_TTL_S = 30.0
 
-# cancel_appointment/reschedule_appointment are deliberately NOT
-# independently configurable (2026-07-23 design decision): they're the
-# natural counterparts of book_appointment, not separate features a tenant
-# would want without it — there's no real scenario where a business offers
-# booking but not cancellation/rescheduling. So neither is ever something an
-# admin adds/configures via its own tool_provider_config/agent_tool_policies
-# row; both are automatically derived here, reusing whichever
-# tool_provider_config book_appointment already uses (same Cal.com
-# account/event type — CalComCalendarProvider already implements
-# check_availability/book_appointment, find_upcoming_bookings/
-# cancel_appointment, AND reschedule_appointment on the same instance).
-# Disabling book_appointment (agent_tool_policies.enabled=false, or
-# removing it entirely) automatically disables both derived tools too, with
-# no separate action needed — they simply never appear in `rows` to derive
-# from.
-_AUTO_DERIVED_COMPANIONS = {"book_appointment": ["cancel_appointment", "reschedule_appointment"]}
+# The auto-derived-companion machinery (book_appointment silently granting
+# cancel_appointment/reschedule_appointment on the same Cal.com config)
+# was removed on 2026-09-18 along with the calendar built-ins themselves.
+# Nothing replaces it: execute_api is the only DB-gated tool left, and a
+# custom API never implies another custom API — if two of them are related,
+# that relationship is an upstream edge in custom_api_params, resolved by
+# services/toolexec, not a second tool grant here.
 
 
 @dataclass(frozen=True)
@@ -164,7 +155,6 @@ class ToolPolicyResolver:
                 max_chain_depth=row["max_chain_depth"],
             ))
 
-        self._add_auto_derived_companions(resolved, agent_id)
         await self._specialize_execute_api_if_present(resolved, agent_id, tenant_slug)
 
         # Cache unnarrowed; `only` is applied on read (varies per node).
@@ -199,33 +189,101 @@ class ToolPolicyResolver:
 
         The query is the runtime tenant fence for AC 10 — an agent_custom_apis
         row can only resolve if the agent and the API share a tenant,
-        independent of the write-time check in services/toolexec."""
+        independent of the write-time check in services/toolexec.
+
+        TWO THINGS THIS GETS RIGHT THAT THE FLAT PER-API QUERY DID NOT
+        (fixed 2026-09-18 after the model kept picking the wrong API):
+
+        1. An API that is another enabled API's upstream is NOT offered.
+           services/toolexec calls it automatically as a chain step, so
+           offering it invites the model to call a half-chain directly. In
+           the reference tenant that was 5 of 8 names in the enum.
+
+        2. An API's caller params are collected across its WHOLE chain, not
+           just its own row. A terminal API usually declares no caller
+           params of its own — its inputs live on the leaf it depends on
+           (get_product_details needs `q`, which belongs to
+           search_products). The flat query therefore documented exactly
+           the wrong three APIs as taking no arguments at all, while the
+           intermediate ones advertised the `q` the caller had just said.
+           A model shown that will pick the intermediate one, correctly,
+           given what it was told.
+
+        Together these make the enum mean "things you can ask for" and the
+        params mean "what you must supply", which is what execute_api's own
+        description has always promised."""
         async with tenant_conn(
             self._pool, explicit_tenant=tenant_slug, reason="conversation-tool-policy",
         ) as conn:
             rows = await conn.fetch(
                 """
-                SELECT ca.id, ca.name, ca.description, ca.chain_levels,
-                       p.name AS param_name, p.description AS param_description,
-                       p.json_type, p.required, p.sensitive AS param_sensitive
-                FROM agent_custom_apis aca
-                JOIN custom_apis ca ON ca.id = aca.custom_api_id AND ca.deleted_at IS NULL
-                JOIN agents      a  ON a.id  = aca.agent_id AND a.tenant_id = ca.tenant_id
-                LEFT JOIN custom_api_params p ON p.custom_api_id = ca.id AND p.source = 'caller'
-                WHERE aca.agent_id = $1 AND aca.enabled
-                ORDER BY ca.name, p.name
+                WITH RECURSIVE enabled AS (
+                    SELECT ca.id, ca.name, ca.description
+                    FROM agent_custom_apis aca
+                    JOIN custom_apis ca ON ca.id = aca.custom_api_id AND ca.deleted_at IS NULL
+                    JOIN agents      a  ON a.id  = aca.agent_id AND a.tenant_id = ca.tenant_id
+                    WHERE aca.agent_id = $1 AND aca.enabled
+                ),
+                -- Every API reachable from each enabled API: itself, plus
+                -- its transitive upstream dependencies. The depth cap is a
+                -- termination guard for a cycle in the data, NOT the chain
+                -- limit — services/toolexec's resolve_order() owns that and
+                -- raises cycle_detected/depth_limit_exceeded for real.
+                chain(root_id, api_id, depth) AS (
+                    SELECT id, id, 1 FROM enabled
+                  UNION ALL
+                    SELECT c.root_id, p.upstream_api_id, c.depth + 1
+                    FROM chain c
+                    JOIN custom_api_params p
+                      ON p.custom_api_id = c.api_id
+                     AND p.source = 'upstream'
+                     AND p.upstream_api_id IS NOT NULL
+                    WHERE c.depth < 8
+                )
+                SELECT e.id, e.name, e.description,
+                       EXISTS (
+                           SELECT 1 FROM chain c2
+                           WHERE c2.api_id = e.id AND c2.root_id <> e.id
+                       ) AS is_intermediate,
+                       p.name        AS param_name,
+                       p.description AS param_description,
+                       p.json_type, p.required,
+                       p.sensitive   AS param_sensitive
+                FROM enabled e
+                LEFT JOIN chain c ON c.root_id = e.id
+                LEFT JOIN custom_api_params p
+                       ON p.custom_api_id = c.api_id AND p.source = 'caller'
+                ORDER BY e.name, p.name
                 """,
                 agent_id,
             )
         if not rows:
             return None
 
+        # A name is offerable unless it is some other enabled API's
+        # upstream. Collected first so the params pass can skip the rest.
+        offerable = {r["name"] for r in rows if not r["is_intermediate"]}
+        if not offerable:
+            # Every enabled API is an upstream of another — only reachable
+            # through a cycle in the data, which resolve_order() will
+            # refuse anyway. Offer everything rather than silently handing
+            # the model an empty enum, and say so in the log.
+            log.warning(
+                "ToolPolicyResolver: every enabled custom API for agent_id=%s is an upstream of "
+                "another (dependency cycle?) — offering all of them unfiltered", agent_id,
+            )
+            offerable = {r["name"] for r in rows}
+
         apis: dict[str, dict[str, Any]] = {}
         sensitive_arg_keys: set[str] = set()
         for row in rows:
-            api = apis.setdefault(row["name"], {"description": row["description"], "params": []})
-            if row["param_name"] is not None:
-                api["params"].append(row)
+            if row["name"] not in offerable:
+                continue
+            api = apis.setdefault(row["name"], {"description": row["description"], "params": {}})
+            # Keyed by param name: a diamond in the chain reaches the same
+            # leaf twice, and the model must be told about it once.
+            if row["param_name"] is not None and row["param_name"] not in api["params"]:
+                api["params"][row["param_name"]] = row
                 if row["param_sensitive"]:
                     sensitive_arg_keys.add(row["param_name"])
 
@@ -233,7 +291,7 @@ class ToolPolicyResolver:
             f"- {name}: {api['description']}" + "".join(
                 f"\n    * {p['param_name']} ({p['json_type']}"
                 f"{', required' if p['required'] else ''}): {p['param_description']}"
-                for p in api["params"]
+                for p in sorted(api["params"].values(), key=lambda r: r["param_name"])
             )
             for name, api in apis.items()
         )
@@ -250,43 +308,12 @@ class ToolPolicyResolver:
         )
         return specialized, frozenset(sensitive_arg_keys)
 
-    def _add_auto_derived_companions(self, resolved: list[ResolvedToolPolicy], agent_id: str) -> None:
-        """Fill gaps from _AUTO_DERIVED_COMPANIONS; explicit rows win."""
-        present = {p.definition.name for p in resolved}
-        for source_name, derived_names in _AUTO_DERIVED_COMPANIONS.items():
-            if source_name not in present:
-                continue
-            source = next(p for p in resolved if p.definition.name == source_name)
-            for derived_name in derived_names:
-                if derived_name in present:
-                    continue
-                derived_defn = self._registry.resolve(derived_name)
-                if derived_defn is None:
-                    log.warning(
-                        "ToolPolicyResolver: _AUTO_DERIVED_COMPANIONS references unknown tool_name=%r agent_id=%s",
-                        derived_name, agent_id,
-                    )
-                    continue
-                resolved.append(ResolvedToolPolicy(
-                    definition=derived_defn,
-                    tool_provider_config_id=source.tool_provider_config_id,
-                    engine=source.engine,
-                    api_key_ref=source.api_key_ref,
-                    extra=source.extra,
-                    timeout_ms=source.timeout_ms,
-                    max_calls_per_turn=source.max_calls_per_turn,
-                ))
-                present.add(derived_name)
-
 
 def _narrow(
     resolved: list[ResolvedToolPolicy], only: list[str] | None,
 ) -> list[ResolvedToolPolicy]:
-    """Subset by name; companions ride along when their source is allowed."""
+    """Subset by name — never grants. None means unnarrowed."""
     if only is None:
         return resolved
     allowed = set(only)
-    for source_name, derived_names in _AUTO_DERIVED_COMPANIONS.items():
-        if source_name in allowed:
-            allowed.update(derived_names)
     return [p for p in resolved if p.definition.name in allowed]

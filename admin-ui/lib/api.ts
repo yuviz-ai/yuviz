@@ -811,11 +811,17 @@ export const listAllTodaysActivity = async (tenants: Tenant[]): Promise<TodaysAc
 
 // ── Tools ────────────────────────────────────────────────────────────────
 // Config Service surface for services/conversation/tools/ (Tool Execution
-// Framework): tool_provider_configs (a credentialed engine instance, e.g.
-// "our Cal.com account") and agent_tool_policies (which agent may use which
-// tool_provider_config). Resolved at call time by the Conversation
-// Service's own ToolPolicyResolver, not read through this API — this is
-// cold-path admin CRUD only.
+// Framework): tool_provider_configs (an engine instance) and
+// agent_tool_policies (which agent may use which tool_provider_config).
+// Resolved at call time by the Conversation Service's own
+// ToolPolicyResolver, not read through this API — this is cold-path admin
+// CRUD only.
+//
+// Since 2026-09-18 there is exactly one configurable tool, execute_api on
+// engine "toolexec" — the individual integrations behind it are custom
+// APIs (see the APIs tab), not tools. The agent's other tool,
+// search_knowledge, is enabled by linking a knowledge base to the agent
+// and is deliberately absent from this surface.
 
 export interface ToolCatalogExtraField {
   key: string;

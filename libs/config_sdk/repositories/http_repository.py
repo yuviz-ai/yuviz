@@ -91,6 +91,9 @@ class HttpConfigRepository:
     async def fetch_provider_config(self, provider_id: str) -> dict[str, Any] | None:
         return await self._get(f"/providers/{provider_id}")
 
+    async def fetch_call_flow(self, tenant_slug: str, call_flow_id: str) -> dict[str, Any] | None:
+        return await self._get(f"/tenants/{tenant_slug}/call-flows/{call_flow_id}/published")
+
     async def list_tenants(self) -> list[dict[str, Any]]:
         """Enumeration, not per-call resolution — used only by startup
         prewarming (see services/conversation/__main__.py), never on the

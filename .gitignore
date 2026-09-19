@@ -42,3 +42,7 @@ docs/cloud_deployment_architecture.md
 docs/transfer.md
 docs/warm_transfer_architecture.md
 .sdlc/current
+
+# Locally-generated CA bundle (corporate TLS-interception root + certifi).
+# Machine-specific and regenerable — see docs, never commit.
+certs/

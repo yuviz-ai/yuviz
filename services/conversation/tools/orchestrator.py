@@ -65,7 +65,7 @@ class ToolCallOrchestrator:
     async def run_turn(
         self, agent_id: str, tenant_id: str, call_id: str, session_id: str, history: list[ChatMessage],
         caller_number: str = "", cancel_event: "asyncio.Event | None" = None,
-        force_tool_name: str | None = None, phone_number_confirmed: bool = False,
+        force_tool_name: str | None = None,
         local_tools: LocalToolsSource = None,
         only_tools: list[str] | Callable[[], list[str] | None] | None = None,
     ) -> AsyncGenerator[TurnEvent, None]:
@@ -98,6 +98,22 @@ class ToolCallOrchestrator:
         iteration = 0
         local, policies_by_name, schemas, local_schemas = await resolve()
 
+        # One line per turn naming exactly what the model was offered. Added
+        # 2026-09-19 after an "it isn't calling the API" report cost an hour:
+        # every layer (policy row, provider config, node allow-list, the
+        # api_name enum) had to be checked by hand because nothing recorded
+        # what actually reached the LLM. A turn that offered tools and got
+        # no tool call is a model/prompt problem; a turn that offered none
+        # is a config problem, and these two look identical from the
+        # caller's side.
+        log.info(
+            "tools offered agent=%s turn=%s: remote=%s local=%s%s",
+            agent_id, turn_id,
+            [p.definition.name for p in policies_by_name.values() if p.definition.llm_visible] or "NONE",
+            [d.name for d, _ in local.values()] or "NONE",
+            "" if schemas else "  (no schemas sent — the LLM cannot call anything this turn)",
+        )
+
         # force_tool_name applies to the first generate() only.
         tool_choice = (
             {"type": "function", "function": {"name": force_tool_name}}
@@ -114,6 +130,10 @@ class ToolCallOrchestrator:
 
                 assert isinstance(event, ToolCallEvent)
                 tool_call_happened = True
+                log.info(
+                    "tool call turn=%s: %s(%s)",
+                    turn_id, event.tool_name, ", ".join(sorted(event.arguments or {})),
+                )
 
                 local_entry = local.get(event.tool_name)
                 if local_entry is not None:
@@ -138,7 +158,7 @@ class ToolCallOrchestrator:
                     yield ToolCallStartedEvent(tool_name=event.tool_name)
                     result = await self._execute_tool_call(
                         event, policies_by_name, tenant_id, agent_id, call_id, session_id, turn_id,
-                        iteration, caller_number, cancel_event, phone_number_confirmed,
+                        iteration, caller_number, cancel_event,
                     )
                 _fold_tool_result_into_history(history, event, result)
                 if result.deterministic_response is not None:
@@ -159,7 +179,7 @@ class ToolCallOrchestrator:
     async def _execute_tool_call(
         self, event: ToolCallEvent, policies_by_name: dict, tenant_id: str, agent_id: str,
         call_id: str, session_id: str, turn_id: str, iteration: int, caller_number: str = "",
-        cancel_event: "asyncio.Event | None" = None, phone_number_confirmed: bool = False,
+        cancel_event: "asyncio.Event | None" = None,
     ) -> ToolResult:
         policy = policies_by_name.get(event.tool_name)
         if policy is None:
@@ -172,20 +192,7 @@ class ToolCallOrchestrator:
             log.exception("ToolCallOrchestrator: provider construction failed tool=%s", event.tool_name)
             return ToolResult(status=ToolStatus.FAILED, error="provider_unavailable")
 
-        companion = None
-        companion_tool_name = policy.definition.companion_tool_name
-        if companion_tool_name is not None:
-            companion_policy = policies_by_name.get(companion_tool_name)
-            if companion_policy is not None:
-                try:
-                    companion = await self._provider_manager.get(companion_policy)
-                except Exception:
-                    log.exception(
-                        "ToolCallOrchestrator: companion provider construction failed tool=%s companion=%s",
-                        event.tool_name, companion_tool_name,
-                    )
-
-        executor = self._executor_registry.resolve(event.tool_name, provider, companion)
+        executor = self._executor_registry.resolve(event.tool_name, provider)
         if executor is None:
             log.error("ToolCallOrchestrator: no executor registered for tool_name=%r", event.tool_name)
             return ToolResult(status=ToolStatus.FAILED, error="no_executor_registered")
@@ -206,7 +213,6 @@ class ToolCallOrchestrator:
                 deadline=time.monotonic() + timeout_ms / 1000,
                 request_id=str(uuid.uuid4()),
                 caller_number=caller_number,
-                phone_number_confirmed=phone_number_confirmed,
                 max_chain_depth=policy.max_chain_depth,
             ),
         )

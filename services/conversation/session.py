@@ -13,6 +13,7 @@ The EventBus carries only observability/state events (SessionStateChanged, etc.)
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -130,6 +131,18 @@ class IConversationHandler(Protocol):
     async def on_cancel(self, session_id: str) -> None: ...
     async def on_session_end(self, session_id: str, reason: str,
                              final_state: str | None = None) -> None: ...
+
+    async def on_dtmf(self, session_id: str, digit: str) -> None: ...
+
+    # Out-of-band egress channel: a queue of HandlerResponse a handler can
+    # push onto with no inbound message driving it (a call-flow menu
+    # timeout is the only producer today — see callflow/handler.py). None
+    # on every handler that never speaks unprompted (EchoConversationHandler,
+    # PipelineConversationHandler) — declared here as a Protocol attribute
+    # so a future implementer sees it's part of the contract, but it MUST
+    # also land as an explicit class attribute on every implementer (see
+    # ConversationSession.out_responses's own comment for why).
+    out_responses: "asyncio.Queue[HandlerResponse] | None"
 
     def on_transfer_failed(
         self, session_id: str, destination: str, reason: str,
@@ -454,6 +467,26 @@ class ConversationSession:
         self._audio_buffer.clear()
         await self._handler.on_cancel(self._ctx.session_id)
         self._fsm.on_cancel()  # handles SPEAKING/THINKING/SYNTHESIZING/RECOGNIZING → LISTENING
+
+    async def push_dtmf(self, digit: str) -> None:
+        """A caller keypress (servicer's `dtmf` case). Guarded like every
+        other handler call on this class: a handler exception here must not
+        take the stream down."""
+        try:
+            await self._handler.on_dtmf(self._ctx.session_id, digit)
+        except Exception:
+            log.exception("push_dtmf: handler raised session=%s", self._ctx.session_id)
+
+    @property
+    def out_responses(self) -> "asyncio.Queue[HandlerResponse] | None":
+        """The handler's out-of-band egress queue, or None on every handler
+        that never speaks unprompted. `getattr` with a default is a second
+        line of defence for a test double or a future handler that forgets
+        the class attribute — see the Changes note on echo.py/pipeline.py:
+        without that attribute existing there too, this would raise
+        AttributeError on the no-flow majority path instead of reading
+        None."""
+        return getattr(self._handler, "out_responses", None)
 
     # close() reasons that carry no information beyond "the stream ended" —
     # a transfer outcome that de facto ended the AI session replaces these

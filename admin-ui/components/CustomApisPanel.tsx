@@ -49,6 +49,52 @@ const emptyParam = (): ParamForm => ({
   sensitive: false,
 });
 
+/** What a pasted JSON value is, in the param model's vocabulary. Arrays and
+ *  objects stay whole rather than being flattened into dotted names: the
+ *  executor sends a param's value as-is, so a nested object is one param. */
+function jsonTypeOf(value: unknown): ParamForm["json_type"] {
+  if (Array.isArray(value)) return "array";
+  if (value === null) return "string";
+  switch (typeof value) {
+    case "number":
+      return Number.isInteger(value) ? "integer" : "number";
+    case "boolean":
+      return "boolean";
+    case "object":
+      return "object";
+    default:
+      return "string";
+  }
+}
+
+/** Expand a pasted JSON object into parameter rows. Everything lands as
+ *  `literal` with the pasted value kept — that is what a pasted sample IS, a
+ *  set of fixed values. Flip the ones the agent should fill to `caller`, or
+ *  to `upstream` to chain them. */
+function paramsFromJson(
+  raw: string,
+  location: ParamForm["location"],
+): { params: ParamForm[]; error: string | null } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    return { params: [], error: e instanceof Error ? e.message : "That is not valid JSON." };
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { params: [], error: "Paste a JSON object — a top-level array or bare value has no field names to use." };
+  }
+  const params = Object.entries(parsed as Record<string, unknown>).map(([name, value]) => ({
+    ...emptyParam(),
+    name,
+    location,
+    json_type: jsonTypeOf(value),
+    source: "literal" as const,
+    literal_value: value,
+  }));
+  return { params, error: null };
+}
+
 const emptyForm = (): ApiForm => ({
   name: "",
   description: "",
@@ -157,6 +203,30 @@ export function CustomApisPanel({ tenantId }: { tenantId: string }) {
 
   const setParam = (index: number, patch: Partial<ParamForm>) => {
     setForm((f) => ({ ...f, params: f.params.map((p, i) => (i === index ? { ...p, ...patch } : p)) }));
+  };
+
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [pasteWhere, setPasteWhere] = useState<ParamForm["location"]>("body");
+  const [pasteError, setPasteError] = useState<string | null>(null);
+
+  const applyPaste = () => {
+    const { params, error } = paramsFromJson(pasteText, pasteWhere);
+    if (error) {
+      setPasteError(error);
+      return;
+    }
+    // Merge by name so pasting twice (a body then a header set) adds rather
+    // than replaces, and re-pasting a corrected body updates in place
+    // instead of duplicating every field.
+    setForm((f) => {
+      const byName = new Map(f.params.map((p) => [p.name, p]));
+      for (const p of params) byName.set(p.name, { ...byName.get(p.name), ...p });
+      return { ...f, params: [...byName.values()] };
+    });
+    setPasteText("");
+    setPasteError(null);
+    setPasteOpen(false);
   };
 
   const addParam = () => setForm((f) => ({ ...f, params: [...f.params, emptyParam()] }));
@@ -420,21 +490,33 @@ export function CustomApisPanel({ tenantId }: { tenantId: string }) {
         </div>
 
         <div className="form-group">
-          <label className="form-label">Parameters</label>
+          <label className="form-label">
+            Parameters{" "}
+            <span className="hint">
+              where each value goes in the request, and where it comes from
+            </span>
+          </label>
+          {form.params.length > 0 && (
+            <div className="api-param-head">
+              <span>Name</span>
+              <span>Send as</span>
+              <span>Type</span>
+              <span>Value from</span>
+              <span />
+            </div>
+          )}
           {form.params.map((p, i) => (
-            <div key={i} className="kb-row" style={{ flexWrap: "wrap", gap: 8 }}>
+            <div key={i} className="api-param-row">
               <input
                 className="form-input"
                 placeholder="name"
                 value={p.name}
                 onChange={(e) => setParam(i, { name: e.target.value })}
-                style={{ maxWidth: 140 }}
               />
               <select
                 className="form-select"
                 value={p.location}
                 onChange={(e) => setParam(i, { location: e.target.value as ParamForm["location"] })}
-                style={{ maxWidth: 110 }}
               >
                 {(["body", "query", "header", "path"] as const).map((l) => (
                   <option key={l} value={l}>
@@ -446,7 +528,6 @@ export function CustomApisPanel({ tenantId }: { tenantId: string }) {
                 className="form-select"
                 value={p.json_type}
                 onChange={(e) => setParam(i, { json_type: e.target.value as ParamForm["json_type"] })}
-                style={{ maxWidth: 110 }}
               >
                 {(["string", "number", "integer", "boolean", "object", "array"] as const).map((t) => (
                   <option key={t} value={t}>
@@ -458,16 +539,17 @@ export function CustomApisPanel({ tenantId }: { tenantId: string }) {
                 className="form-select"
                 value={p.source}
                 onChange={(e) => setParam(i, { source: e.target.value as ParamForm["source"] })}
-                style={{ maxWidth: 110 }}
               >
                 <option value="caller">caller</option>
                 <option value="literal">literal</option>
                 <option value="upstream">upstream</option>
               </select>
               {p.source === "literal" && (
+                <div className="api-param-extra">
+                  <span className="api-param-extra-label">Fixed value</span>
                 <input
                   className="form-input"
-                  placeholder="literal value (JSON)"
+                  placeholder={'e.g. "voice" or 42'}
                   value={p.literal_value != null ? JSON.stringify(p.literal_value) : ""}
                   onChange={(e) => {
                     try {
@@ -476,16 +558,16 @@ export function CustomApisPanel({ tenantId }: { tenantId: string }) {
                       setParam(i, { literal_value: e.target.value });
                     }
                   }}
-                  style={{ maxWidth: 160 }}
                 />
+                </div>
               )}
               {p.source === "upstream" && (
-                <>
+                <div className="api-param-extra">
+                  <span className="api-param-extra-label">Take from</span>
                   <select
                     className="form-select"
                     value={p.upstream_api_id ?? ""}
                     onChange={(e) => setParam(i, { upstream_api_id: e.target.value })}
-                    style={{ maxWidth: 160 }}
                   >
                     <option value="">select upstream API…</option>
                     {customApis
@@ -501,26 +583,81 @@ export function CustomApisPanel({ tenantId }: { tenantId: string }) {
                     placeholder="$.data.id"
                     value={p.upstream_json_path ?? ""}
                     onChange={(e) => setParam(i, { upstream_json_path: e.target.value })}
-                    style={{ maxWidth: 140 }}
                   />
-                </>
+                  <span className="api-param-note">
+                    that API runs first; this value is read from its response
+                  </span>
+                </div>
               )}
-              <label className="toggle-switch" title="Sensitive — redacted in logs and chain history">
-                <input
-                  type="checkbox"
-                  checked={!!p.sensitive}
-                  onChange={(e) => setParam(i, { sensitive: e.target.checked })}
-                />
-                <span className="toggle-slider" />
+              <div className="api-param-actions">
+              <label
+                className="api-param-sensitive"
+                title="Redacted in logs and chain history — use for PINs, tokens, card numbers"
+              >
+                <span className="toggle-switch">
+                  <input
+                    type="checkbox"
+                    checked={!!p.sensitive}
+                    onChange={(e) => setParam(i, { sensitive: e.target.checked })}
+                  />
+                  <span className="toggle-slider" />
+                </span>
+                Sensitive
               </label>
               <button className="btn btn-danger btn-sm" onClick={() => removeParam(i)}>
                 ✕
               </button>
+              </div>
             </div>
           ))}
-          <button className="btn btn-ghost btn-sm" onClick={addParam}>
-            + Add parameter
-          </button>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button className="btn btn-ghost btn-sm" onClick={addParam}>
+              + Add parameter
+            </button>
+            <button className="btn btn-ghost btn-sm" onClick={() => setPasteOpen((o) => !o)}>
+              {pasteOpen ? "Close JSON paste" : "Paste JSON…"}
+            </button>
+          </div>
+
+          {pasteOpen && (
+            <div className="api-paste">
+              <div className="form-hint" style={{ marginBottom: 6 }}>
+                Paste a sample request and each top-level field becomes a parameter, typed and set
+                to <strong>literal</strong>. Switch the ones the agent should fill to{" "}
+                <strong>caller</strong>, or to <strong>upstream</strong> to take them from another
+                API&apos;s response.
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+                <span className="form-label" style={{ margin: 0 }}>Send these as</span>
+                <select
+                  className="form-select"
+                  style={{ maxWidth: 120 }}
+                  value={pasteWhere}
+                  onChange={(e) => setPasteWhere(e.target.value as ParamForm["location"])}
+                >
+                  {(["body", "query", "header", "path"] as const).map((l) => (
+                    <option key={l} value={l}>{l}</option>
+                  ))}
+                </select>
+              </div>
+              <textarea
+                className="form-textarea"
+                style={{ minHeight: 110, fontFamily: "var(--mono)", fontSize: ".74rem" }}
+                placeholder={'{\n  "email": "a@b.com",\n  "channel": "voice"\n}'}
+                value={pasteText}
+                onChange={(e) => { setPasteText(e.target.value); setPasteError(null); }}
+              />
+              {pasteError && <div className="error-banner">{pasteError}</div>}
+              <button
+                className="btn btn-primary btn-sm"
+                style={{ marginTop: 6 }}
+                disabled={!pasteText.trim()}
+                onClick={applyPaste}
+              >
+                Create parameters
+              </button>
+            </div>
+          )}
         </div>
       </Modal>
     </div>

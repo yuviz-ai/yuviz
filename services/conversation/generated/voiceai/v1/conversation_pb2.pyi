@@ -31,7 +31,7 @@ AGENT_DISCONNECTED: FinalizationReason
 SYSTEM_SHUTDOWN: FinalizationReason
 
 class GatewayMessage(_message.Message):
-    __slots__ = ("session_open", "audio_chunk", "cancel_generation", "playback_finished", "speech_ended", "transfer_initiated", "transfer_completed", "transfer_failed")
+    __slots__ = ("session_open", "audio_chunk", "cancel_generation", "playback_finished", "speech_ended", "transfer_initiated", "transfer_completed", "transfer_failed", "dtmf")
     SESSION_OPEN_FIELD_NUMBER: _ClassVar[int]
     AUDIO_CHUNK_FIELD_NUMBER: _ClassVar[int]
     CANCEL_GENERATION_FIELD_NUMBER: _ClassVar[int]
@@ -40,6 +40,7 @@ class GatewayMessage(_message.Message):
     TRANSFER_INITIATED_FIELD_NUMBER: _ClassVar[int]
     TRANSFER_COMPLETED_FIELD_NUMBER: _ClassVar[int]
     TRANSFER_FAILED_FIELD_NUMBER: _ClassVar[int]
+    DTMF_FIELD_NUMBER: _ClassVar[int]
     session_open: SessionOpenRequest
     audio_chunk: AudioChunk
     cancel_generation: CancelGeneration
@@ -48,7 +49,18 @@ class GatewayMessage(_message.Message):
     transfer_initiated: TransferInitiated
     transfer_completed: TransferCompleted
     transfer_failed: TransferFailed
-    def __init__(self, session_open: _Optional[_Union[SessionOpenRequest, _Mapping]] = ..., audio_chunk: _Optional[_Union[AudioChunk, _Mapping]] = ..., cancel_generation: _Optional[_Union[CancelGeneration, _Mapping]] = ..., playback_finished: _Optional[_Union[PlaybackFinished, _Mapping]] = ..., speech_ended: _Optional[_Union[SpeechEndedNotification, _Mapping]] = ..., transfer_initiated: _Optional[_Union[TransferInitiated, _Mapping]] = ..., transfer_completed: _Optional[_Union[TransferCompleted, _Mapping]] = ..., transfer_failed: _Optional[_Union[TransferFailed, _Mapping]] = ...) -> None: ...
+    dtmf: DtmfDigit
+    def __init__(self, session_open: _Optional[_Union[SessionOpenRequest, _Mapping]] = ..., audio_chunk: _Optional[_Union[AudioChunk, _Mapping]] = ..., cancel_generation: _Optional[_Union[CancelGeneration, _Mapping]] = ..., playback_finished: _Optional[_Union[PlaybackFinished, _Mapping]] = ..., speech_ended: _Optional[_Union[SpeechEndedNotification, _Mapping]] = ..., transfer_initiated: _Optional[_Union[TransferInitiated, _Mapping]] = ..., transfer_completed: _Optional[_Union[TransferCompleted, _Mapping]] = ..., transfer_failed: _Optional[_Union[TransferFailed, _Mapping]] = ..., dtmf: _Optional[_Union[DtmfDigit, _Mapping]] = ...) -> None: ...
+
+class DtmfDigit(_message.Message):
+    __slots__ = ("session_id", "digit", "trace_id")
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    DIGIT_FIELD_NUMBER: _ClassVar[int]
+    TRACE_ID_FIELD_NUMBER: _ClassVar[int]
+    session_id: str
+    digit: str
+    trace_id: str
+    def __init__(self, session_id: _Optional[str] = ..., digit: _Optional[str] = ..., trace_id: _Optional[str] = ...) -> None: ...
 
 class SessionOpenRequest(_message.Message):
     __slots__ = ("protocol_version", "session_id", "tenant_id", "trace_id", "call_id", "caller_did", "called_did", "script_id", "codec", "sample_rate", "channels", "direction")

@@ -45,3 +45,6 @@ class RedisConfigRepository:
 
     async def fetch_provider_config(self, provider_id: str) -> dict[str, Any] | None:
         return await self._get_json(f"provider:{provider_id}")
+
+    async def fetch_call_flow(self, tenant_slug: str, call_flow_id: str) -> dict[str, Any] | None:
+        return await self._get_json(f"callflow:{tenant_slug}:{call_flow_id}")

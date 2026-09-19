@@ -48,7 +48,17 @@ message GatewayMessage {
     TransferInitiated       transfer_initiated = 6;
     TransferCompleted       transfer_completed = 7;
     TransferFailed          transfer_failed    = 8;
+    DtmfDigit               dtmf               = 9;
   }
+}
+
+// A single keypress from the caller. The gateway/vobiz side detects it
+// (RFC2833 / SIP INFO / websocket "dtmf" event) — the service never derives
+// digits from audio.
+message DtmfDigit {
+  string session_id = 1;
+  string digit      = 2;  // exactly one of "0".."9", "*", "#"
+  string trace_id   = 3;
 }
 
 // ---------------------------------------------------------------------------

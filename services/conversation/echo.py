@@ -28,6 +28,13 @@ class EchoConversationHandler:
     pipeline_delay_ms: artificial delay applied once per on_audio() call.
     """
 
+    # Echo mode never speaks unprompted — no out-of-band egress. Explicit
+    # class attribute, not just the Protocol's declaration: without this,
+    # ConversationSession.out_responses's getattr(..., None) is the only
+    # thing standing between the no-flow majority path and AttributeError
+    # (see session.py's IConversationHandler/Changes note).
+    out_responses: "asyncio.Queue[HandlerResponse] | None" = None
+
     def __init__(self, pipeline_delay_ms: float = 0.0) -> None:
         self._delay_s = pipeline_delay_ms / 1000.0
 
@@ -59,6 +66,10 @@ class EchoConversationHandler:
         yield  # make this an async generator
 
     async def on_cancel(self, session_id: str) -> None:
+        pass
+
+    async def on_dtmf(self, session_id: str, digit: str) -> None:
+        # Echo mode has no IVR/flow to advance on a keypress.
         pass
 
     async def on_session_end(self, session_id: str, reason: str,

@@ -340,7 +340,17 @@ class VobizCallBridge:
                 self._audio_delay_buf.append((time.monotonic(), audio_msg))
                 await self._run_vad(ws, session_id, pcm16)
             elif kind == "dtmf":
-                log.info("vobiz: dtmf digit=%s call=%s", event.get("dtmf", {}).get("digit"), self.call_uuid)
+                digit = event.get("dtmf", {}).get("digit")
+                if not digit:
+                    continue
+                log.info("vobiz: dtmf received call=%s", self.call_uuid)
+                # Flush held audio first (see module docstring's _AUDIO_DELAY_S
+                # note) so a digit keyed in during the delay window is
+                # ordered after the audio recorded at the same instant.
+                self._flush_pending_audio_now()
+                self._grpc_write_queue.put_nowait(pb.GatewayMessage(
+                    dtmf=pb.DtmfDigit(session_id=session_id, digit=digit),
+                ))
             elif kind == "stop":
                 log.info("vobiz: stream stop call=%s", self.call_uuid)
                 return

@@ -6,7 +6,6 @@ import { Agent, AgentStatus, AgentUpdate, ApiError, deleteAgent, getAgent, listP
 import { KnowledgeBaseTabs } from "@/components/KnowledgeBaseTabs";
 import { ToolsPanel } from "@/components/ToolsPanel";
 import { SipPanel } from "@/components/SipPanel";
-import { TestAgentPanel } from "@/components/TestAgentPanel";
 import { LocalVoicePicker } from "@/components/LocalVoicePicker";
 import { ElevenLabsVoicePicker } from "@/components/ElevenLabsVoicePicker";
 import { LANGUAGES, OTHER, asBrowsableTtsEngine } from "@/lib/engineCatalog";
@@ -42,7 +41,6 @@ export default function AgentDetailPage() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [testingAgent, setTestingAgent] = useState(false);
 
   const [form, setForm] = useState<AgentUpdate>({});
   const [languageChoice, setLanguageChoice] = useState<string>("");
@@ -60,11 +58,13 @@ export default function AgentDetailPage() {
   // the canvas: they are agent columns, and update_agent mirrors them into
   // the flow's start/global nodes, so the two stay in sync either way.
 
-  // Landed here straight from the creation wizard (?test=1) — open the test
-  // call immediately so the very first thing you do with a new agent is
-  // hear whether it actually talks the way the wizard said it should.
+  // Landed here straight from the creation wizard (?test=1) — send straight
+  // on to the test page, so the first thing you do with a new agent is hear
+  // whether it talks the way the wizard said it would.
   useEffect(() => {
-    if (searchParams.get("test") === "1") setTestingAgent(true);
+    if (searchParams.get("test") === "1") {
+      router.replace(`/agents/${tenantSlug}/${agentSlug}/test`);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -181,18 +181,14 @@ export default function AgentDetailPage() {
           >
             Call flow →
           </button>
-          <button className="btn btn-primary btn-sm" onClick={() => setTestingAgent(true)}>
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={() => router.push(`/agents/${tenantSlug}/${agentSlug}/test`)}
+          >
             🎙️ Test Agent
           </button>
         </div>
       </div>
-
-      <TestAgentPanel
-        open={testingAgent}
-        onClose={() => setTestingAgent(false)}
-        tenantSlug={tenantSlug}
-        agentSlug={agentSlug}
-      />
 
       <div className="tabs">
         {TABS.map((t) => (

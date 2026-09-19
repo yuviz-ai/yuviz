@@ -15,10 +15,10 @@ Two engines registered today:
   - "ollama"  — local, no API key, calls http://localhost:11434/api/embeddings
                with model "nomic-embed-text" (768-dim — matches kb_chunks.
                embedding's column width; see database/knowledge_schema.sql).
-  - "openai"  — cloud, requires api_key_ref. Not usable end-to-end on this
-               machine today (768 vs 1536 dims — see schema comment) but
-               registered so the registry-extension pattern is real, not
-               hypothetical.
+  - "openai"  — cloud, requires api_key_ref. text-embedding-3-* models are
+               asked for EMBEDDING_DIMS explicitly (they support truncation
+               natively); without that they return 1536 floats, which do not
+               fit kb_chunks.embedding's vector(768) and fail on insert.
 """
 
 from __future__ import annotations
@@ -31,6 +31,12 @@ from typing import Any, Awaitable, Callable, Protocol
 import httpx
 
 from .secret_resolver import SecretResolver
+
+# kb_chunks.embedding is vector(768) (database/knowledge_schema.sql). Any
+# provider registered here must return vectors of exactly this width, or the
+# insert fails — so a cloud model that defaults to something else is asked to
+# truncate rather than being silently mismatched.
+EMBEDDING_DIMS = 768
 
 
 class IEmbeddingProvider(Protocol):
@@ -72,11 +78,17 @@ class OpenAIEmbeddingProvider:
         self._model = model
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
+        payload: dict[str, Any] = {"model": self._model, "input": texts}
+        # Only the text-embedding-3 family supports `dimensions`; sending it
+        # to ada-002 is a 400. Those older models emit a fixed width that
+        # does not match the column, so they are simply not usable here.
+        if self._model.startswith("text-embedding-3"):
+            payload["dimensions"] = EMBEDDING_DIMS
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 "https://api.openai.com/v1/embeddings",
                 headers={"Authorization": f"Bearer {self._api_key}"},
-                json={"model": self._model, "input": texts},
+                json=payload,
             )
             resp.raise_for_status()
             data = resp.json()["data"]

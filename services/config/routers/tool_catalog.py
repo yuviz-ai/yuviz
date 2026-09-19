@@ -10,20 +10,25 @@ because Config Service and Conversation Service are deliberately separate
 deployables with no shared import today (see architecture_decisions:
 Gateway/ConvSvc/Config Service responsibility boundaries).
 
-cancel_appointment/reschedule_appointment are deliberately NOT listed
-here: neither is ever independently configured by an admin —
-ToolPolicyResolver auto-derives both from book_appointment's own
-tool_provider_config (same Cal.com account/event type), since there's no
-real scenario where a tenant wants booking without them. See
-services/conversation/tools/policy_resolver.py's _AUTO_DERIVED_COMPANIONS.
+ONE ENTRY, and that is the design (2026-09-18). The agent has exactly two
+tools — search_knowledge and execute_api — and only execute_api is
+configured here:
 
-send_sms IS independently configured (its own tool_provider_config, its
-own agent_tool_policies row, added/edited/enabled here exactly like
-book_appointment) — but it's never LLM-callable; see
-services/conversation/tools/types.py's ToolDefinition.llm_visible and
-registry.py's own entry for why. book_appointment's executor picks it up
-automatically when both are enabled for the same agent (see
-ToolDefinition.companion_tool_name), no linking step needed here.
+  search_knowledge  is not admin-configurable at all. It needs no
+                    credential and is already enabled per agent by linking
+                    a knowledge base to it on the Knowledge tab, so a
+                    second enablement switch here would be a redundant
+                    gate that can only ever disagree with the first.
+
+  execute_api       is configured once per agent, then every individual
+                    integration is a row in custom_apis (the APIs tab) —
+                    NOT a new entry in this file. Adding a capability must
+                    never mean shipping conversation-service code.
+
+The Cal.com "book_appointment" and Twilio "send_sms" entries were removed
+here along with the built-ins themselves. Appointment booking is now an
+ordinary custom API chain like any other integration; an outbound SMS is
+a side-effecting custom API.
 """
 
 from __future__ import annotations
@@ -37,73 +42,35 @@ router = APIRouter(prefix="/tools", tags=["tool_catalog"])
 
 _CATALOG = [
     {
-        "tool_name": "book_appointment",
-        "display_name": "Book Appointment",
+        "tool_name": "execute_api",
+        "display_name": "Business APIs",
         "description": (
-            "Lets the agent check calendar availability and book an appointment for the caller "
-            "without exposing multiple tool calls to the LLM — availability checking, booking, "
-            "and alternative-slot lookup all happen inside a single tool call. Also automatically "
-            "gives the agent the ability to cancel appointments using this same configuration — "
-            "no separate setup needed."
+            "Lets the agent call your own systems during a call — to look up an order, check "
+            "stock, verify an account, or book something. Turn this on once, then add each API "
+            "on the APIs tab; the agent picks between them using the description you write for "
+            "each one, so no code change is needed to add a new capability."
         ),
-        "category": "calendar",
+        "category": "custom_api",
         "engines": [
             {
-                "engine": "cal_com",
-                "display_name": "Cal.com",
+                "engine": "toolexec",
+                "display_name": "Tool Execution Service",
+                # engine='toolexec' is internal infrastructure, not a tenant
+                # credential — each API carries its own auth on the APIs tab,
+                # which is why there is no API key field here (see
+                # provider_manager.py's _make_toolexec and configs.py's
+                # exemption from the usual api_key_ref requirement).
                 "extra_fields": [
                     {
-                        "key": "event_type_id",
-                        "label": "Event Type ID",
+                        "key": "max_chain_depth",
+                        "label": "Maximum Chain Depth",
                         "type": "number",
-                        "required": True,
-                        "help": "The Cal.com event type this agent books against — one event type per agent (see project design notes).",
-                    },
-                    {
-                        "key": "timezone",
-                        "label": "Default Timezone",
-                        "type": "text",
                         "required": False,
-                        "help": "IANA timezone name, e.g. America/New_York or Asia/Kolkata. Used whenever a caller doesn't state one. Defaults to UTC if left blank.",
-                    },
-                    {
-                        "key": "default_attendee_phone",
-                        "label": "Default Attendee Phone",
-                        "type": "text",
-                        "required": False,
-                        "help": "Used only for sessions with no caller ID at all (e.g. a browser test call) and no phone number given. Leave blank to have the agent ask instead.",
-                    },
-                ],
-            },
-        ],
-    },
-    {
-        "tool_name": "send_sms",
-        "display_name": "Send SMS Confirmation",
-        "description": (
-            "Texts the caller a confirmation after a successful booking. Independent of any SMS "
-            "notification your calendar provider's own account might separately send — this is "
-            "this platform's own text, sent through the provider configured below."
-        ),
-        "category": "notifications",
-        "engines": [
-            {
-                "engine": "twilio",
-                "display_name": "Twilio",
-                "extra_fields": [
-                    {
-                        "key": "account_sid",
-                        "label": "Twilio Account SID",
-                        "type": "text",
-                        "required": True,
-                        "help": "Starts with AC... — found on your Twilio Console dashboard.",
-                    },
-                    {
-                        "key": "from_number",
-                        "label": "Twilio Phone Number",
-                        "type": "text",
-                        "required": True,
-                        "help": "The Twilio number confirmations are sent from, e.g. +19998887777.",
+                        "help": (
+                            "How many dependent APIs may run for a single request — an API that "
+                            "needs a lookup first counts as 2. Leave blank for the platform "
+                            "default. The platform maximum is 4 and this cannot raise it."
+                        ),
                     },
                 ],
             },

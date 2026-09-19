@@ -21,7 +21,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 
 from libs.config_sdk import RuntimeConfig, validate_transfer_timeout_ms
 from libs.knowledge_sdk import IKnowledgeProvider, RetrievalPolicy
@@ -46,6 +46,8 @@ from .tools.llm_adapter import LocalToolCompletedEvent
 from .tools.llm_adapter import TokenEvent as ToolTokenEvent
 from .tools.llm_adapter import ToolCallStartedEvent
 from .tools.orchestrator import ToolCallOrchestrator
+from .tools.registry import SEARCH_KNOWLEDGE
+from .tools.types import ToolResult, ToolStatus
 from .transcript_builder import TranscriptBuilder, TurnLatency
 from .transfer_engine import (
     DecisionContext,
@@ -81,7 +83,6 @@ class _SessionState:
     first_turn_filler_spoken:        bool = False
     fabrication_triggered_transfer:  bool = False
     confirmed_booking_slot:          str | None = None
-    phone_number_confirmed:          bool = False
 
 
 # Sentence boundary splitter.  Rules:
@@ -221,23 +222,6 @@ def _message_reads_back_phone_number(text: str, caller_number: str) -> bool:
     if len(target) < 7:
         return False
     return target[-7:] in _extract_spoken_digits(text)
-
-
-def _caller_just_confirmed_phone_number(history: list[ChatMessage], caller_number: str) -> bool:
-    """The one narrow, deterministic condition worth forcing tool_choice
-    over: the immediately preceding assistant turn read the caller's
-    number back to them, and this turn's caller reply is a short
-    affirmative — the exact moment book_appointment should be called,
-    confirmed live, repeatedly, to instead sometimes get skipped entirely
-    with no explanation. history[-1] is this turn's just-appended caller
-    message (see on_speech_ended's own append, right before _llm_to_tts
-    runs); history[-2], if present and from the assistant, is the turn
-    being checked for the readback."""
-    if len(history) < 2 or history[-2].role != "assistant":
-        return False
-    if not _AFFIRMATIVE_RE.match(history[-1].content or ""):
-        return False
-    return _message_reads_back_phone_number(history[-2].content or "", caller_number)
 
 
 def _claim_matches_confirmed_slot(assistant_text: str, confirmed_datetime: str) -> bool:
@@ -506,6 +490,13 @@ class PipelineConversationHandler:
                   LLM context window (also pipeline-wide, not per-tenant).
     """
 
+    # A conversational pipeline session never speaks unprompted — no
+    # out-of-band egress. Explicit class attribute, not just the Protocol's
+    # declaration: without this, ConversationSession.out_responses's
+    # getattr(..., None) is the only thing standing between the no-flow
+    # majority path and AttributeError (see session.py's Changes note).
+    out_responses: "asyncio.Queue[HandlerResponse] | None" = None
+
     def __init__(
         self,
         runtime_config: RuntimeConfig,
@@ -523,6 +514,7 @@ class PipelineConversationHandler:
         metrics:       IMetrics | None = None,
         tool_orchestrator: ToolCallOrchestrator | None = None,
         has_booking_tool: bool = False,
+        initial_variables: dict[str, Any] | None = None,
     ) -> None:
         self._default_system_prompt = (default_system_prompt or "").strip()
         self._stt          = provider_bundle.stt
@@ -554,8 +546,8 @@ class PipelineConversationHandler:
         self._transfer_announcement = (
             (runtime_config.conversation.transfer_announcement or "").strip() or None
         )
-        self._has_booking_tool = has_booking_tool
-        # Date / booking / directive tokens appended after each node's prompt.
+        self._has_action_tool = has_booking_tool
+        # Date / caller-number / directive tokens appended after each node's prompt.
         self._prompt_suffix = (
             _build_current_date_context()
             + (_build_caller_number_context(self._caller_number) if has_booking_tool else "")
@@ -696,6 +688,12 @@ class PipelineConversationHandler:
             graph,
             base_suffix=self._prompt_suffix,
             default_global=self._default_system_prompt,
+            # initial_variables (a call-flow handoff's collected values —
+            # see callflow/handler.py) is merged OVER the call-context
+            # defaults below: last-write-wins, so a handed-off variable
+            # actually takes effect rather than being shadowed by, say, a
+            # seeded "direction" key of the same name (AC 30; round-1
+            # finding 5's merge direction, open by user decision).
             variables={
                 "caller_number": caller_number,
                 "called_number": called_number,
@@ -704,6 +702,7 @@ class PipelineConversationHandler:
                 "business_name": runtime_config.tenant.name,
                 "current_date":  now.strftime("%Y-%m-%d"),
                 "current_time":  now.strftime("%H:%M"),
+                **(initial_variables or {}),
             },
             extractor=self._extractor,
             summarizer=self._summarizer,
@@ -913,17 +912,21 @@ class PipelineConversationHandler:
         # to generation. Prefixing the retrieved context onto the user
         # turn is the standard, safe RAG prompting pattern and leaves
         # exactly one system message in the conversation, always.
+        # Knowledge retrieval is NO LONGER unconditional (2026-09-18). It
+        # used to run exactly once per turn here and get prefixed onto the
+        # user message; it is now the `search_knowledge` local tool the
+        # model calls when it decides the question needs the business's
+        # own documents — see _local_tools() below and registry.py's
+        # two-tool docstring.
+        #
+        # What this buys: the model no longer answers a live, caller-
+        # specific question ("where's my order") out of whatever RAG
+        # happened to retrieve, and a question needing no documents at all
+        # costs no retrieval. What it costs: one extra LLM round trip on
+        # questions that DO need documents, since the model must ask for
+        # them before it can answer. That is the trade the two-tool design
+        # makes deliberately.
         messages_for_llm = history
-        # Retrieval: node with explicit knowledge_base_ids, or all-empty graph
-        # (starter backfill) keeping agent-level RAG. See WorkflowRunner.knowledge_enabled.
-        if self._knowledge is not None and self._workflow.knowledge_enabled():
-            context = await self._retrieve_context(stt_result.text, session_id)
-            if context is not None and context.chunks:
-                augmented = ChatMessage(
-                    role="user",
-                    content=f"{self._format_context(context)}\n\nCaller's question: {stt_result.text}",
-                )
-                messages_for_llm = history[:-1] + [augmented]
 
         directives: list[Directive] = []
         full_response: list[str] = []
@@ -1004,10 +1007,16 @@ class PipelineConversationHandler:
             _confirmed_slot is not None
             and _claim_matches_confirmed_slot(assistant_text, _confirmed_slot)
         )
+        # Generalized 2026-09-18: was "book_appointment not in
+        # tool_calls_made" when booking was a built-in tool. Booking is
+        # now an ordinary custom API reached through execute_api, whose
+        # name is per tenant and unknowable here, so the condition is
+        # the weaker but still correct one: the model claimed a booking
+        # having called NO tool at all this turn.
         fabricated_booking_claim = (
-            self._has_booking_tool
+            self._has_action_tool
             and not recap_of_real_booking
-            and "book_appointment" not in tool_calls_made
+            and not tool_calls_made
             and _claims_booking_without_tool_call(assistant_text)
         )
 
@@ -1020,15 +1029,15 @@ class PipelineConversationHandler:
             history.append(ChatMessage(role="assistant", content=assistant_text))
             if fabricated_booking_claim:
                 log.warning(
-                    "Possible fabricated booking claim (no book_appointment call this turn) "
+                    "Possible fabricated booking claim (no tool call this turn) "
                     "session=%s text=%r", session_id, assistant_text,
                 )
                 history.append(ChatMessage(
                     role="system",
                     content=(
                         "Correction: nothing was actually booked, confirmed, or scheduled just "
-                        "now — you did not call book_appointment. If the caller still wants an "
-                        "appointment, call book_appointment for real before saying anything is "
+                        "now — you did not call any tool. If the caller still wants an "
+                        "appointment, call the booking API for real before saying anything is "
                         "booked or confirmed."
                     ),
                 ))
@@ -1161,6 +1170,12 @@ class PipelineConversationHandler:
         # Barge-in before pending_speech is consumed must not replay it next turn.
         self._workflow.pending_speech = None
         self._interrupt_workflow_background_llm()
+
+    async def on_dtmf(self, session_id: str, digit: str) -> None:
+        # A conversational pipeline session has no IVR/flow to advance on a
+        # keypress — only CallFlowConversationHandler (callflow/handler.py)
+        # does.
+        pass
 
     async def on_session_end(self, session_id: str, reason: str,
                              final_state: str | None = None) -> None:
@@ -1493,23 +1508,13 @@ class PipelineConversationHandler:
                 yield token
             return
 
-        # Force book_appointment only on the turn right after phone confirmation.
-        just_confirmed = self._has_booking_tool and _caller_just_confirmed_phone_number(
-            history, self._caller_number,
-        )
-        force_tool_name = "book_appointment" if just_confirmed else None
-        if just_confirmed:
-            self._session(session_id).phone_number_confirmed = True
-
         # Callables so a mid-turn transition re-reads the new node's tools.
-        local_tools = lambda: self._workflow.local_tools(history, store)  # noqa: E731
-        only_tools = lambda: self._workflow.allowed_tool_names()       # noqa: E731
+        local_tools = lambda: self._local_tools(history, store, session_id)  # noqa: E731
+        only_tools = lambda: self._workflow.allowed_tool_names()            # noqa: E731
 
         async for event in self._tool_orchestrator.run_turn(
             self._agent_id or "", self._tenant_id, self._call_id, session_id, history,
             caller_number=self._caller_number, cancel_event=cancel_event,
-            force_tool_name=force_tool_name,
-            phone_number_confirmed=self._session(session_id).phone_number_confirmed,
             local_tools=local_tools, only_tools=only_tools,
         ):
             if isinstance(event, ToolCallStartedEvent):
@@ -1638,6 +1643,57 @@ class PipelineConversationHandler:
         if text_buffer.strip() and not cancel_event.is_set():
             async for chunk in self._synthesize_sentence_stream(text_buffer.strip(), session_id):
                 yield "", chunk, end_call
+
+    def _local_tools(
+        self, history: list[ChatMessage], store: list[ChatMessage] | None, session_id: str,
+    ) -> dict[str, tuple[Any, Any]]:
+        """The workflow node's own transition tools, plus search_knowledge
+        when this node has knowledge enabled.
+
+        search_knowledge is local rather than DB-gated on purpose (see
+        registry.py's SEARCH_KNOWLEDGE): it needs no credential, it is
+        already scoped per agent by its KB links, and — the operational
+        reason — local tools do not consume the remote tool-iteration
+        budget, so "look it up in the docs, then call an API" still fits
+        inside a single turn."""
+        tools = dict(self._workflow.local_tools(history, store))
+        # Node with explicit knowledge_base_ids, or an all-empty graph
+        # (starter backfill) keeping agent-level RAG — see
+        # WorkflowRunner.knowledge_enabled.
+        if self._knowledge is not None and self._workflow.knowledge_enabled():
+            tools[SEARCH_KNOWLEDGE.name] = (SEARCH_KNOWLEDGE, self._make_knowledge_handler(session_id))
+        return tools
+
+    def _make_knowledge_handler(self, session_id: str):
+        async def handler(arguments: dict[str, Any]) -> ToolResult:
+            query = str(arguments.get("query") or "").strip()
+            if not query:
+                return ToolResult(status=ToolStatus.INVALID_ARGUMENT, error="missing_query")
+            # Deliberately NOT _retrieve_context(): that helper collapses
+            # "the lookup broke" and "the provider had nothing" into the
+            # same None, which was harmless when a None just meant "no
+            # context to prefix" but is not harmless now. Told to a caller,
+            # those two are completely different sentences — "we have no
+            # policy on that" versus "I couldn't look that up" — and the
+            # model can only tell them apart if this does.
+            try:
+                context = await self._knowledge.retrieve(
+                    self._tenant_slug, self._agent_slug, query, RetrievalPolicy(),
+                )
+            except Exception:
+                log.exception("search_knowledge retrieval failed session=%s", session_id)
+                return ToolResult(status=ToolStatus.FAILED, error="knowledge_unavailable")
+            if context is None or not context.chunks:
+                return ToolResult(status=ToolStatus.SUCCESS, payload={"found": False, "passages": []})
+            payload: dict[str, Any] = {
+                "found": True,
+                "passages": [chunk.content for chunk in context.chunks],
+            }
+            if context.include_citations and context.sources:
+                payload["sources"] = list(context.sources)
+            return ToolResult(status=ToolStatus.SUCCESS, payload=payload)
+
+        return handler
 
     async def _retrieve_context(self, query: str, session_id: str):
         # A retrieval failure must never fail the turn — same "degrade to

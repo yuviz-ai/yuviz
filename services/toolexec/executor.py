@@ -32,6 +32,7 @@ import hashlib
 import hmac
 import json
 import logging
+import uuid
 import os
 import re
 import time
@@ -68,6 +69,27 @@ _HEADER_VALUE_RE = re.compile(r"^[\x20-\x7E]*$")
 
 # ── step 1-3: ownership, ordering, admission, run claim ──────────────────
 
+async def _resolve_tenant_uuid(conn: Any, tenant_id: str) -> str | None:
+    """`tenant_id` on the wire may be a slug or a UUID.
+
+    The conversation service carries the tenant as its SLUG all the way
+    through a call (ToolExecutionContext.tenant_id), and libs.tenancy
+    accepts either when it resolves the RLS GUCs — so a slug arrives here
+    already correctly scoped. It is only the raw `a.tenant_id = $1`
+    comparison below that needs a UUID, and handing it a slug raised
+    `invalid UUID` as a 500 rather than any tenant-safety verdict.
+    """
+    try:
+        uuid.UUID(tenant_id)
+        return tenant_id
+    except (ValueError, AttributeError, TypeError):
+        pass
+    row = await conn.fetchrow(
+        "SELECT id FROM tenants WHERE slug = $1 AND deleted_at IS NULL", tenant_id,
+    )
+    return str(row["id"]) if row is not None else None
+
+
 async def _verify_ownership(tenant_id: str, agent_id: str, api_name: str) -> dict | None:
     """The single ownership-verification query. tenant_id/agent_id/api_name
     all arrive as independent, untrusted body fields — this is what stops
@@ -87,6 +109,9 @@ async def _verify_ownership(tenant_id: str, agent_id: str, api_name: str) -> dic
     JOIN, WHERE and deleted_at filter is unchanged from the task's query."""
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
+        resolved_tenant_id = await _resolve_tenant_uuid(conn, tenant_id)
+        if resolved_tenant_id is None:
+            return None
         row = await conn.fetchrow(
             "SELECT ca.*, atp.timeout_ms AS agent_policy_timeout_ms, "
             "       atp.max_chain_depth AS agent_policy_max_chain_depth "
@@ -97,7 +122,7 @@ async def _verify_ownership(tenant_id: str, agent_id: str, api_name: str) -> dic
             "LEFT JOIN agent_tool_policies atp ON atp.agent_id = a.id AND atp.tool_name = 'execute_api' "
             "                                 AND atp.enabled "
             "WHERE a.id = $2 AND a.tenant_id = $1 AND a.deleted_at IS NULL",
-            tenant_id, agent_id, api_name,
+            resolved_tenant_id, agent_id, api_name,
         )
     return dict(row) if row is not None else None
 

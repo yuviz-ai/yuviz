@@ -28,6 +28,7 @@ from ..interfaces import IConfigRepository
 from ..models import (
     TRANSFER_TIMEOUT_DEFAULT_MS,
     Agent,
+    CallFlow,
     ConversationInfo,
     MediaInfo,
     Policies,
@@ -125,6 +126,18 @@ def _agent_from_dict(row: dict[str, Any]) -> Agent:
         max_call_duration_s=row.get("max_call_duration_s"),
         workflow=_parse_json(row.get("workflow")),
         workflow_draft=_parse_json(row.get("workflow_draft")),
+        call_flow_id=row.get("call_flow_id"),
+    )
+
+
+def _call_flow_from_dict(row: dict[str, Any]) -> CallFlow:
+    return CallFlow(
+        id=str(row["id"]),
+        tenant_slug=row["tenant_slug"],
+        config_version=row.get("config_version", 0),
+        graph=_parse_json(row.get("graph")) or {},
+        agent_slugs=_parse_json(row.get("agent_slugs")) or {},
+        resolved_tts_config_id=row.get("resolved_tts_config_id"),
     )
 
 
@@ -175,6 +188,13 @@ class CacheAsideConfigProvider:
             lambda r: r.fetch_provider_config(provider_id), lambda r: r.fetch_provider_config(provider_id),
         )
         return _provider_config_from_dict(raw) if raw is not None else None
+
+    async def get_call_flow(self, tenant_slug: str, call_flow_id: str) -> CallFlow | None:
+        raw = await self._fetch(
+            lambda r: r.fetch_call_flow(tenant_slug, call_flow_id),
+            lambda r: r.fetch_call_flow(tenant_slug, call_flow_id),
+        )
+        return _call_flow_from_dict(raw) if raw is not None else None
 
     async def get_runtime_config(self, tenant_slug: str, agent_slug: str) -> RuntimeConfig | None:
         agent = await self.get_agent(tenant_slug, agent_slug)

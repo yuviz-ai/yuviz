@@ -1104,6 +1104,54 @@ CREATE INDEX IF NOT EXISTS idx_cfv_flow ON call_flow_versions (call_flow_id, ver
 -- agent pointing at it — they just go back to answering directly.
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS call_flow_id UUID REFERENCES call_flows(id) ON DELETE SET NULL;
 
+-- Same-tenant constraint on agents.call_flow_id (lesson 31's remedy,
+-- applied here where it was missing): the plain REFERENCES call_flows(id)
+-- above lets any agent point at ANY tenant's call flow, with nothing but
+-- application code and RLS standing in the way. No Config write path sets
+-- this column today, which is the only reason a live violation is
+-- unlikely rather than impossible — so this still guards for one.
+--
+-- A composite FK needs something UNIQUE to point at, so this adds
+-- UNIQUE (id, tenant_id) on call_flows (harmless alongside the existing
+-- PRIMARY KEY (id) — a superset uniqueness, not a conflicting one) and
+-- swaps agents' plain FK for a composite one against it. `psql -f` is
+-- autocommit-per-statement with no ON_ERROR_STOP (lesson 13): the
+-- violation guard, the UNIQUE add and the FK swap are folded into one DO
+-- block, atomic under autocommit, so a RAISE here rolls all three back
+-- together instead of leaving the table with the UNIQUE added but the old
+-- cross-tenant-permissive FK still in place. NULL call_flow_id (the
+-- common case — no flow attached) is exempt from a composite FK check by
+-- Postgres's default MATCH SIMPLE semantics, so this changes nothing for
+-- an agent with no flow.
+DO $$
+DECLARE violations int;
+BEGIN
+  SELECT count(*) INTO violations
+    FROM agents a JOIN call_flows c ON c.id = a.call_flow_id
+   WHERE a.call_flow_id IS NOT NULL AND a.tenant_id <> c.tenant_id;
+  IF violations > 0 THEN
+    RAISE EXCEPTION
+      'agents.call_flow_id has % row(s) pointing at another tenant''s call '
+      'flow; fix or NULL them out before applying schema.sql', violations;
+  END IF;
+
+  -- The FK (whichever name it currently has — the original plain-column
+  -- one on a first-ever apply, or this composite one on a re-run) must go
+  -- BEFORE the UNIQUE it depends on, or the DROP CONSTRAINT below fails
+  -- with "other objects depend on it" on every apply after the first
+  -- (found by re-running this block a second time against a clean
+  -- database, not just once against an empty one — lesson 10's own
+  -- earned miss).
+  EXECUTE 'ALTER TABLE agents DROP CONSTRAINT IF EXISTS agents_call_flow_id_fkey';
+  EXECUTE 'ALTER TABLE agents DROP CONSTRAINT IF EXISTS agents_call_flow_id_tenant_fkey';
+
+  EXECUTE 'ALTER TABLE call_flows DROP CONSTRAINT IF EXISTS call_flows_id_tenant_id_key';
+  EXECUTE 'ALTER TABLE call_flows ADD CONSTRAINT call_flows_id_tenant_id_key UNIQUE (id, tenant_id)';
+
+  EXECUTE $sql$ALTER TABLE agents ADD CONSTRAINT agents_call_flow_id_tenant_fkey
+    FOREIGN KEY (call_flow_id, tenant_id) REFERENCES call_flows(id, tenant_id) ON DELETE SET NULL$sql$;
+END $$;
+
 -- CREATE TABLE ... IF NOT EXISTS is a no-op on a database that already has
 -- call_flows from the first version of this table, so `direction` needs its
 -- own idempotent ALTER to reach one (same reason audit_log.tenant_id's FK fix

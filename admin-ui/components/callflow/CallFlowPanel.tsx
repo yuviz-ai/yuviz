@@ -626,6 +626,16 @@ function Canvas({ flow, tenantSlug }: { flow: CallFlow; tenantSlug: string }) {
                         />
                       </div>
                     </div>
+                    <div className="form-group">
+                      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: ".8rem" }}>
+                        <input
+                          type="checkbox"
+                          checked={!!d.sensitive}
+                          onChange={(e) => patchNode(selected.id, { sensitive: e.target.checked })}
+                        />
+                        this value is sensitive — don&apos;t store it
+                      </label>
+                    </div>
                   </>
                 )}
 
