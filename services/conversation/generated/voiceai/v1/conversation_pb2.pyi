@@ -171,7 +171,7 @@ class TransferFailed(_message.Message):
     def __init__(self, session_id: _Optional[str] = ..., destination: _Optional[str] = ..., reason: _Optional[str] = ..., transfer_id: _Optional[str] = ...) -> None: ...
 
 class ServiceMessage(_message.Message):
-    __slots__ = ("service_ready", "tts_chunk", "cancel_ack", "error", "stt_result", "tts_started", "end_call", "transfer_request", "conversation_finalized")
+    __slots__ = ("service_ready", "tts_chunk", "cancel_ack", "error", "stt_result", "tts_started", "end_call", "transfer_request", "conversation_finalized", "assistant_response")
     SERVICE_READY_FIELD_NUMBER: _ClassVar[int]
     TTS_CHUNK_FIELD_NUMBER: _ClassVar[int]
     CANCEL_ACK_FIELD_NUMBER: _ClassVar[int]
@@ -181,6 +181,7 @@ class ServiceMessage(_message.Message):
     END_CALL_FIELD_NUMBER: _ClassVar[int]
     TRANSFER_REQUEST_FIELD_NUMBER: _ClassVar[int]
     CONVERSATION_FINALIZED_FIELD_NUMBER: _ClassVar[int]
+    ASSISTANT_RESPONSE_FIELD_NUMBER: _ClassVar[int]
     service_ready: ServiceReady
     tts_chunk: TtsChunk
     cancel_ack: CancelAck
@@ -190,7 +191,16 @@ class ServiceMessage(_message.Message):
     end_call: EndCall
     transfer_request: TransferRequest
     conversation_finalized: ConversationFinalized
-    def __init__(self, service_ready: _Optional[_Union[ServiceReady, _Mapping]] = ..., tts_chunk: _Optional[_Union[TtsChunk, _Mapping]] = ..., cancel_ack: _Optional[_Union[CancelAck, _Mapping]] = ..., error: _Optional[_Union[ServiceError, _Mapping]] = ..., stt_result: _Optional[_Union[SttResult, _Mapping]] = ..., tts_started: _Optional[_Union[TtsStarted, _Mapping]] = ..., end_call: _Optional[_Union[EndCall, _Mapping]] = ..., transfer_request: _Optional[_Union[TransferRequest, _Mapping]] = ..., conversation_finalized: _Optional[_Union[ConversationFinalized, _Mapping]] = ...) -> None: ...
+    assistant_response: AssistantResponse
+    def __init__(self, service_ready: _Optional[_Union[ServiceReady, _Mapping]] = ..., tts_chunk: _Optional[_Union[TtsChunk, _Mapping]] = ..., cancel_ack: _Optional[_Union[CancelAck, _Mapping]] = ..., error: _Optional[_Union[ServiceError, _Mapping]] = ..., stt_result: _Optional[_Union[SttResult, _Mapping]] = ..., tts_started: _Optional[_Union[TtsStarted, _Mapping]] = ..., end_call: _Optional[_Union[EndCall, _Mapping]] = ..., transfer_request: _Optional[_Union[TransferRequest, _Mapping]] = ..., conversation_finalized: _Optional[_Union[ConversationFinalized, _Mapping]] = ..., assistant_response: _Optional[_Union[AssistantResponse, _Mapping]] = ...) -> None: ...
+
+class AssistantResponse(_message.Message):
+    __slots__ = ("session_id", "text")
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    TEXT_FIELD_NUMBER: _ClassVar[int]
+    session_id: str
+    text: str
+    def __init__(self, session_id: _Optional[str] = ..., text: _Optional[str] = ...) -> None: ...
 
 class ServiceReady(_message.Message):
     __slots__ = ("session_id", "protocol_version")

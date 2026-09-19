@@ -483,6 +483,17 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
                                             is_final=False,
                                         )
                                     )
+                            # The assistant's complete spoken-turn text — sent
+                            # alongside, never instead of, the tts_chunk audio
+                            # already streamed above. Today's only consumer is
+                            # the browser test-call panel (services/webcall),
+                            # which has no other way to show what the agent said.
+                            if response.response_text:
+                                yield pb.ServiceMessage(
+                                    assistant_response=pb.AssistantResponse(
+                                        session_id=sid, text=response.response_text,
+                                    )
+                                )
 
                     # Empty transcript (noise / filtered hallucination): tell the
                     # gateway so its FSM returns to Listening instead of waiting

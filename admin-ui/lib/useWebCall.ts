@@ -48,7 +48,7 @@ export type CallState = "idle" | "connecting" | "ready" | "talking" | "thinking"
 
 export interface WebCall {
   state: CallState;
-  transcript: { text: string; ts: number }[];
+  transcript: { role: "user" | "assistant"; text: string; ts: number }[];
   errorMsg: string | null;
   micLevelPct: number;
   muted: boolean;
@@ -60,7 +60,7 @@ export interface WebCall {
 
 export function useWebCall(tenantSlug: string, agentSlug: string): WebCall {
   const [state, setState] = useState<CallState>("idle");
-  const [transcript, setTranscript] = useState<{ text: string; ts: number }[]>([]);
+  const [transcript, setTranscript] = useState<{ role: "user" | "assistant"; text: string; ts: number }[]>([]);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [micLevelPct, setMicLevelPct] = useState(0);
@@ -264,11 +264,14 @@ export function useWebCall(tenantSlug: string, agentSlug: string): WebCall {
             setState("ready");
             break;
           case "stt_result":
-            if (msg.text) setTranscript((prev) => [...prev, { text: msg.text, ts: Date.now() }]);
+            if (msg.text) setTranscript((prev) => [...prev, { role: "user", text: msg.text, ts: Date.now() }]);
             setState((s) => (s === "talking" ? "thinking" : s));
             break;
           case "tts_started":
             setState((s) => (s === "talking" ? s : "speaking"));
+            break;
+          case "tts_result":
+            if (msg.text) setTranscript((prev) => [...prev, { role: "assistant", text: msg.text, ts: Date.now() }]);
             break;
           case "tts_chunk_final":
             setState((s) => (s === "talking" ? s : "ready"));

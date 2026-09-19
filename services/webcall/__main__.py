@@ -224,6 +224,10 @@ async def _grpc_to_browser(ws: ServerConnection, call, response_watchdog: Respon
             }))
         elif which == "tts_started":
             await ws.send(json.dumps({"type": "tts_started"}))
+        elif which == "assistant_response":
+            await ws.send(json.dumps({
+                "type": "tts_result", "text": msg.assistant_response.text,
+            }))
         elif which == "cancel_ack":
             await ws.send(json.dumps({"type": "cancel_ack"}))
         elif which == "error":

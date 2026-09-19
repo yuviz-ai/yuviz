@@ -70,20 +70,16 @@ export default function AgentTestPage() {
           <div className="test-log" ref={logRef}>
             {call.transcript.length === 0 ? (
               <div className="empty-state" style={{ padding: 24 }}>
-                Start the session and your words appear here as they&apos;re recognised.
+                Start the session and the conversation appears here as it happens.
               </div>
             ) : (
               call.transcript.map((t, i) => (
                 <div key={i} className="test-turn">
-                  <span className="test-turn-who">You</span>
+                  <span className="test-turn-who">{t.role === "user" ? "You" : "Agent"}</span>
                   <span>{t.text}</span>
                 </div>
               ))
             )}
-          </div>
-          <div className="card-body test-note">
-            Only your own recognised speech is shown — the agent&apos;s replies come back as audio,
-            not text.
           </div>
         </div>
 

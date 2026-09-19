@@ -184,46 +184,6 @@ def _build_caller_number_context(caller_number: str) -> str:
     )
 
 
-_DIGIT_WORDS = {
-    "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
-    "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
-}
-_AFFIRMATIVE_RE = re.compile(
-    r"^\s*(yes|yeah|yep|yup|sure|correct|right|that'?s\s+(right|correct)|ok(ay)?)\b", re.IGNORECASE,
-)
-
-
-def _extract_spoken_digits(text: str) -> str:
-    """A digit confirmation readback can spell digits as words ("eight
-    nine seven") or as numerals ("8 9 7") depending on how the model
-    happens to phrase it this time — normalize both to one digit string
-    so the two representations compare equal."""
-    out = []
-    for word in re.findall(r"[A-Za-z]+|\d+", text):
-        if word.isdigit():
-            out.append(word)
-        else:
-            digit = _DIGIT_WORDS.get(word.lower())
-            if digit:
-                out.append(digit)
-    return "".join(out)
-
-
-def _message_reads_back_phone_number(text: str, caller_number: str) -> bool:
-    """True when `text` (an assistant turn) appears to have just spoken
-    the caller's own number back to them — the digit-confirmation moment
-    _build_caller_number_context() instructs the agent to do before
-    booking. Compares only the last 7 digits so country-code/leading-zero
-    formatting differences between what was injected and what the model
-    actually said don't cause a false negative."""
-    if not caller_number:
-        return False
-    target = re.sub(r"\D", "", caller_number)
-    if len(target) < 7:
-        return False
-    return target[-7:] in _extract_spoken_digits(text)
-
-
 def _claim_matches_confirmed_slot(assistant_text: str, confirmed_datetime: str) -> bool:
     """True when assistant_text appears to be describing the SAME slot
     confirmed_datetime already real, truthfully — as opposed to a claim
@@ -1021,6 +981,13 @@ class PipelineConversationHandler:
         )
 
         if full_response and not cancel_event.is_set():
+            # Same guard as the history append below: only a complete,
+            # non-barged-in turn's text is worth surfacing — a cancelled
+            # turn's audio was cut short too, so its text would describe
+            # speech the caller never actually heard in full. Sent
+            # alongside, never instead of, the tts_payloads already
+            # yielded above (see HandlerResponse.response_text).
+            yield HandlerResponse(response_text=assistant_text)
             # A cancelled response (≥1 token, interrupted) is treated as zero
             # tokens: discard it so history only ever holds complete pairs.
             # Marker stripped here too — full_response is raw per-token text, so

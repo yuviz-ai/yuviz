@@ -605,3 +605,67 @@ async def test_transfer_request_dropped_on_interrupted_playback():
             await stream.done_writing()
     finally:
         await server.stop(grace=0)
+
+
+# ---------------------------------------------------------------------------
+# assistant_response — the browser test-call panel's only way to see what
+# the agent said (it otherwise only receives tts_chunk audio, never text).
+# ---------------------------------------------------------------------------
+
+class _SpeakingEchoHandler(EchoConversationHandler):
+    """Echo handler whose speech_ended turn carries both audio and the
+    turn's full text — the shape a real completed pipeline.py turn
+    produces (see HandlerResponse.response_text)."""
+
+    async def on_speech_ended(self, session_id, audio, duration_ms, energy_db):
+        yield HandlerResponse(
+            stt_text="what's the weather",
+            stt_confidence=1.0,
+            tts_payloads=[_pcm_sine(320)],
+        )
+        yield HandlerResponse(response_text="It's sunny today.")
+
+
+async def _open_speaking_server() -> tuple[str, grpc.aio.Server]:
+    async def factory(ctx):
+        return _SpeakingEchoHandler()
+    server = grpc.aio.server()
+    pb_grpc.add_ConversationServiceServicer_to_server(
+        ConversationServicer(factory), server,
+    )
+    port = server.add_insecure_port("[::]:0")
+    await server.start()
+    return f"localhost:{port}", server
+
+
+@pytest.mark.asyncio
+async def test_assistant_response_sent_after_turn_audio():
+    """response_text must reach the gateway as its own assistant_response
+    message, after the turn's stt_result/tts_started/tts_chunk sequence —
+    sent alongside, never instead of, the audio already streamed."""
+    addr, server = await _open_speaking_server()
+    try:
+        async with grpc.aio.insecure_channel(addr) as channel:
+            stub   = pb_grpc.ConversationServiceStub(channel)
+            stream = await _open_and_handshake(stub, "test-assistant-response")
+
+            await stream.write(pb.GatewayMessage(
+                speech_ended=pb.SpeechEndedNotification(
+                    session_id="test-assistant-response", duration_ms=500, energy_db=-20.0,
+                )
+            ))
+            stt = await stream.read()
+            assert stt.HasField("stt_result")
+            tts_s = await stream.read()
+            assert tts_s.HasField("tts_started")
+            chunk = await stream.read()
+            assert chunk.HasField("tts_chunk")
+
+            msg = await asyncio.wait_for(stream.read(), timeout=5)
+            assert msg.HasField("assistant_response"), f"Expected assistant_response, got: {msg}"
+            assert msg.assistant_response.text == "It's sunny today."
+            assert msg.assistant_response.session_id == "test-assistant-response"
+
+            await stream.done_writing()
+    finally:
+        await server.stop(grace=0)

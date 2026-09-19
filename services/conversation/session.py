@@ -68,6 +68,14 @@ class HandlerResponse:
                                   and sends TransferRequest to the gateway
                                   once this turn's audio finishes playing
                                   uninterrupted (see servicer.py).
+    response_text              — the assistant's complete spoken-turn text,
+                                  assembled once the LLM/TTS streaming loop
+                                  for this turn finishes. Sent alongside,
+                                  never instead of, tts_payloads — today's
+                                  only consumer is the browser test-call
+                                  panel, which has no other way to show
+                                  what the agent said (see servicer.py's
+                                  speech_ended loop and services/webcall).
     """
     stt_text:       str         = ""
     stt_confidence: float       = 0.0
@@ -75,6 +83,7 @@ class HandlerResponse:
     end_call:       bool        = False
     end_call_grace_period_ms: int = 0
     transfer_request: TransferRequest | None = None
+    response_text:  str         = ""
 
 
 class IConversationHandler(Protocol):

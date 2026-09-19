@@ -203,7 +203,18 @@ message ServiceMessage {
     EndCall             end_call             = 7;
     TransferRequest     transfer_request     = 8;
     ConversationFinalized conversation_finalized = 9;
+    AssistantResponse   assistant_response   = 10;
   }
+}
+
+// The assistant's complete spoken-turn text, assembled once the LLM/TTS
+// streaming loop for that turn finishes (see pipeline.py's on_speech_ended).
+// Sent alongside — never instead of — the tts_chunk audio already streamed
+// for the same turn; today's only consumer is the browser test-call panel
+// (services/webcall), which has no other way to show what the agent said.
+message AssistantResponse {
+  string session_id  = 1;
+  string text         = 2;
 }
 
 // Sent once after SessionOpenRequest is accepted.

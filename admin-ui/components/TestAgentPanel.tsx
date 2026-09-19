@@ -50,7 +50,7 @@ export function TestAgentPanel({
   agentSlug: string;
 }) {
   const [state, setState] = useState<CallState>("idle");
-  const [transcript, setTranscript] = useState<{ text: string; ts: number }[]>([]);
+  const [transcript, setTranscript] = useState<{ role: "user" | "assistant"; text: string; ts: number }[]>([]);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [micLevelPct, setMicLevelPct] = useState(0);
@@ -250,11 +250,14 @@ export function TestAgentPanel({
             setState("ready");
             break;
           case "stt_result":
-            if (msg.text) setTranscript((prev) => [...prev, { text: msg.text, ts: Date.now() }]);
+            if (msg.text) setTranscript((prev) => [...prev, { role: "user", text: msg.text, ts: Date.now() }]);
             setState((s) => (s === "talking" ? "thinking" : s));
             break;
           case "tts_started":
             setState((s) => (s === "talking" ? s : "speaking"));
+            break;
+          case "tts_result":
+            if (msg.text) setTranscript((prev) => [...prev, { role: "assistant", text: msg.text, ts: Date.now() }]);
             break;
           case "tts_chunk_final":
             setState((s) => (s === "talking" ? s : "ready"));
@@ -442,13 +445,12 @@ export function TestAgentPanel({
             </button>
             {transcriptOpen && (
               <div style={{ maxHeight: 160, overflowY: "auto", padding: "8px 4px", fontSize: ".78rem", color: "var(--text-3)" }}>
-                <div className="hint" style={{ marginBottom: 8 }}>
-                  Only your own recognized speech is shown — the agent&apos;s spoken replies aren&apos;t sent back as
-                  text, only as audio.
-                </div>
                 {transcript.map((t, i) => (
-                  <div key={i} style={{ marginBottom: 6, fontStyle: "italic" }}>
-                    “{t.text}”
+                  <div key={i} style={{ marginBottom: 6 }}>
+                    <span style={{ fontWeight: 600, color: "var(--text-2)" }}>
+                      {t.role === "user" ? "You: " : "Agent: "}
+                    </span>
+                    <span style={{ fontStyle: "italic" }}>“{t.text}”</span>
                   </div>
                 ))}
               </div>

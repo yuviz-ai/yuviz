@@ -1117,6 +1117,45 @@ async def test_on_speech_ended_cancelled_turn_records_partial_latency():
     assert latency.stt_ms is not None  # STT always completes before cancellation is checked
 
 
+@pytest.mark.asyncio
+async def test_on_speech_ended_yields_response_text_for_a_complete_turn():
+    """The assistant's full spoken-turn text must reach the servicer via
+    HandlerResponse.response_text — the browser test-call panel's only way
+    to show what the agent said (it never receives synthesized speech as
+    text otherwise)."""
+    stt = _make_stt("book me a haircut")
+    llm = _make_llm(["Sure, what time works?"])
+    tts = _make_tts(b"\x00" * 640)
+    handler = _make_handler(stt, llm, tts)
+
+    responses = [r async for r in handler.on_speech_ended("s1", _silence(), 200, -20.0)]
+
+    text_responses = [r for r in responses if r.response_text]
+    assert len(text_responses) == 1
+    assert text_responses[0].response_text == "Sure, what time works?"
+    # response_text always arrives alongside — never instead of — the turn's
+    # own tts_payloads, both from the same completed-turn generator.
+    assert any(r.tts_payloads for r in responses)
+
+
+@pytest.mark.asyncio
+async def test_on_speech_ended_cancelled_turn_never_yields_response_text():
+    """A barge-in cuts the turn's audio short, so its text must not be
+    surfaced either — it would describe speech the caller never actually
+    heard in full (same guard as the history-append it mirrors)."""
+    stt = _make_stt("hello")
+    llm = _make_llm(["Sure thing right away."])
+    tts = _make_tts(b"\x00" * 640)
+    handler = _make_handler(stt, llm, tts)
+
+    gen = handler.on_speech_ended("s1", _silence(), 200, -20.0)
+    await gen.__anext__()  # consume just the stt_text response
+    handler._sessions["s1"].cancelled.set()
+    responses = [r async for r in gen]
+
+    assert not any(r.response_text for r in responses)
+
+
 # ---------------------------------------------------------------------------
 # Phase 5D — PipelineConversationHandler.finalize_session()
 # ---------------------------------------------------------------------------
@@ -2386,15 +2425,6 @@ async def test_deterministic_spoken_event_reaches_tts_and_history():
     history = handler._get_history("s1")
     assert history[-1].role == "assistant"
     assert history[-1].content == confirmation
-
-
-def test_message_reads_back_phone_number_matches_words_or_digits():
-    from ..pipeline import _message_reads_back_phone_number
-
-    assert _message_reads_back_phone_number("nine one eight nine seven one one eight eight two one one", "+918971188211")
-    assert _message_reads_back_phone_number("+91 8 9 7 1 1 8 8 2 1 1, is that right?", "+918971188211")
-    assert not _message_reads_back_phone_number("What's a good time for you?", "+918971188211")
-    assert not _message_reads_back_phone_number("nine one eight nine seven one one eight eight two one one", "")
 
 
 @pytest.mark.asyncio
