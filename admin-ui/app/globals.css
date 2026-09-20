@@ -388,28 +388,6 @@ body {
 .toggle-switch input:checked + .toggle-slider { background: var(--cyan); }
 .toggle-switch input:checked + .toggle-slider::before { transform: translateX(15px); }
 
-/* Settings' secondary nav.
-   It used to borrow .nav-item, which is built for the DARK sidebar: its
-   colours are sidebar tokens and its active state is a near-black fill, so
-   inside a light card the labels sat white-on-white and the browser's own
-   button border-left survived as a stray rule down the left edge. These are
-   the same shape, drawn in surface tokens instead. */
-.set-nav { padding: 6px; }
-.set-nav-group {
-  font-size: .6rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
-  color: var(--text-3); padding: 12px 10px 5px;
-}
-.set-nav-item {
-  display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 10px;
-  border: none; border-radius: var(--rs); background: none; cursor: pointer;
-  font: inherit; font-size: .8rem; text-align: left; color: var(--text-2);
-  transition: background .12s ease, color .12s ease;
-}
-.set-nav-item:hover { background: var(--surf-2); color: var(--text); }
-.set-nav-item.active { background: var(--cyan-dim); color: var(--cyan); font-weight: 600; }
-.set-nav-item svg { width: 15px; height: 15px; flex-shrink: 0; opacity: .75; }
-.set-nav-item.active svg { opacity: 1; }
-
 /* Identity header on the Profile panel. */
 .set-identity { display: flex; align-items: center; gap: 14px; }
 .set-avatar {

@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
 import {
   ApiError,
   AuditLogEntry,
@@ -17,44 +16,14 @@ import { Modal } from "@/components/Modal";
 
 type SettingsSection = "profile" | "sessions" | "security" | "audit-log";
 
-const SECTION_ICONS: Record<SettingsSection, React.ReactNode> = {
-  profile: (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <circle cx="8" cy="5.5" r="2.6" />
-      <path d="M2.5 14c0-3 2.4-4.8 5.5-4.8s5.5 1.8 5.5 4.8" />
-    </svg>
-  ),
-  sessions: (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <rect x="1.5" y="2.5" width="13" height="8.5" rx="1.2" />
-      <path d="M5.5 14h5" />
-    </svg>
-  ),
-  security: (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <path d="M8 1.7l5 2v4.1c0 3-2.1 5.5-5 6.5-2.9-1-5-3.5-5-6.5V3.7l5-2z" />
-      <path d="M5.9 8.1l1.5 1.5 2.9-3" />
-    </svg>
-  ),
-  "audit-log": (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <rect x="2.5" y="1.5" width="11" height="13" rx="1.3" />
-      <path d="M5.2 5h5.6M5.2 8h5.6M5.2 11h3.4" />
-    </svg>
-  ),
-};
-
-// Users deliberately is NOT a section here. It has its own top-level page
-// (/users) with the same list, the same edit modal and the same role gate —
-// two entry points to one surface meant two places to keep correct, and the
-// copy inside Settings was the one that drifted.
-const YOUR_ACCOUNT: { id: SettingsSection; label: string }[] = [
+// Users deliberately is NOT a tab here, nor a link out. It has its own
+// top-level page (/users) reachable from the sidebar — the copy that used
+// to live inside Settings was a duplicate of that whole surface, modal and
+// role gate included, and the second entry point was itself the confusion.
+const SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "profile", label: "Profile" },
   { id: "sessions", label: "Sessions" },
   { id: "security", label: "Security" },
-];
-
-const ORGANIZATION: { id: SettingsSection; label: string }[] = [
   { id: "audit-log", label: "Audit Log" },
 ];
 
@@ -88,6 +57,17 @@ const ROLE_BLURB: Record<UserRole, string> = {
   viewer: "Read-only access to this account.",
 };
 
+/** What each role may actually reach in this console. Mirrors the gates in
+    AppShell and services/config/deps.py — it is a description of the real
+    permissions, so it must be edited whenever those move. */
+const ROLE_ACCESS: Record<UserRole, string[]> = {
+  superadmin: ["Every account on the platform", "Agents, IVR flows, knowledge and voice", "Telephony, users and billing", "Full audit trail"],
+  admin: ["This account only", "Agents, IVR flows, knowledge and voice", "Telephony, users and billing", "Full audit trail"],
+  supervisor: ["Live Calls only", "May listen to and barge into a live call", "No configuration access"],
+  agent: ["Handles calls", "No console access at all"],
+  viewer: ["This account, read-only", "May not invite users or change configuration"],
+};
+
 function ProfilePanel() {
   const [user, setUser] = useState<User | null>(null);
   const [accountName, setAccountName] = useState<string | null>(null);
@@ -116,11 +96,11 @@ function ProfilePanel() {
         <div className="card-body">
           <div className="set-identity">
             <div className="set-avatar">{initials}</div>
-            <div style={{ minWidth: 0 }}>
+            <div style={{ minWidth: 0, flex: 1 }}>
               <div style={{ fontSize: "1.02rem", fontWeight: 600, color: "var(--text)", wordBreak: "break-all" }}>
                 {user?.email ?? "…"}
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 5 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 5, flexWrap: "wrap" }}>
                 <span className={`badge ${user ? ROLE_BADGE[user.role] : "gray"}`}>{user?.role ?? "…"}</span>
                 <span style={{ fontSize: ".74rem", color: "var(--text-3)" }}>
                   {user ? ROLE_BLURB[user.role] : ""}
@@ -131,36 +111,56 @@ function ProfilePanel() {
         </div>
       </div>
 
-      <div className="card">
-        <div className="card-hdr">
-          <div className="card-title">Account details</div>
-        </div>
-        <div className="card-body">
-          <div className="set-facts">
-            <div>
-              <div className="set-fact-label">Account</div>
-              <div className="set-fact-value">
-                {user?.tenant_id
-                  ? accountName ?? <span className="mono" style={{ fontSize: ".74rem" }}>{user.tenant_id}</span>
-                  : user
-                    ? "Platform — every account"
-                    : "…"}
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "stretch" }}>
+        <div className="card" style={{ flex: "1 1 340px", minWidth: 280 }}>
+          <div className="card-hdr">
+            <div className="card-title">Account details</div>
+          </div>
+          <div className="card-body">
+            <div className="set-facts">
+              <div>
+                <div className="set-fact-label">Account</div>
+                <div className="set-fact-value">
+                  {user?.tenant_id
+                    ? accountName ?? <span className="mono" style={{ fontSize: ".74rem" }}>{user.tenant_id}</span>
+                    : user
+                      ? "Platform — every account"
+                      : "…"}
+                </div>
+              </div>
+              <div>
+                <div className="set-fact-label">Member since</div>
+                <div className="set-fact-value" suppressHydrationWarning>{joined}</div>
               </div>
             </div>
-            <div>
-              <div className="set-fact-label">Member since</div>
-              <div className="set-fact-value" suppressHydrationWarning>{joined}</div>
-            </div>
-            <div>
+            <div style={{ marginTop: 14 }}>
               <div className="set-fact-label">User ID</div>
               <div className="set-fact-value mono" style={{ fontSize: ".72rem", wordBreak: "break-all" }}>
                 {user?.id ?? "…"}
               </div>
             </div>
+            <div className="form-hint" style={{ marginTop: 14 }}>
+              Editing your own email or role isn&apos;t supported yet — a superadmin changes it from the Users page.
+            </div>
           </div>
-          <div className="form-hint" style={{ marginTop: 16 }}>
-            Editing your own email or role isn&apos;t supported yet — a superadmin can change it from{" "}
-            <Link href="/users" style={{ color: "var(--cyan)" }}>Users</Link>.
+        </div>
+
+        <div className="card" style={{ flex: "1 1 300px", minWidth: 260 }}>
+          <div className="card-hdr">
+            <div className="card-title">What this role can reach</div>
+          </div>
+          <div className="card-body">
+            <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: 10 }}>
+              {(user ? ROLE_ACCESS[user.role] : []).map((line) => (
+                <li key={line} style={{ display: "flex", gap: 9, alignItems: "flex-start", fontSize: ".8rem", color: "var(--text-2)" }}>
+                  <svg viewBox="0 0 16 16" fill="none" stroke="var(--cyan)" strokeWidth="1.8" style={{ width: 14, height: 14, flexShrink: 0, marginTop: 2 }}>
+                    <path d="M3.5 8.4l3 3 6-6.8" />
+                  </svg>
+                  <span>{line}</span>
+                </li>
+              ))}
+              {!user && <li style={{ fontSize: ".8rem", color: "var(--text-3)" }}>…</li>}
+            </ul>
           </div>
         </div>
       </div>
@@ -583,22 +583,9 @@ function SecurityPanel() {
 export default function SettingsPage() {
   const [section, setSection] = useState<SettingsSection>("profile");
 
-  const renderItem = (item: { id: SettingsSection; label: string }) => (
-    <button
-      key={item.id}
-      type="button"
-      className={`set-nav-item${section === item.id ? " active" : ""}`}
-      onClick={() => setSection(item.id)}
-      aria-current={section === item.id}
-    >
-      {SECTION_ICONS[item.id]}
-      <span>{item.label}</span>
-    </button>
-  );
-
   return (
-    <>
-      <div style={{ marginBottom: 18 }}>
+    <div style={{ maxWidth: 980 }}>
+      <div style={{ marginBottom: 16 }}>
         <h1 style={{ fontSize: "1.5rem", fontWeight: 600, letterSpacing: "-.025em", margin: 0, color: "var(--text)" }}>
           Settings
         </h1>
@@ -607,35 +594,28 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      <div className="cols">
-        <div style={{ width: 200, flexShrink: 0 }}>
-          <div className="card set-nav">
-            <div className="set-nav-group" style={{ paddingTop: 4 }}>Your account</div>
-            {YOUR_ACCOUNT.map(renderItem)}
-            <div className="set-nav-group">Organization</div>
-            {ORGANIZATION.map(renderItem)}
-            <div className="set-nav-group">Elsewhere</div>
-            {/* Users and Accounts live at the top level. Linking out beats
-                a second copy of either surface inside Settings. */}
-            <Link href="/users" className="set-nav-item">
-              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <circle cx="6" cy="5" r="2.3" />
-                <path d="M1.5 14c0-2.76 2.02-4.5 4.5-4.5s4.5 1.74 4.5 4.5" />
-                <circle cx="12" cy="4.5" r="1.8" />
-                <path d="M10.2 9.7c1.86.3 3.3 1.8 3.3 4.3" />
-              </svg>
-              <span>Users</span>
-              <span style={{ marginLeft: "auto", color: "var(--text-3)", fontSize: ".8rem" }}>›</span>
-            </Link>
-          </div>
-        </div>
-        <div className="col-main">
-          {section === "profile" && <ProfilePanel />}
-          {section === "sessions" && <SessionsPanel />}
-          {section === "security" && <SecurityPanel />}
-          {section === "audit-log" && <AuditLogPanel />}
-        </div>
+      {/* One horizontal tab strip, the same .tabs/.tab pair the rest of the
+          console uses. The left rail this replaced was a second navigation
+          idiom for four panels, and it pushed every panel into a narrow
+          column on an otherwise empty page. */}
+      <div className="tabs">
+        {SECTIONS.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            className={`tab${section === item.id ? " active" : ""}`}
+            onClick={() => setSection(item.id)}
+            aria-current={section === item.id}
+          >
+            {item.label}
+          </button>
+        ))}
       </div>
-    </>
+
+      {section === "profile" && <ProfilePanel />}
+      {section === "sessions" && <SessionsPanel />}
+      {section === "security" && <SecurityPanel />}
+      {section === "audit-log" && <AuditLogPanel />}
+    </div>
   );
 }
