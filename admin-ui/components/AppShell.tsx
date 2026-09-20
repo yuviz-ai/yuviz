@@ -10,6 +10,10 @@ import { clearToken, getToken } from "@/lib/auth";
 // (T22b) — the same key this header switcher already writes, so a
 // superadmin's selection here is the one Live Calls reads too (T23).
 export const ACTIVE_TENANT_STORAGE_KEY = "yuviz.activeTenantId";
+/** Stored in place of a tenant slug when a superadmin explicitly picks
+ *  "All tenants" — distinct from "nothing stored yet" so a page reload
+ *  doesn't silently fall back to a single tenant. */
+export const ALL_TENANTS_SENTINEL = "__all__";
 
 function tenantInitial(name: string): string {
   return (name.trim()[0] || "?").toUpperCase();
@@ -96,6 +100,19 @@ const ICONS: Record<string, React.ReactNode> = {
       <path d="M4 10.5l1 3.5h2l-.8-3" />
     </svg>
   ),
+  telephony: (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <rect x="1.5" y="9.5" width="13" height="5" rx="1" />
+      <path d="M4 12h.01M6.5 12h.01M9 12h.01" />
+      <path d="M8 8V5M8 5H4.5M8 5h3.5M4.5 5V2.5M11.5 5V2.5" />
+    </svg>
+  ),
+  billing: (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <rect x="2" y="1.5" width="12" height="13" rx="1.5" />
+      <path d="M5 4.5h6M5 7.5h4M5 10.5h3" />
+    </svg>
+  ),
   settings: (
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
       <circle cx="8" cy="8" r="2.2" />
@@ -116,6 +133,11 @@ const MANAGEMENT_ITEMS = [
   { href: "/knowledge-bases", label: "Knowledge Base", icon: "knowledge-bases" },
   { href: "/ai-voice", label: "AI & Voice", icon: "ai-voice" },
   { href: "/phone-numbers", label: "Phone Numbers", icon: "phone-numbers" },
+  // Read-only trunk/DID/routing overview across the selected account(s).
+  // Every write path stays on /phone-numbers (assign, re-route, delete) —
+  // this page reads the same inventory, so duplicating the CRUD here would
+  // mean two places to keep correct.
+  { href: "/telephony", label: "Telephony", icon: "telephony" },
 ];
 
 // Invite-based onboarding is a superadmin/admin surface only (matches
@@ -131,7 +153,14 @@ const CALLING_ITEMS = [
 
 const PLATFORM_ITEMS = [{ href: "/settings", label: "Settings", icon: "settings" }];
 
-const ALL_ITEMS = [...OVERVIEW_ITEMS, ...MANAGEMENT_ITEMS, USERS_ITEM, ...CALLING_ITEMS, ...PLATFORM_ITEMS];
+// Spend is an owner's view, not an operator's: gated to the same roles that
+// may manage users (superadmin/admin) rather than every console role. The
+// call-record endpoints it reads are open to any console role, so this is a
+// UI-level narrowing of a surface, not a security boundary — hence the
+// direct-URL redirect below as well, mirroring how /tenants is handled.
+const BILLING_ITEM = { href: "/billing", label: "Billing & usage", icon: "billing" };
+
+const ALL_ITEMS = [...OVERVIEW_ITEMS, ...MANAGEMENT_ITEMS, USERS_ITEM, ...CALLING_ITEMS, BILLING_ITEM, ...PLATFORM_ITEMS];
 
 // One agent's config page is /agents/{tenant}/{agent} — second crumb for it.
 const SETTINGS_CRUMBS = ["Agent Studio", "Configuration"];
@@ -205,6 +234,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           router.push("/no-access");
           return;
         }
+        // Billing is hidden from the nav for anyone but superadmin/admin
+        // (see visibleBilling below) — a bookmark must be turned back the
+        // same way, not just left unlinked.
+        if (u.role !== "superadmin" && u.role !== "admin" && pathname.startsWith("/billing")) {
+          router.push("/no-access");
+          return;
+        }
         setUser(u);
         setAuthChecked(true);
       })
@@ -218,9 +254,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // The header tenant switcher only makes sense for a platform-scoped
   // superadmin (tenant_id === null) — every other role's own account is
   // already bound to exactly one tenant server-side (lesson 24), so listing
-  // others here would be misleading UI, not a real capability. This is a
-  // display convenience only: it does not re-scope any existing page's own
-  // fetches, which each keep their own tenant selector for now.
+  // others here would be misleading UI, not a real capability. Every
+  // tenant-scoped page reads this same selection via useActiveTenant() and
+  // re-queries when it changes — see that hook's module comment.
   useEffect(() => {
     if (user?.role !== "superadmin") return;
     listTenants()
@@ -232,7 +268,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         // an id; see admin-ui/app/live-calls/page.tsx, the first real
         // reader of this key besides this switcher itself).
         const stored = typeof window !== "undefined" ? window.localStorage.getItem(ACTIVE_TENANT_STORAGE_KEY) : null;
-        const initial = ts.find((t) => t.slug === stored) ?? ts[0] ?? null;
+        // No stored preference, or a stale one pointing at a deleted
+        // tenant, both default to "All tenants" — never a silently-picked
+        // ts[0], which read as "the switcher works" for whichever tenant
+        // happened to sort first and nothing for everyone else.
+        const initial = stored && stored !== ALL_TENANTS_SENTINEL ? ts.find((t) => t.slug === stored) ?? null : null;
         setActiveTenantId(initial?.id ?? null);
       })
       .catch(() => {
@@ -255,6 +295,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // Tell open pages to re-query. Without this the switcher only took
     // effect on the next full page load, which reads as it not working.
     window.dispatchEvent(new CustomEvent("yuviz:active-tenant", { detail: t.slug }));
+  };
+
+  const selectAllTenants = () => {
+    setActiveTenantId(null);
+    setTenantMenuOpen(false);
+    try {
+      window.localStorage.setItem(ACTIVE_TENANT_STORAGE_KEY, ALL_TENANTS_SENTINEL);
+    } catch {
+      // Same non-fatal fallback as selectTenant above.
+    }
+    window.dispatchEvent(new CustomEvent("yuviz:active-tenant", { detail: ALL_TENANTS_SENTINEL }));
   };
 
   const handleLogout = () => {
@@ -285,6 +336,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const visibleCalling = isSupervisor
     ? CALLING_ITEMS.filter((item) => item.href === "/live-calls")
     : CALLING_ITEMS.filter((item) => matches(item.label));
+  const visibleBilling = !isSupervisor && canManageUsers && matches(BILLING_ITEM.label);
   const visiblePlatform = isSupervisor ? [] : PLATFORM_ITEMS.filter((item) => matches(item.label));
 
   // Longest-prefix match, not first-match: /workflows/acme/reception must
@@ -387,9 +439,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               ))}
             </>
           )}
-          {visiblePlatform.length > 0 && (
+          {(visiblePlatform.length > 0 || visibleBilling) && (
             <>
               <div className="nav-section">Platform</div>
+              {visibleBilling && (
+                <Link
+                  href={BILLING_ITEM.href}
+                  className={`nav-item${BILLING_ITEM.href === activeItem?.href ? " active" : ""}`}
+                >
+                  {ICONS[BILLING_ITEM.icon]}
+                  <span className="nav-label">{BILLING_ITEM.label}</span>
+                </Link>
+              )}
               {visiblePlatform.map((item) => (
                 <Link
                   key={item.href}
@@ -402,7 +463,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               ))}
             </>
           )}
-          {visibleOverview.length === 0 && visibleManagement.length === 0 && !visibleUsers && visibleCalling.length === 0 && visiblePlatform.length === 0 && (
+          {visibleOverview.length === 0 && visibleManagement.length === 0 && !visibleUsers && visibleCalling.length === 0 && !visibleBilling && visiblePlatform.length === 0 && (
             <div style={{ padding: "12px 10px", fontSize: ".76rem", color: "var(--text-3)" }}>No pages match &quot;{search}&quot;</div>
           )}
         </nav>
@@ -463,6 +524,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     <div className="wf-menu-scrim" onClick={() => setTenantMenuOpen(false)} />
                     <div className="tenant-switch-menu">
                       <div className="tenant-switch-menu-label">Switch tenant</div>
+                      <button
+                        className={`tenant-switch-row${activeTenantId === null ? " active" : ""}`}
+                        onClick={selectAllTenants}
+                      >
+                        <span className="tenant-switch-mark">∀</span>
+                        <span className="tenant-switch-row-name">
+                          All tenants
+                          <br />
+                          <span className="tenant-switch-row-meta">every account, unfiltered</span>
+                        </span>
+                        {activeTenantId === null && <span className="tenant-switch-check">✓</span>}
+                      </button>
                       {tenants.map((t) => (
                         <button
                           key={t.id}
