@@ -48,7 +48,7 @@ from .vector_repository import IVectorRepository, VectorMatch
 _SYSTEM_DEFAULT_POLICY: dict[str, Any] = {
     "top_k": 5,
     "max_tokens": 1000,
-    "minimum_score": 0.0,
+    "minimum_score": 0.3,
     "rerank": False,
     "hybrid_search": False,
     "include_citations": True,
