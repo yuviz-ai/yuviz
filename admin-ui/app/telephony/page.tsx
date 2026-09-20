@@ -52,6 +52,10 @@ interface TrunkRow {
   carrier: Carrier | null;
   key: string;
   name: string;
+  /** Grouping key for per-account totals. Tenant NAMES are not unique —
+   *  nothing constrains two accounts from sharing one — so anything that
+   *  aggregates per account keys on the id and only displays the name. */
+  tenantId: string;
   tenantName: string;
   providerLabel: string;
   accountRef: string | null;
@@ -100,7 +104,7 @@ function TrunkCard({ trunk, totalCalls, showTenant }: { trunk: TrunkRow; totalCa
       </div>
       <div style={{ fontSize: ".68rem", color: "var(--text-3)" }}>
         {totalCalls > 0
-          ? `${sharePct.toFixed(0)}% of recent calls on this account`
+          ? `${sharePct.toFixed(0)}% of the account's recent calls matched this trunk's DIDs`
           : "no calls in the recent window"}
         {trunk.suspendedDids > 0 && ` · ${fmtInt(trunk.suspendedDids)} suspended DID${trunk.suspendedDids === 1 ? "" : "s"}`}
       </div>
@@ -125,6 +129,11 @@ export default function TelephonyPage() {
   const { tenant, allTenants, isPlatformScoped, isAllTenants, loading: tenantLoading } = useActiveTenant();
   const [trunks, setTrunks] = useState<TrunkRow[]>([]);
   const [numbers, setNumbers] = useState<NumberRow[]>([]);
+  /** Calls fetched per account id — the denominator behind each trunk's
+   *  share. Derived from the same window the per-DID counts come from, so
+   *  the two can be compared; summing the DID counts instead would silently
+   *  exclude every call whose numbers match no DID on file. */
+  const [callsByTenant, setCallsByTenant] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -148,22 +157,23 @@ export default function TelephonyPage() {
     (async () => {
       const results = await Promise.allSettled(
         targets.map(async (t) => {
-          const [carriers, phoneNumbers, agents, calls] = await Promise.all([
+          const [carriers, phoneNumbers, agentList, calls] = await Promise.all([
             listCarriers(t.id),
             listPhoneNumbers(t.id),
             // Routing and recent activity are conveniences on this page, not
             // its subject: either failing degrades a column to "—" rather
             // than losing the trunk and DID inventory with it.
-            listAgents(t.slug).catch((): Agent[] => []),
+            listAgents(t.slug).then((a) => ({ ok: true, agents: a })).catch(() => ({ ok: false, agents: [] as Agent[] })),
             listCalls(t.slug, { limit: CALL_WINDOW }).then((r) => r.items).catch((): Call[] => []),
           ]);
-          return { t, carriers, phoneNumbers, agents, calls };
+          return { t, carriers, phoneNumbers, agents: agentList.agents, agentsOk: agentList.ok, calls };
         }),
       );
       if (cancelled) return;
 
       const trunkRows: TrunkRow[] = [];
       const numberRows: NumberRow[] = [];
+      const callTotals: Record<string, number> = {};
       const errs: string[] = [];
 
       results.forEach((r, i) => {
@@ -171,7 +181,8 @@ export default function TelephonyPage() {
           errs.push(`${targets[i].name}: ${r.reason instanceof ApiError ? r.reason.detail : String(r.reason)}`);
           return;
         }
-        const { t, carriers, phoneNumbers, agents, calls } = r.value;
+        const { t, carriers, phoneNumbers, agents, agentsOk, calls } = r.value;
+        callTotals[t.id] = calls.length;
         const agentName = (id: string | null) => (id ? agents.find((a) => a.id === id)?.name ?? null : null);
 
         // A DID's traffic: inbound calls are the ones dialled TO it,
@@ -198,7 +209,12 @@ export default function TelephonyPage() {
             ...n,
             tenantName: t.name,
             trunkName: carrier?.name ?? null,
-            routesTo: primary ?? (fallback ? `${fallback} (fallback)` : "Account default agent"),
+            // With the agent list unavailable, an assigned agent_id is a
+            // name this page cannot resolve — "—", never "Account default
+            // agent", which would assert routing that isn't configured.
+            routesTo: !agentsOk && (n.agent_id || n.fallback_agent_id)
+              ? "—"
+              : primary ?? (fallback ? `${fallback} (fallback)` : "Account default agent"),
             inbound: inboundByDid.get(key) ?? 0,
             outbound: outboundByDid.get(key) ?? 0,
           };
@@ -212,6 +228,7 @@ export default function TelephonyPage() {
             carrier,
             key: carrier?.id ?? `${t.id}:unassigned`,
             name: carrier?.name ?? "No trunk assigned",
+            tenantId: t.id,
             tenantName: t.name,
             providerLabel: carrier ? PROVIDER_LABEL[carrier.provider] : "unrouted DIDs",
             accountRef: carrier?.carrier_account_ref ?? carrier?.auth_id ?? null,
@@ -237,6 +254,7 @@ export default function TelephonyPage() {
 
       setTrunks(trunkRows);
       setNumbers(numberRows);
+      setCallsByTenant(callTotals);
       setError(errs.length > 0 ? errs.join("; ") : null);
       setLoading(false);
     })();
@@ -244,14 +262,6 @@ export default function TelephonyPage() {
       cancelled = true;
     };
   }, [tenant, allTenants, isAllTenants, tenantLoading]);
-
-  const totalCallsByTenant = useMemo(() => {
-    const byTenant = new Map<string, number>();
-    for (const n of numbers) {
-      byTenant.set(n.tenantName, (byTenant.get(n.tenantName) ?? 0) + n.inbound + n.outbound);
-    }
-    return byTenant;
-  }, [numbers]);
 
   const visibleNumbers = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -307,7 +317,7 @@ export default function TelephonyPage() {
                 <TrunkCard
                   key={t.key}
                   trunk={t}
-                  totalCalls={totalCallsByTenant.get(t.tenantName) ?? 0}
+                  totalCalls={callsByTenant[t.tenantId] ?? 0}
                   showTenant={isAllTenants}
                 />
               ))

@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   ApiError,
-  DashboardStats,
   UsageTrendPoint,
   getDashboardStats,
   getUsageTrend,
@@ -77,7 +76,11 @@ interface Cycle {
 export default function BillingPage() {
   const { tenant, allTenants, isPlatformScoped, isAllTenants, loading: tenantLoading } = useActiveTenant();
   const [cycle, setCycle] = useState<Cycle | null>(null);
-  const [stats, setStats] = useState<DashboardStats | null>(null);
+  /** Calls in progress right now, summed over the selected accounts.
+   *  Only this one figure is read off dashboard-stats — keeping the whole
+   *  payload would leave every other field holding one arbitrary account's
+   *  numbers under a heading that reads as a total. */
+  const [liveCalls, setLiveCalls] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [rate, setRate] = useState<number>(DEFAULT_RATE);
@@ -97,8 +100,10 @@ export default function BillingPage() {
   useEffect(() => {
     try {
       const stored = window.localStorage.getItem(RATE_STORAGE_KEY);
+      // Number("") is 0, not NaN — an empty or blank entry has to be
+      // rejected explicitly or it reads back as a free minute.
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      if (stored !== null && Number.isFinite(Number(stored))) setRate(Number(stored));
+      if (stored !== null && stored.trim() !== "" && Number.isFinite(Number(stored))) setRate(Number(stored));
     } catch {
       // Private-mode/blocked storage: the rate just falls back to the
       // default each visit, which is a worse-but-safe outcome, not a crash.
@@ -120,7 +125,7 @@ export default function BillingPage() {
     if (picked.length === 0) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setCycle(null);
-      setStats(null);
+      setLiveCalls(null);
       setLoading(false);
       return;
     }
@@ -131,7 +136,10 @@ export default function BillingPage() {
         picked.map(async (t) => {
           const [trend, dash] = await Promise.all([
             getUsageTrend(t.slug, TREND_DAYS),
-            getDashboardStats(t.slug, 24 * 31),
+            // live_calls filters on ended_at IS NULL and ignores this window
+            // on purpose (services/config/calls.py), and it is the only field
+            // read — so ask for the cheapest window, not a month of rollups.
+            getDashboardStats(t.slug, 24),
           ]);
           return { trend, dash };
         }),
@@ -142,7 +150,7 @@ export default function BillingPage() {
       const thisMonth = monthKey(now);
       const prevMonth = monthKey(new Date(now.getFullYear(), now.getMonth() - 1, 1));
       const acc: Cycle = { minutes: 0, calls: 0, prevMinutes: 0, prevCalls: 0 };
-      let dashAcc: DashboardStats | null = null;
+      let live = 0;
       const errs: string[] = [];
 
       results.forEach((r, i) => {
@@ -164,14 +172,11 @@ export default function BillingPage() {
             acc.prevCalls += p.calls;
           }
         }
-        const d = r.value.dash;
-        dashAcc = dashAcc
-          ? { ...dashAcc, live_calls: dashAcc.live_calls + d.live_calls, total_minutes: dashAcc.total_minutes + d.total_minutes }
-          : d;
+        live += r.value.dash.live_calls;
       });
 
       setCycle(acc);
-      setStats(dashAcc);
+      setLiveCalls(live);
       setError(errs.length > 0 ? errs.join("; ") : null);
       setLoading(false);
     })();
@@ -253,7 +258,7 @@ export default function BillingPage() {
                 />
                 <Meter
                   label="Concurrent channels"
-                  value={stats?.live_calls ?? 0}
+                  value={liveCalls ?? 0}
                   ceiling={channelCap}
                   color="var(--green)"
                   footnote={
@@ -309,7 +314,12 @@ export default function BillingPage() {
                   min={0}
                   step={0.01}
                   value={rate}
-                  onChange={(e) => saveRate(Math.max(0, Number(e.target.value)))}
+                  // A cleared field parses to NaN, which propagated all the
+                  // way to "₹NaN" in the headline — treated as 0 instead.
+                  onChange={(e) => {
+                    const next = Number(e.target.value);
+                    saveRate(Number.isFinite(next) ? Math.max(0, next) : 0);
+                  }}
                   style={{ background: "rgba(233,229,220,.06)", borderColor: "rgba(233,229,220,.18)", color: "var(--sidebar-text)" }}
                 />
                 <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 8 }}>
