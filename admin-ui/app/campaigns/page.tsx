@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -15,11 +15,10 @@ import {
   listAllAgents,
   listAllCampaigns,
   listDncNumbers,
-  listTenants,
   removeDncNumber,
-  Tenant,
 } from "@/lib/api";
 import { Modal } from "@/components/Modal";
+import { useActiveTenant } from "@/lib/useActiveTenant";
 
 // STATE tabs shown in the mockup order. "draft" is labelled "Scheduled"
 // here — a draft campaign has no caller_id/contacts requirement yet met
@@ -58,7 +57,15 @@ function mockPercent(seed: string, salt: number): number {
 
 export default function CampaignsPage() {
   const router = useRouter();
-  const [tenants, setTenants] = useState<Tenant[]>([]);
+  const { tenant, allTenants, isAllTenants, loading: tenantLoading } = useActiveTenant();
+  // Scopes the campaign LIST to the header switcher. The DNC modal's own
+  // tenant picker below intentionally keeps using allTenants — managing DNC
+  // entries for a specific account is a separate concern from which
+  // account's campaigns this page is currently listing.
+  const targetTenants = useMemo(
+    () => (isAllTenants ? allTenants : tenant ? [tenant] : []),
+    [tenant, allTenants, isAllTenants],
+  );
   const [agents, setAgents] = useState<AgentWithTenant[]>([]);
   const [campaigns, setCampaigns] = useState<CampaignWithTenant[]>([]);
   const [progressById, setProgressById] = useState<Record<string, CampaignProgress>>({});
@@ -76,14 +83,10 @@ export default function CampaignsPage() {
   const [dncReason, setDncReason] = useState("");
   const [dncSubmitting, setDncSubmitting] = useState(false);
 
-  useEffect(() => {
-    listTenants().then(setTenants);
-  }, []);
-
   const refresh = () => {
-    if (tenants.length === 0) return;
+    if (tenantLoading || targetTenants.length === 0) return;
     setLoading(true);
-    Promise.all([listAllCampaigns(tenants), listAllAgents(tenants)])
+    Promise.all([listAllCampaigns(targetTenants), listAllAgents(targetTenants)])
       .then(async ([cs, ags]) => {
         setCampaigns(cs);
         setAgents(ags);
@@ -97,7 +100,7 @@ export default function CampaignsPage() {
   };
 
   // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(refresh, [tenants]);
+  useEffect(refresh, [targetTenants, tenantLoading]);
 
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name || id;
 
@@ -115,7 +118,7 @@ export default function CampaignsPage() {
     });
 
   const openDncModal = () => {
-    const tenantId = dncTenantId || tenants[0]?.id || "";
+    const tenantId = dncTenantId || allTenants[0]?.id || "";
     setDncTenantId(tenantId);
     setDncModalOpen(true);
     setDncError(null);
@@ -196,7 +199,7 @@ export default function CampaignsPage() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
-          <button className="btn btn-ghost btn-sm" onClick={openDncModal} disabled={tenants.length === 0}>
+          <button className="btn btn-ghost btn-sm" onClick={openDncModal} disabled={allTenants.length === 0}>
             Do-Not-Call List
           </button>
         </div>
@@ -285,7 +288,7 @@ export default function CampaignsPage() {
               loadDncNumbers(e.target.value);
             }}
           >
-            {tenants.map((t) => (
+            {allTenants.map((t) => (
               <option key={t.id} value={t.id}>
                 {t.name}
               </option>

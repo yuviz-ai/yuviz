@@ -15,11 +15,10 @@ import {
   listAllLatencyStats,
   listAllTodaysActivity,
   listAllUsageTrend,
-  listTenants,
   TodaysActivityPoint,
-  Tenant,
   UsageTrendPoint,
 } from "@/lib/api";
+import { useActiveTenant } from "@/lib/useActiveTenant";
 
 const RANGE_OPTIONS = [
   { label: "7 Days", hours: 24 * 7, days: 7 },
@@ -263,7 +262,16 @@ function LineChart({
 }
 
 export default function DashboardPage() {
-  const [tenants, setTenants] = useState<Tenant[]>([]);
+  const { tenant, allTenants, isAllTenants, loading: tenantLoading } = useActiveTenant();
+  // Scoped to the account selected in the header switcher by default, or
+  // every account under "All tenants" — the listAllX() helpers below
+  // already accept any tenant array and fan out/aggregate over it, so a
+  // single-tenant array scopes them for free with no change to those
+  // functions.
+  const targetTenants = useMemo(
+    () => (isAllTenants ? allTenants : tenant ? [tenant] : []),
+    [tenant, allTenants, isAllTenants],
+  );
   const [agents, setAgents] = useState<AgentWithTenant[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -285,63 +293,59 @@ export default function DashboardPage() {
   const [dispositionsLoading, setDispositionsLoading] = useState(true);
 
   useEffect(() => {
-    listTenants().then(setTenants).catch((e) => setError(e instanceof ApiError ? e.detail : String(e)));
-  }, []);
+    if (tenantLoading || targetTenants.length === 0) return;
+    listAllAgents(targetTenants).then(setAgents).catch(() => {});
+  }, [targetTenants, tenantLoading]);
 
   useEffect(() => {
-    if (tenants.length === 0) return;
-    listAllAgents(tenants).then(setAgents).catch(() => {});
-  }, [tenants]);
-
-  useEffect(() => {
-    if (tenants.length === 0) return;
+    if (tenantLoading || targetTenants.length === 0) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setStatsLoading(true);
-    listAllDashboardStats(tenants, range.hours)
+    listAllDashboardStats(targetTenants, range.hours)
       .then(setStats)
       .catch((e) => setError(e instanceof ApiError ? e.detail : String(e)))
       .finally(() => setStatsLoading(false));
-  }, [tenants, range]);
+  }, [targetTenants, tenantLoading, range]);
 
   useEffect(() => {
-    if (tenants.length === 0) return;
+    if (tenantLoading || targetTenants.length === 0) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setTrendLoading(true);
-    listAllUsageTrend(tenants, range.days)
+    listAllUsageTrend(targetTenants, range.days)
       .then(setTrend)
       .catch((e) => setError(e instanceof ApiError ? e.detail : String(e)))
       .finally(() => setTrendLoading(false));
-  }, [tenants, range]);
+  }, [targetTenants, tenantLoading, range]);
 
   useEffect(() => {
-    if (tenants.length === 0) return;
+    if (tenantLoading || targetTenants.length === 0) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setActivityLoading(true);
-    listAllTodaysActivity(tenants)
+    listAllTodaysActivity(targetTenants)
       .then(setActivity)
       .catch((e) => setError(e instanceof ApiError ? e.detail : String(e)))
       .finally(() => setActivityLoading(false));
-  }, [tenants]);
+  }, [targetTenants, tenantLoading]);
 
   useEffect(() => {
-    if (tenants.length === 0) return;
+    if (tenantLoading || targetTenants.length === 0) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setDispositionsLoading(true);
-    listAllDispositionMix(tenants, range.hours)
+    listAllDispositionMix(targetTenants, range.hours)
       .then(setDispositions)
       .catch((e) => setError(e instanceof ApiError ? e.detail : String(e)))
       .finally(() => setDispositionsLoading(false));
-  }, [tenants, range]);
+  }, [targetTenants, tenantLoading, range]);
 
   useEffect(() => {
-    if (tenants.length === 0) return;
+    if (tenantLoading || targetTenants.length === 0) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLatencyLoading(true);
-    listAllLatencyStats(tenants, latencyHours)
+    listAllLatencyStats(targetTenants, latencyHours)
       .then(setLatencyStats)
       .catch((e) => setError(e instanceof ApiError ? e.detail : String(e)))
       .finally(() => setLatencyLoading(false));
-  }, [tenants, latencyHours]);
+  }, [targetTenants, tenantLoading, latencyHours]);
 
   const activeAgents = agents.filter((a) => a.status === "active").length;
 
@@ -428,7 +432,9 @@ export default function DashboardPage() {
       }}>
         <div>
           <h1 style={{ fontSize: "1.55rem", fontWeight: 600, letterSpacing: "-.025em", margin: 0, color: "var(--text)" }}>
-            Today across {tenants.length === 0 ? "your accounts" : `${tenants.length} account${tenants.length === 1 ? "" : "s"}`}
+            Today across {isAllTenants
+              ? `${targetTenants.length} account${targetTenants.length === 1 ? "" : "s"}`
+              : tenant?.name ?? "your accounts"}
           </h1>
           {/* The date is computed from the viewer's clock, which need not
               match the prerender host's — suppressed rather than deferred to

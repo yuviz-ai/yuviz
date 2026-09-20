@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { getCurrentUser, isConsoleRole, listTenants, Tenant, User } from "@/lib/api";
 import { clearToken, getToken } from "@/lib/auth";
 
@@ -257,6 +257,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // others here would be misleading UI, not a real capability. Every
   // tenant-scoped page reads this same selection via useActiveTenant() and
   // re-queries when it changes — see that hook's module comment.
+  // Resolves the switcher's selection from whatever's in localStorage right
+  // now, against a given tenant list — shared by the initial fetch below
+  // and the event listener that follows, so a selection made from anywhere
+  // else (e.g. Live Calls' own picker) resolves exactly the same way.
+  const resolveActiveTenantId = useCallback((ts: Tenant[]): string | null => {
+    const stored = typeof window !== "undefined" ? window.localStorage.getItem(ACTIVE_TENANT_STORAGE_KEY) : null;
+    // No stored preference, or a stale one pointing at a deleted tenant,
+    // both default to "All tenants" — never a silently-picked ts[0], which
+    // read as "the switcher works" for whichever tenant happened to sort
+    // first and nothing for everyone else.
+    const found = stored && stored !== ALL_TENANTS_SENTINEL ? ts.find((t) => t.slug === stored) ?? null : null;
+    return found?.id ?? null;
+  }, []);
+
   useEffect(() => {
     if (user?.role !== "superadmin") return;
     listTenants()
@@ -267,19 +281,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         // reader, since every tenant-scoped route/query takes a slug, not
         // an id; see admin-ui/app/live-calls/page.tsx, the first real
         // reader of this key besides this switcher itself).
-        const stored = typeof window !== "undefined" ? window.localStorage.getItem(ACTIVE_TENANT_STORAGE_KEY) : null;
-        // No stored preference, or a stale one pointing at a deleted
-        // tenant, both default to "All tenants" — never a silently-picked
-        // ts[0], which read as "the switcher works" for whichever tenant
-        // happened to sort first and nothing for everyone else.
-        const initial = stored && stored !== ALL_TENANTS_SENTINEL ? ts.find((t) => t.slug === stored) ?? null : null;
-        setActiveTenantId(initial?.id ?? null);
+        setActiveTenantId(resolveActiveTenantId(ts));
       })
       .catch(() => {
         // Non-fatal: the switcher simply doesn't render (lesson 21 — a
         // failed convenience fetch must not block the rest of the shell).
       });
-  }, [user]);
+  }, [user, resolveActiveTenantId]);
+
+  // Another page's own picker (Live Calls has one — see its own module
+  // comment) can change the selection without ever calling selectTenant()
+  // below, so this header must also listen for the same event it dispatches
+  // — without this, its own state stayed stale until the next navigation
+  // even though localStorage (and every OTHER page reading it live via
+  // useActiveTenant) had already moved on. Confirmed live: switching
+  // tenants from Live Calls left this switcher showing "All tenants" for
+  // the rest of the session.
+  useEffect(() => {
+    if (user?.role !== "superadmin") return;
+    const onSwitch = () => setActiveTenantId(resolveActiveTenantId(tenants));
+    window.addEventListener("yuviz:active-tenant", onSwitch);
+    return () => window.removeEventListener("yuviz:active-tenant", onSwitch);
+  }, [user, tenants, resolveActiveTenantId]);
 
   const activeTenant = tenants.find((t) => t.id === activeTenantId) ?? null;
 

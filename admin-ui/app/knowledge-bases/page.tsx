@@ -25,6 +25,7 @@ import {
   KbAgent,
   KbDocument,
   KnowledgeBase,
+  deleteDocument,
   deleteKnowledgeBase,
   listDocuments,
   listKbAgents,
@@ -76,11 +77,12 @@ function sourceType(doc: KbDocument): string {
 }
 
 export default function KnowledgeBasesPage() {
-  const { tenant, allTenants, loading: tenantLoading } = useActiveTenant();
+  const { tenant, allTenants, isAllTenants, loading: tenantLoading } = useActiveTenant();
   const [kbs, setKbs] = useState<KbRow[]>([]);
   const [sources, setSources] = useState<SourceRow[]>([]);
   const [emptyKbs, setEmptyKbs] = useState<KbRow[]>([]);
   const [removingKb, setRemovingKb] = useState<string | null>(null);
+  const [removingSource, setRemovingSource] = useState<string | null>(null);
   const [apis, setApis] = useState<CustomApi[]>([]);
   const [tenantErrors, setTenantErrors] = useState<string[]>([]);
   const [canManage, setCanManage] = useState(false);
@@ -96,15 +98,16 @@ export default function KnowledgeBasesPage() {
     setLoading(true);
     setPageError(null);
     setTenantErrors([]);
-    if (!tenant) {
+    // One account at a time by default (the header switcher picks it), or
+    // every account when "All tenants" is selected — each tenant's fetch
+    // fails independently below (Promise.allSettled) rather than the old
+    // unconditional every-tenant query that turned into thousands of
+    // requests and a page full of "Failed to fetch" on hundreds of accounts.
+    const fetchedTenants = isAllTenants ? allTenants : tenant ? [tenant] : [];
+    if (fetchedTenants.length === 0) {
       setLoading(false);
       return;
     }
-    // One account at a time (the header switcher picks it). This used to
-    // query every tenant for knowledge bases AND custom APIs, which on a
-    // platform with hundreds of accounts is thousands of requests and a
-    // page full of "Failed to fetch".
-    const fetchedTenants = [tenant];
     try {
       const kbResults = await Promise.allSettled(fetchedTenants.map((t) => listKnowledgeBases(t.id)));
       const nextKbs: KbRow[] = [];
@@ -170,7 +173,7 @@ export default function KnowledgeBasesPage() {
         // every other page's canManage check.
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tenant, tenantLoading]);
+  }, [tenant, allTenants, isAllTenants, tenantLoading]);
 
   const stats = useMemo(() => {
     const ready = sources.filter((s) => s.status === "ready").length;
@@ -192,6 +195,19 @@ export default function KnowledgeBasesPage() {
       setTenantErrors((errs) => [...errs, e instanceof ApiError ? e.detail : String(e)]);
     } finally {
       setRemovingKb(null);
+    }
+  };
+
+  const removeSource = async (source: SourceRow) => {
+    if (!window.confirm(`Delete "${source.title}"? This removes it from every agent using it.`)) return;
+    setRemovingSource(source.id);
+    try {
+      await deleteDocument(source.id);
+      await refresh();
+    } catch (e) {
+      setTenantErrors((errs) => [...errs, e instanceof ApiError ? e.detail : String(e)]);
+    } finally {
+      setRemovingSource(null);
     }
   };
 
@@ -239,7 +255,9 @@ export default function KnowledgeBasesPage() {
         <div className="kb-stat">
           <div className="kb-stat-label">Knowledge bases</div>
           <div className="kb-stat-value">{kbs.length}</div>
-          <div className="kb-stat-sub">in {tenant?.name ?? "this account"}</div>
+          <div className="kb-stat-sub">
+            {isAllTenants ? `across ${allTenants.length} tenants` : `in ${tenant?.name ?? "this account"}`}
+          </div>
         </div>
         <div className="kb-stat">
           <div className="kb-stat-label">APIs</div>
@@ -276,7 +294,7 @@ export default function KnowledgeBasesPage() {
             <table className="tbl">
               <thead>
                 <tr>
-                  <th>Source</th><th>Type</th><th>Status</th><th>Indexed</th><th>Used by</th>
+                  <th>Source</th><th>Type</th><th>Status</th><th>Indexed</th><th>Used by</th><th>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -291,6 +309,7 @@ export default function KnowledgeBasesPage() {
                     <td>—</td>
                     <td><span className="badge gray">empty</span></td>
                     <td className="kb-source-sub">No documents in it yet</td>
+                    <td><span className="kb-source-sub">—</span></td>
                     <td>
                       {canManage && (
                         <button
@@ -329,6 +348,17 @@ export default function KnowledgeBasesPage() {
                           ? s.agents[0].agent_name
                           : `${s.agents.length} agents`}
                     </td>
+                    <td>
+                      {canManage && (
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          disabled={removingSource === s.id}
+                          onClick={() => removeSource(s)}
+                        >
+                          {removingSource === s.id ? "Deleting…" : "Delete"}
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -339,7 +369,11 @@ export default function KnowledgeBasesPage() {
 
       {tab === "apis" && (
         !tenant ? (
-          <div className="empty-state">No account selected.</div>
+          <div className="empty-state">
+            {isAllTenants
+              ? "Pick a single tenant from the header switcher to manage its APIs."
+              : "No account selected."}
+          </div>
         ) : (
           <CustomApisPanel tenantId={tenant.id} />
         )

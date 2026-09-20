@@ -23,7 +23,7 @@ interface FlowRow extends CallFlowSummary {
 
 export default function CallFlowsPage() {
   const router = useRouter();
-  const { tenant, loading: tenantLoading } = useActiveTenant();
+  const { tenant, allTenants, isAllTenants, loading: tenantLoading } = useActiveTenant();
   const [flows, setFlows] = useState<FlowRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -31,24 +31,38 @@ export default function CallFlowsPage() {
   const [deleting, setDeleting] = useState<string | null>(null);
 
 
-  // One account at a time — the header switcher picks which. Fanning out
-  // across every tenant is what broke this page at scale.
+  // One account at a time by default, or every account under "All tenants"
+  // — each tenant's fetch fails independently below, so one bad account
+  // never blanks the rest (fanning out unconditionally is what broke this
+  // page at scale before the switcher existed).
   useEffect(() => {
     if (tenantLoading) return;
-    if (!tenant) {
+    const targets = isAllTenants ? allTenants : tenant ? [tenant] : [];
+    if (targets.length === 0) {
       setFlows([]);
       setLoading(false);
       return;
     }
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
-    listCallFlows(tenant.slug)
-      .then((rows) =>
-        setFlows(rows.map((f) => ({ ...f, tenantSlug: tenant.slug, tenantName: tenant.name }))),
-      )
-      .catch((e) => setError(e instanceof ApiError ? e.detail : String(e)))
+    Promise.allSettled(targets.map((t) => listCallFlows(t.slug).then((rows) => ({ t, rows }))))
+      .then((results) => {
+        const nextFlows: FlowRow[] = [];
+        const errs: string[] = [];
+        results.forEach((r, i) => {
+          if (r.status === "fulfilled") {
+            nextFlows.push(
+              ...r.value.rows.map((f) => ({ ...f, tenantSlug: r.value.t.slug, tenantName: r.value.t.name })),
+            );
+          } else {
+            errs.push(`${targets[i].name}: ${r.reason instanceof ApiError ? r.reason.detail : String(r.reason)}`);
+          }
+        });
+        setFlows(nextFlows);
+        setError(errs.length > 0 ? errs.join("; ") : null);
+      })
       .finally(() => setLoading(false));
-  }, [tenant, tenantLoading]);
+  }, [tenant, allTenants, isAllTenants, tenantLoading]);
 
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();

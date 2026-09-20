@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ApiError, Call, CallWithTenant, listAllCalls,
-  listTenants, Tenant, TranscriptEntry, getTranscript,
+  TranscriptEntry, getTranscript,
 } from "@/lib/api";
 import { Modal } from "@/components/Modal";
+import { useActiveTenant } from "@/lib/useActiveTenant";
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleString(undefined, {
@@ -26,7 +27,11 @@ function statusBadgeClass(status: Call["status"]): string {
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 
 export default function CallsPage() {
-  const [tenants, setTenants] = useState<Tenant[]>([]);
+  const { tenant, allTenants, isAllTenants, loading: tenantLoading } = useActiveTenant();
+  const targetTenants = useMemo(
+    () => (isAllTenants ? allTenants : tenant ? [tenant] : []),
+    [tenant, allTenants, isAllTenants],
+  );
   const [calls, setCalls] = useState<CallWithTenant[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -39,21 +44,17 @@ export default function CallsPage() {
   const [page, setPage] = useState(1);
 
   useEffect(() => {
-    listTenants().then(setTenants).catch((e) => setError(e instanceof ApiError ? e.detail : String(e)));
-  }, []);
-
-  useEffect(() => {
-    if (tenants.length === 0) return;
+    if (tenantLoading || targetTenants.length === 0) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
-    listAllCalls(tenants)
+    listAllCalls(targetTenants)
       .then((cs) => {
         setCalls(cs);
         setPage(1);
       })
       .catch((e) => setError(e instanceof ApiError ? e.detail : String(e)))
       .finally(() => setLoading(false));
-  }, [tenants]);
+  }, [targetTenants, tenantLoading]);
 
   const pageCount = Math.max(1, Math.ceil(calls.length / pageSize));
   const currentPage = Math.min(page, pageCount);

@@ -33,7 +33,7 @@ interface Attachments {
 
 export default function AgentsPage() {
   const router = useRouter();
-  const { tenant, isPlatformScoped, loading: tenantLoading } = useActiveTenant();
+  const { tenant, allTenants, isPlatformScoped, isAllTenants, loading: tenantLoading } = useActiveTenant();
   const [agents, setAgents] = useState<AgentRow[]>([]);
   const [providersById, setProvidersById] = useState<Record<string, ProviderConfig>>({});
   const [attachments, setAttachments] = useState<Record<string, Attachments>>({});
@@ -41,48 +41,58 @@ export default function AgentsPage() {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
 
-  // Scoped to the account selected in the header switcher. Querying every
-  // tenant instead (one request each) is what made this page fail outright
-  // on a platform with hundreds of accounts.
+  // Scoped to the account(s) selected in the header switcher — one tenant by
+  // default, or every tenant when "All tenants" is picked. Each tenant's
+  // fetch fails independently (Promise.allSettled): one bad account never
+  // blanks the rest, matching how the tenant-scoped path already degraded
+  // per-agent attachment lookups to "—" rather than failing outright.
   useEffect(() => {
     if (tenantLoading) return;
-    if (!tenant) {
+    const targets = isAllTenants ? allTenants : tenant ? [tenant] : [];
+    if (targets.length === 0) {
       setAgents([]);
       setLoading(false);
       return;
     }
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
-    listAgents(tenant.slug)
-      .then(async (found) => {
-        const list: AgentRow[] = found.map((a) => ({
-          ...a, tenantName: tenant.name, tenantSlug: tenant.slug,
-        }));
-        setAgents(list);
-        setLoading(false);
-
-        const provs = await listProviders(tenant.id).catch(() => [] as ProviderConfig[]);
-        setProvidersById(Object.fromEntries(provs.map((p) => [p.id, p])));
-
-        // Attachment counts are per-agent by necessity (both junction tables
-        // are keyed by agent_id with no bulk endpoint). Failures degrade to
-        // "—" per agent rather than failing the page (lesson 21).
-        const entries = await Promise.all(
-          list.map(async (a) => {
-            const [kbs, apis] = await Promise.all([
-              listAgentKnowledgeBases(a.id).then((r) => r.length).catch(() => null),
-              listAgentCustomApis(a.id).then((r) => r.length).catch(() => null),
-            ]);
-            return [a.id, { sources: kbs, tools: apis }] as const;
-          }),
-        );
-        setAttachments(Object.fromEntries(entries));
-      })
-      .catch((e) => {
-        setError(e instanceof ApiError ? e.detail : String(e));
-        setLoading(false);
+    (async () => {
+      const results = await Promise.allSettled(
+        targets.map((t) =>
+          listAgents(t.slug).then((found) =>
+            found.map((a): AgentRow => ({ ...a, tenantName: t.name, tenantSlug: t.slug })),
+          ),
+        ),
+      );
+      const list: AgentRow[] = [];
+      const errs: string[] = [];
+      results.forEach((r, i) => {
+        if (r.status === "fulfilled") list.push(...r.value);
+        else errs.push(`${targets[i].name}: ${r.reason instanceof ApiError ? r.reason.detail : String(r.reason)}`);
       });
-  }, [tenant, tenantLoading]);
+      setAgents(list);
+      setError(errs.length > 0 ? errs.join("; ") : null);
+      setLoading(false);
+
+      const provResults = await Promise.allSettled(targets.map((t) => listProviders(t.id)));
+      const provs = provResults.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
+      setProvidersById(Object.fromEntries(provs.map((p) => [p.id, p])));
+
+      // Attachment counts are per-agent by necessity (both junction tables
+      // are keyed by agent_id with no bulk endpoint). Failures degrade to
+      // "—" per agent rather than failing the page (lesson 21).
+      const entries = await Promise.all(
+        list.map(async (a) => {
+          const [kbs, apis] = await Promise.all([
+            listAgentKnowledgeBases(a.id).then((r) => r.length).catch(() => null),
+            listAgentCustomApis(a.id).then((r) => r.length).catch(() => null),
+          ]);
+          return [a.id, { sources: kbs, tools: apis }] as const;
+        }),
+      );
+      setAttachments(Object.fromEntries(entries));
+    })();
+  }, [tenant, allTenants, isAllTenants, tenantLoading]);
 
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -102,11 +112,14 @@ export default function AgentsPage() {
     return p.model || p.voice || p.engine;
   };
 
-  const accountLine = tenant
-    ? `${agents.length} agent${agents.length === 1 ? "" : "s"} in ${tenant.name}.` +
-      (isPlatformScoped ? " Switch accounts from the header." : "") +
+  const accountLine = isAllTenants
+    ? `${agents.length} agent${agents.length === 1 ? "" : "s"} across ${allTenants.length} tenant${allTenants.length === 1 ? "" : "s"}.` +
       " Each carries its own voice stack, knowledge and guardrails."
-    : "Each agent carries its own voice stack, knowledge and guardrails.";
+    : tenant
+      ? `${agents.length} agent${agents.length === 1 ? "" : "s"} in ${tenant.name}.` +
+        (isPlatformScoped ? " Switch accounts from the header." : "") +
+        " Each carries its own voice stack, knowledge and guardrails."
+      : "Each agent carries its own voice stack, knowledge and guardrails.";
 
   return (
     <>

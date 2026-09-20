@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AgentWithTenant,
   ApiError,
@@ -8,21 +8,28 @@ import {
   deletePhoneNumber,
   listAllAgents,
   listAllPhoneNumbers,
-  listTenants,
   PhoneNumberCreate,
   PhoneNumberStatus,
   PhoneNumberUpdate,
   PhoneNumberWithTenant,
-  Tenant,
   updatePhoneNumber,
 } from "@/lib/api";
 import { Modal } from "@/components/Modal";
+import { useActiveTenant } from "@/lib/useActiveTenant";
 
 const STATUSES: PhoneNumberStatus[] = ["active", "inactive", "suspended"];
 const ALL_TENANTS = "__all__";
 
 export default function PhoneNumbersPage() {
-  const [tenants, setTenants] = useState<Tenant[]>([]);
+  const { allTenants, isAllTenants, tenant, loading: tenantLoading } = useActiveTenant();
+  // Scopes the underlying fetch to the header switcher. The dropdown below
+  // is a separate, page-local narrowing on top of whatever that already
+  // fetched — unchanged, and still built from allTenants so it keeps
+  // offering every account regardless of the header's current selection.
+  const targetTenants = useMemo(
+    () => (isAllTenants ? allTenants : tenant ? [tenant] : []),
+    [tenant, allTenants, isAllTenants],
+  );
   const [filterTenantId, setFilterTenantId] = useState<string>(ALL_TENANTS);
   const [agents, setAgents] = useState<AgentWithTenant[]>([]);
   const [numbers, setNumbers] = useState<PhoneNumberWithTenant[]>([]);
@@ -40,17 +47,15 @@ export default function PhoneNumbersPage() {
   const [editSubmitting, setEditSubmitting] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
 
-  useEffect(() => {
-    listTenants().then((ts) => {
-      setTenants(ts);
-      if (ts.length > 0) setCreateTenantId(ts[0].id);
-    });
-  }, []);
+  const openCreateModal = () => {
+    setCreateTenantId((id) => id || allTenants[0]?.id || "");
+    setModalOpen(true);
+  };
 
   const refresh = () => {
-    if (tenants.length === 0) return;
+    if (tenantLoading || targetTenants.length === 0) return;
     setLoading(true);
-    Promise.all([listAllPhoneNumbers(tenants), listAllAgents(tenants)])
+    Promise.all([listAllPhoneNumbers(targetTenants), listAllAgents(targetTenants)])
       .then(([nums, ags]) => {
         setNumbers(nums);
         setAgents(ags);
@@ -60,7 +65,7 @@ export default function PhoneNumbersPage() {
   };
 
   // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(refresh, [tenants]);
+  useEffect(refresh, [targetTenants, tenantLoading]);
 
   const agentName = (id: string | null) => {
     if (!id) return <i style={{ color: "var(--text-3)" }}>none</i>;
@@ -123,7 +128,7 @@ export default function PhoneNumbersPage() {
     }
   };
 
-  const agentsForTenant = (tenantId: string) => agents.filter((a) => tenants.find((t) => t.id === tenantId)?.slug === a.tenantSlug);
+  const agentsForTenant = (tenantId: string) => agents.filter((a) => allTenants.find((t) => t.id === tenantId)?.slug === a.tenantSlug);
 
   const visibleNumbers = filterTenantId === ALL_TENANTS ? numbers : numbers.filter((n) => n.tenant_id === filterTenantId);
 
@@ -132,13 +137,13 @@ export default function PhoneNumbersPage() {
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 14, gap: 10 }}>
         <select className="form-select" style={{ width: 240 }} value={filterTenantId} onChange={(e) => setFilterTenantId(e.target.value)}>
           <option value={ALL_TENANTS}>All Accounts</option>
-          {tenants.map((t) => (
+          {allTenants.map((t) => (
             <option key={t.id} value={t.id}>
               {t.name}
             </option>
           ))}
         </select>
-        <button className="btn btn-primary btn-sm" onClick={() => setModalOpen(true)} disabled={tenants.length === 0}>
+        <button className="btn btn-primary btn-sm" onClick={openCreateModal} disabled={allTenants.length === 0}>
           + Assign DID
         </button>
       </div>
@@ -223,7 +228,7 @@ export default function PhoneNumbersPage() {
             Account <span className="required">*</span>
           </label>
           <select className="form-select" value={createTenantId} onChange={(e) => setCreateTenantId(e.target.value)}>
-            {tenants.map((t) => (
+            {allTenants.map((t) => (
               <option key={t.id} value={t.id}>
                 {t.name}
               </option>

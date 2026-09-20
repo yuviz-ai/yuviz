@@ -8,14 +8,13 @@ import {
   Invite,
   InviteRole,
   listInvites,
-  listTenants,
   listUsers,
   resendInvite,
   revokeInvite,
-  Tenant,
   User,
 } from "@/lib/api";
 import { Modal } from "@/components/Modal";
+import { useActiveTenant } from "@/lib/useActiveTenant";
 
 // Resend cooldown mirrors services/config/invites.py's RESEND_COOLDOWN_SECONDS.
 const RESEND_COOLDOWN_SECONDS = 60;
@@ -79,10 +78,10 @@ const CAPABILITY_MATRIX: { label: string; superadmin: Reach; admin: Reach; super
 ];
 
 export default function UsersPage() {
+  const { tenant, allTenants, isPlatformScoped, isAllTenants, loading: tenantLoading } = useActiveTenant();
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [invites, setInvites] = useState<Invite[]>([]);
-  const [tenants, setTenants] = useState<Tenant[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Page-level, not modal-level: AC12's "email failed to send" warning has
@@ -117,13 +116,16 @@ export default function UsersPage() {
   // 403s for.
   const canManageUsers = isSuperadmin || currentUser?.role === "admin";
 
+  // A tenant-scoped viewer's own `?tenant_id=` would be a no-op (the server
+  // already narrows to their tenant regardless), so only a platform-scoped
+  // viewer (superadmin) who picked one specific tenant in the header
+  // switcher passes it explicitly — "All tenants" (the default) keeps the
+  // unfiltered, every-tenant fetch this page always did.
+  const scopeTenantId = isPlatformScoped && !isAllTenants ? tenant?.id : undefined;
+
   const refresh = () => {
     setLoading(true);
     setError(null);
-    // No `?tenant_id=` passed — the server already scopes both lists to the
-    // caller's own tenant (or every tenant for a super_admin, AC11). The UI
-    // must not re-derive that scope itself.
-    //
     // GET /invites is superadmin/admin-only, so it 403s for a viewer — never
     // request it for a role that can't have invites. And each fetch below is
     // independently caught (allSettled, not Promise.all) so one forbidden or
@@ -134,15 +136,13 @@ export default function UsersPage() {
       .then(async (me) => {
         setCurrentUser(me);
         const canManage = me.role === "superadmin" || me.role === "admin";
-        const [usersResult, invitesResult, tenantsResult] = await Promise.allSettled([
-          listUsers(),
-          canManage ? listInvites() : Promise.resolve<Invite[]>([]),
-          me.role === "superadmin" ? listTenants() : Promise.resolve<Tenant[]>([]),
+        const [usersResult, invitesResult] = await Promise.allSettled([
+          listUsers(scopeTenantId),
+          canManage ? listInvites(scopeTenantId) : Promise.resolve<Invite[]>([]),
         ]);
         if (usersResult.status === "fulfilled") setUsers(usersResult.value);
         if (invitesResult.status === "fulfilled") setInvites(invitesResult.value);
-        if (tenantsResult.status === "fulfilled") setTenants(tenantsResult.value);
-        const failed = [usersResult, invitesResult, tenantsResult].find((r) => r.status === "rejected");
+        const failed = [usersResult, invitesResult].find((r) => r.status === "rejected");
         if (failed?.status === "rejected") {
           const reason = failed.reason;
           setError(reason instanceof ApiError ? reason.detail : String(reason));
@@ -152,10 +152,14 @@ export default function UsersPage() {
       .finally(() => setLoading(false));
   };
 
-  // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(refresh, []);
+  useEffect(() => {
+    if (tenantLoading) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopeTenantId, tenantLoading]);
 
-  const tenantName = (id: string | null) => (id ? tenants.find((t) => t.id === id)?.name ?? id : "— platform —");
+  const tenantName = (id: string | null) => (id ? allTenants.find((t) => t.id === id)?.name ?? id : "— platform —");
 
   // Mirrors invites.may_invite: an admin actor may invite anyone except a
   // superadmin, and only within their own tenant. The server enforces this
@@ -460,7 +464,7 @@ export default function UsersPage() {
             </label>
             <select id="invite-tenant" className="form-input" value={tenantId} onChange={(e) => setTenantId(e.target.value)}>
               <option value="">— Platform (no tenant) —</option>
-              {tenants.map((t) => (
+              {allTenants.map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.name}
                 </option>

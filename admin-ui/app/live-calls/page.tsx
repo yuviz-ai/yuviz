@@ -7,7 +7,6 @@ import {
   getCurrentUser,
   getLiveCalls,
   InterventionAction,
-  listTenants,
   LiveCall,
   LiveCallsSnapshot,
   requestIntervention,
@@ -15,6 +14,7 @@ import {
   User,
 } from "@/lib/api";
 import { ACTIVE_TENANT_STORAGE_KEY } from "@/components/AppShell";
+import { ACTIVE_TENANT_EVENT, useActiveTenant } from "@/lib/useActiveTenant";
 
 // AC5's whole poll budget — never slacken this for testing (lesson 25); the
 // pool acquire timeout and rate limit on the server are sized to exactly
@@ -77,13 +77,17 @@ function downloadCsv(csv: string): void {
 
 export default function LiveCallsPage() {
   const [user, setUser] = useState<User | null>(null);
-  const [tenants, setTenants] = useState<Tenant[]>([]);
-  // null covers BOTH "not superadmin, irrelevant" and "superadmin, nothing
-  // selected yet" — deliberately one value, not undefined-then-null, so a
-  // non-superadmin role never causes a real state transition here at all
-  // (a transition would recreate fetchSnapshot below and double the very
-  // first poll — found by actually driving this in a browser, lesson 23).
-  const [activeTenantSlug, setActiveTenantSlug] = useState<string | null>(null);
+  // Reads the SAME selection the header switcher writes — a superadmin who
+  // switches tenants anywhere in the console now sees this page follow,
+  // instead of the two staying independently out of sync (T22b/T23's
+  // original picker was seeded from localStorage once on mount but never
+  // listened for the header's own change event).
+  const { allTenants, isPlatformScoped, tenant: headerTenant, isAllTenants: headerIsAllTenants } = useActiveTenant();
+  // Live monitoring has no aggregate-across-tenants view server-side (the
+  // backend snapshot is always exactly one tenant's live call floor) — "All
+  // tenants" in the header means "nothing resolved yet" here, same as no
+  // selection at all, and the picker below stays up until one is chosen.
+  const activeTenantSlug = isPlatformScoped ? (headerIsAllTenants ? null : headerTenant?.slug ?? null) : null;
 
   const [snapshot, setSnapshot] = useState<LiveCallsSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -97,30 +101,17 @@ export default function LiveCallsPage() {
     getCurrentUser().then(setUser).catch(() => {});
   }, []);
 
-  // Only a superadmin needs the tenant list (for the picker) or the stored
-  // selection at all — supervisor/admin are already scoped server-side, and
-  // activeTenantSlug's initial `null` already means "no selection needed"
-  // for them, so this effect does nothing at all in that case (no setState,
-  // no re-render, no re-fetch).
-  useEffect(() => {
-    if (!user || user.role !== "superadmin") return;
-    listTenants()
-      .then((ts) => {
-        setTenants(ts);
-        const stored = typeof window !== "undefined" ? window.localStorage.getItem(ACTIVE_TENANT_STORAGE_KEY) : null;
-        setActiveTenantSlug(ts.find((t) => t.slug === stored)?.slug ?? null);
-      })
-      .catch(() => setActiveTenantSlug(null));
-  }, [user]);
-
+  // Writes through to the exact same key + event AppShell's own switcher
+  // uses, so picking a tenant from this page's picker updates the header
+  // too, not just this page's own (now-derived) selection.
   const selectTenant = (t: Tenant) => {
-    setActiveTenantSlug(t.slug);
     try {
       window.localStorage.setItem(ACTIVE_TENANT_STORAGE_KEY, t.slug);
     } catch {
       // Private-mode/blocked storage — the selection just won't survive a
       // reload; strictly worse, not a crash.
     }
+    window.dispatchEvent(new CustomEvent(ACTIVE_TENANT_EVENT, { detail: t.slug }));
   };
 
   // superadmin with nothing selected yet: no fetch, no interval — the
@@ -200,11 +191,11 @@ export default function LiveCallsPage() {
           <div style={{ marginBottom: 12, color: "var(--text-2)", fontSize: ".82rem" }}>
             Select a tenant to monitor its live calls.
           </div>
-          {tenants.length === 0 ? (
+          {allTenants.length === 0 ? (
             <div className="empty-state">No tenants yet.</div>
           ) : (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-              {tenants.map((t) => (
+              {allTenants.map((t) => (
                 <button key={t.id} className="btn btn-ghost" onClick={() => selectTenant(t)}>
                   {t.name} <span style={{ color: "var(--text-3)", marginLeft: 6 }}>{t.slug}</span>
                 </button>
