@@ -77,6 +77,20 @@ const CAPABILITY_MATRIX: { label: string; superadmin: Reach; admin: Reach; super
   { label: "View the platform audit log", superadmin: "yes", admin: "no", supervisor: "no", viewer: "no" },
 ];
 
+/** One small headline count. Deliberately plainer than the dashboard's
+    Kpi tile — these are inventory numbers with no trend behind them. */
+function Tile({ label, value, footnote }: { label: string; value: string; footnote?: string }) {
+  return (
+    <div className="card" style={{ padding: "12px 16px", flex: "1 1 150px", minWidth: 140 }}>
+      <div style={{ fontSize: ".7rem", fontWeight: 600, color: "var(--text-2)" }}>{label}</div>
+      <div style={{ fontSize: "1.6rem", fontWeight: 600, letterSpacing: "-.025em", color: "var(--text)", fontVariantNumeric: "tabular-nums", lineHeight: 1.25 }}>
+        {value}
+      </div>
+      {footnote && <div style={{ fontSize: ".68rem", color: "var(--text-3)" }}>{footnote}</div>}
+    </div>
+  );
+}
+
 export default function UsersPage() {
   const { tenant, allTenants, isPlatformScoped, isAllTenants, loading: tenantLoading } = useActiveTenant();
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -239,15 +253,28 @@ export default function UsersPage() {
     }
   };
 
+  const pendingInvites = invites.filter((i) => deriveStatus(i) === "pending").length;
+  const adminCount = users.filter((u) => u.role === "superadmin" || u.role === "admin").length;
+  const scopeLabel = isAllTenants
+    ? `across ${allTenants.length} account${allTenants.length === 1 ? "" : "s"}`
+    : `in ${tenant?.name ?? "this account"}`;
+
   return (
     <>
-      {canManageUsers && (
-        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
-          <button className="btn btn-primary btn-sm" onClick={openInvite}>
-            + Invite User
-          </button>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
+        <div>
+          <h1 style={{ fontSize: "1.5rem", fontWeight: 600, letterSpacing: "-.025em", margin: 0, color: "var(--text)" }}>Users</h1>
+          <div className="form-hint" style={{ marginTop: 4 }}>
+            {loading ? "Loading members…" : `${users.length} member${users.length === 1 ? "" : "s"} ${scopeLabel}.`}
+            {isPlatformScoped && !isAllTenants && " Switch accounts from the header."}
+          </div>
         </div>
-      )}
+        {canManageUsers && (
+          <button className="btn btn-primary btn-sm" onClick={openInvite}>
+            + Invite user
+          </button>
+        )}
+      </div>
 
       {error && <div className="error-banner">{error}</div>}
       {notice && (
@@ -256,83 +283,63 @@ export default function UsersPage() {
         </div>
       )}
 
-      <div className="users-layout" style={{ marginBottom: 14 }}>
-        <div className="card">
-          <div className="card-hdr">
-            <div className="card-title">Members</div>
-          </div>
-          {loading ? (
-            <div className="empty-state">Loading…</div>
-          ) : users.length === 0 ? (
-            <div className="empty-state">No users yet.</div>
-          ) : (
-            <table className="tbl">
-              <thead>
-                <tr>
-                  <th>Email</th>
-                  <th>Role</th>
-                  {isSuperadmin && <th>Tenant</th>}
-                  <th>Created</th>
-                </tr>
-              </thead>
-              <tbody>
-                {users.map((u) => (
-                  <tr key={u.id}>
-                    <td className="bold">
-                      {u.email}
-                      {u.id === currentUser?.id && (
-                        <span className="badge indigo" style={{ marginLeft: 6 }}>
-                          You
-                        </span>
-                      )}
-                    </td>
-                    <td>
-                      <span className={`badge ${ROLE_BADGE[u.role]}`}>{u.role}</span>
-                    </td>
-                    {isSuperadmin && <td>{tenantName(u.tenant_id)}</td>}
-                    <td style={{ fontSize: ".71rem", color: "var(--text-3)" }}>
-                      {new Date(u.created_at).toLocaleDateString()}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+        <Tile label="Members" value={loading ? "—" : String(users.length)} />
+        <Tile label="Admins" value={loading ? "—" : String(adminCount)} footnote="superadmin or admin" />
+        <Tile
+          label="Pending invites"
+          value={loading || !canManageUsers ? "—" : String(pendingInvites)}
+          footnote={canManageUsers ? "not yet accepted" : "visible to admins only"}
+        />
+      </div>
 
-        <div className="card">
-          <div className="card-hdr">
-            <div className="card-title">What each role can do</div>
-          </div>
-          <div className="card-body" style={{ padding: "10px 16px 16px" }}>
-            <table className="tbl tbl-matrix">
-              <thead>
-                <tr>
-                  <th></th>
-                  <th style={{ textAlign: "center" }}>Super&shy;admin</th>
-                  <th style={{ textAlign: "center" }}>Admin</th>
-                  <th style={{ textAlign: "center" }}>Super&shy;visor</th>
-                  <th style={{ textAlign: "center" }}>Viewer</th>
-                </tr>
-              </thead>
-              <tbody>
-                {CAPABILITY_MATRIX.map((row) => (
-                  <tr key={row.label}>
-                    <td style={{ fontSize: ".76rem" }}>{row.label}</td>
-                    <td className="tbl-matrix-cell">{row.superadmin === "yes" ? "✓" : "—"}</td>
-                    <td className="tbl-matrix-cell">{row.admin === "yes" ? "✓" : "—"}</td>
-                    <td className="tbl-matrix-cell">{row.supervisor === "yes" ? "✓" : "—"}</td>
-                    <td className="tbl-matrix-cell">{row.viewer === "yes" ? "✓" : "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <div className="form-hint" style={{ marginTop: 10 }}>
-              Fixed by role, not editable here — reflects how this console actually
-              gates each action today.
-            </div>
-          </div>
+      {/* Members and Invites each get the full width. They used to share a
+          row with the role matrix at 1.6fr/1fr, which squeezed the matrix's
+          five columns until every header and label wrapped, while a short
+          member list left the other half of the row empty. The matrix is
+          reference material, so it sits at the bottom, full width. */}
+      <div className="card" style={{ marginBottom: 14 }}>
+        <div className="card-hdr">
+          <div className="card-title">Members</div>
+          <div className="card-sub">{loading ? "" : `${users.length} total`}</div>
         </div>
+        {loading ? (
+          <div className="empty-state">Loading…</div>
+        ) : users.length === 0 ? (
+          <div className="empty-state">No users yet.</div>
+        ) : (
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Email</th>
+                <th>Role</th>
+                {isSuperadmin && <th>Tenant</th>}
+                <th>Created</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((u) => (
+                <tr key={u.id}>
+                  <td className="bold">
+                    {u.email}
+                    {u.id === currentUser?.id && (
+                      <span className="badge indigo" style={{ marginLeft: 6 }}>
+                        You
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    <span className={`badge ${ROLE_BADGE[u.role]}`}>{u.role}</span>
+                  </td>
+                  {isSuperadmin && <td>{tenantName(u.tenant_id)}</td>}
+                  <td style={{ fontSize: ".71rem", color: "var(--text-3)" }}>
+                    {new Date(u.created_at).toLocaleDateString()}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
 
       <div className="card">
@@ -416,6 +423,42 @@ export default function UsersPage() {
             </tbody>
           </table>
         )}
+      </div>
+
+      <div className="card" style={{ marginTop: 14 }}>
+        <div className="card-hdr">
+          <div className="card-title">What each role can do</div>
+          <div className="card-sub">Fixed by role — not editable here</div>
+        </div>
+        <div className="card-body" style={{ padding: "4px 16px 16px" }}>
+          <table className="tbl tbl-matrix">
+            <thead>
+              <tr>
+                <th>Capability</th>
+                <th style={{ textAlign: "center" }}>Superadmin</th>
+                <th style={{ textAlign: "center" }}>Admin</th>
+                <th style={{ textAlign: "center" }}>Supervisor</th>
+                <th style={{ textAlign: "center" }}>Viewer</th>
+              </tr>
+            </thead>
+            <tbody>
+              {CAPABILITY_MATRIX.map((row) => (
+                <tr key={row.label}>
+                  <td style={{ fontSize: ".78rem" }}>{row.label}</td>
+                  {([row.superadmin, row.admin, row.supervisor, row.viewer] as Reach[]).map((reach, i) => (
+                    <td key={i} className="tbl-matrix-cell" style={{ color: reach === "yes" ? "var(--cyan)" : "var(--text-3)" }}>
+                      {reach === "yes" ? "✓" : "—"}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="form-hint" style={{ marginTop: 10 }}>
+            Reflects how this console actually gates each action today — the same checks
+            services/config/deps.py enforces server-side.
+          </div>
+        </div>
       </div>
 
       <Modal
