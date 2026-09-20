@@ -51,6 +51,8 @@ from .tools.orchestrator import ToolCallOrchestrator
 from .tools.policy_resolver import ToolPolicyResolver
 from .tools.provider_manager import ToolProviderManager
 from .tools.registry import ToolRegistry
+from .providers.llm.openai import OpenAILLM
+from .sentiment import SentimentScorer
 from .transcript_builder import TranscriptBuilder
 from .workflow import graph_for
 from .generated.voiceai.v1 import conversation_pb2_grpc as pb_grpc
@@ -174,7 +176,38 @@ async def serve(port: int, args: argparse.Namespace) -> None:
     # this project runs two Conversation Service processes (:50051,
     # :50052) behind Envoy, so "this process" is never "the only process."
     node_id = f"{socket.gethostname()}:{port}"
-    transcripts = await TranscriptBuilder.connect(cfg.db.database_url, node_id=node_id)
+
+    # Call-sentiment scoring runs on its OWN hosted model, not the
+    # conversational provider built further down — see SentimentConfig for
+    # the measurement behind that. It is constructed here because
+    # TranscriptBuilder needs it at connect() time, and it is skipped
+    # entirely in echo mode (no real conversation to score) and whenever no
+    # key is configured, leaving calls.sentiment NULL rather than scoring
+    # with something that invents its evidence.
+    sentiment_scorer: SentimentScorer | None = None
+    sentiment_llm: OpenAILLM | None = None
+    if args.mode != "echo" and cfg.sentiment.api_key:
+        sentiment_llm = OpenAILLM(
+            api_key=cfg.sentiment.api_key,
+            model=cfg.sentiment.model,
+            system="",  # SentimentScorer injects its own system message
+            temperature=0.0,
+            base_url=cfg.sentiment.base_url,
+            timeout_s=cfg.sentiment.timeout_s,
+        )
+        sentiment_scorer = SentimentScorer(
+            sentiment_llm,
+            max_turns=cfg.sentiment.max_turns,
+            timeout_s=cfg.sentiment.timeout_s,
+        )
+    elif args.mode != "echo":
+        log.info(
+            "Call-sentiment scoring disabled — no VOICEAI_SENTIMENT_API_KEY/OPENAI_API_KEY",
+        )
+
+    transcripts = await TranscriptBuilder.connect(
+        cfg.db.database_url, node_id=node_id, sentiment=sentiment_scorer,
+    )
     await transcripts.reconcile_stale_calls()
     provider_manager = AIProviderManager(CompositeSecretResolver())
     provider_registry = ProviderRegistry(provider_manager)
@@ -487,7 +520,11 @@ async def serve(port: int, args: argparse.Namespace) -> None:
     finally:
         if llm is not None:
             await llm.aclose()
+        # Before sentiment_llm: transcripts.close() drains in-flight end_call
+        # chains, and a chain still scoring needs its HTTP client alive.
         await transcripts.close()
+        if sentiment_llm is not None:
+            await sentiment_llm.aclose()
         await config.close()
         await knowledge.close()
         await tool_policy_resolver.close()

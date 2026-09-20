@@ -524,6 +524,30 @@ ALTER TABLE calls ADD COLUMN IF NOT EXISTS direction TEXT NOT NULL DEFAULT 'inbo
 ALTER TABLE calls DROP CONSTRAINT IF EXISTS calls_direction_check;
 ALTER TABLE calls ADD CONSTRAINT calls_direction_check CHECK (direction IN ('inbound', 'outbound', 'test'));
 
+-- ── Call sentiment (added 2026-09-20) ────────────────────────────────────
+-- How the CALLER sounded over the call as a whole, scored once from the
+-- finished transcript by SentimentScorer (services/conversation/sentiment.py)
+-- inside TranscriptBuilder's end_call() background write — never on the
+-- live turn path, so a slow or unreachable scorer costs the call nothing.
+--
+-- NULL is a real, expected state and is NOT the same as 'neutral': it means
+-- "never scored", which covers every call that ended before this column
+-- existed, a call with no transcript turns (turn_count = 0 — there is no
+-- caller speech to judge), a call whose scorer was disabled, and one whose
+-- LLM call failed or returned something unparseable. The Admin UI renders
+-- those as "—" rather than inventing a neutral reading.
+--
+-- 'frustrated' is deliberately separate from 'negative': a caller can be
+-- unhappy with the ANSWER (negative) while the call itself went fine, and
+-- can be frustrated with the AGENT (repeating themselves, asking for a
+-- human) while the news was good. Those two want different follow-up, so
+-- collapsing them into one bucket would lose the actionable half.
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS sentiment        TEXT;
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS sentiment_reason TEXT;
+ALTER TABLE calls DROP CONSTRAINT IF EXISTS calls_sentiment_check;
+ALTER TABLE calls ADD CONSTRAINT calls_sentiment_check
+    CHECK (sentiment IS NULL OR sentiment IN ('positive', 'neutral', 'negative', 'frustrated'));
+
 CREATE INDEX IF NOT EXISTS idx_calls_tenant   ON calls(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_calls_started  ON calls(started_at);
 CREATE INDEX IF NOT EXISTS idx_calls_agent    ON calls(agent_id);

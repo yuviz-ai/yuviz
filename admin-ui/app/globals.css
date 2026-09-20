@@ -1149,3 +1149,97 @@ body {
   .test-layout { flex-direction: column; }
   .test-controls { width: auto; }
 }
+
+/* ═══ Calls — log + detail ═══ */
+
+.sentiment-dot { width: 6px; height: 6px; border-radius: 99px; background: currentColor; flex-shrink: 0; }
+.sentiment-unscored { color: var(--text-3); font-size: .78rem; cursor: help; }
+
+/* Filter bar above the Call Log. Wraps rather than scrolls — on a narrow
+   window the controls stack instead of hiding behind an overflow edge. */
+.calls-filters {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 16px; border-bottom: 1px solid var(--border);
+}
+.calls-search { width: 230px; max-width: 100%; }
+.calls-filter-group { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.calls-filter-label {
+  font-size: .64rem; font-weight: 600; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--text-3); margin-right: 2px;
+}
+.calls-chip {
+  font-family: inherit; font-size: .69rem; font-weight: 500; cursor: pointer;
+  padding: 3px 9px; border-radius: 99px; border: 1px solid var(--border-2);
+  background: transparent; color: var(--text-2);
+  display: inline-flex; align-items: center; gap: 5px; transition: background .12s, border-color .12s;
+}
+.calls-chip:hover { background: var(--surf-2); color: var(--text); }
+.calls-chip.on { background: var(--cyan-dim); color: var(--cyan); border-color: var(--cyan-border); }
+.calls-chip-count { font-variant-numeric: tabular-nums; opacity: .65; font-size: .64rem; }
+
+/* Two-line cells: a primary value with its context under it, so the table
+   carries more without growing more columns. */
+.cell-stack { display: flex; flex-direction: column; gap: 1px; line-height: 1.35; }
+.cell-primary { color: var(--text); }
+.cell-sub { font-size: .67rem; color: var(--text-3); }
+.cell-num { font-variant-numeric: tabular-nums; }
+
+/* Auto table layout hands spare width to the column with the widest
+   content, which would otherwise always be Sentiment (it carries a reason
+   line). Capping it keeps the reason next to its badge instead of leaving a
+   gap across to Status. */
+.tbl th.col-sentiment { width: 240px; }
+.calls-reason {
+  display: block; font-size: .67rem; color: var(--text-3); margin-top: 3px;
+  max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ── Call detail page ── */
+.detail-back {
+  display: inline-flex; align-items: center; gap: 5px; font-size: .72rem; color: var(--text-3);
+  text-decoration: none; margin-bottom: 10px;
+}
+.detail-back:hover { color: var(--text); }
+
+.detail-hdr { display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin-bottom: 16px; }
+.detail-title { font-size: 1.05rem; font-weight: 600; color: var(--text); }
+.detail-subtitle { font-size: .73rem; color: var(--text-3); margin-top: 3px; }
+.detail-hdr-badges { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+
+.detail-grid { display: grid; grid-template-columns: 1.1fr 1.9fr; gap: 16px; align-items: start; }
+@media (max-width: 1000px) { .detail-grid { grid-template-columns: 1fr; } }
+
+.detail-section + .detail-section { border-top: 1px solid var(--border-2); }
+.detail-section-title {
+  font-size: .64rem; font-weight: 700; text-transform: uppercase; letter-spacing: .09em;
+  color: var(--text-3); padding: 12px 16px 0;
+}
+.detail-kv { display: grid; grid-template-columns: auto 1fr; gap: 7px 14px; padding: 8px 16px 14px; font-size: .78rem; }
+.detail-kv dt { color: var(--text-3); white-space: nowrap; }
+.detail-kv dd { color: var(--text); overflow-wrap: anywhere; }
+
+/* align-items: flex-start — a column flex container stretches its
+   children, which would blow the badge out to the full card width. */
+.detail-sentiment { padding: 14px 16px; display: flex; flex-direction: column; align-items: flex-start; gap: 7px; }
+.detail-sentiment-reason { font-size: .76rem; color: var(--text-2); line-height: 1.55; }
+
+.detail-path { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 16px 14px; }
+.detail-path-arrow { color: var(--text-3); font-size: .72rem; }
+
+/* Transcript as an alternating speaker log rather than flat text — the
+   caller's line is what sentiment was read from, so it leads each turn. */
+.transcript { padding: 6px 0 10px; max-height: 620px; overflow-y: auto; }
+.transcript-turn { padding: 9px 16px; }
+.transcript-turn + .transcript-turn { border-top: 1px solid var(--border-2); }
+.transcript-turn-no {
+  font-size: .62rem; font-weight: 600; letter-spacing: .06em; color: var(--text-3);
+  text-transform: uppercase; margin-bottom: 5px; display: flex; align-items: center; gap: 7px;
+}
+.transcript-line { display: flex; gap: 9px; font-size: .79rem; line-height: 1.55; padding: 2px 0; }
+.transcript-who {
+  flex-shrink: 0; width: 46px; font-size: .63rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--text-3); padding-top: 3px;
+}
+.transcript-text { color: var(--text); overflow-wrap: anywhere; }
+.transcript-text.empty { color: var(--text-3); font-style: italic; }
+.transcript-line.agent .transcript-text { color: var(--text-2); }

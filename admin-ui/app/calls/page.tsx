@@ -1,17 +1,32 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
-  ApiError, Call, CallWithTenant, listAllCalls,
-  TranscriptEntry, getTranscript,
+  ApiError, Call, CallSentiment, CallWithTenant, listAllCalls,
 } from "@/lib/api";
-import { Modal } from "@/components/Modal";
+import { SentimentBadge, SENTIMENT_ORDER, sentimentLabel } from "@/components/SentimentBadge";
 import { useActiveTenant } from "@/lib/useActiveTenant";
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleString(undefined, {
     month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
   });
+}
+
+/** Secondary line under the timestamp — "how long ago" is the question a
+ *  call log is usually scanned with, and it is tedious to work out from an
+ *  absolute time. Both are shown; neither replaces the other. */
+function formatRelative(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  if (diffMs < 0) return "just now";
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return days < 30 ? `${days}d ago` : formatTime(iso);
 }
 
 function formatDuration(ms: number | null): string {
@@ -26,7 +41,10 @@ function statusBadgeClass(status: Call["status"]): string {
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 
+type SentimentFilter = CallSentiment | "unscored";
+
 export default function CallsPage() {
+  const router = useRouter();
   const { tenant, allTenants, isAllTenants, loading: tenantLoading } = useActiveTenant();
   const targetTenants = useMemo(
     () => (isAllTenants ? allTenants : tenant ? [tenant] : []),
@@ -36,9 +54,8 @@ export default function CallsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [detailCall, setDetailCall] = useState<CallWithTenant | null>(null);
-  const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
-  const [transcriptLoading, setTranscriptLoading] = useState(false);
+  const [search, setSearch] = useState("");
+  const [sentimentFilter, setSentimentFilter] = useState<SentimentFilter | null>(null);
 
   const [pageSize, setPageSize] = useState(25);
   const [page, setPage] = useState(1);
@@ -56,21 +73,45 @@ export default function CallsPage() {
       .finally(() => setLoading(false));
   }, [targetTenants, tenantLoading]);
 
-  const pageCount = Math.max(1, Math.ceil(calls.length / pageSize));
-  const currentPage = Math.min(page, pageCount);
-  const pageCalls = calls.slice((currentPage - 1) * pageSize, currentPage * pageSize);
-  const rangeStart = calls.length === 0 ? 0 : (currentPage - 1) * pageSize + 1;
-  const rangeEnd = Math.min(currentPage * pageSize, calls.length);
+  // Counts come from the unfiltered set so a chip always shows how many it
+  // would select — a count that shrank as you filtered would be useless for
+  // deciding what to look at next.
+  const sentimentCounts = useMemo(() => {
+    const counts = new Map<SentimentFilter, number>();
+    for (const c of calls) {
+      const key: SentimentFilter = c.sentiment ?? "unscored";
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+  }, [calls]);
 
-  const openDetail = (call: CallWithTenant) => {
-    setDetailCall(call);
-    setTranscript([]);
-    setTranscriptLoading(true);
-    getTranscript(call.session_id)
-      .then(setTranscript)
-      .catch(() => setTranscript([]))
-      .finally(() => setTranscriptLoading(false));
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return calls.filter((c) => {
+      if (sentimentFilter !== null) {
+        const key: SentimentFilter = c.sentiment ?? "unscored";
+        if (key !== sentimentFilter) return false;
+      }
+      if (q === "") return true;
+      return [
+        c.tenantName, c.agent_name, c.caller_number, c.called_number,
+        c.disposition, c.sentiment_reason, c.session_id,
+      ].some((field) => field != null && field.toLowerCase().includes(q));
+    });
+  }, [calls, search, sentimentFilter]);
+
+  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const currentPage = Math.min(page, pageCount);
+  const pageCalls = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const rangeStart = filtered.length === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const rangeEnd = Math.min(currentPage * pageSize, filtered.length);
+
+  const toggleSentiment = (key: SentimentFilter) => {
+    setSentimentFilter((current) => (current === key ? null : key));
+    setPage(1);
   };
+
+  const openDetail = (call: CallWithTenant) => router.push(`/calls/${call.session_id}`);
 
   return (
     <>
@@ -79,7 +120,13 @@ export default function CallsPage() {
       <div className="card">
         <div className="card-hdr">
           <div className="card-title">Call Log</div>
-          <div className="card-sub">{loading ? "Loading…" : `${calls.length} call${calls.length === 1 ? "" : "s"}`}</div>
+          <div className="card-sub">
+            {loading
+              ? "Loading…"
+              : filtered.length === calls.length
+                ? `${calls.length} call${calls.length === 1 ? "" : "s"}`
+                : `${filtered.length} of ${calls.length} calls`}
+          </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: 12 }}>
             <label htmlFor="calls-page-size" style={{ fontSize: ".7rem", color: "var(--text-3)" }}>
               Rows per page
@@ -102,64 +149,128 @@ export default function CallsPage() {
             </select>
           </div>
         </div>
+
+        {!loading && calls.length > 0 && (
+          <div className="calls-filters">
+            <input
+              className="form-input calls-search"
+              style={{ padding: "5px 10px", fontSize: ".74rem" }}
+              placeholder="Search number, agent, account…"
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setPage(1);
+              }}
+            />
+            <div className="calls-filter-group">
+              <span className="calls-filter-label">Sentiment</span>
+              {SENTIMENT_ORDER.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  className={`calls-chip${sentimentFilter === s ? " on" : ""}`}
+                  onClick={() => toggleSentiment(s)}
+                >
+                  {sentimentLabel(s)}
+                  <span className="calls-chip-count">{sentimentCounts.get(s) ?? 0}</span>
+                </button>
+              ))}
+              <button
+                type="button"
+                className={`calls-chip${sentimentFilter === "unscored" ? " on" : ""}`}
+                onClick={() => toggleSentiment("unscored")}
+                title="Calls that were never scored — not the same as neutral"
+              >
+                Not scored
+                <span className="calls-chip-count">{sentimentCounts.get("unscored") ?? 0}</span>
+              </button>
+            </div>
+          </div>
+        )}
+
         {loading ? (
           <div className="empty-state">Loading…</div>
         ) : calls.length === 0 ? (
           <div className="empty-state">No calls yet.</div>
+        ) : filtered.length === 0 ? (
+          <div className="empty-state">No calls match these filters.</div>
         ) : (
           <table className="tbl">
             <thead>
               <tr>
                 <th>Time</th>
                 <th>Account</th>
-                <th>Direction</th>
-                <th>Mode</th>
-                <th>From</th>
-                <th>To</th>
+                {/* Direction and Mode were two columns showing one fact —
+                    calls.py derives mode FROM direction (_mode_of), so they
+                    could never disagree. Merged into one cell. */}
+                <th>Type</th>
+                <th>Parties</th>
                 <th>Duration</th>
+                <th className="col-sentiment">Sentiment</th>
                 <th>Status</th>
-                <th>Transcript</th>
-                <th>Owner</th>
+                <th>Agent</th>
+                <th style={{ textAlign: "right" }}>Turns</th>
               </tr>
             </thead>
             <tbody>
               {pageCalls.map((c) => (
                 <tr key={c.session_id} onClick={() => openDetail(c)}>
-                  <td style={{ whiteSpace: "nowrap" }}>{formatTime(c.started_at)}</td>
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    <div className="cell-stack">
+                      <span className="cell-primary">{formatTime(c.started_at)}</span>
+                      <span className="cell-sub">{formatRelative(c.started_at)}</span>
+                    </div>
+                  </td>
                   <td>{c.tenantName}</td>
                   <td>
-                    <span className={`badge ${c.direction === "inbound" ? "cyan" : "amber"}`}>{c.direction}</span>
+                    <div className="cell-stack">
+                      <span className={`badge ${c.direction === "inbound" ? "cyan" : "amber"}`}>
+                        {c.direction}
+                      </span>
+                      <span className="cell-sub">{c.mode}</span>
+                    </div>
                   </td>
+                  <td className="mono">
+                    {c.caller_number || c.called_number ? (
+                      <div className="cell-stack">
+                        <span>{c.caller_number || "—"}</span>
+                        <span className="cell-sub">→ {c.called_number || "—"}</span>
+                      </div>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                  <td className="cell-num">{formatDuration(c.duration_ms)}</td>
                   <td>
-                    <span className="badge indigo">{c.mode}</span>
+                    <SentimentBadge sentiment={c.sentiment} />
+                    {c.sentiment_reason && (
+                      <span className="calls-reason" title={c.sentiment_reason}>
+                        {c.sentiment_reason}
+                      </span>
+                    )}
                   </td>
-                  <td className="mono">{c.caller_number || "—"}</td>
-                  <td className="mono">{c.called_number || "—"}</td>
-                  <td>{formatDuration(c.duration_ms)}</td>
                   <td>
                     <span className={`badge ${statusBadgeClass(c.status)}`}>{c.status}</span>
                   </td>
-                  <td>
-                    <button className="diff-link" onClick={(e) => { e.stopPropagation(); openDetail(c); }}>
-                      {/* turn_count is a summary counter only written once, at clean
-                          call-end — it stays 0 for a call reconciled after a server
-                          restart even though its real per-turn data still exists in
-                          transcript_entries (found live 2026-08-02). Always show this
-                          as clickable; openDetail()'s getTranscript() fetch is the
-                          actual source of truth and already handles the empty case. */}
-                      {c.turn_count > 0 ? `Transcript · ${c.turn_count}` : "Transcript"}
-                    </button>
-                  </td>
                   <td>{c.agent_name || "—"}</td>
+                  {/* turn_count is a summary counter written once at clean
+                      call-end — it stays 0 for a call reconciled after a
+                      server restart even though its real per-turn data still
+                      exists in transcript_entries (found live 2026-08-02).
+                      The row is always clickable; the detail page's
+                      getTranscript() fetch is the source of truth. */}
+                  <td className="cell-num" style={{ textAlign: "right" }}>
+                    {c.turn_count > 0 ? c.turn_count : "—"}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
-        {!loading && calls.length > 0 && (
+        {!loading && filtered.length > 0 && (
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6, padding: "10px 16px", borderTop: "1px solid var(--border)" }}>
             <div style={{ fontSize: ".71rem", color: "var(--text-3)" }}>
-              Showing {rangeStart}–{rangeEnd} of {calls.length}
+              Showing {rangeStart}–{rangeEnd} of {filtered.length}
             </div>
             <div style={{ display: "flex", gap: 6 }}>
               <button className="btn btn-ghost btn-sm" disabled={currentPage <= 1} onClick={() => setPage((p) => p - 1)}>
@@ -194,98 +305,6 @@ export default function CallsPage() {
           </div>
         )}
       </div>
-
-      <Modal open={detailCall !== null} title="Call Details" onClose={() => setDetailCall(null)}>
-        {detailCall && (
-          <>
-            <div style={{ fontSize: ".65rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".09em", color: "var(--text-3)", marginBottom: 6 }}>
-              Call
-            </div>
-            <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 14 }}>
-              <span>Direction <span className="badge cyan" style={{ marginLeft: 4 }}>{detailCall.direction}</span></span>
-              <span>Mode <span className="badge indigo" style={{ marginLeft: 4 }}>{detailCall.mode}</span></span>
-              <span>Status <span className={`badge ${statusBadgeClass(detailCall.status)}`} style={{ marginLeft: 4 }}>{detailCall.status}</span></span>
-              <span>Duration <strong style={{ color: "var(--text)" }}>{formatDuration(detailCall.duration_ms)}</strong></span>
-            </div>
-            <div style={{ fontSize: ".65rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".09em", color: "var(--text-3)", marginBottom: 6 }}>
-              Parties
-            </div>
-            <div style={{ marginBottom: 14 }}>
-              From <span className="mono" style={{ color: "var(--text)" }}>{detailCall.caller_number || "—"}</span>
-              &nbsp;→&nbsp;
-              To <span className="mono" style={{ color: "var(--text)" }}>{detailCall.called_number || "—"}</span>
-            </div>
-            <div style={{ fontSize: ".65rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".09em", color: "var(--text-3)", marginBottom: 6 }}>
-              Owner
-            </div>
-            <div style={{ marginBottom: 14 }}>{detailCall.agent_name || "—"}</div>
-            <div style={{ fontSize: ".65rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".09em", color: "var(--text-3)", marginBottom: 6 }}>
-              Timeline
-            </div>
-            <div style={{ marginBottom: 14 }}>
-              Started <span className="mono" style={{ color: "var(--text)" }}>{formatTime(detailCall.started_at)}</span>
-              {detailCall.ended_at && (
-                <>
-                  &nbsp;·&nbsp;Ended <span className="mono" style={{ color: "var(--text)" }}>{formatTime(detailCall.ended_at)}</span>
-                </>
-              )}
-            </div>
-            {/* The path this call took through its workflow, and how it
-                ended — the questions a single-prompt agent simply can't
-                answer (docs/workflow.md §7.1). Absent entirely for one. */}
-            {detailCall.nodes_visited && detailCall.nodes_visited.length > 0 && (
-              <>
-                <div style={{ fontSize: ".65rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".09em", color: "var(--text-3)", marginBottom: 6 }}>
-                  Path
-                </div>
-                <div style={{ marginBottom: 14, display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, fontSize: ".75rem" }}>
-                  {detailCall.nodes_visited.map((node, i) => (
-                    <span key={`${node}-${i}`} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      {i > 0 && <span style={{ color: "var(--text-3)" }}>→</span>}
-                      <span className="badge gray">{node}</span>
-                    </span>
-                  ))}
-                  {detailCall.disposition && (
-                    <span className="badge indigo" style={{ marginLeft: 6 }}>{detailCall.disposition}</span>
-                  )}
-                </div>
-              </>
-            )}
-            {detailCall.extracted_variables && Object.keys(detailCall.extracted_variables).length > 0 && (
-              <>
-                <div style={{ fontSize: ".65rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".09em", color: "var(--text-3)", marginBottom: 6 }}>
-                  Captured
-                </div>
-                <div style={{ marginBottom: 14, fontSize: ".75rem" }}>
-                  {Object.entries(detailCall.extracted_variables).map(([k, v]) => (
-                    <div key={k}>
-                      <span style={{ color: "var(--text-3)" }}>{k}</span>{" "}
-                      <span className="mono" style={{ color: "var(--text)" }}>{String(v)}</span>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-            <div style={{ fontSize: ".65rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: ".09em", color: "var(--text-3)" }}>
-              Transcript
-            </div>
-            {transcriptLoading ? (
-              <div style={{ color: "var(--text-3)", fontSize: ".75rem", marginTop: 4 }}>Loading…</div>
-            ) : transcript.length === 0 ? (
-              <div style={{ color: "var(--text-3)", fontSize: ".75rem", marginTop: 4 }}>No transcript available.</div>
-            ) : (
-              <div style={{ background: "var(--surf-2)", border: "1px solid var(--border)", borderRadius: "var(--rs)", padding: "10px 12px", fontSize: ".75rem", lineHeight: 1.7, marginTop: 4 }}>
-                {transcript.map((t) => (
-                  <div key={t.id} style={{ marginBottom: 8 }}>
-                    <div>Caller: {t.caller_text || "—"}</div>
-                    <div>Agent: {t.ai_response || "—"}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </>
-        )}
-      </Modal>
     </>
   );
 }

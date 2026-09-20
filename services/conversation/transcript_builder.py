@@ -24,6 +24,8 @@ import asyncpg
 
 from libs.tenancy import platform_conn, tenant_conn
 
+from .sentiment import SentimentScorer, Turn
+
 log = logging.getLogger(__name__)
 
 
@@ -44,8 +46,17 @@ class TurnLatency:
 
 
 class TranscriptBuilder:
-    def __init__(self, pool: asyncpg.Pool | None, node_id: str | None = None) -> None:
+    def __init__(
+        self,
+        pool: asyncpg.Pool | None,
+        node_id: str | None = None,
+        sentiment: "SentimentScorer | None" = None,
+    ) -> None:
         self._pool = pool
+        # Optional: when None, calls.sentiment is simply never written and
+        # stays NULL ("never scored" — see schema.sql). Scoring is an
+        # end-of-call extra, so nothing about persistence depends on it.
+        self._sentiment = sentiment
         # Identifies THIS process instance (see connect()'s docstring) —
         # stamped onto every call this instance begins, and used to scope
         # reconcile_stale_calls() so restarting one instance can never
@@ -66,17 +77,50 @@ class TranscriptBuilder:
         self._tenant_slugs:    dict[str, str]            = {}
 
     @classmethod
-    async def connect(cls, database_url: str | None, node_id: str | None = None) -> "TranscriptBuilder":
+    async def connect(
+        cls,
+        database_url: str | None,
+        node_id: str | None = None,
+        sentiment: "SentimentScorer | None" = None,
+    ) -> "TranscriptBuilder":
         if not database_url:
             log.info("TranscriptBuilder disabled — POSTGRES_DSN not set")
             return cls(pool=None)
         pool = await asyncpg.create_pool(database_url, min_size=1, max_size=5)
-        log.info("TranscriptBuilder connected node_id=%s", node_id)
-        return cls(pool=pool, node_id=node_id)
+        log.info(
+            "TranscriptBuilder connected node_id=%s sentiment=%s",
+            node_id, "on" if sentiment is not None else "off",
+        )
+        return cls(pool=pool, node_id=node_id, sentiment=sentiment)
 
-    async def close(self) -> None:
-        if self._pool is not None:
-            await self._pool.close()
+    async def close(self, *, drain_timeout_s: float = 25.0) -> None:
+        """Let outstanding per-session write chains finish before the pool
+        goes away.
+
+        Previously this closed the pool immediately, which was near enough
+        to safe when the longest-running chain step was a single UPDATE.
+        It stopped being safe once end_call() grew an LLM sentiment score
+        (see _score_sentiment): that holds a chain open for seconds, and
+        closing the pool underneath it would drop the final write of every
+        call that happened to end during shutdown. Bounded, so a wedged
+        scorer delays shutdown by at most drain_timeout_s rather than
+        hanging it — the timeout is above SentimentScorer's own default
+        ceiling so a scorer running normally is never cut off.
+        """
+        if self._pool is None:
+            return
+        pending = [t for t in self._chains.values() if not t.done()]
+        if pending:
+            log.info("TranscriptBuilder: draining %d write chain(s)", len(pending))
+            done, still_running = await asyncio.wait(pending, timeout=drain_timeout_s)
+            for task in still_running:
+                task.cancel()
+            if still_running:
+                log.warning(
+                    "TranscriptBuilder: %d write chain(s) did not drain in %.0fs — cancelled",
+                    len(still_running), drain_timeout_s,
+                )
+        await self._pool.close()
 
     async def reconcile_stale_calls(self) -> int:
         """Call once at process startup, before serving any traffic. Any
@@ -429,6 +473,7 @@ class TranscriptBuilder:
         self, session_id: str, tenant_slug: str | None, close_reason: str, turn_count: int,
         barge_in_count: int, final_state: str | None = None,
     ) -> None:
+        turns: list[Turn] = []
         try:
             async with tenant_conn(
                 self._pool, explicit_tenant=tenant_slug, reason="conversation-session-write",
@@ -442,8 +487,53 @@ class TranscriptBuilder:
                     "WHERE session_id = $1",
                     session_id, close_reason, turn_count, barge_in_count, final_state,
                 )
+                # Read the transcript back here rather than accumulating it in
+                # memory across the call: record_turn() already persisted every
+                # turn, this task is chained strictly after those writes, and
+                # holding a full transcript per live session just to score it
+                # once at the end would grow with concurrency for no reason.
+                if self._sentiment is not None:
+                    rows = await conn.fetch(
+                        "SELECT caller_text, ai_response FROM transcript_entries "
+                        "WHERE session_id = $1 ORDER BY turn_number",
+                        session_id,
+                    )
+                    turns = [Turn(caller_text=r["caller_text"], ai_response=r["ai_response"])
+                             for r in rows]
         except Exception:
             log.exception("TranscriptBuilder: end_call failed session=%s", session_id)
+            return
+
+        # Scoring runs OUTSIDE the connection block above on purpose: an LLM
+        # round-trip is seconds, and holding a pooled connection open across
+        # it would starve a pool sized for short writes (max_size=5) as soon
+        # as a handful of calls ended together. The call is already correctly
+        # finalized at this point — everything below is additive.
+        if self._sentiment is not None and turns:
+            await self._score_sentiment(session_id, tenant_slug, turns)
+
+    async def _score_sentiment(
+        self, session_id: str, tenant_slug: str | None, turns: list[Turn],
+    ) -> None:
+        """Best-effort: any failure leaves calls.sentiment NULL, which reads
+        as "never scored" rather than as a neutral call."""
+        try:
+            result = await self._sentiment.score(turns)
+        except Exception:
+            log.exception("TranscriptBuilder: sentiment scoring failed session=%s", session_id)
+            return
+        if result is None:
+            return
+        try:
+            async with tenant_conn(
+                self._pool, explicit_tenant=tenant_slug, reason="conversation-session-write",
+            ) as conn:
+                await conn.execute(
+                    "UPDATE calls SET sentiment = $2, sentiment_reason = $3 WHERE session_id = $1",
+                    session_id, result.label, result.reason or None,
+                )
+        except Exception:
+            log.exception("TranscriptBuilder: sentiment write failed session=%s", session_id)
 
 
 def _round_or_none(value: float | None) -> int | None:

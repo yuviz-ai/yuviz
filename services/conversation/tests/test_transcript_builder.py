@@ -453,3 +453,161 @@ async def test_record_live_stage_serializes_per_session_a_later_call_is_never_ov
 
     await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
     await builder.close()
+
+
+# ── sentiment scoring at end_call ─────────────────────────────────────────
+# Scoring is additive to finalization, never a precondition for it: a call
+# must come out correctly ended even when the scorer is slow, broken, or
+# refuses to commit to a reading.
+
+class _StubScorer:
+    """Stands in for SentimentScorer. Records what it was handed so the
+    transcript actually read back out of Postgres can be asserted on."""
+
+    def __init__(self, result=None, *, raises: Exception | None = None) -> None:
+        self._result = result
+        self._raises = raises
+        self.seen_turns = None
+        self.calls = 0
+
+    async def score(self, turns):
+        self.calls += 1
+        self.seen_turns = turns
+        if self._raises is not None:
+            raise self._raises
+        return self._result
+
+
+class _Result:
+    def __init__(self, label: str, reason: str) -> None:
+        self.label = label
+        self.reason = reason
+
+
+async def _finish_call(builder, session_id: str) -> None:
+    builder.begin_call(session_id, "default", "call-1")
+    builder.record_turn(session_id, "this is the third time I've called", 0.9, "I'm sorry about that", False)
+    builder.end_call(session_id, "stream_ended")
+    await builder._chains[session_id]
+
+
+async def _cleanup(pool, session_id: str) -> None:
+    await pool.execute("DELETE FROM transcript_entries WHERE session_id = $1", session_id)
+    await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
+
+
+async def test_end_call_writes_sentiment_from_the_persisted_transcript():
+    scorer = _StubScorer(_Result("frustrated", "caller had to call three times"))
+    builder = await TranscriptBuilder.connect(os.environ["POSTGRES_DSN"], sentiment=scorer)
+    pool = builder._pool
+    session_id = f"test-sentiment-{uuid.uuid4().hex[:8]}"
+
+    await _finish_call(builder, session_id)
+
+    row = await pool.fetchrow(
+        "SELECT ended_at, sentiment, sentiment_reason FROM calls WHERE session_id = $1", session_id,
+    )
+    assert row["ended_at"] is not None
+    assert row["sentiment"] == "frustrated"
+    assert row["sentiment_reason"] == "caller had to call three times"
+
+    # The scorer is fed what actually landed in transcript_entries, not an
+    # in-memory copy — this is what lets end_call() avoid retaining every
+    # live call's transcript just to score it once.
+    assert scorer.seen_turns is not None
+    assert scorer.seen_turns[0].caller_text == "this is the third time I've called"
+
+    await _cleanup(pool, session_id)
+    await builder.close()
+
+
+async def test_a_declined_score_leaves_sentiment_null_and_still_finalizes():
+    builder = await TranscriptBuilder.connect(os.environ["POSTGRES_DSN"], sentiment=_StubScorer(None))
+    pool = builder._pool
+    session_id = f"test-sentiment-none-{uuid.uuid4().hex[:8]}"
+
+    await _finish_call(builder, session_id)
+
+    row = await pool.fetchrow(
+        "SELECT ended_at, close_reason, turn_count, sentiment FROM calls WHERE session_id = $1", session_id,
+    )
+    assert row["sentiment"] is None, "NULL means 'never scored' — never coerce to 'neutral'"
+    assert row["ended_at"] is not None
+    assert row["close_reason"] == "stream_ended"
+    assert row["turn_count"] == 1
+
+    await _cleanup(pool, session_id)
+    await builder.close()
+
+
+async def test_a_raising_scorer_never_breaks_call_finalization():
+    scorer = _StubScorer(raises=RuntimeError("model unreachable"))
+    builder = await TranscriptBuilder.connect(os.environ["POSTGRES_DSN"], sentiment=scorer)
+    pool = builder._pool
+    session_id = f"test-sentiment-boom-{uuid.uuid4().hex[:8]}"
+
+    await _finish_call(builder, session_id)
+
+    row = await pool.fetchrow(
+        "SELECT ended_at, duration_ms, sentiment FROM calls WHERE session_id = $1", session_id,
+    )
+    assert scorer.calls == 1
+    assert row["ended_at"] is not None
+    assert row["duration_ms"] is not None
+    assert row["sentiment"] is None
+
+    await _cleanup(pool, session_id)
+    await builder.close()
+
+
+async def test_no_scorer_configured_skips_scoring_entirely():
+    builder = await TranscriptBuilder.connect(os.environ["POSTGRES_DSN"])
+    pool = builder._pool
+    session_id = f"test-sentiment-off-{uuid.uuid4().hex[:8]}"
+
+    await _finish_call(builder, session_id)
+
+    row = await pool.fetchrow("SELECT ended_at, sentiment FROM calls WHERE session_id = $1", session_id)
+    assert row["ended_at"] is not None
+    assert row["sentiment"] is None
+
+    await _cleanup(pool, session_id)
+    await builder.close()
+
+
+async def test_close_drains_an_in_flight_sentiment_write():
+    """close() used to drop the pool immediately, which only looked safe
+    while the longest chain step was one UPDATE. An LLM score holds a chain
+    open for seconds, so a shutdown landing mid-score would lose the write."""
+    slow = asyncio.Event()
+
+    class _SlowScorer:
+        async def score(self, turns):
+            await slow.wait()
+            return _Result("positive", "caller thanked the agent")
+
+    builder = await TranscriptBuilder.connect(os.environ["POSTGRES_DSN"], sentiment=_SlowScorer())
+    pool = builder._pool
+    session_id = f"test-sentiment-drain-{uuid.uuid4().hex[:8]}"
+
+    builder.begin_call(session_id, "default", "call-1")
+    builder.record_turn(session_id, "thank you so much", 0.9, "happy to help", False)
+    builder.end_call(session_id, "stream_ended")
+
+    # Let the chain reach the scorer, then shut down while it is still there.
+    await asyncio.sleep(0.05)
+    close_task = asyncio.create_task(builder.close())
+    await asyncio.sleep(0.05)
+    assert not close_task.done(), "close() should be waiting on the in-flight chain"
+    slow.set()
+    await close_task
+
+    # A fresh pool — the one under test is closed.
+    verify = await TranscriptBuilder.connect(os.environ["POSTGRES_DSN"])
+    row = await verify._pool.fetchrow(
+        "SELECT sentiment FROM calls WHERE session_id = $1", session_id,
+    )
+    assert row["sentiment"] == "positive"
+
+    await _cleanup(verify._pool, session_id)
+    await verify.close()

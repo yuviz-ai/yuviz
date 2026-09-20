@@ -465,6 +465,12 @@ export type CallDirection = "inbound" | "outbound";
 export type CallStatus = "live" | "completed";
 export type CallMode = "AI" | "WebRTC";
 
+// Mirrors database/schema.sql's calls_sentiment_check. `sentiment: null` is
+// "never scored" and is NOT the same as "neutral" — it covers calls that
+// ended before scoring existed, calls with no caller speech, and scorer
+// failures. Render it as "—", never as a neutral reading.
+export type CallSentiment = "positive" | "neutral" | "negative" | "frustrated";
+
 export interface Call {
   session_id: string;
   tenant_id: string;
@@ -485,6 +491,8 @@ export interface Call {
   disposition: string | null;
   nodes_visited: string[] | null;
   extracted_variables: Record<string, unknown> | null;
+  sentiment: CallSentiment | null;
+  sentiment_reason: string | null;
 }
 
 export interface CallListResult {
@@ -515,6 +523,8 @@ export const listCalls = (
   const qs = params.toString();
   return request<CallListResult>(`/tenants/${tenantSlug}/calls${qs ? `?${qs}` : ""}`);
 };
+
+export const getCall = (sessionId: string) => request<Call>(`/calls/${sessionId}`);
 
 export const getTranscript = (sessionId: string) =>
   request<TranscriptEntry[]>(`/calls/${sessionId}/transcript`);
