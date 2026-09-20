@@ -114,30 +114,60 @@ def extract(response: Any, json_path: str) -> Any:
     MISSING — never raises — if any segment is absent, the wrong shape
     (indexing into a non-list, keying into a non-dict), or out of range.
     """
+    value, _reason = extract_with_reason(response, json_path)
+    return value
+
+
+# Why a miss happened, for callers that must tell two very different
+# situations apart (see executor.py's _resolve_arguments):
+#
+#   NO_MATCH    the path was structurally right and the collection it
+#               indexes into is simply EMPTY — the upstream call worked and
+#               legitimately found nothing. "We don't stock that."
+#   PATH_ABSENT anything else: a key that isn't there, the wrong shape, an
+#               index past a non-empty list, a malformed path. A
+#               configuration bug, not an answer.
+#
+# Collapsing these into one error is what made an unstocked product and a
+# broken json_path reach the caller identically, as a failure the agent
+# could only apologise for.
+NO_MATCH = "no_match"
+PATH_ABSENT = "path_absent"
+
+
+def extract_with_reason(response: Any, json_path: str) -> tuple[Any, str | None]:
+    """extract(), plus WHY it missed. Returns (value, None) on a hit, or
+    (MISSING, NO_MATCH | PATH_ABSENT) on a miss."""
     if not json_path.startswith("$"):
-        return MISSING
+        return MISSING, PATH_ABSENT
     path = json_path[1:].removeprefix(".")
     if path == "":
-        return response
+        return response, None
 
     current = response
     for raw_segment in path.split("."):
         if raw_segment == "":
-            return MISSING
+            return MISSING, PATH_ABSENT
         match = _SEGMENT_RE.fullmatch(raw_segment)
         if match is None:
-            return MISSING
+            return MISSING, PATH_ABSENT
 
         name = match.group("name")
         if name is not None:
             if not isinstance(current, dict) or name not in current:
-                return MISSING
+                return MISSING, PATH_ABSENT
             current = current[name]
 
         for index_str in _INDEX_RE.findall(match.group("indices") or ""):
             index = int(index_str)
-            if not isinstance(current, list) or index >= len(current):
-                return MISSING
+            if not isinstance(current, list):
+                return MISSING, PATH_ABSENT
+            if index >= len(current):
+                # An EMPTY list at a path that otherwise resolved is the
+                # signature of a search that ran and found nothing. A
+                # non-empty list too short for this index is a real
+                # mismatch between the path and the response shape.
+                return MISSING, (NO_MATCH if not current else PATH_ABSENT)
             current = current[index]
 
-    return current
+    return current, None

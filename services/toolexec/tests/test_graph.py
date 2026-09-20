@@ -109,3 +109,55 @@ def test_extract_miss_is_not_an_exception():
     assert graph.extract(response, "$.no.such.path") is graph.MISSING
     assert graph.extract(response, "$.data.id[0]") is graph.MISSING  # indexing into a str
     assert graph.extract([], "$.items[5]") is graph.MISSING
+
+
+# ── extract_with_reason: telling "found nothing" from "wrong path" ────────
+#
+# These two used to be indistinguishable, so a product the tenant does not
+# stock reached the caller as the same failure as a misconfigured
+# upstream_json_path. See executor.py's _resolve_arguments.
+
+
+def test_empty_collection_is_no_match_not_a_path_error():
+    # A search that ran and found nothing: the path resolves, the list is
+    # simply empty. This is an ANSWER, not a misconfiguration.
+    value, reason = graph.extract_with_reason({"products": [], "total": 0}, "$.products[0].id")
+    assert value is graph.MISSING
+    assert reason == graph.NO_MATCH
+
+
+def test_absent_key_is_a_path_error():
+    value, reason = graph.extract_with_reason({"items": [{"id": 1}]}, "$.products[0].id")
+    assert value is graph.MISSING
+    assert reason == graph.PATH_ABSENT
+
+
+def test_index_past_a_non_empty_list_is_a_path_error():
+    # The list has results, the path just asks for one that isn't there —
+    # a real mismatch between the path and the response shape, and no
+    # rephrasing by the caller would fix it.
+    value, reason = graph.extract_with_reason({"products": [{"id": 1}]}, "$.products[3].id")
+    assert value is graph.MISSING
+    assert reason == graph.PATH_ABSENT
+
+
+def test_indexing_into_a_non_list_is_a_path_error():
+    value, reason = graph.extract_with_reason({"products": {"id": 1}}, "$.products[0].id")
+    assert value is graph.MISSING
+    assert reason == graph.PATH_ABSENT
+
+
+def test_a_hit_reports_no_reason():
+    assert graph.extract_with_reason({"products": [{"id": 6}]}, "$.products[0].id") == (6, None)
+
+
+def test_malformed_path_is_a_path_error():
+    _value, reason = graph.extract_with_reason({"a": 1}, "no-dollar")
+    assert reason == graph.PATH_ABSENT
+
+
+def test_extract_still_returns_bare_missing():
+    # The original single-return API is unchanged for every existing caller
+    # (sensitive_response_paths, success_template interpolation).
+    assert graph.extract({"products": []}, "$.products[0].id") is graph.MISSING
+    assert graph.extract({"products": [{"id": 6}]}, "$.products[0].id") == 6

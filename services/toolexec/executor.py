@@ -433,8 +433,31 @@ def _resolve_arguments(
             upstream_name = prior_responses.get("__names__", {}).get(upstream_id, upstream_id)
             json_path = param["upstream_json_path"]
             upstream_response = prior_responses.get(upstream_id)
-            extracted = graph.extract(upstream_response, json_path) if upstream_response is not None else graph.MISSING
+            if upstream_response is None:
+                extracted, miss_reason = graph.MISSING, graph.PATH_ABSENT
+            else:
+                extracted, miss_reason = graph.extract_with_reason(upstream_response, json_path)
             if extracted is graph.MISSING:
+                # Two different situations, deliberately two different
+                # errors. NO_MATCH means the prior step ran fine and found
+                # nothing — an ordinary answer ("we don't stock that",
+                # "no appointment under that name") the agent should say
+                # plainly and can often recover from by asking for a
+                # different spelling. PATH_ABSENT is a config bug: the
+                # json_path does not fit the response shape, and no amount
+                # of rephrasing by the caller will fix it.
+                #
+                # These used to share upstream_value_missing, so a product
+                # we do not sell reached the caller as a failure the agent
+                # could only apologise for.
+                if miss_reason == graph.NO_MATCH:
+                    raise _StepFailure(
+                        "invalid_argument", "upstream_no_match",
+                        [{"name": name, "description": (
+                            f"{upstream_name} found no match for what the caller gave. "
+                            f"Tell them plainly that nothing was found, and ask for a "
+                            f"different spelling or more detail rather than guessing.")}],
+                    )
                 raise _StepFailure("failed", "upstream_value_missing")
             raw_values[name] = extracted
             argument_sources[name] = f"{upstream_name}:{json_path}"
@@ -894,6 +917,15 @@ async def _run_steps(
 
     if failed_step is None:
         chain_status = "success"
+    elif chain_error == "upstream_no_match":
+        # Deliberately NOT "partial", even though earlier steps completed.
+        # "Partial" means the chain broke half way and the caller cannot be
+        # told anything useful; this chain did not break — it ran, and the
+        # answer is that nothing matched. Reporting it as partial maps to a
+        # bare FAILED whose payload is {"partial": true}, which drops
+        # missing_fields and leaves the agent apologising for an error
+        # instead of saying "we don't have that".
+        chain_status = "invalid_argument"
     elif completed_steps:
         chain_status = "partial"
     elif failed_step.status in ("failed", "timeout", "invalid_argument", "unavailable"):

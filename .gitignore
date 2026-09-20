@@ -25,6 +25,16 @@ venv/
 # not source.
 data/knowledge_documents/
 
+# Tenant-namespaced raw credentials the Tool Execution Service resolves
+# k8s: refs against locally (see scripts/start_local.sh's
+# TOOLEXEC_TENANT_SECRET_ROOT) — live secrets, never source.
+data/toolexec_tenant_secrets/
+
+# The platform HMAC key TOOLEXEC_ARGS_HMAC_KEY_REF resolves against for
+# side-effect claims and downstream idempotency keys. Generated locally on
+# first run (see scripts/start_local.sh) — a live secret, never source.
+data/toolexec_hmac_key
+
 # Binary model weights — not source, and too large to version sensibly.
 # silero_vad.onnx and the kokoro cache are fetched on first use / via a
 # documented download step (see docs/setup.md) instead of being committed.
