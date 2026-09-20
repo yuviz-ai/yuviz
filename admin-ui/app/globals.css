@@ -388,6 +388,48 @@ body {
 .toggle-switch input:checked + .toggle-slider { background: var(--cyan); }
 .toggle-switch input:checked + .toggle-slider::before { transform: translateX(15px); }
 
+/* Settings' secondary nav.
+   It used to borrow .nav-item, which is built for the DARK sidebar: its
+   colours are sidebar tokens and its active state is a near-black fill, so
+   inside a light card the labels sat white-on-white and the browser's own
+   button border-left survived as a stray rule down the left edge. These are
+   the same shape, drawn in surface tokens instead. */
+.set-nav { padding: 6px; }
+.set-nav-group {
+  font-size: .6rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--text-3); padding: 12px 10px 5px;
+}
+.set-nav-item {
+  display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 10px;
+  border: none; border-radius: var(--rs); background: none; cursor: pointer;
+  font: inherit; font-size: .8rem; text-align: left; color: var(--text-2);
+  transition: background .12s ease, color .12s ease;
+}
+.set-nav-item:hover { background: var(--surf-2); color: var(--text); }
+.set-nav-item.active { background: var(--cyan-dim); color: var(--cyan); font-weight: 600; }
+.set-nav-item svg { width: 15px; height: 15px; flex-shrink: 0; opacity: .75; }
+.set-nav-item.active svg { opacity: 1; }
+
+/* Identity header on the Profile panel. */
+.set-identity { display: flex; align-items: center; gap: 14px; }
+.set-avatar {
+  width: 46px; height: 46px; border-radius: 12px; flex-shrink: 0;
+  background: var(--cyan); color: #fff; display: flex; align-items: center; justify-content: center;
+  font-size: 1rem; font-weight: 700; letter-spacing: -.02em;
+}
+.set-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; }
+.set-fact-label {
+  font-size: .62rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--text-3); margin-bottom: 4px;
+}
+.set-fact-value { font-size: .84rem; color: var(--text); }
+
+/* A signed-in device row. */
+.device-row { display: flex; align-items: center; gap: 11px; padding: 11px 0; }
+.device-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+.device-name { font-size: .82rem; font-weight: 600; color: var(--text); }
+.device-meta { font-size: .72rem; color: var(--text-3); margin-top: 2px; }
+
 .kb-row {
   display: flex; align-items: center; gap: 10px; padding: 10px 13px; border-bottom: 1px solid var(--border);
 }

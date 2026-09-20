@@ -6,21 +6,48 @@ import {
   ApiError,
   AuditLogEntry,
   changePassword,
-  deleteUser,
   getCurrentUser,
   listAuditLog,
   listTenants,
-  listUsers,
   Tenant,
-  updateUser,
   User,
   UserRole,
-  UserUpdate,
 } from "@/lib/api";
 import { Modal } from "@/components/Modal";
 
-type SettingsSection = "profile" | "sessions" | "security" | "users" | "audit-log";
+type SettingsSection = "profile" | "sessions" | "security" | "audit-log";
 
+const SECTION_ICONS: Record<SettingsSection, React.ReactNode> = {
+  profile: (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <circle cx="8" cy="5.5" r="2.6" />
+      <path d="M2.5 14c0-3 2.4-4.8 5.5-4.8s5.5 1.8 5.5 4.8" />
+    </svg>
+  ),
+  sessions: (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <rect x="1.5" y="2.5" width="13" height="8.5" rx="1.2" />
+      <path d="M5.5 14h5" />
+    </svg>
+  ),
+  security: (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <path d="M8 1.7l5 2v4.1c0 3-2.1 5.5-5 6.5-2.9-1-5-3.5-5-6.5V3.7l5-2z" />
+      <path d="M5.9 8.1l1.5 1.5 2.9-3" />
+    </svg>
+  ),
+  "audit-log": (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <rect x="2.5" y="1.5" width="11" height="13" rx="1.3" />
+      <path d="M5.2 5h5.6M5.2 8h5.6M5.2 11h3.4" />
+    </svg>
+  ),
+};
+
+// Users deliberately is NOT a section here. It has its own top-level page
+// (/users) with the same list, the same edit modal and the same role gate —
+// two entry points to one surface meant two places to keep correct, and the
+// copy inside Settings was the one that drifted.
 const YOUR_ACCOUNT: { id: SettingsSection; label: string }[] = [
   { id: "profile", label: "Profile" },
   { id: "sessions", label: "Sessions" },
@@ -28,7 +55,6 @@ const YOUR_ACCOUNT: { id: SettingsSection; label: string }[] = [
 ];
 
 const ORGANIZATION: { id: SettingsSection; label: string }[] = [
-  { id: "users", label: "Users" },
   { id: "audit-log", label: "Audit Log" },
 ];
 
@@ -46,37 +72,6 @@ const ENTITY_TYPES = [
 
 const ACTION_BADGE: Record<string, string> = { created: "green", updated: "amber", deleted: "red" };
 
-function ProfilePanel() {
-  const [user, setUser] = useState<User | null>(null);
-
-  useEffect(() => {
-    getCurrentUser().then(setUser).catch(() => {});
-  }, []);
-
-  return (
-    <div className="card">
-      <div className="card-hdr">
-        <div className="card-title">Account Details</div>
-      </div>
-      <div className="card-body">
-        <div className="form-row">
-          <div className="form-group">
-            <label className="form-label">Email</label>
-            <input className="form-input" value={user?.email ?? "…"} disabled />
-          </div>
-          <div className="form-group">
-            <label className="form-label">Role</label>
-            <input className="form-input" value={user?.role ?? "…"} disabled />
-          </div>
-        </div>
-        <div className="form-hint">
-          Editing your own email/role isn&apos;t supported yet — a superadmin can update it via the Config Service&apos;s Users API.
-        </div>
-      </div>
-    </div>
-  );
-}
-
 const ROLE_BADGE: Record<UserRole, string> = {
   superadmin: "red",
   admin: "indigo",
@@ -85,232 +80,90 @@ const ROLE_BADGE: Record<UserRole, string> = {
   viewer: "gray",
 };
 
-function UsersPanel() {
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [users, setUsers] = useState<User[]>([]);
-  const [tenants, setTenants] = useState<Tenant[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [editTarget, setEditTarget] = useState<User | null>(null);
-  const [deactivatingId, setDeactivatingId] = useState<string | null>(null);
+const ROLE_BLURB: Record<UserRole, string> = {
+  superadmin: "Full platform access across every account.",
+  admin: "Manages this account: agents, numbers, users and billing.",
+  supervisor: "Monitors live calls and may intervene on them.",
+  agent: "Handles calls; no console access.",
+  viewer: "Read-only access to this account.",
+};
 
-  const [editForm, setEditForm] = useState<UserUpdate>({});
-  const [resetPassword, setResetPassword] = useState("");
-  const [editSubmitting, setEditSubmitting] = useState(false);
-  const [editError, setEditError] = useState<string | null>(null);
+function ProfilePanel() {
+  const [user, setUser] = useState<User | null>(null);
+  const [accountName, setAccountName] = useState<string | null>(null);
 
-  const isSuperadmin = currentUser?.role === "superadmin";
-  const canCreate = currentUser?.role === "superadmin" || currentUser?.role === "admin";
-
-  const refresh = () => {
-    setLoading(true);
-    setError(null);
-    Promise.all([getCurrentUser(), listUsers()])
-      .then(async ([me, us]) => {
-        setCurrentUser(me);
-        setUsers(us);
-        if (me.role === "superadmin") setTenants(await listTenants());
+  useEffect(() => {
+    getCurrentUser()
+      .then(async (u) => {
+        setUser(u);
+        if (!u.tenant_id) return;
+        // A tenant-scoped user's own account name is worth one lookup; a
+        // failure just leaves the id showing rather than blanking the card.
+        const ts = await listTenants().catch((): Tenant[] => []);
+        setAccountName(ts.find((t) => t.id === u.tenant_id)?.name ?? null);
       })
-      .catch((e) => setError(e instanceof ApiError ? e.detail : String(e)))
-      .finally(() => setLoading(false));
-  };
+      .catch(() => {});
+  }, []);
 
-  // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(refresh, []);
-
-  const tenantName = (id: string | null) => (id ? tenants.find((t) => t.id === id)?.name ?? id : "— platform —");
-
-  const openEdit = (u: User) => {
-    setEditTarget(u);
-    setEditForm({ role: u.role, tenant_id: u.tenant_id });
-    setResetPassword("");
-    setEditError(null);
-  };
-
-  const handleEditSave = async () => {
-    if (!editTarget) return;
-    if (
-      editTarget.id === currentUser?.id &&
-      currentUser?.role === "superadmin" &&
-      editForm.role !== "superadmin" &&
-      !window.confirm(
-        "This removes your own superadmin access. You won't be able to manage users again until another superadmin restores it. Continue?",
-      )
-    ) {
-      return;
-    }
-    if (resetPassword && resetPassword.length < 8) {
-      setEditError("New password must be at least 8 characters.");
-      return;
-    }
-    setEditSubmitting(true);
-    setEditError(null);
-    try {
-      await updateUser(editTarget.id, { ...editForm, ...(resetPassword ? { password: resetPassword } : {}) });
-      setEditTarget(null);
-      refresh();
-    } catch (e) {
-      setEditError(e instanceof ApiError ? e.detail : String(e));
-    } finally {
-      setEditSubmitting(false);
-    }
-  };
-
-  const handleDeactivate = async (u: User) => {
-    if (deactivatingId === u.id) return;
-    if (!window.confirm(`Deactivate ${u.email}? They will no longer be able to sign in.`)) return;
-    setDeactivatingId(u.id);
-    try {
-      await deleteUser(u.id);
-      refresh();
-    } catch (e) {
-      setError(e instanceof ApiError ? e.detail : String(e));
-    } finally {
-      setDeactivatingId(null);
-    }
-  };
+  const initials = (user?.email ?? "?").slice(0, 2).toUpperCase();
+  const joined = user
+    ? new Date(user.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
+    : "…";
 
   return (
     <>
-      {canCreate && (
-        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
-          <Link href="/users" className="btn btn-primary btn-sm">
-            Invite User
-          </Link>
-        </div>
-      )}
-
-      {error && <div className="error-banner">{error}</div>}
-
-      <div className="card">
-        {loading ? (
-          <div className="empty-state">Loading…</div>
-        ) : users.length === 0 ? (
-          <div className="empty-state">No users found.</div>
-        ) : (
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th>Email</th>
-                <th>Role</th>
-                {isSuperadmin && <th>Tenant</th>}
-                <th>Created</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {users.map((u) => (
-                <tr key={u.id}>
-                  <td className="bold">
-                    {u.email}
-                    {u.id === currentUser?.id && (
-                      <span className="badge indigo" style={{ marginLeft: 6 }}>
-                        You
-                      </span>
-                    )}
-                  </td>
-                  <td>
-                    <span className={`badge ${ROLE_BADGE[u.role]}`}>{u.role}</span>
-                  </td>
-                  {isSuperadmin && <td>{tenantName(u.tenant_id)}</td>}
-                  <td style={{ fontSize: ".71rem", color: "var(--text-3)" }}>
-                    {new Date(u.created_at).toLocaleDateString()}
-                  </td>
-                  <td style={{ display: "flex", gap: 6 }}>
-                    {isSuperadmin ? (
-                      <>
-                        <button className="btn btn-ghost btn-sm" onClick={() => openEdit(u)}>
-                          Edit
-                        </button>
-                        <button
-                          className="btn btn-danger btn-sm"
-                          onClick={() => handleDeactivate(u)}
-                          disabled={u.id === currentUser?.id || deactivatingId === u.id}
-                          title={u.id === currentUser?.id ? "You can't deactivate your own account" : undefined}
-                        >
-                          {deactivatingId === u.id ? "Deactivating…" : "Deactivate"}
-                        </button>
-                      </>
-                    ) : (
-                      <span style={{ fontSize: ".71rem", color: "var(--text-3)" }}>—</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-        {!isSuperadmin && !loading && users.length > 0 && (
-          <div className="form-hint" style={{ padding: "0 16px 16px" }}>
-            Editing roles or deactivating users requires a superadmin.
+      <div className="card" style={{ marginBottom: 14 }}>
+        <div className="card-body">
+          <div className="set-identity">
+            <div className="set-avatar">{initials}</div>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: "1.02rem", fontWeight: 600, color: "var(--text)", wordBreak: "break-all" }}>
+                {user?.email ?? "…"}
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 5 }}>
+                <span className={`badge ${user ? ROLE_BADGE[user.role] : "gray"}`}>{user?.role ?? "…"}</span>
+                <span style={{ fontSize: ".74rem", color: "var(--text-3)" }}>
+                  {user ? ROLE_BLURB[user.role] : ""}
+                </span>
+              </div>
+            </div>
           </div>
-        )}
+        </div>
       </div>
 
-      <Modal
-        open={editTarget !== null}
-        title={`Edit User — ${editTarget?.email ?? ""}`}
-        onClose={() => setEditTarget(null)}
-        footer={
-          <>
-            <button className="btn btn-ghost btn-sm" onClick={() => setEditTarget(null)}>
-              Cancel
-            </button>
-            <button className="btn btn-primary btn-sm" onClick={handleEditSave} disabled={editSubmitting}>
-              {editSubmitting ? "Saving…" : "Save Changes"}
-            </button>
-          </>
-        }
-      >
-        {editError && <div className="error-banner">{editError}</div>}
-        <div className="form-group">
-          <label className="form-label" htmlFor="edit-user-role">Role</label>
-          <select
-            id="edit-user-role"
-            className="form-input"
-            value={editForm.role ?? ""}
-            onChange={(e) => setEditForm({ ...editForm, role: e.target.value as UserRole })}
-          >
-            {(["superadmin", "admin", "supervisor", "agent", "viewer"] as UserRole[]).map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </select>
+      <div className="card">
+        <div className="card-hdr">
+          <div className="card-title">Account details</div>
         </div>
-        <div className="form-group">
-          <label className="form-label" htmlFor="edit-user-tenant">
-            Tenant <span className="hint">blank = platform-wide (superadmin scope)</span>
-          </label>
-          <select
-            id="edit-user-tenant"
-            className="form-input"
-            value={editForm.tenant_id ?? ""}
-            onChange={(e) => setEditForm({ ...editForm, tenant_id: e.target.value || null })}
-          >
-            <option value="">— Platform (no tenant) —</option>
-            {tenants.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-              </option>
-            ))}
-          </select>
+        <div className="card-body">
+          <div className="set-facts">
+            <div>
+              <div className="set-fact-label">Account</div>
+              <div className="set-fact-value">
+                {user?.tenant_id
+                  ? accountName ?? <span className="mono" style={{ fontSize: ".74rem" }}>{user.tenant_id}</span>
+                  : user
+                    ? "Platform — every account"
+                    : "…"}
+              </div>
+            </div>
+            <div>
+              <div className="set-fact-label">Member since</div>
+              <div className="set-fact-value" suppressHydrationWarning>{joined}</div>
+            </div>
+            <div>
+              <div className="set-fact-label">User ID</div>
+              <div className="set-fact-value mono" style={{ fontSize: ".72rem", wordBreak: "break-all" }}>
+                {user?.id ?? "…"}
+              </div>
+            </div>
+          </div>
+          <div className="form-hint" style={{ marginTop: 16 }}>
+            Editing your own email or role isn&apos;t supported yet — a superadmin can change it from{" "}
+            <Link href="/users" style={{ color: "var(--cyan)" }}>Users</Link>.
+          </div>
         </div>
-        <div className="form-group">
-          <label className="form-label" htmlFor="edit-user-reset-password">
-            Reset Password <span className="hint">leave blank to keep their current one</span>
-          </label>
-          <input
-            id="edit-user-reset-password"
-            className="form-input"
-            type="password"
-            value={resetPassword}
-            onChange={(e) => setResetPassword(e.target.value)}
-            placeholder="At least 8 characters"
-            autoComplete="new-password"
-          />
-        </div>
-      </Modal>
+      </div>
     </>
   );
 }
@@ -319,21 +172,26 @@ function SessionsPanel() {
   return (
     <div className="card">
       <div className="card-hdr">
-        <div className="card-title">Signed-in Devices</div>
-        <div className="card-sub">Sign out anything you don&apos;t recognize</div>
+        <div className="card-title">Signed-in devices</div>
+        <div className="card-sub">Sign out anything you don&apos;t recognise</div>
       </div>
       <div className="card-body">
-        <div className="health-row">
-          <span className="status-dot green"></span>
-          <div>
-            <div className="health-name">
-              This browser <span className="badge green" style={{ marginLeft: 6 }}>This device</span>
+        {/* This used to reach for .health-row/.status-dot/.health-name,
+            none of which exist in globals.css — the row rendered as three
+            unstyled lines of text. */}
+        <div className="device-row">
+          <span className="device-dot" />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="device-name">
+              This browser
+              <span className="badge green" style={{ marginLeft: 7 }}>This device</span>
             </div>
-            <div className="health-engine">Localhost · last active just now</div>
+            <div className="device-meta">Active now</div>
           </div>
         </div>
         <div className="form-hint" style={{ marginTop: 8 }}>
-          Session tracking isn&apos;t backed by a real auth service yet — this shows only the local browser session.
+          Sessions aren&apos;t tracked server-side yet — tokens are held in this browser only, so signing out here is
+          the only session this console can end.
         </div>
       </div>
     </div>
@@ -650,12 +508,14 @@ function SecurityPanel() {
           <div className="card-title">Two-Factor Authentication</div>
         </div>
         <div className="card-body">
-          <label className="toggle">
-            <input type="checkbox" disabled />
-            <span className="toggle-track">
-              <span className="toggle-thumb" />
+          <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span className="toggle-switch">
+              <input type="checkbox" disabled />
+              <span className="toggle-slider" />
             </span>
-            <span style={{ fontSize: ".78rem", color: "var(--text-2)", marginLeft: 9 }}>Not available yet</span>
+            <span style={{ fontSize: ".78rem", color: "var(--text-2)" }}>
+              Not available yet — this build authenticates with a password only.
+            </span>
           </label>
         </div>
       </div>
@@ -723,47 +583,59 @@ function SecurityPanel() {
 export default function SettingsPage() {
   const [section, setSection] = useState<SettingsSection>("profile");
 
+  const renderItem = (item: { id: SettingsSection; label: string }) => (
+    <button
+      key={item.id}
+      type="button"
+      className={`set-nav-item${section === item.id ? " active" : ""}`}
+      onClick={() => setSection(item.id)}
+      aria-current={section === item.id}
+    >
+      {SECTION_ICONS[item.id]}
+      <span>{item.label}</span>
+    </button>
+  );
+
   return (
-    <div className="cols">
-      <div style={{ width: 190, flexShrink: 0 }}>
-        <div className="card" style={{ padding: "8px 6px" }}>
-          <div className="nav-section" style={{ paddingTop: 6 }}>
-            Your Account
-          </div>
-          {YOUR_ACCOUNT.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={`nav-item${section === item.id ? " active" : ""}`}
-              onClick={() => setSection(item.id)}
-              style={{ background: "none", borderTop: "none", borderRight: "none", borderBottom: "none", width: "100%", textAlign: "left", font: "inherit" }}
-            >
-              {item.label}
-            </button>
-          ))}
-          <div className="nav-section" style={{ paddingTop: 6 }}>
-            Organization
-          </div>
-          {ORGANIZATION.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={`nav-item${section === item.id ? " active" : ""}`}
-              onClick={() => setSection(item.id)}
-              style={{ background: "none", borderTop: "none", borderRight: "none", borderBottom: "none", width: "100%", textAlign: "left", font: "inherit" }}
-            >
-              {item.label}
-            </button>
-          ))}
+    <>
+      <div style={{ marginBottom: 18 }}>
+        <h1 style={{ fontSize: "1.5rem", fontWeight: 600, letterSpacing: "-.025em", margin: 0, color: "var(--text)" }}>
+          Settings
+        </h1>
+        <div className="form-hint" style={{ marginTop: 4 }}>
+          Your profile and sign-in, plus the audit trail for this account.
         </div>
       </div>
-      <div className="col-main">
-        {section === "profile" && <ProfilePanel />}
-        {section === "sessions" && <SessionsPanel />}
-        {section === "security" && <SecurityPanel />}
-        {section === "users" && <UsersPanel />}
-        {section === "audit-log" && <AuditLogPanel />}
+
+      <div className="cols">
+        <div style={{ width: 200, flexShrink: 0 }}>
+          <div className="card set-nav">
+            <div className="set-nav-group" style={{ paddingTop: 4 }}>Your account</div>
+            {YOUR_ACCOUNT.map(renderItem)}
+            <div className="set-nav-group">Organization</div>
+            {ORGANIZATION.map(renderItem)}
+            <div className="set-nav-group">Elsewhere</div>
+            {/* Users and Accounts live at the top level. Linking out beats
+                a second copy of either surface inside Settings. */}
+            <Link href="/users" className="set-nav-item">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <circle cx="6" cy="5" r="2.3" />
+                <path d="M1.5 14c0-2.76 2.02-4.5 4.5-4.5s4.5 1.74 4.5 4.5" />
+                <circle cx="12" cy="4.5" r="1.8" />
+                <path d="M10.2 9.7c1.86.3 3.3 1.8 3.3 4.3" />
+              </svg>
+              <span>Users</span>
+              <span style={{ marginLeft: "auto", color: "var(--text-3)", fontSize: ".8rem" }}>›</span>
+            </Link>
+          </div>
+        </div>
+        <div className="col-main">
+          {section === "profile" && <ProfilePanel />}
+          {section === "sessions" && <SessionsPanel />}
+          {section === "security" && <SecurityPanel />}
+          {section === "audit-log" && <AuditLogPanel />}
+        </div>
       </div>
-    </div>
+    </>
   );
 }
