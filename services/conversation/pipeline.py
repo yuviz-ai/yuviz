@@ -1725,5 +1725,20 @@ class PipelineConversationHandler:
         base = 1 if (history and history[0].role == "system") else 0
         max_msgs = self._max_history * 2 + base
         if len(history) > max_msgs:
-            # Splice in place: ContextSummarizer holds this list reference.
-            history[base:] = history[-self._max_history * 2:]
+            # A tool-using turn appends an assistant tool_calls message and
+            # its tool-role reply as an inseparable pair — a fixed-count cut
+            # from the end can land inside that pair, leaving an orphaned
+            # "tool" message with no preceding tool_calls before it.
+            # Confirmed live: OpenAI's Chat Completions API 400s on exactly
+            # that ("messages with role 'tool' must be a response to a
+            # preceeding message with 'tool_calls'"), intermittently, once a
+            # turn makes a tool call and the trim boundary later sweeps past
+            # it. A "user" message is the only role that ever starts a
+            # fresh, self-contained turn, so snap the cut forward to the
+            # next one instead of cutting mid-turn.
+            cut = len(history) - self._max_history * 2
+            while cut < len(history) and history[cut].role != "user":
+                cut += 1
+            if cut < len(history):
+                # Splice in place: ContextSummarizer holds this list reference.
+                history[base:] = history[cut:]

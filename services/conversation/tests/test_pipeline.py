@@ -1157,6 +1157,107 @@ async def test_on_speech_ended_cancelled_turn_never_yields_response_text():
 
 
 # ---------------------------------------------------------------------------
+# _trim_history — must never orphan a tool_calls/tool pair
+# ---------------------------------------------------------------------------
+
+def _set_history(handler, session_id: str, messages: list[ChatMessage], max_history: int) -> None:
+    handler._max_history = max_history
+    handler._session(session_id).history[:] = messages
+
+
+@pytest.mark.asyncio
+async def test_trim_history_does_not_orphan_a_tool_call_pair():
+    """Confirmed live: OpenAI 400s with 'messages with role tool must be a
+    response to a preceeding message with tool_calls' once a tool-using
+    turn's assistant/tool pair straddles the fixed-count cut boundary. A
+    naive history[-N:] slice has no notion of that pairing; the fix must
+    snap the cut forward to the next 'user' message instead."""
+    stt = _make_stt("hi")
+    llm = _make_llm(["hi"])
+    tts = _make_tts(b"")
+    handler = _make_handler(stt, llm, tts)
+
+    # 4 turns: two ordinary (2 msgs each), one tool-using (user, assistant
+    # tool_calls, tool result, assistant final — 4 msgs), one more ordinary.
+    # 10 messages total; max_history=2 => max_msgs=4, so the naive cut index
+    # (10-4=6) lands exactly on the tool-result message (index 6) — the
+    # message right after the assistant's tool_calls message.
+    messages = [
+        ChatMessage(role="user", content="turn 1"),
+        ChatMessage(role="assistant", content="reply 1"),
+        ChatMessage(role="user", content="turn 2"),
+        ChatMessage(role="assistant", content="reply 2"),
+        ChatMessage(role="user", content="turn 3, use a tool"),
+        ChatMessage(role="assistant", content="", tool_calls=[{"id": "c1", "name": "t", "arguments": {}}]),
+        ChatMessage(role="tool", content="{}", tool_call_id="c1"),
+        ChatMessage(role="assistant", content="reply 3"),
+        ChatMessage(role="user", content="turn 4"),
+        ChatMessage(role="assistant", content="reply 4"),
+    ]
+    _set_history(handler, "s1", messages, max_history=2)
+    handler._trim_history("s1")
+
+    trimmed = handler._session("s1").history
+    # No orphaned tool message: the first message is never role "tool", and
+    # any "tool" message is always immediately preceded by an "assistant"
+    # message carrying tool_calls.
+    for i, msg in enumerate(trimmed):
+        if msg.role == "tool":
+            assert i > 0, "a 'tool' message must never be first in history"
+            assert trimmed[i - 1].role == "assistant" and trimmed[i - 1].tool_calls, (
+                f"orphaned tool message at index {i}: {trimmed}"
+            )
+    # The naive cut (index 6, mid-pair) must have snapped forward to the
+    # next user message (index 8) instead — the incomplete tool turn is
+    # dropped entirely rather than left half-orphaned.
+    assert [m.content for m in trimmed] == ["turn 4", "reply 4"]
+
+
+@pytest.mark.asyncio
+async def test_trim_history_preserves_leading_system_message():
+    """A leading system message must survive trimming regardless of where
+    the cut lands — same guard as before this fix, still exercised."""
+    stt = _make_stt("hi")
+    llm = _make_llm(["hi"])
+    tts = _make_tts(b"")
+    handler = _make_handler(stt, llm, tts)
+
+    messages = [ChatMessage(role="system", content="be helpful")]
+    for i in range(6):
+        messages.append(ChatMessage(role="user", content=f"turn {i}"))
+        messages.append(ChatMessage(role="assistant", content=f"reply {i}"))
+    _set_history(handler, "s1", messages, max_history=2)
+    handler._trim_history("s1")
+
+    trimmed = handler._session("s1").history
+    assert trimmed[0].role == "system" and trimmed[0].content == "be helpful"
+    assert len(trimmed) == 1 + 2 * 2
+
+
+@pytest.mark.asyncio
+async def test_trim_history_skips_trim_when_no_safe_cut_point_exists():
+    """If nothing ahead of the target cut is ever a 'user' message (all
+    tool-call churn from one giant turn), trimming must leave history
+    untouched rather than emptying it out from under the next LLM call."""
+    stt = _make_stt("hi")
+    llm = _make_llm(["hi"])
+    tts = _make_tts(b"")
+    handler = _make_handler(stt, llm, tts)
+
+    messages = [ChatMessage(role="user", content="turn 1")]
+    for i in range(10):
+        messages.append(ChatMessage(
+            role="assistant", content="", tool_calls=[{"id": f"c{i}", "name": "t", "arguments": {}}],
+        ))
+        messages.append(ChatMessage(role="tool", content="{}", tool_call_id=f"c{i}"))
+    _set_history(handler, "s1", messages, max_history=2)
+    original = list(handler._session("s1").history)
+    handler._trim_history("s1")
+
+    assert handler._session("s1").history == original
+
+
+# ---------------------------------------------------------------------------
 # Phase 5D — PipelineConversationHandler.finalize_session()
 # ---------------------------------------------------------------------------
 
