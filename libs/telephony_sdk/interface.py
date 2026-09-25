@@ -102,6 +102,10 @@ class ITelephonyProvider(ABC):
         NO DID lookup and NO call-context work (AC9) — that is the
         orchestrator's job, not the adapter's."""
 
+    @abstractmethod
+    def parse_dtmf_digit(self, fields: dict[str, Any]) -> str | None:
+        """Extracts DTMF digit from webhook payload; returns None if missing/invalid."""
+
     @classmethod
     def sensitive_credential_fields(cls) -> list[str]:
         """Field names in `credentials` this provider needs encrypted at

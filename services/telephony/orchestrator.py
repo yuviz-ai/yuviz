@@ -28,6 +28,34 @@ from .callctx import CallContextStore, CallRoute, HandoffCapacityError, outbound
 
 log = logging.getLogger("telephony.orchestrator")
 
+
+class CallSessionMap:
+    def __init__(self):
+        self._map: dict[str, str] = {}  # provider_call_id -> session_id
+        self._ttl = 3600.0  # 1 hour
+        self._timestamps: dict[str, float] = {}
+
+    def put(self, provider_call_id: str, session_id: str) -> None:
+        self._map[provider_call_id] = session_id
+        self._timestamps[provider_call_id] = time.monotonic()
+
+    def get(self, provider_call_id: str) -> str | None:
+        now = time.monotonic()
+        if provider_call_id in self._map:
+            if now - self._timestamps[provider_call_id] < self._ttl:
+                return self._map[provider_call_id]
+            else:
+                del self._map[provider_call_id]
+                del self._timestamps[provider_call_id]
+        return None
+
+    def delete(self, provider_call_id: str) -> None:
+        self._map.pop(provider_call_id, None)
+        self._timestamps.pop(provider_call_id, None)
+
+
+call_session_map = CallSessionMap()
+
 _ACCOUNT_LIMIT = int(os.environ.get("TELEPHONY_ACCOUNT_LIMIT", "300"))
 _DID_LIMIT = int(os.environ.get("TELEPHONY_DID_LIMIT", "30"))
 
@@ -199,3 +227,60 @@ async def handle_inbound_webhook(*, provider_name: str, account_ref: str, reques
 def _ws_base() -> str:
     base = os.environ["TELEPHONY_PUBLIC_BASE_URL"].rstrip("/")
     return base.replace("https://", "wss://").replace("http://", "ws://")
+
+
+async def handle_dtmf_webhook(provider_name: str, account: Account, request: Request) -> bool:
+    try:
+        provider_cls = TelephonyProviderRegistry.get(provider_name)
+    except ValueError:
+        return False
+
+    fields = await combined_fields(request)
+    headers = {k.lower(): v for k, v in request.headers.items()}
+
+    if not account.instance.verify_webhook_signature(str(request.url), headers):
+        log.info("telephony.dtmf.reject.signature provider=%s account=%s", provider_name, account.account_ref)
+        return False
+
+    try:
+        dtmf_digit = account.instance.parse_dtmf_digit(fields)
+        provider_call_id = fields.get("call_id") or fields.get("callid") or fields.get("call_uuid") or fields.get("callsid")
+        if not dtmf_digit or not provider_call_id:
+            log.warning("telephony.dtmf.missing_fields provider=%s account=%s", provider_name, account.account_ref)
+            return False
+
+        session_id = call_session_map.get(provider_call_id)
+        if not session_id:
+            log.warning("telephony.dtmf.unknown_call provider=%s account=%s call_id=%s", provider_name, account.account_ref, provider_call_id)
+            return False
+
+        await _send_dtmf_to_conversation_service(session_id, dtmf_digit)
+        log.info("telephony.dtmf.sent provider=%s account=%s session=%s digit=%s", provider_name, account.account_ref, session_id, dtmf_digit)
+        return True
+    except Exception as e:
+        log.exception("telephony.dtmf.error provider=%s account=%s", provider_name, account.account_ref)
+        return False
+
+
+async def _send_dtmf_to_conversation_service(session_id: str, digit: str) -> None:
+    import asyncio
+    import grpc
+    from voiceai.v1 import conversation_pb2, conversation_pb2_grpc
+
+    channel_addr = os.environ.get("CONVERSATION_SERVICE_GRPC", "localhost:50051")
+    try:
+        async with grpc.aio.insecure_channel(channel_addr) as channel:
+            stub = conversation_pb2_grpc.ConversationServiceStub(channel)
+            call = stub.Converse()
+
+            dtmf_msg = conversation_pb2.GatewayMessage(
+                dtmf=conversation_pb2.DtmfDigit(session_id=session_id, digit=digit)
+            )
+            await call.write(dtmf_msg)
+
+            try:
+                await asyncio.wait_for(call.done_writing(), timeout=1.0)
+            except asyncio.TimeoutError:
+                pass
+    except Exception as e:
+        log.warning("telephony.dtmf.grpc_error session=%s digit=%s error=%s", session_id, digit, str(e))

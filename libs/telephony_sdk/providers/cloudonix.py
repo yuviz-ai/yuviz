@@ -143,6 +143,11 @@ class CloudonixProvider(ITelephonyProvider):
             raw=dict(fields),
         )
 
+    def parse_dtmf_digit(self, fields: dict[str, Any]) -> str | None:
+        lowered = {k.lower(): v for k, v in fields.items()}
+        digit = lowered.get("digit") or lowered.get("dtmf") or lowered.get("dtmf_digit")
+        return str(digit)[0] if digit else None
+
     @classmethod
     def sensitive_credential_fields(cls) -> list[str]:
         return ["api_keys", "account_api_key"]

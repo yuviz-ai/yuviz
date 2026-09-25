@@ -10,6 +10,12 @@ connected-call path).
 
 from __future__ import annotations
 
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.join(
+    _os.path.dirname(__file__), "..", "conversation", "generated",
+))
+
 import asyncio
 import logging
 import os
@@ -82,6 +88,9 @@ async def stream(websocket: WebSocket, provider: str, token: str) -> None:
         await websocket.close(code=1008)
         return
 
+    def on_session_start(session_id: str) -> None:
+        orchestrator.call_session_map.put(route.provider_call_id, session_id)
+
     bridge = MediaStreamBridge(
         serializer=serializer_cls(),
         call_id=route.provider_call_id,
@@ -91,9 +100,11 @@ async def stream(websocket: WebSocket, provider: str, token: str) -> None:
         caller_did=route.caller_did,
         called_did=route.called_did,
         log_name="telephony.bridge",
+        on_session_start=on_session_start,
     )
     try:
         await bridge.run(websocket)
+        orchestrator.call_session_map.delete(route.provider_call_id)
     except (WebSocketDisconnect, ConnectionClosed):
         log.info("telephony: caller disconnected mid-stream call=%s", route.provider_call_id)
 
@@ -118,6 +129,20 @@ async def status_callback(provider: str, account_ref: str, request: Request) -> 
     if event == "hangup":
         await _notify_campaigns_best_effort(call_id, lowered)
     return PlainTextResponse("ok")
+
+
+@app.post("/{provider}/dtmf/{account_ref}")
+async def dtmf_webhook(provider: str, account_ref: str, request: Request) -> Response:
+    account = accounts.get(provider, account_ref)
+    if account is None:
+        return PlainTextResponse("not found", status_code=404)
+
+    try:
+        result = await orchestrator.handle_dtmf_webhook(provider, account, request)
+        return PlainTextResponse("ok") if result else PlainTextResponse("bad request", status_code=400)
+    except Exception as e:
+        log.exception("telephony.dtmf.error provider=%s account=%s", provider, account_ref)
+        return PlainTextResponse("error", status_code=500)
 
 
 async def _notify_campaigns_best_effort(call_id: str | None, fields: dict) -> None:

@@ -78,6 +78,10 @@ class FakeProvider(ITelephonyProvider, ISmsProvider):
             raw=dict(fields),
         )
 
+    def parse_dtmf_digit(self, fields: dict[str, Any]) -> str | None:
+        digit = fields.get("digit") or fields.get("dtmf")
+        return str(digit)[0] if digit else None
+
     def build_answer_response(self, websocket_url: str) -> str:
         return websocket_url
 

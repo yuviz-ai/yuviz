@@ -170,6 +170,11 @@ class VobizTelephonyProvider(ITelephonyProvider, ISmsProvider):
             raw=dict(fields),
         )
 
+    def parse_dtmf_digit(self, fields: dict[str, Any]) -> str | None:
+        lowered = {k.lower(): v for k, v in fields.items()}
+        digit = lowered.get("digit") or lowered.get("dtmf") or lowered.get("digits")
+        return str(digit)[0] if digit else None
+
     async def check_health(self) -> bool:
         """GETs the account endpoint used by get_call_status/hangup_call —
         any 2xx/4xx response means the credentials at least reach Vobiz;
