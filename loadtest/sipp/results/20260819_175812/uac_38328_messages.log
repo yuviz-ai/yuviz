@@ -1,0 +1,690 @@
+----------------------------------------------- 2026-08-19T17:58:13.477113
+UDP message sent [627] bytes:
+
+INVITE sip:5006@192.168.0.116:5060 SIP/2.0
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-1-0
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=1
+To: <sip:5006@192.168.0.116>
+Call-ID: 1-38328@192.168.0.116
+CSeq: 1 INVITE
+Contact: <sip:+919876543210@192.168.0.116:5061>
+Max-Forwards: 70
+Subject: Yuviz.ai Human Simulation
+Content-Type: application/sdp
+Content-Length:   223
+
+v=0
+o=SIPp 53655765 2353687637 IN IP4 192.168.0.116
+s=HumanSim
+c=IN IP4 192.168.0.116
+t=0 0
+m=audio 6000 RTP/AVP 0 101
+a=rtpmap:0 PCMU/8000
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-15
+a=ptime:20
+a=sendrecv
+
+----------------------------------------------- 2026-08-19T17:58:13.479992
+UDP message received [331] bytes:
+
+SIP/2.0 100 trying -- your call is important to us
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-1-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=1
+To: <sip:5006@192.168.0.116>
+Call-ID: 1-38328@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+
+----------------------------------------------- 2026-08-19T17:58:13.488393
+UDP message received [1008] bytes:
+
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 192.168.0.116:5061;rport=5061;branch=z9hG4bK-38328-1-0
+Record-Route: <sip:192.168.0.116;lr>
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=1
+To: <sip:5006@192.168.0.116>;tag=vB3tSHvKcZe5H
+Call-ID: 1-38328@192.168.0.116
+CSeq: 1 INVITE
+Contact: <sip:5006@192.168.0.116:5080;transport=udp>
+User-Agent: FreeSWITCH-mod_sofia/1.10.13-dev+git~20260402T150328Z~8babcee3ea~64bit
+Accept: application/sdp
+Allow: INVITE, ACK, BYE, CANCEL, OPTIONS, MESSAGE, INFO, UPDATE, REGISTER, REFER, NOTIFY
+Supported: timer, path, replaces
+Allow-Events: talk, hold, conference, refer
+Content-Type: application/sdp
+Content-Disposition: session
+Content-Length: 222
+Remote-Party-ID: "5006" <sip:5006@192.168.0.116>;party=calling;privacy=off;screen=no
+
+v=0
+o=FreeSWITCH 1787121963 1787121964 IN IP4 192.168.0.116
+s=FreeSWITCH
+c=IN IP4 192.168.0.116
+t=0 0
+m=audio 20530 RTP/AVP 0 101
+a=rtpmap:0 PCMU/8000
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-15
+a=ptime:20
+
+----------------------------------------------- 2026-08-19T17:58:13.488906
+UDP message sent [341] bytes:
+
+ACK sip:5006@192.168.0.116:5080;transport=udp SIP/2.0
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-1-5
+Route: <sip:192.168.0.116;lr>
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=1
+To: <sip:5006@192.168.0.116>;tag=vB3tSHvKcZe5H
+Call-ID: 1-38328@192.168.0.116
+CSeq: 1 ACK
+Max-Forwards: 70
+Content-Length: 0
+
+
+----------------------------------------------- 2026-08-19T17:58:14.476367
+UDP message sent [627] bytes:
+
+INVITE sip:5006@192.168.0.116:5060 SIP/2.0
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-2-0
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=2
+To: <sip:5006@192.168.0.116>
+Call-ID: 2-38328@192.168.0.116
+CSeq: 1 INVITE
+Contact: <sip:+919876543210@192.168.0.116:5061>
+Max-Forwards: 70
+Subject: Yuviz.ai Human Simulation
+Content-Type: application/sdp
+Content-Length:   223
+
+v=0
+o=SIPp 53655765 2353687637 IN IP4 192.168.0.116
+s=HumanSim
+c=IN IP4 192.168.0.116
+t=0 0
+m=audio 6000 RTP/AVP 0 101
+a=rtpmap:0 PCMU/8000
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-15
+a=ptime:20
+a=sendrecv
+
+----------------------------------------------- 2026-08-19T17:58:14.476805
+UDP message received [331] bytes:
+
+SIP/2.0 100 trying -- your call is important to us
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-2-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=2
+To: <sip:5006@192.168.0.116>
+Call-ID: 2-38328@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+
+----------------------------------------------- 2026-08-19T17:58:14.484629
+UDP message received [1008] bytes:
+
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 192.168.0.116:5061;rport=5061;branch=z9hG4bK-38328-2-0
+Record-Route: <sip:192.168.0.116;lr>
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=2
+To: <sip:5006@192.168.0.116>;tag=XmvKUcDQ974QD
+Call-ID: 2-38328@192.168.0.116
+CSeq: 1 INVITE
+Contact: <sip:5006@192.168.0.116:5080;transport=udp>
+User-Agent: FreeSWITCH-mod_sofia/1.10.13-dev+git~20260402T150328Z~8babcee3ea~64bit
+Accept: application/sdp
+Allow: INVITE, ACK, BYE, CANCEL, OPTIONS, MESSAGE, INFO, UPDATE, REGISTER, REFER, NOTIFY
+Supported: timer, path, replaces
+Allow-Events: talk, hold, conference, refer
+Content-Type: application/sdp
+Content-Disposition: session
+Content-Length: 222
+Remote-Party-ID: "5006" <sip:5006@192.168.0.116>;party=calling;privacy=off;screen=no
+
+v=0
+o=FreeSWITCH 1787121150 1787121151 IN IP4 192.168.0.116
+s=FreeSWITCH
+c=IN IP4 192.168.0.116
+t=0 0
+m=audio 21344 RTP/AVP 0 101
+a=rtpmap:0 PCMU/8000
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-15
+a=ptime:20
+
+----------------------------------------------- 2026-08-19T17:58:14.485288
+UDP message sent [341] bytes:
+
+ACK sip:5006@192.168.0.116:5080;transport=udp SIP/2.0
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-2-5
+Route: <sip:192.168.0.116;lr>
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=2
+To: <sip:5006@192.168.0.116>;tag=XmvKUcDQ974QD
+Call-ID: 2-38328@192.168.0.116
+CSeq: 1 ACK
+Max-Forwards: 70
+Content-Length: 0
+
+
+----------------------------------------------- 2026-08-19T17:58:15.475983
+UDP message sent [627] bytes:
+
+INVITE sip:5006@192.168.0.116:5060 SIP/2.0
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-3-0
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=3
+To: <sip:5006@192.168.0.116>
+Call-ID: 3-38328@192.168.0.116
+CSeq: 1 INVITE
+Contact: <sip:+919876543210@192.168.0.116:5061>
+Max-Forwards: 70
+Subject: Yuviz.ai Human Simulation
+Content-Type: application/sdp
+Content-Length:   223
+
+v=0
+o=SIPp 53655765 2353687637 IN IP4 192.168.0.116
+s=HumanSim
+c=IN IP4 192.168.0.116
+t=0 0
+m=audio 6000 RTP/AVP 0 101
+a=rtpmap:0 PCMU/8000
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-15
+a=ptime:20
+a=sendrecv
+
+----------------------------------------------- 2026-08-19T17:58:15.476653
+UDP message received [331] bytes:
+
+SIP/2.0 100 trying -- your call is important to us
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-3-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=3
+To: <sip:5006@192.168.0.116>
+Call-ID: 3-38328@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+
+----------------------------------------------- 2026-08-19T17:58:15.486067
+UDP message received [1008] bytes:
+
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 192.168.0.116:5061;rport=5061;branch=z9hG4bK-38328-3-0
+Record-Route: <sip:192.168.0.116;lr>
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=3
+To: <sip:5006@192.168.0.116>;tag=yXNcX7Xt6gUaS
+Call-ID: 3-38328@192.168.0.116
+CSeq: 1 INVITE
+Contact: <sip:5006@192.168.0.116:5080;transport=udp>
+User-Agent: FreeSWITCH-mod_sofia/1.10.13-dev+git~20260402T150328Z~8babcee3ea~64bit
+Accept: application/sdp
+Allow: INVITE, ACK, BYE, CANCEL, OPTIONS, MESSAGE, INFO, UPDATE, REGISTER, REFER, NOTIFY
+Supported: timer, path, replaces
+Allow-Events: talk, hold, conference, refer
+Content-Type: application/sdp
+Content-Disposition: session
+Content-Length: 222
+Remote-Party-ID: "5006" <sip:5006@192.168.0.116>;party=calling;privacy=off;screen=no
+
+v=0
+o=FreeSWITCH 1787117765 1787117766 IN IP4 192.168.0.116
+s=FreeSWITCH
+c=IN IP4 192.168.0.116
+t=0 0
+m=audio 24730 RTP/AVP 0 101
+a=rtpmap:0 PCMU/8000
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-15
+a=ptime:20
+
+----------------------------------------------- 2026-08-19T17:58:15.486796
+UDP message sent [341] bytes:
+
+ACK sip:5006@192.168.0.116:5080;transport=udp SIP/2.0
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-3-5
+Route: <sip:192.168.0.116;lr>
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=3
+To: <sip:5006@192.168.0.116>;tag=yXNcX7Xt6gUaS
+Call-ID: 3-38328@192.168.0.116
+CSeq: 1 ACK
+Max-Forwards: 70
+Content-Length: 0
+
+
+----------------------------------------------- 2026-08-19T17:59:13.492117
+UDP message sent [342] bytes:
+
+BYE sip:5006@192.168.0.116:5080;transport=udp SIP/2.0
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-1-10
+Route: <sip:192.168.0.116;lr>
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=1
+To: <sip:5006@192.168.0.116>;tag=vB3tSHvKcZe5H
+Call-ID: 1-38328@192.168.0.116
+CSeq: 2 BYE
+Max-Forwards: 70
+Content-Length: 0
+
+
+----------------------------------------------- 2026-08-19T17:59:13.510632
+UDP message received [462] bytes:
+
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-1-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=1
+To: <sip:5006@192.168.0.116>;tag=vB3tSHvKcZe5H
+Call-ID: 1-38328@192.168.0.116
+CSeq: 2 BYE
+User-Agent: FreeSWITCH-mod_sofia/1.10.13-dev+git~20260402T150328Z~8babcee3ea~64bit
+Allow: INVITE, ACK, BYE, CANCEL, OPTIONS, MESSAGE, INFO, UPDATE, REGISTER, REFER, NOTIFY
+Supported: timer, path, replaces
+Content-Length: 0
+
+
+----------------------------------------------- 2026-08-19T17:59:14.477516
+UDP message sent [627] bytes:
+
+INVITE sip:5006@192.168.0.116:5060 SIP/2.0
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-4-0
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=4
+To: <sip:5006@192.168.0.116>
+Call-ID: 4-38328@192.168.0.116
+CSeq: 1 INVITE
+Contact: <sip:+919876543210@192.168.0.116:5061>
+Max-Forwards: 70
+Subject: Yuviz.ai Human Simulation
+Content-Type: application/sdp
+Content-Length:   223
+
+v=0
+o=SIPp 53655765 2353687637 IN IP4 192.168.0.116
+s=HumanSim
+c=IN IP4 192.168.0.116
+t=0 0
+m=audio 6000 RTP/AVP 0 101
+a=rtpmap:0 PCMU/8000
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-15
+a=ptime:20
+a=sendrecv
+
+----------------------------------------------- 2026-08-19T17:59:14.478187
+UDP message received [331] bytes:
+
+SIP/2.0 100 trying -- your call is important to us
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-4-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=4
+To: <sip:5006@192.168.0.116>
+Call-ID: 4-38328@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+
+----------------------------------------------- 2026-08-19T17:59:14.487514
+UDP message sent [342] bytes:
+
+BYE sip:5006@192.168.0.116:5080;transport=udp SIP/2.0
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-2-10
+Route: <sip:192.168.0.116;lr>
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=2
+To: <sip:5006@192.168.0.116>;tag=XmvKUcDQ974QD
+Call-ID: 2-38328@192.168.0.116
+CSeq: 2 BYE
+Max-Forwards: 70
+Content-Length: 0
+
+
+----------------------------------------------- 2026-08-19T17:59:14.487982
+UDP message received [1008] bytes:
+
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 192.168.0.116:5061;rport=5061;branch=z9hG4bK-38328-4-0
+Record-Route: <sip:192.168.0.116;lr>
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=4
+To: <sip:5006@192.168.0.116>;tag=21tF4K18tmmNQ
+Call-ID: 4-38328@192.168.0.116
+CSeq: 1 INVITE
+Contact: <sip:5006@192.168.0.116:5080;transport=udp>
+User-Agent: FreeSWITCH-mod_sofia/1.10.13-dev+git~20260402T150328Z~8babcee3ea~64bit
+Accept: application/sdp
+Allow: INVITE, ACK, BYE, CANCEL, OPTIONS, MESSAGE, INFO, UPDATE, REGISTER, REFER, NOTIFY
+Supported: timer, path, replaces
+Allow-Events: talk, hold, conference, refer
+Content-Type: application/sdp
+Content-Disposition: session
+Content-Length: 222
+Remote-Party-ID: "5006" <sip:5006@192.168.0.116>;party=calling;privacy=off;screen=no
+
+v=0
+o=FreeSWITCH 1787119820 1787119821 IN IP4 192.168.0.116
+s=FreeSWITCH
+c=IN IP4 192.168.0.116
+t=0 0
+m=audio 22734 RTP/AVP 0 101
+a=rtpmap:0 PCMU/8000
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-15
+a=ptime:20
+
+----------------------------------------------- 2026-08-19T17:59:14.489065
+UDP message sent [341] bytes:
+
+ACK sip:5006@192.168.0.116:5080;transport=udp SIP/2.0
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-4-5
+Route: <sip:192.168.0.116;lr>
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=4
+To: <sip:5006@192.168.0.116>;tag=21tF4K18tmmNQ
+Call-ID: 4-38328@192.168.0.116
+CSeq: 1 ACK
+Max-Forwards: 70
+Content-Length: 0
+
+
+----------------------------------------------- 2026-08-19T17:59:14.511880
+UDP message received [462] bytes:
+
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-2-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=2
+To: <sip:5006@192.168.0.116>;tag=XmvKUcDQ974QD
+Call-ID: 2-38328@192.168.0.116
+CSeq: 2 BYE
+User-Agent: FreeSWITCH-mod_sofia/1.10.13-dev+git~20260402T150328Z~8babcee3ea~64bit
+Allow: INVITE, ACK, BYE, CANCEL, OPTIONS, MESSAGE, INFO, UPDATE, REGISTER, REFER, NOTIFY
+Supported: timer, path, replaces
+Content-Length: 0
+
+
+----------------------------------------------- 2026-08-19T17:59:15.476085
+UDP message sent [627] bytes:
+
+INVITE sip:5006@192.168.0.116:5060 SIP/2.0
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-5-0
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=5
+To: <sip:5006@192.168.0.116>
+Call-ID: 5-38328@192.168.0.116
+CSeq: 1 INVITE
+Contact: <sip:+919876543210@192.168.0.116:5061>
+Max-Forwards: 70
+Subject: Yuviz.ai Human Simulation
+Content-Type: application/sdp
+Content-Length:   223
+
+v=0
+o=SIPp 53655765 2353687637 IN IP4 192.168.0.116
+s=HumanSim
+c=IN IP4 192.168.0.116
+t=0 0
+m=audio 6000 RTP/AVP 0 101
+a=rtpmap:0 PCMU/8000
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-15
+a=ptime:20
+a=sendrecv
+
+----------------------------------------------- 2026-08-19T17:59:15.476488
+UDP message received [331] bytes:
+
+SIP/2.0 100 trying -- your call is important to us
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-5-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=5
+To: <sip:5006@192.168.0.116>
+Call-ID: 5-38328@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+
+----------------------------------------------- 2026-08-19T17:59:15.483757
+UDP message received [1008] bytes:
+
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 192.168.0.116:5061;rport=5061;branch=z9hG4bK-38328-5-0
+Record-Route: <sip:192.168.0.116;lr>
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=5
+To: <sip:5006@192.168.0.116>;tag=3am85ejcrXa8j
+Call-ID: 5-38328@192.168.0.116
+CSeq: 1 INVITE
+Contact: <sip:5006@192.168.0.116:5080;transport=udp>
+User-Agent: FreeSWITCH-mod_sofia/1.10.13-dev+git~20260402T150328Z~8babcee3ea~64bit
+Accept: application/sdp
+Allow: INVITE, ACK, BYE, CANCEL, OPTIONS, MESSAGE, INFO, UPDATE, REGISTER, REFER, NOTIFY
+Supported: timer, path, replaces
+Allow-Events: talk, hold, conference, refer
+Content-Type: application/sdp
+Content-Disposition: session
+Content-Length: 222
+Remote-Party-ID: "5006" <sip:5006@192.168.0.116>;party=calling;privacy=off;screen=no
+
+v=0
+o=FreeSWITCH 1787113787 1787113788 IN IP4 192.168.0.116
+s=FreeSWITCH
+c=IN IP4 192.168.0.116
+t=0 0
+m=audio 28768 RTP/AVP 0 101
+a=rtpmap:0 PCMU/8000
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-15
+a=ptime:20
+
+----------------------------------------------- 2026-08-19T17:59:15.484111
+UDP message sent [341] bytes:
+
+ACK sip:5006@192.168.0.116:5080;transport=udp SIP/2.0
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-5-5
+Route: <sip:192.168.0.116;lr>
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=5
+To: <sip:5006@192.168.0.116>;tag=3am85ejcrXa8j
+Call-ID: 5-38328@192.168.0.116
+CSeq: 1 ACK
+Max-Forwards: 70
+Content-Length: 0
+
+
+----------------------------------------------- 2026-08-19T17:59:15.491006
+UDP message sent [342] bytes:
+
+BYE sip:5006@192.168.0.116:5080;transport=udp SIP/2.0
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-3-10
+Route: <sip:192.168.0.116;lr>
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=3
+To: <sip:5006@192.168.0.116>;tag=yXNcX7Xt6gUaS
+Call-ID: 3-38328@192.168.0.116
+CSeq: 2 BYE
+Max-Forwards: 70
+Content-Length: 0
+
+
+----------------------------------------------- 2026-08-19T17:59:15.510561
+UDP message received [462] bytes:
+
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-3-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=3
+To: <sip:5006@192.168.0.116>;tag=yXNcX7Xt6gUaS
+Call-ID: 3-38328@192.168.0.116
+CSeq: 2 BYE
+User-Agent: FreeSWITCH-mod_sofia/1.10.13-dev+git~20260402T150328Z~8babcee3ea~64bit
+Allow: INVITE, ACK, BYE, CANCEL, OPTIONS, MESSAGE, INFO, UPDATE, REGISTER, REFER, NOTIFY
+Supported: timer, path, replaces
+Content-Length: 0
+
+
+----------------------------------------------- 2026-08-19T17:59:16.475218
+UDP message sent [627] bytes:
+
+INVITE sip:5006@192.168.0.116:5060 SIP/2.0
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-6-0
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=6
+To: <sip:5006@192.168.0.116>
+Call-ID: 6-38328@192.168.0.116
+CSeq: 1 INVITE
+Contact: <sip:+919876543210@192.168.0.116:5061>
+Max-Forwards: 70
+Subject: Yuviz.ai Human Simulation
+Content-Type: application/sdp
+Content-Length:   223
+
+v=0
+o=SIPp 53655765 2353687637 IN IP4 192.168.0.116
+s=HumanSim
+c=IN IP4 192.168.0.116
+t=0 0
+m=audio 6000 RTP/AVP 0 101
+a=rtpmap:0 PCMU/8000
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-15
+a=ptime:20
+a=sendrecv
+
+----------------------------------------------- 2026-08-19T17:59:16.475652
+UDP message received [331] bytes:
+
+SIP/2.0 100 trying -- your call is important to us
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-6-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=6
+To: <sip:5006@192.168.0.116>
+Call-ID: 6-38328@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+
+----------------------------------------------- 2026-08-19T17:59:16.482956
+UDP message received [1008] bytes:
+
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 192.168.0.116:5061;rport=5061;branch=z9hG4bK-38328-6-0
+Record-Route: <sip:192.168.0.116;lr>
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=6
+To: <sip:5006@192.168.0.116>;tag=4KD1792FN60te
+Call-ID: 6-38328@192.168.0.116
+CSeq: 1 INVITE
+Contact: <sip:5006@192.168.0.116:5080;transport=udp>
+User-Agent: FreeSWITCH-mod_sofia/1.10.13-dev+git~20260402T150328Z~8babcee3ea~64bit
+Accept: application/sdp
+Allow: INVITE, ACK, BYE, CANCEL, OPTIONS, MESSAGE, INFO, UPDATE, REGISTER, REFER, NOTIFY
+Supported: timer, path, replaces
+Allow-Events: talk, hold, conference, refer
+Content-Type: application/sdp
+Content-Disposition: session
+Content-Length: 222
+Remote-Party-ID: "5006" <sip:5006@192.168.0.116>;party=calling;privacy=off;screen=no
+
+v=0
+o=FreeSWITCH 1787111600 1787111601 IN IP4 192.168.0.116
+s=FreeSWITCH
+c=IN IP4 192.168.0.116
+t=0 0
+m=audio 30956 RTP/AVP 0 101
+a=rtpmap:0 PCMU/8000
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-15
+a=ptime:20
+
+----------------------------------------------- 2026-08-19T17:59:16.483545
+UDP message sent [341] bytes:
+
+ACK sip:5006@192.168.0.116:5080;transport=udp SIP/2.0
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-6-5
+Route: <sip:192.168.0.116;lr>
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=6
+To: <sip:5006@192.168.0.116>;tag=4KD1792FN60te
+Call-ID: 6-38328@192.168.0.116
+CSeq: 1 ACK
+Max-Forwards: 70
+Content-Length: 0
+
+
+----------------------------------------------- 2026-08-19T18:00:14.493746
+UDP message sent [342] bytes:
+
+BYE sip:5006@192.168.0.116:5080;transport=udp SIP/2.0
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-4-10
+Route: <sip:192.168.0.116;lr>
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=4
+To: <sip:5006@192.168.0.116>;tag=21tF4K18tmmNQ
+Call-ID: 4-38328@192.168.0.116
+CSeq: 2 BYE
+Max-Forwards: 70
+Content-Length: 0
+
+
+----------------------------------------------- 2026-08-19T18:00:14.512327
+UDP message received [462] bytes:
+
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-4-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=4
+To: <sip:5006@192.168.0.116>;tag=21tF4K18tmmNQ
+Call-ID: 4-38328@192.168.0.116
+CSeq: 2 BYE
+User-Agent: FreeSWITCH-mod_sofia/1.10.13-dev+git~20260402T150328Z~8babcee3ea~64bit
+Allow: INVITE, ACK, BYE, CANCEL, OPTIONS, MESSAGE, INFO, UPDATE, REGISTER, REFER, NOTIFY
+Supported: timer, path, replaces
+Content-Length: 0
+
+
+----------------------------------------------- 2026-08-19T18:00:15.487247
+UDP message sent [342] bytes:
+
+BYE sip:5006@192.168.0.116:5080;transport=udp SIP/2.0
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-5-10
+Route: <sip:192.168.0.116;lr>
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=5
+To: <sip:5006@192.168.0.116>;tag=3am85ejcrXa8j
+Call-ID: 5-38328@192.168.0.116
+CSeq: 2 BYE
+Max-Forwards: 70
+Content-Length: 0
+
+
+----------------------------------------------- 2026-08-19T18:00:15.512170
+UDP message received [462] bytes:
+
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-5-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=5
+To: <sip:5006@192.168.0.116>;tag=3am85ejcrXa8j
+Call-ID: 5-38328@192.168.0.116
+CSeq: 2 BYE
+User-Agent: FreeSWITCH-mod_sofia/1.10.13-dev+git~20260402T150328Z~8babcee3ea~64bit
+Allow: INVITE, ACK, BYE, CANCEL, OPTIONS, MESSAGE, INFO, UPDATE, REGISTER, REFER, NOTIFY
+Supported: timer, path, replaces
+Content-Length: 0
+
+
+----------------------------------------------- 2026-08-19T18:00:16.487197
+UDP message sent [342] bytes:
+
+BYE sip:5006@192.168.0.116:5080;transport=udp SIP/2.0
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-6-10
+Route: <sip:192.168.0.116;lr>
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=6
+To: <sip:5006@192.168.0.116>;tag=4KD1792FN60te
+Call-ID: 6-38328@192.168.0.116
+CSeq: 2 BYE
+Max-Forwards: 70
+Content-Length: 0
+
+
+----------------------------------------------- 2026-08-19T18:00:16.512314
+UDP message received [462] bytes:
+
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-38328-6-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=6
+To: <sip:5006@192.168.0.116>;tag=4KD1792FN60te
+Call-ID: 6-38328@192.168.0.116
+CSeq: 2 BYE
+User-Agent: FreeSWITCH-mod_sofia/1.10.13-dev+git~20260402T150328Z~8babcee3ea~64bit
+Allow: INVITE, ACK, BYE, CANCEL, OPTIONS, MESSAGE, INFO, UPDATE, REGISTER, REFER, NOTIFY
+Supported: timer, path, replaces
+Content-Length: 0
+
+

@@ -1,0 +1,6 @@
+The following events occurred:
+2026-08-18	19:08:40.119606	1787060320.119606: Call-Id: 31-17353@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-18	19:08:47.116822	1787060327.116822: Call-Id: 45-17353@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-18	19:08:48.619671	1787060328.619671: Call-Id: 48-17353@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-18	19:08:58.618357	1787060338.618357: Call-Id: 57-17353@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-18	19:09:15.618714	1787060355.618714: Call-Id: 90-17353@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10

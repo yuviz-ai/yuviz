@@ -1,0 +1,2056 @@
+The following events occurred:
+2026-08-19	11:27:38.331677	1787119058.331677: Call-Id: 1-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:41.992765	1787119061.992765: Call-Id: 12-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:42.329730	1787119062.329730: Call-Id: 13-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:42.660203	1787119062.660203: Call-Id: 14-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:42.994699	1787119062.994699: Call-Id: 15-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:43.327406	1787119063.327406: Call-Id: 16-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:43.664061	1787119063.664061: Call-Id: 17-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:43.995054	1787119063.995054: Call-Id: 18-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:44.327667	1787119064.327667: Call-Id: 19-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:44.660921	1787119064.660921: Call-Id: 20-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:44.994408	1787119064.994408: Call-Id: 21-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:45.328158	1787119065.328158: Call-Id: 22-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:45.657076	1787119065.657076: Call-Id: 23-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:45.995495	1787119065.995495: Call-Id: 24-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:46.329388	1787119066.329388: Call-Id: 25-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:46.662075	1787119066.662075: Call-Id: 26-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:46.993694	1787119066.993694: Call-Id: 27-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:47.327058	1787119067.327058: Call-Id: 28-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:47.661852	1787119067.661852: Call-Id: 29-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:47.997121	1787119067.997121: Call-Id: 30-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:48.325202	1787119068.325202: Call-Id: 31-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:48.659784	1787119068.659784: Call-Id: 32-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:48.994138	1787119068.994138: Call-Id: 33-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:49.324468	1787119069.324468: Call-Id: 34-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:49.661474	1787119069.661474: Call-Id: 35-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:50.000134	1787119070.000134: Call-Id: 36-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:50.327003	1787119070.327003: Call-Id: 37-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:50.662739	1787119070.662739: Call-Id: 38-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:50.994665	1787119070.994665: Call-Id: 39-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:51.326967	1787119071.326967: Call-Id: 40-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:51.661015	1787119071.661015: Call-Id: 41-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:52.007447	1787119072.007447: Call-Id: 42-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:52.327094	1787119072.327094: Call-Id: 43-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:52.660832	1787119072.660832: Call-Id: 44-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:52.997702	1787119072.997702: Call-Id: 45-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:53.329100	1787119073.329100: Call-Id: 46-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:53.661808	1787119073.661808: Call-Id: 47-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:53.996877	1787119073.996877: Call-Id: 48-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:54.327409	1787119074.327409: Call-Id: 49-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:54.666070	1787119074.666070: Call-Id: 50-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:54.998418	1787119074.998418: Call-Id: 51-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:55.337101	1787119075.337101: Call-Id: 52-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:55.665447	1787119075.665447: Call-Id: 53-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:55.994052	1787119075.994052: Call-Id: 54-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:56.328363	1787119076.328363: Call-Id: 55-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:56.679707	1787119076.679707: Call-Id: 56-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:56.993433	1787119076.993433: Call-Id: 57-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:57.324736	1787119077.324736: Call-Id: 58-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:57.660014	1787119077.660014: Call-Id: 59-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:58.001174	1787119078.001174: Call-Id: 60-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:58.328946	1787119078.328946: Call-Id: 61-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:58.667792	1787119078.667792: Call-Id: 62-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:59.054117	1787119079.054117: Call-Id: 63-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:59.349452	1787119079.349452: Call-Id: 64-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:27:59.668400	1787119079.668400: Call-Id: 65-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:28:00.000036	1787119080.000036: Call-Id: 66-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:28:00.368395	1787119080.368395: Call-Id: 67-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:28:00.700381	1787119080.700381: Call-Id: 68-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:28:01.016234	1787119081.016234: Call-Id: 69-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:28:01.327797	1787119081.327797: Call-Id: 70-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:28:01.670462	1787119081.670462: Call-Id: 71-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:28:02.006502	1787119082.006502: Call-Id: 72-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:28:02.326827	1787119082.326827: Call-Id: 73-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:28:02.667061	1787119082.667061: Call-Id: 74-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:28:03.007682	1787119083.007682: Call-Id: 75-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:28:08.996134	1787119088.996134: Call-Id: 76-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:28:09.325434	1787119089.325434: Call-Id: 77-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:28:09.662839	1787119089.662839: Call-Id: 78-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:28:10.003312	1787119090.003312: Call-Id: 79-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:28:10.421031	1787119090.421031: Call-Id: 80-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:28:10.712107	1787119090.712107: Call-Id: 81-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:28:11.005116	1787119091.005116: Call-Id: 82-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:28:11.320238	1787119091.320238: Aborting call on unexpected message for Call-Id '86-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-86-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=86
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-324d25d6
+Call-ID: 86-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:11.326699	1787119091.326699: Call-Id: 83-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:28:11.724117	1787119091.724117: Call-Id: 84-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:28:11.945186	1787119091.945186: Aborting call on unexpected message for Call-Id '12-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-12-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=12
+To: <sip:5006@192.168.0.116>;tag=Qmr0Ne8F36aym
+Call-ID: 12-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:11.947374	1787119091.947374: Dead call 12-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-12-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=12
+To: <sip:5006@192.168.0.116>;tag=Qmr0Ne8F36aym
+Call-ID: 12-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:12.000644	1787119092.000644: Call-Id: 85-26617@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:28:12.321082	1787119092.321082: Aborting call on unexpected message for Call-Id '13-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-13-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=13
+To: <sip:5006@192.168.0.116>;tag=rXHSQ9rK0F1gg
+Call-ID: 13-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:12.322611	1787119092.322611: Dead call 13-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-13-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=13
+To: <sip:5006@192.168.0.116>;tag=rXHSQ9rK0F1gg
+Call-ID: 13-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:12.632870	1787119092.632870: Aborting call on unexpected message for Call-Id '14-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-14-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=14
+To: <sip:5006@192.168.0.116>;tag=S6ajS49pXrQ3B
+Call-ID: 14-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:12.634349	1787119092.634349: Dead call 14-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-14-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=14
+To: <sip:5006@192.168.0.116>;tag=S6ajS49pXrQ3B
+Call-ID: 14-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:12.945496	1787119092.945496: Aborting call on unexpected message for Call-Id '15-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-15-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=15
+To: <sip:5006@192.168.0.116>;tag=tF4aUZttt1DpQ
+Call-ID: 15-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:12.947116	1787119092.947116: Dead call 15-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-15-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=15
+To: <sip:5006@192.168.0.116>;tag=tF4aUZttt1DpQ
+Call-ID: 15-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:13.320747	1787119093.320747: Aborting call on unexpected message for Call-Id '16-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-16-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=16
+To: <sip:5006@192.168.0.116>;tag=UrX3vtByQa48j
+Call-ID: 16-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:13.322986	1787119093.322986: Dead call 16-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-16-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=16
+To: <sip:5006@192.168.0.116>;tag=UrX3vtByQa48j
+Call-ID: 16-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:13.632686	1787119093.632686: Aborting call on unexpected message for Call-Id '17-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-17-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=17
+To: <sip:5006@192.168.0.116>;tag=v1pvyNv1mKtUe
+Call-ID: 17-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:13.634205	1787119093.634205: Dead call 17-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-17-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=17
+To: <sip:5006@192.168.0.116>;tag=v1pvyNv1mKtUe
+Call-ID: 17-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:13.945770	1787119093.945770: Aborting call on unexpected message for Call-Id '18-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-18-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=18
+To: <sip:5006@192.168.0.116>;tag=XagN0gD5Hvgea
+Call-ID: 18-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:13.946968	1787119093.946968: Dead call 18-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-18-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=18
+To: <sip:5006@192.168.0.116>;tag=XagN0gD5Hvgea
+Call-ID: 18-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:14.320669	1787119094.320669: Aborting call on unexpected message for Call-Id '19-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-19-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=19
+To: <sip:5006@192.168.0.116>;tag=yK9D2By8e560N
+Call-ID: 19-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:14.321763	1787119094.321763: Dead call 19-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-19-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=19
+To: <sip:5006@192.168.0.116>;tag=yK9D2By8e560N
+Call-ID: 19-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:14.633509	1787119094.633509: Aborting call on unexpected message for Call-Id '20-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-20-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=20
+To: <sip:5006@192.168.0.116>;tag=Zv2636ecceXKH
+Call-ID: 20-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:14.635150	1787119094.635150: Dead call 20-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-20-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=20
+To: <sip:5006@192.168.0.116>;tag=Zv2636ecceXKH
+Call-ID: 20-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:14.945995	1787119094.945995: Aborting call on unexpected message for Call-Id '21-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-21-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=21
+To: <sip:5006@192.168.0.116>;tag=05UZ51ZF9pK6c
+Call-ID: 21-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:14.947205	1787119094.947205: Dead call 21-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-21-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=21
+To: <sip:5006@192.168.0.116>;tag=05UZ51ZF9pK6c
+Call-ID: 21-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:15.320316	1787119095.320316: Aborting call on unexpected message for Call-Id '22-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-22-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=22
+To: <sip:5006@192.168.0.116>;tag=1eNr7vgK6Z9rr
+Call-ID: 22-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:15.321543	1787119095.321543: Dead call 22-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-22-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=22
+To: <sip:5006@192.168.0.116>;tag=1eNr7vgK6Z9rr
+Call-ID: 22-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:15.633023	1787119095.633023: Aborting call on unexpected message for Call-Id '23-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-23-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=23
+To: <sip:5006@192.168.0.116>;tag=2QeH9Q1p38ZBm
+Call-ID: 23-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:15.634718	1787119095.634718: Dead call 23-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-23-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=23
+To: <sip:5006@192.168.0.116>;tag=2QeH9Q1p38ZBm
+Call-ID: 23-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:15.946169	1787119095.946169: Aborting call on unexpected message for Call-Id '24-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-24-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=24
+To: <sip:5006@192.168.0.116>;tag=3079aKjt0HpyF
+Call-ID: 24-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:15.947963	1787119095.947963: Dead call 24-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-24-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=24
+To: <sip:5006@192.168.0.116>;tag=3079aKjt0HpyF
+Call-ID: 24-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:16.320657	1787119096.320657: Aborting call on unexpected message for Call-Id '25-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-25-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=25
+To: <sip:5006@192.168.0.116>;tag=5jtUe9K1t323p
+Call-ID: 25-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:16.321803	1787119096.321803: Dead call 25-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-25-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=25
+To: <sip:5006@192.168.0.116>;tag=5jtUe9K1t323p
+Call-ID: 25-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:16.633059	1787119096.633059: Aborting call on unexpected message for Call-Id '26-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-26-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=26
+To: <sip:5006@192.168.0.116>;tag=6UKmg444QcSpj
+Call-ID: 26-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:16.634631	1787119096.634631: Dead call 26-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-26-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=26
+To: <sip:5006@192.168.0.116>;tag=6UKmg444QcSpj
+Call-ID: 26-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:16.945051	1787119096.945051: Aborting call on unexpected message for Call-Id '27-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-27-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=27
+To: <sip:5006@192.168.0.116>;tag=74cDjZN8mNF9D
+Call-ID: 27-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:16.946392	1787119096.946392: Dead call 27-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-27-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=27
+To: <sip:5006@192.168.0.116>;tag=74cDjZN8mNF9D
+Call-ID: 27-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:17.320301	1787119097.320301: Aborting call on unexpected message for Call-Id '28-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-28-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=28
+To: <sip:5006@192.168.0.116>;tag=8D65Kt6Bjy5US
+Call-ID: 28-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:17.321483	1787119097.321483: Dead call 28-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-28-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=28
+To: <sip:5006@192.168.0.116>;tag=8D65Kt6Bjy5US
+Call-ID: 28-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:17.632579	1787119097.632579: Aborting call on unexpected message for Call-Id '29-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-29-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=29
+To: <sip:5006@192.168.0.116>;tag=9pZyNNQFF7UeN
+Call-ID: 29-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:17.633854	1787119097.633854: Dead call 29-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-29-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=29
+To: <sip:5006@192.168.0.116>;tag=9pZyNNQFF7UeN
+Call-ID: 29-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:17.945853	1787119097.945853: Aborting call on unexpected message for Call-Id '30-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-30-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=30
+To: <sip:5006@192.168.0.116>;tag=a0rQQg8jcgj1g
+Call-ID: 30-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:17.947496	1787119097.947496: Dead call 30-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-30-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=30
+To: <sip:5006@192.168.0.116>;tag=a0rQQg8jcgj1g
+Call-ID: 30-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:18.320582	1787119098.320582: Aborting call on unexpected message for Call-Id '31-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-31-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=31
+To: <sip:5006@192.168.0.116>;tag=B9HgSBSp9r8Kc
+Call-ID: 31-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:18.321706	1787119098.321706: Dead call 31-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-31-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=31
+To: <sip:5006@192.168.0.116>;tag=B9HgSBSp9r8Kc
+Call-ID: 31-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:18.633505	1787119098.633505: Aborting call on unexpected message for Call-Id '32-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-32-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=32
+To: <sip:5006@192.168.0.116>;tag=cjB9t69S61y6Q
+Call-ID: 32-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:18.635199	1787119098.635199: Dead call 32-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-32-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=32
+To: <sip:5006@192.168.0.116>;tag=cjB9t69S61y6Q
+Call-ID: 32-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:18.945326	1787119098.945326: Aborting call on unexpected message for Call-Id '33-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-33-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=33
+To: <sip:5006@192.168.0.116>;tag=DU41v1tX3aNSK
+Call-ID: 33-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:18.946342	1787119098.946342: Dead call 33-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-33-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=33
+To: <sip:5006@192.168.0.116>;tag=DU41v1tX3aNSK
+Call-ID: 33-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:19.320554	1787119099.320554: Aborting call on unexpected message for Call-Id '34-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-34-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=34
+To: <sip:5006@192.168.0.116>;tag=e4XtyvB10KBcF
+Call-ID: 34-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:19.322065	1787119099.322065: Dead call 34-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-34-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=34
+To: <sip:5006@192.168.0.116>;tag=e4XtyvB10KBcF
+Call-ID: 34-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:19.632753	1787119099.632753: Aborting call on unexpected message for Call-Id '35-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-35-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=35
+To: <sip:5006@192.168.0.116>;tag=FDQK0Qv4Xv1ya
+Call-ID: 35-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:19.634265	1787119099.634265: Dead call 35-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-35-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=35
+To: <sip:5006@192.168.0.116>;tag=FDQK0Qv4Xv1ya
+Call-ID: 35-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:19.945900	1787119099.945900: Aborting call on unexpected message for Call-Id '36-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-36-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=36
+To: <sip:5006@192.168.0.116>;tag=gpgc2jD8t5QHp
+Call-ID: 36-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:19.947439	1787119099.947439: Dead call 36-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-36-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=36
+To: <sip:5006@192.168.0.116>;tag=gpgc2jD8t5QHp
+Call-ID: 36-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:20.321079	1787119100.321079: Aborting call on unexpected message for Call-Id '37-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-37-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=37
+To: <sip:5006@192.168.0.116>;tag=HZ943DyBree4H
+Call-ID: 37-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:20.322400	1787119100.322400: Dead call 37-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-37-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=37
+To: <sip:5006@192.168.0.116>;tag=HZ943DyBree4H
+Call-ID: 37-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:20.632890	1787119100.632890: Aborting call on unexpected message for Call-Id '38-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-38-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=38
+To: <sip:5006@192.168.0.116>;tag=j82X58eFNQ4pD
+Call-ID: 38-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:20.635978	1787119100.635978: Dead call 38-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-38-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=38
+To: <sip:5006@192.168.0.116>;tag=j82X58eFNQ4pD
+Call-ID: 38-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:20.946008	1787119100.946008: Aborting call on unexpected message for Call-Id '39-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-39-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=39
+To: <sip:5006@192.168.0.116>;tag=KHvp73Zjj0t9r
+Call-ID: 39-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:20.947346	1787119100.947346: Dead call 39-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-39-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=39
+To: <sip:5006@192.168.0.116>;tag=KHvp73Zjj0t9r
+Call-ID: 39-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:21.320666	1787119101.320666: Aborting call on unexpected message for Call-Id '40-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-40-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=40
+To: <sip:5006@192.168.0.116>;tag=mtNF9ygpF9gvm
+Call-ID: 40-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:21.321573	1787119101.321573: Dead call 40-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-40-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=40
+To: <sip:5006@192.168.0.116>;tag=mtNF9ygpF9gvm
+Call-ID: 40-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:21.633695	1787119101.633695: Aborting call on unexpected message for Call-Id '41-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-41-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=41
+To: <sip:5006@192.168.0.116>;tag=N3e8at1Scj7eg
+Call-ID: 41-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:21.635295	1787119101.635295: Dead call 41-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-41-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=41
+To: <sip:5006@192.168.0.116>;tag=N3e8at1Scj7eg
+Call-ID: 41-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:22.007995	1787119102.007995: Aborting call on unexpected message for Call-Id '42-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-42-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=42
+To: <sip:5006@192.168.0.116>;tag=pc80cNjX9tX1B
+Call-ID: 42-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:22.009525	1787119102.009525: Dead call 42-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-42-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=42
+To: <sip:5006@192.168.0.116>;tag=pc80cNjX9tX1B
+Call-ID: 42-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:22.320462	1787119102.320462: Aborting call on unexpected message for Call-Id '43-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-43-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=43
+To: <sip:5006@192.168.0.116>;tag=QN1Seg3063KmQ
+Call-ID: 43-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:22.321867	1787119102.321867: Dead call 43-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-43-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=43
+To: <sip:5006@192.168.0.116>;tag=QN1Seg3063KmQ
+Call-ID: 43-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:22.632902	1787119102.632902: Aborting call on unexpected message for Call-Id '44-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-44-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=44
+To: <sip:5006@192.168.0.116>;tag=rytjgBm43ca7j
+Call-ID: 44-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:22.634636	1787119102.634636: Dead call 44-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-44-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=44
+To: <sip:5006@192.168.0.116>;tag=rytjgBm43ca7j
+Call-ID: 44-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:22.945408	1787119102.945408: Aborting call on unexpected message for Call-Id '45-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-45-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=45
+To: <sip:5006@192.168.0.116>;tag=S7KBj6470N0Se
+Call-ID: 45-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:22.947012	1787119102.947012: Dead call 45-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-45-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=45
+To: <sip:5006@192.168.0.116>;tag=S7KBj6470N0Se
+Call-ID: 45-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:23.320620	1787119103.320620: Aborting call on unexpected message for Call-Id '46-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-46-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=46
+To: <sip:5006@192.168.0.116>;tag=tgD4K1NByypca
+Call-ID: 46-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:23.322013	1787119103.322013: Dead call 46-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-46-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=46
+To: <sip:5006@192.168.0.116>;tag=tgD4K1NByypca
+Call-ID: 46-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:23.633499	1787119103.633499: Aborting call on unexpected message for Call-Id '47-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-47-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=47
+To: <sip:5006@192.168.0.116>;tag=US6vNv6eU7cZN
+Call-ID: 47-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:23.635075	1787119103.635075: Dead call 47-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-47-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=47
+To: <sip:5006@192.168.0.116>;tag=US6vNv6eU7cZN
+Call-ID: 47-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:23.945434	1787119103.945434: Aborting call on unexpected message for Call-Id '48-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-48-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=48
+To: <sip:5006@192.168.0.116>;tag=v2ZNQQQjrg3HH
+Call-ID: 48-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:23.946874	1787119103.946874: Dead call 48-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-48-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=48
+To: <sip:5006@192.168.0.116>;tag=v2ZNQQQjrg3HH
+Call-ID: 48-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:24.320422	1787119104.320422: Aborting call on unexpected message for Call-Id '49-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-49-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=49
+To: <sip:5006@192.168.0.116>;tag=XBSeSj8NNSS4c
+Call-ID: 49-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:24.321742	1787119104.321742: Dead call 49-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-49-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=49
+To: <sip:5006@192.168.0.116>;tag=XBSeSj8NNSS4c
+Call-ID: 49-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:24.633523	1787119104.633523: Aborting call on unexpected message for Call-Id '50-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-50-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=50
+To: <sip:5006@192.168.0.116>;tag=ymj7tDSSj2FQr
+Call-ID: 50-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:24.635093	1787119104.635093: Dead call 50-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-50-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=50
+To: <sip:5006@192.168.0.116>;tag=ymj7tDSSj2FQr
+Call-ID: 50-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:24.946042	1787119104.946042: Aborting call on unexpected message for Call-Id '51-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-51-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=51
+To: <sip:5006@192.168.0.116>;tag=ZXB0v89vFB69K
+Call-ID: 51-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:24.947606	1787119104.947606: Dead call 51-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-51-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=51
+To: <sip:5006@192.168.0.116>;tag=ZXB0v89vFB69K
+Call-ID: 51-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:25.320544	1787119105.320544: Aborting call on unexpected message for Call-Id '52-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-52-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=52
+To: <sip:5006@192.168.0.116>;tag=064ry3t0cmvvF
+Call-ID: 52-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:25.321758	1787119105.321758: Dead call 52-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-52-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=52
+To: <sip:5006@192.168.0.116>;tag=064ry3t0cmvvF
+Call-ID: 52-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:25.632500	1787119105.632500: Aborting call on unexpected message for Call-Id '53-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-53-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=53
+To: <sip:5006@192.168.0.116>;tag=1FyH0yB49vjFB
+Call-ID: 53-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:25.633953	1787119105.633953: Dead call 53-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-53-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=53
+To: <sip:5006@192.168.0.116>;tag=1FyH0yB49vjFB
+Call-ID: 53-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:25.945895	1787119105.945895: Aborting call on unexpected message for Call-Id '54-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-54-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=54
+To: <sip:5006@192.168.0.116>;tag=2rQa2Sv76581p
+Call-ID: 54-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:25.947303	1787119105.947303: Dead call 54-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-54-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=54
+To: <sip:5006@192.168.0.116>;tag=2rQa2Sv76581p
+Call-ID: 54-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:26.320761	1787119106.320761: Aborting call on unexpected message for Call-Id '55-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-55-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=55
+To: <sip:5006@192.168.0.116>;tag=31g33mDB4eZmj
+Call-ID: 55-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:26.322044	1787119106.322044: Dead call 55-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-55-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=55
+To: <sip:5006@192.168.0.116>;tag=31g33mDB4eZmj
+Call-ID: 55-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:26.632814	1787119106.632814: Aborting call on unexpected message for Call-Id '56-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-56-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=56
+To: <sip:5006@192.168.0.116>;tag=4aav5Fye1QN7D
+Call-ID: 56-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:26.634555	1787119106.634555: Dead call 56-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-56-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=56
+To: <sip:5006@192.168.0.116>;tag=4aav5Fye1QN7D
+Call-ID: 56-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:26.945551	1787119106.945551: Aborting call on unexpected message for Call-Id '57-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-57-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=57
+To: <sip:5006@192.168.0.116>;tag=5K3m7aFjy0BtS
+Call-ID: 57-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:26.947537	1787119106.947537: Dead call 57-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-57-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=57
+To: <sip:5006@192.168.0.116>;tag=5K3m7aFjy0BtS
+Call-ID: 57-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:27.319975	1787119107.319975: Aborting call on unexpected message for Call-Id '58-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-58-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=58
+To: <sip:5006@192.168.0.116>;tag=6vvD95ZNU91cN
+Call-ID: 58-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:27.320935	1787119107.320935: Dead call 58-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-58-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=58
+To: <sip:5006@192.168.0.116>;tag=6vvD95ZNU91cN
+Call-ID: 58-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:27.633056	1787119107.633056: Aborting call on unexpected message for Call-Id '59-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-59-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=59
+To: <sip:5006@192.168.0.116>;tag=75N6a1gSrjrZg
+Call-ID: 59-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:27.634375	1787119107.634375: Dead call 59-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-59-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=59
+To: <sip:5006@192.168.0.116>;tag=75N6a1gSrjrZg
+Call-ID: 59-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:27.945069	1787119107.945069: Aborting call on unexpected message for Call-Id '60-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-60-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=60
+To: <sip:5006@192.168.0.116>;tag=8eFZcv1vNUejc
+Call-ID: 60-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:27.946923	1787119107.946923: Dead call 60-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-60-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=60
+To: <sip:5006@192.168.0.116>;tag=8eFZcv1vNUejc
+Call-ID: 60-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:28.320447	1787119108.320447: Aborting call on unexpected message for Call-Id '61-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-61-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=61
+To: <sip:5006@192.168.0.116>;tag=9Q8QeQj0j444Q
+Call-ID: 61-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:28.322204	1787119108.322204: Dead call 61-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-61-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=61
+To: <sip:5006@192.168.0.116>;tag=9Q8QeQj0j444Q
+Call-ID: 61-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:28.633440	1787119108.633440: Aborting call on unexpected message for Call-Id '62-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-62-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=62
+To: <sip:5006@192.168.0.116>;tag=a11ggj33FDUQK
+Call-ID: 62-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:28.635063	1787119108.635063: Dead call 62-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-62-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=62
+To: <sip:5006@192.168.0.116>;tag=a11ggj33FDUQK
+Call-ID: 62-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:29.008464	1787119109.008464: Aborting call on unexpected message for Call-Id '63-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-63-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=63
+To: <sip:5006@192.168.0.116>;tag=BaU9HDm7cpHaF
+Call-ID: 63-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:29.010189	1787119109.010189: Dead call 63-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-63-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=63
+To: <sip:5006@192.168.0.116>;tag=BaU9HDm7cpHaF
+Call-ID: 63-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:29.320964	1787119109.320964: Aborting call on unexpected message for Call-Id '64-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-64-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=64
+To: <sip:5006@192.168.0.116>;tag=cKm2K84aaZ7va
+Call-ID: 64-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:29.322403	1787119109.322403: Dead call 64-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-64-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=64
+To: <sip:5006@192.168.0.116>;tag=cKm2K84aaZ7va
+Call-ID: 64-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:29.633520	1787119109.633520: Aborting call on unexpected message for Call-Id '65-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-65-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=65
+To: <sip:5006@192.168.0.116>;tag=DvDUN3Ne77XFp
+Call-ID: 65-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:29.635177	1787119109.635177: Dead call 65-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-65-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=65
+To: <sip:5006@192.168.0.116>;tag=DvDUN3Ne77XFp
+Call-ID: 65-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:29.945758	1787119109.945758: Aborting call on unexpected message for Call-Id '66-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-66-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=66
+To: <sip:5006@192.168.0.116>;tag=e56KQy6H4gm2H
+Call-ID: 66-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:29.946963	1787119109.946963: Dead call 66-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-66-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=66
+To: <sip:5006@192.168.0.116>;tag=e56KQy6H4gm2H
+Call-ID: 66-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:30.320753	1787119110.320753: Aborting call on unexpected message for Call-Id '67-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-67-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=67
+To: <sip:5006@192.168.0.116>;tag=Fe0cSSQN1SaND
+Call-ID: 67-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:30.322466	1787119110.322466: Dead call 67-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-67-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=67
+To: <sip:5006@192.168.0.116>;tag=Fe0cSSQN1SaND
+Call-ID: 67-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:30.696157	1787119110.696157: Aborting call on unexpected message for Call-Id '68-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-68-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=68
+To: <sip:5006@192.168.0.116>;tag=gQS5tm8ry207r
+Call-ID: 68-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:30.699271	1787119110.699271: Dead call 68-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-68-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=68
+To: <sip:5006@192.168.0.116>;tag=gQS5tm8ry207r
+Call-ID: 68-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:31.008606	1787119111.008606: Aborting call on unexpected message for Call-Id '69-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-69-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=69
+To: <sip:5006@192.168.0.116>;tag=H0jyvFSvUBQtm
+Call-ID: 69-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:31.010306	1787119111.010306: Dead call 69-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-69-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=69
+To: <sip:5006@192.168.0.116>;tag=H0jyvFSvUBQtm
+Call-ID: 69-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:31.320478	1787119111.320478: Aborting call on unexpected message for Call-Id '70-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-70-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=70
+To: <sip:5006@192.168.0.116>;tag=j9BQyaa0rmDDg
+Call-ID: 70-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:31.321959	1787119111.321959: Dead call 70-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-70-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=70
+To: <sip:5006@192.168.0.116>;tag=j9BQyaa0rmDDg
+Call-ID: 70-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:31.632646	1787119111.632646: Aborting call on unexpected message for Call-Id '71-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-71-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=71
+To: <sip:5006@192.168.0.116>;tag=Kj5F05t3NX3ZB
+Call-ID: 71-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:31.634134	1787119111.634134: Dead call 71-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-71-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=71
+To: <sip:5006@192.168.0.116>;tag=Kj5F05t3NX3ZB
+Call-ID: 71-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:32.008385	1787119112.008385: Aborting call on unexpected message for Call-Id '72-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-72-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=72
+To: <sip:5006@192.168.0.116>;tag=mUy810B7j6SjQ
+Call-ID: 72-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:32.010143	1787119112.010143: Dead call 72-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-72-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=72
+To: <sip:5006@192.168.0.116>;tag=mUy810B7j6SjQ
+Call-ID: 72-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:32.320248	1787119112.320248: Aborting call on unexpected message for Call-Id '73-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-73-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=73
+To: <sip:5006@192.168.0.116>;tag=N4Q13UvagFg5j
+Call-ID: 73-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:32.321694	1787119112.321694: Dead call 73-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-73-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=73
+To: <sip:5006@192.168.0.116>;tag=N4Q13UvagFg5j
+Call-ID: 73-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:32.632625	1787119112.632625: Aborting call on unexpected message for Call-Id '74-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-74-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=74
+To: <sip:5006@192.168.0.116>;tag=pDHt5pDeDr6Qe
+Call-ID: 74-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:32.634332	1787119112.634332: Dead call 74-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-74-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=74
+To: <sip:5006@192.168.0.116>;tag=pDHt5pDeDr6Qe
+Call-ID: 74-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:33.007566	1787119113.007566: Aborting call on unexpected message for Call-Id '75-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-75-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=75
+To: <sip:5006@192.168.0.116>;tag=QpaK7HyHa1vaa
+Call-ID: 75-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:33.009337	1787119113.009337: Dead call 75-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-75-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=75
+To: <sip:5006@192.168.0.116>;tag=QpaK7HyHa1vaa
+Call-ID: 75-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:38.945599	1787119118.945599: Aborting call on unexpected message for Call-Id '76-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-76-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=76
+To: <sip:5006@192.168.0.116>;tag=S8v4a8Zr4j9FH
+Call-ID: 76-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:38.947387	1787119118.947387: Dead call 76-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-76-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=76
+To: <sip:5006@192.168.0.116>;tag=S8v4a8Zr4j9FH
+Call-ID: 76-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:39.320960	1787119119.320960: Aborting call on unexpected message for Call-Id '77-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-77-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=77
+To: <sip:5006@192.168.0.116>;tag=tHpXc3gv1UZ2c
+Call-ID: 77-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:39.322574	1787119119.322574: Dead call 77-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-77-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=77
+To: <sip:5006@192.168.0.116>;tag=tHpXc3gv1UZ2c
+Call-ID: 77-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:39.633164	1787119119.633164: Aborting call on unexpected message for Call-Id '78-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-78-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=78
+To: <sip:5006@192.168.0.116>;tag=UtFpey1Zy4NNr
+Call-ID: 78-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:39.634373	1787119119.634373: Dead call 78-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-78-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=78
+To: <sip:5006@192.168.0.116>;tag=UtFpey1Zy4NNr
+Call-ID: 78-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:39.944937	1787119119.944937: Aborting call on unexpected message for Call-Id '79-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-79-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=79
+To: <sip:5006@192.168.0.116>;tag=v38egSj3UDc8K
+Call-ID: 79-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:39.946666	1787119119.946666: Dead call 79-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-79-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=79
+To: <sip:5006@192.168.0.116>;tag=v38egSj3UDc8K
+Call-ID: 79-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:40.383467	1787119120.383467: Aborting call on unexpected message for Call-Id '80-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-80-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=80
+To: <sip:5006@192.168.0.116>;tag=Xc27Hm36rp2tF
+Call-ID: 80-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:40.385167	1787119120.385167: Dead call 80-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-80-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=80
+To: <sip:5006@192.168.0.116>;tag=Xc27Hm36rp2tF
+Call-ID: 80-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:40.696027	1787119120.696027: Aborting call on unexpected message for Call-Id '81-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-81-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=81
+To: <sip:5006@192.168.0.116>;tag=yNU0KFmapZrDB
+Call-ID: 81-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:40.697684	1787119120.697684: Dead call 81-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-81-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=81
+To: <sip:5006@192.168.0.116>;tag=yNU0KFmapZrDB
+Call-ID: 81-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:40.946036	1787119120.946036: Aborting call on unexpected message for Call-Id '82-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-82-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=82
+To: <sip:5006@192.168.0.116>;tag=ZymSNa5DK8e0p
+Call-ID: 82-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:40.947734	1787119120.947734: Dead call 82-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-82-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=82
+To: <sip:5006@192.168.0.116>;tag=ZymSNa5DK8e0p
+Call-ID: 82-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:41.320993	1787119121.320993: Aborting call on unexpected message for Call-Id '83-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-83-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=83
+To: <sip:5006@192.168.0.116>;tag=07DjQ5NHgH5jj
+Call-ID: 83-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:41.323097	1787119121.323097: Dead call 83-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-83-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=83
+To: <sip:5006@192.168.0.116>;tag=07DjQ5NHgH5jj
+Call-ID: 83-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:41.632523	1787119121.632523: Aborting call on unexpected message for Call-Id '87-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-87-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=87
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-ffe8e3a5
+Call-ID: 87-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:41.695790	1787119121.695790: Aborting call on unexpected message for Call-Id '84-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-84-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=84
+To: <sip:5006@192.168.0.116>;tag=1g7aS06mDtU5D
+Call-ID: 84-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:41.697504	1787119121.697504: Dead call 84-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-84-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=84
+To: <sip:5006@192.168.0.116>;tag=1g7aS06mDtU5D
+Call-ID: 84-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:41.945990	1787119121.945990: Aborting call on unexpected message for Call-Id '88-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-88-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=88
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-834cb4d6
+Call-ID: 88-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:41.947426	1787119121.947426: Aborting call on unexpected message for Call-Id '85-26617@192.168.0.116': while expecting '200' (index 11), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-85-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=85
+To: <sip:5006@192.168.0.116>;tag=2S03tUQra3HrS
+Call-ID: 85-26617@192.168.0.116
+CSeq: 2 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:41.948579	1787119121.948579: Dead call 85-26617@192.168.0.116 (aborted at index 11), received 'SIP/2.0 404 Not here
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-85-10
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=85
+To: <sip:5006@192.168.0.116>;tag=2S03tUQra3HrS
+Call-ID: 85-26617@192.168.0.116
+CSeq: 3 BYE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:42.633443	1787119122.633443: Aborting call on unexpected message for Call-Id '89-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-89-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=89
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-4ee972a5
+Call-ID: 89-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:42.945287	1787119122.945287: Aborting call on unexpected message for Call-Id '90-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-90-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=90
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-14e17677
+Call-ID: 90-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:43.320646	1787119123.320646: Aborting call on unexpected message for Call-Id '91-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-91-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=91
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-d944b004
+Call-ID: 91-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:43.633206	1787119123.633206: Aborting call on unexpected message for Call-Id '92-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-92-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=92
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-9fbafb91
+Call-ID: 92-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:43.945311	1787119123.945311: Aborting call on unexpected message for Call-Id '93-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-93-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=93
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-521f3de2
+Call-ID: 93-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:44.320848	1787119124.320848: Aborting call on unexpected message for Call-Id '94-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-94-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=94
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-02d77daa
+Call-ID: 94-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:44.633472	1787119124.633472: Aborting call on unexpected message for Call-Id '95-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-95-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=95
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-cf72bbd9
+Call-ID: 95-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:44.946029	1787119124.946029: Aborting call on unexpected message for Call-Id '96-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-96-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=96
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-898cf04c
+Call-ID: 96-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:45.320533	1787119125.320533: Aborting call on unexpected message for Call-Id '97-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-97-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=97
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-4429363f
+Call-ID: 97-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:45.633215	1787119125.633215: Aborting call on unexpected message for Call-Id '98-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-98-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=98
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-388d614c
+Call-ID: 98-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:45.945430	1787119125.945430: Aborting call on unexpected message for Call-Id '99-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-99-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=99
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-f528a73f
+Call-ID: 99-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:46.258608	1787119126.258608: Aborting call on unexpected message for Call-Id '100-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-100-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=100
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-b4798608
+Call-ID: 100-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:46.633006	1787119126.633006: Aborting call on unexpected message for Call-Id '101-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-101-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=101
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-79dc407b
+Call-ID: 101-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:46.945163	1787119126.945163: Aborting call on unexpected message for Call-Id '102-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-102-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=102
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-3f220bee
+Call-ID: 102-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:47.320088	1787119127.320088: Aborting call on unexpected message for Call-Id '103-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-103-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=103
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-f287cd9d
+Call-ID: 103-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:47.632545	1787119127.632545: Aborting call on unexpected message for Call-Id '104-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-104-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=104
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-a24f8dd5
+Call-ID: 104-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:47.945380	1787119127.945380: Aborting call on unexpected message for Call-Id '105-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-105-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=105
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-6fea4ba6
+Call-ID: 105-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:48.258182	1787119128.258182: Aborting call on unexpected message for Call-Id '106-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-106-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=106
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-29140033
+Call-ID: 106-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:48.632897	1787119128.632897: Aborting call on unexpected message for Call-Id '107-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-107-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=107
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-e4b1c640
+Call-ID: 107-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:48.945253	1787119128.945253: Aborting call on unexpected message for Call-Id '108-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-108-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=108
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-98159133
+Call-ID: 108-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:49.320381	1787119129.320381: Aborting call on unexpected message for Call-Id '109-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-109-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=109
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-55b05740
+Call-ID: 109-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:49.633506	1787119129.633506: Aborting call on unexpected message for Call-Id '110-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-110-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=110
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-0fb85392
+Call-ID: 110-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:49.945379	1787119129.945379: Aborting call on unexpected message for Call-Id '111-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-111-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=111
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-c21d95e1
+Call-ID: 111-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:50.320547	1787119130.320547: Aborting call on unexpected message for Call-Id '112-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-112-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=112
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-84e3de74
+Call-ID: 112-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:50.633630	1787119130.633630: Aborting call on unexpected message for Call-Id '113-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-113-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=113
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-49461807
+Call-ID: 113-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:50.945305	1787119130.945305: Aborting call on unexpected message for Call-Id '114-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-114-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=114
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-198e584f
+Call-ID: 114-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:51.258165	1787119131.258165: Aborting call on unexpected message for Call-Id '115-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-115-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=115
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-d42b9e3c
+Call-ID: 115-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:51.632660	1787119131.632660: Aborting call on unexpected message for Call-Id '116-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-116-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=116
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-92d5d5a9
+Call-ID: 116-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:51.945313	1787119131.945313: Aborting call on unexpected message for Call-Id '117-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-117-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=117
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-5f7013da
+Call-ID: 117-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:52.320558	1787119132.320558: Aborting call on unexpected message for Call-Id '118-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-118-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=118
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-23d444a9
+Call-ID: 118-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:52.633274	1787119132.633274: Aborting call on unexpected message for Call-Id '119-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-119-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=119
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-ee7182da
+Call-ID: 119-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:52.946117	1787119132.946117: Aborting call on unexpected message for Call-Id '120-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-120-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=120
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-d3ea3cad
+Call-ID: 120-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:53.320727	1787119133.320727: Aborting call on unexpected message for Call-Id '121-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-121-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=121
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-1e4ffade
+Call-ID: 121-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:53.632845	1787119133.632845: Aborting call on unexpected message for Call-Id '122-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-122-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=122
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-58b1b14b
+Call-ID: 122-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:53.946244	1787119133.946244: Aborting call on unexpected message for Call-Id '123-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-123-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=123
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-95147738
+Call-ID: 123-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:54.320564	1787119134.320564: Aborting call on unexpected message for Call-Id '124-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-124-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=124
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-c5dc3770
+Call-ID: 124-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:54.632563	1787119134.632563: Aborting call on unexpected message for Call-Id '125-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-125-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=125
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-0879f103
+Call-ID: 125-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:54.946326	1787119134.946326: Aborting call on unexpected message for Call-Id '126-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-126-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=126
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-4e87ba96
+Call-ID: 126-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:55.258506	1787119135.258506: Aborting call on unexpected message for Call-Id '127-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-127-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=127
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-83227ce5
+Call-ID: 127-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:55.633412	1787119135.633412: Aborting call on unexpected message for Call-Id '128-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-128-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=128
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-ff862b96
+Call-ID: 128-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:55.946150	1787119135.946150: Aborting call on unexpected message for Call-Id '129-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-129-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=129
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-3223ede5
+Call-ID: 129-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:56.320757	1787119136.320757: Aborting call on unexpected message for Call-Id '130-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-130-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=130
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-682be937
+Call-ID: 130-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:56.632942	1787119136.632942: Aborting call on unexpected message for Call-Id '131-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-131-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=131
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-a58e2f44
+Call-ID: 131-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:56.945810	1787119136.945810: Aborting call on unexpected message for Call-Id '132-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-132-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=132
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-e37064d1
+Call-ID: 132-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:57.320496	1787119137.320496: Aborting call on unexpected message for Call-Id '133-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-133-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=133
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-2ed5a2a2
+Call-ID: 133-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:57.633069	1787119137.633069: Aborting call on unexpected message for Call-Id '134-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-134-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=134
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-7e1de2ea
+Call-ID: 134-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	11:28:57.946037	1787119137.946037: Aborting call on unexpected message for Call-Id '135-26617@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 408 Request Timeout
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-26617-135-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=135
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-b3b82499
+Call-ID: 135-26617@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'

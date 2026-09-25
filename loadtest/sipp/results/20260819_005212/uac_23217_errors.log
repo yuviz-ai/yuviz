@@ -1,0 +1,518 @@
+The following events occurred:
+2026-08-19	00:52:25.467774	1787080945.467774: Aborting call on unexpected message for Call-Id '1-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-1-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=1
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-11faf256
+Call-ID: 1-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:25.468848	1787080945.468848: Aborting call on unexpected message for Call-Id '13-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-13-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=13
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-b307a1f0
+Call-ID: 13-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:25.469455	1787080945.469455: Aborting call on unexpected message for Call-Id '25-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-25-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=25
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-f23848f4
+Call-ID: 25-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:25.470501	1787080945.470501: Aborting call on unexpected message for Call-Id '31-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-31-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=31
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-5fcf96b3
+Call-ID: 31-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:25.471351	1787080945.471351: Aborting call on unexpected message for Call-Id '34-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-34-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=34
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-845c5b1d
+Call-ID: 34-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:25.472257	1787080945.472257: Aborting call on unexpected message for Call-Id '36-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-36-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=36
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-0f07d6fb
+Call-ID: 36-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:25.473213	1787080945.473213: Aborting call on unexpected message for Call-Id '2-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-2-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=2
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-5704b9c3
+Call-ID: 2-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:25.474032	1787080945.474032: Aborting call on unexpected message for Call-Id '14-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-14-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=14
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-e3cfe1b8
+Call-ID: 14-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:25.475000	1787080945.475000: Aborting call on unexpected message for Call-Id '26-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-26-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=26
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-b4c60361
+Call-ID: 26-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:25.476118	1787080945.476118: Aborting call on unexpected message for Call-Id '32-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-32-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=32
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-1931dd26
+Call-ID: 32-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:25.477131	1787080945.477131: Aborting call on unexpected message for Call-Id '35-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-35-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=35
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-49f99d6e
+Call-ID: 35-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:25.478095	1787080945.478095: Aborting call on unexpected message for Call-Id '37-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-37-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=37
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-c2a21088
+Call-ID: 37-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:25.479239	1787080945.479239: Aborting call on unexpected message for Call-Id '3-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-3-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=3
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-9aa17fb0
+Call-ID: 3-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:25.480277	1787080945.480277: Aborting call on unexpected message for Call-Id '27-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-27-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=27
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-7963c512
+Call-ID: 27-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:25.481235	1787080945.481235: Aborting call on unexpected message for Call-Id '33-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-33-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=33
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-d4941b55
+Call-ID: 33-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:25.482317	1787080945.482317: Aborting call on unexpected message for Call-Id '15-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-15-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=15
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-2e6a27cb
+Call-ID: 15-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:25.483478	1787080945.483478: Aborting call on unexpected message for Call-Id '38-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-38-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=38
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-be0647fb
+Call-ID: 38-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:25.484312	1787080945.484312: Aborting call on unexpected message for Call-Id '4-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-4-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=4
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-ca693ff8
+Call-ID: 4-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:25.484953	1787080945.484953: Aborting call on unexpected message for Call-Id '16-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-16-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=16
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-68946c5e
+Call-ID: 16-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:25.502304	1787080945.502304: Aborting call on unexpected message for Call-Id '28-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-28-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=28
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-05c79261
+Call-ID: 28-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:25.681656	1787080945.681656: Aborting call on unexpected message for Call-Id '39-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-39-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=39
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-73a38188
+Call-ID: 39-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:25.750947	1787080945.750947: Aborting call on unexpected message for Call-Id '5-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-5-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=5
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-07ccf98b
+Call-ID: 5-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:25.751703	1787080945.751703: Aborting call on unexpected message for Call-Id '17-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-17-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=17
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-a531aa2d
+Call-ID: 17-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:25.812697	1787080945.812697: Aborting call on unexpected message for Call-Id '29-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-29-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=29
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-c8625412
+Call-ID: 29-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:26.015055	1787080946.015055: Aborting call on unexpected message for Call-Id '40-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-40-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=40
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-801f5aa4
+Call-ID: 40-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:26.063643	1787080946.063643: Aborting call on unexpected message for Call-Id '6-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-6-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=6
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-4132b21e
+Call-ID: 6-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:26.125589	1787080946.125589: Aborting call on unexpected message for Call-Id '30-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-30-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=30
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-926a50c0
+Call-ID: 30-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:26.187348	1787080946.187348: Aborting call on unexpected message for Call-Id '18-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-18-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=18
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-d995fd5e
+Call-ID: 18-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:26.350182	1787080946.350182: Aborting call on unexpected message for Call-Id '41-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-41-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=41
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-4dba9cd7
+Call-ID: 41-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:26.439309	1787080946.439309: Aborting call on unexpected message for Call-Id '7-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-7-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=7
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-8c97746d
+Call-ID: 7-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:26.440209	1787080946.440209: Aborting call on unexpected message for Call-Id '19-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-19-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=19
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-14303b2d
+Call-ID: 19-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:26.683433	1787080946.683433: Aborting call on unexpected message for Call-Id '42-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-42-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=42
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-0b44d742
+Call-ID: 42-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:26.751422	1787080946.751422: Aborting call on unexpected message for Call-Id '8-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-8-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=8
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-f033231e
+Call-ID: 8-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:26.814288	1787080946.814288: Aborting call on unexpected message for Call-Id '20-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-20-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=20
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-29ab855a
+Call-ID: 20-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:27.016683	1787080947.016683: Aborting call on unexpected message for Call-Id '43-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-43-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=43
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-c6e11131
+Call-ID: 43-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:27.124924	1787080947.124924: Aborting call on unexpected message for Call-Id '21-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-21-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=21
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-e40e4329
+Call-ID: 21-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:27.188072	1787080947.188072: Aborting call on unexpected message for Call-Id '9-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-9-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=9
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-3d96e56d
+Call-ID: 9-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:27.347138	1787080947.347138: Aborting call on unexpected message for Call-Id '44-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-44-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=44
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-96295179
+Call-ID: 44-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:27.437280	1787080947.437280: Aborting call on unexpected message for Call-Id '10-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-10-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=10
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-f5f9ea65
+Call-ID: 10-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:27.500298	1787080947.500298: Aborting call on unexpected message for Call-Id '22-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-22-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=22
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-a2f008bc
+Call-ID: 22-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:27.684380	1787080947.684380: Aborting call on unexpected message for Call-Id '45-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-45-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=45
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-5b8c970a
+Call-ID: 45-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:27.751327	1787080947.751327: Aborting call on unexpected message for Call-Id '11-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-11-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=11
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-385c2c16
+Call-ID: 11-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:27.814474	1787080947.814474: Aborting call on unexpected message for Call-Id '23-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-23-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=23
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-6f55cecf
+Call-ID: 23-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:28.016901	1787080948.016901: Aborting call on unexpected message for Call-Id '46-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-46-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=46
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-1d72dc9f
+Call-ID: 46-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:28.064746	1787080948.064746: Aborting call on unexpected message for Call-Id '12-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-12-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=12
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-7ea26783
+Call-ID: 12-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:28.126091	1787080948.126091: Aborting call on unexpected message for Call-Id '24-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-24-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=24
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-3f9d8e87
+Call-ID: 24-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:28.349028	1787080948.349028: Aborting call on unexpected message for Call-Id '47-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-47-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=47
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-d0d71aec
+Call-ID: 47-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:28.682629	1787080948.682629: Aborting call on unexpected message for Call-Id '48-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-48-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=48
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-ac734d9f
+Call-ID: 48-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:29.015824	1787080949.015824: Aborting call on unexpected message for Call-Id '49-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-49-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=49
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-61d68bec
+Call-ID: 49-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:29.350439	1787080949.350439: Aborting call on unexpected message for Call-Id '50-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-50-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=50
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-3bde8f3e
+Call-ID: 50-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:52:29.682706	1787080949.682706: Aborting call on unexpected message for Call-Id '51-23217@192.168.0.116': while expecting '180' (index 2), received 'SIP/2.0 500 Service Unavailable
+Via: SIP/2.0/UDP 192.168.0.116:5061;branch=z9hG4bK-23217-51-0;rport=5061
+From: "Rahul Kumar" <sip:+919876543210@192.168.0.116>;tag=51
+To: <sip:5006@192.168.0.116>;tag=9119336a071beb9d0d055d34c75a153f-f67b494d
+Call-ID: 51-23217@192.168.0.116
+CSeq: 1 INVITE
+Server: kamailio (6.2.0-dev1 (arm64/darwin))
+Content-Length: 0
+
+'
+2026-08-19	00:53:02.689277	1787080982.689277: Call-Id: 57-23217@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	00:53:06.021434	1787080986.021434: Call-Id: 67-23217@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	00:53:06.685941	1787080986.685941: Call-Id: 69-23217@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	00:53:08.684829	1787080988.684829: Call-Id: 75-23217@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	00:53:09.354793	1787080989.354793: Call-Id: 77-23217@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	00:53:11.688865	1787080991.688865: Call-Id: 84-23217@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	00:53:18.697350	1787080998.697350: Call-Id: 105-23217@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10

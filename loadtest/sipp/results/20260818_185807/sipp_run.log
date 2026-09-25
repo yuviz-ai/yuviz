@@ -1,0 +1,49 @@
+Resolving remote host '192.168.0.116'... Done.
+2026-08-18	18:58:59.621403	1787059739.621403: Call-Id: 21-16552@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+There were more errors, see 'uac_16552_errors.log' file
+------------------------------ Scenario Screen -------- [1-9]: Change Screen --
+  Call rate (length)   Port   Total-time  Total-calls  Remote-host
+  1.0(0 ms)/1.000s   5061      77.23 s           40  192.168.0.116:5060(UDP)
+
+  Call limit 40 hit, 0.0 s period         0 ms scheduler resolution            
+  0 calls (limit 25)                      Peak was 25 calls, after 25 s
+  1 Running, 28 Paused, 334 Woken up
+  0 dead call msg (discarded)             0 out-of-call msg (discarded)
+  0 open sockets                          0/0/0 UDP errors (send/recv/cong)
+  0 open sockets                          0/0/0 UDP errors (send/recv/cong)
+
+                                 Messages  Retrans   Timeout   Unexpected-Msg
+0 :      INVITE ---------->         40        0         0                            
+1 :         100 <----------         40        0         0         0                  
+2 :         180 <----------         0         0         0         0                  
+3 :         183 <----------         0         0         0         0                  
+4 :         200 <----------  E-RTD1 40        0         0         0                  
+5 :         ACK ---------->         40        0                                      
+6 :              [ NOP ]              
+7 :         BYE <----------         38        0         2         0                  
+8 :         200 ---------->         38        0                                      
+9 :              [ NOP ]              
+10:         BYE ---------->         2         0         0                            
+11:         200 <----------         2         0         0         0                  
+------------------------------ Test Terminated --------------------------------
+----------------------------- Statistics Screen ------- [1-9]: Change Screen --
+  Start Time             | 2026-08-18	18:58:07.608350	1787059687.608350         
+  Last Reset Time        | 2026-08-18	18:59:24.850018	1787059764.850018         
+  Current Time           | 2026-08-18	18:59:24.850411	1787059764.850411         
+-------------------------+---------------------------+--------------------------
+  Counter Name           | Periodic value            | Cumulative value
+-------------------------+---------------------------+--------------------------
+  Elapsed Time           | 00:01:17:242000           | 00:01:17:242000          
+  Call Rate              |    0.000 cps              |    0.518 cps             
+-------------------------+---------------------------+--------------------------
+  Incoming calls created |        0                  |        0                 
+  Outgoing calls created |        0                  |       40                 
+  Total Calls created    |                           |       40                 
+  Current Calls          |        0                  |                          
+-------------------------+---------------------------+--------------------------
+  Successful call        |        0                  |       40                 
+  Failed call            |        0                  |        0                 
+-------------------------+---------------------------+--------------------------
+  Response Time 1        | 00:00:00:007000           | 00:00:00:007000          
+  Call Length            | 00:00:30:276000           | 00:00:30:276000          
+------------------------------ Test Terminated --------------------------------

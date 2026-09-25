@@ -1,0 +1,3 @@
+The following events occurred:
+2026-08-19	10:07:13.556591	1787114233.556591: Call-Id: 8-24953@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	10:07:15.892483	1787114235.892483: Call-Id: 15-24953@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10

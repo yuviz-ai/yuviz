@@ -4,11 +4,10 @@ gateway:
     port: 8080
     max_connections: 1000
     timeout_ms: 30000
-    # Bounded wait for mod_audio_fork's metadata text frame (DID/ANI) —
-    # bumped from the 300ms default after two live warm-transfer test
-    # calls both landed right at that boundary and fell back to the
-    # {"default","default"} tenant/agent (no transfer capability at all).
     metadata_wait_ms: 1500
+
+  timers:
+    no_speech_timeout_ms: 60000
 
   logging:
     level: "debug"

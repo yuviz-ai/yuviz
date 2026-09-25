@@ -1,0 +1,22 @@
+═══════════════════════════════════════════════════════
+  Yuviz SIPp Concurrency Load Test
+  Target  : 192.168.0.116:5060 (DID 5006) → FS:5080
+  Rate    : 1 cps | Concurrent: 1 | Total: 1
+  RTP port: 6000+
+  Monitor : true
+  Results : /Users/satish/voice-ai-platform/loadtest/sipp/results/20260819_164830
+  Window  : 2026-08-19 16:48:30 IST → ~16:49:02 IST (~32s expected)
+═══════════════════════════════════════════════════════
+[OK] All files present
+
+[OK] Resource monitor started (pid 34354) → /Users/satish/voice-ai-platform/loadtest/sipp/results/20260819_164830/resource_usage.csv
+
+═══════════════════════════════════════════════════════
+  Execution window: 2026-08-19 16:48:30 IST → 2026-08-19 16:49:02 IST  (0m32s elapsed)
+  Results in: /Users/satish/voice-ai-platform/loadtest/sipp/results/20260819_164830
+  - stats.csv           call success/failure, response times
+  - run_summary.log      this banner + setup messages
+  - uac_<pid>_screens.log SIPp's own live-screen snapshots over time
+  - uac_<pid>_messages.log full SIP message trace
+  - resource_usage.csv   CPU/RSS sampled every 2s during the run
+═══════════════════════════════════════════════════════

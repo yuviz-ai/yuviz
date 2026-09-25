@@ -7,6 +7,7 @@ import {
   ApiError,
   Carrier,
   CarrierProvider,
+  deletePhoneNumber,
   listAllAgents,
   listAllPhoneNumbers,
   listCarriers,
@@ -107,6 +108,16 @@ export default function PhoneNumbersPage() {
     }
   };
 
+  const handleRemove = async (n: PhoneNumberWithTenant) => {
+    if (!confirm(`Remove DID ${n.did}?`)) return;
+    try {
+      await deletePhoneNumber(n.id);
+      refresh();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.detail : String(e));
+    }
+  };
+
   return (
     <>
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14, gap: 10 }}>
@@ -131,6 +142,7 @@ export default function PhoneNumbersPage() {
                 <th>Status</th>
                 <th>Region</th>
                 <th>Provider</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -167,6 +179,16 @@ export default function PhoneNumbersPage() {
                       ) : (
                         <span className="badge amber">unassigned</span>
                       )}
+                    </td>
+                    <td onClick={(e) => e.stopPropagation()}>
+                      <button
+                        className="btn-icon"
+                        style={{ color: "var(--text-2)", cursor: "pointer" }}
+                        onClick={() => handleRemove(n)}
+                        title="Remove DID"
+                      >
+                        ✕
+                      </button>
                     </td>
                   </tr>
                 );

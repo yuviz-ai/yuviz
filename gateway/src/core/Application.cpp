@@ -174,6 +174,9 @@ void Application::initialize() {
         [this](const std::string& call_id) {
             session_manager_->terminate_by_call_id(call_id, "caller_hangup");
         },
+        [this](const std::string& call_id, const std::string& digit) {
+            session_manager_->push_dtmf_to_call(call_id, digit);
+        },
         transfer_correlator_, job_correlator_);
     if (!esl_event_listener_->start())
         throw std::runtime_error("EslEventListener failed to start");

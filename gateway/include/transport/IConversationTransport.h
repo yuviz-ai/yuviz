@@ -143,6 +143,9 @@ public:
                                       const std::string& reason,
                                       const std::string& transfer_id) = 0;
 
+    virtual void send_dtmf(const std::string& session_id,
+                           const std::string& digit) = 0;
+
     // ORDERING CONSTRAINT: set_callbacks() MUST be called before start().
     // Implementations store callbacks without a mutex, relying on this pre-start
     // ordering to establish a happens-before relationship: the lock acquired

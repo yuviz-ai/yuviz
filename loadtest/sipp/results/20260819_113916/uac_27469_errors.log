@@ -1,0 +1,17 @@
+The following events occurred:
+2026-08-19	11:39:50.173538	1787119790.173538: Call-Id: 7-27469@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:39:53.506624	1787119793.506624: Call-Id: 17-27469@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:40:01.509047	1787119801.509047: Call-Id: 41-27469@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:40:07.511390	1787119807.511390: Call-Id: 59-27469@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:40:09.855418	1787119809.855418: Call-Id: 66-27469@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:40:25.847362	1787119825.847362: Call-Id: 97-27469@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:40:27.867095	1787119827.867095: Call-Id: 103-27469@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:40:29.853041	1787119829.853041: Call-Id: 109-27469@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:40:30.536694	1787119830.536694: Call-Id: 111-27469@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:40:31.851900	1787119831.851900: Call-Id: 115-27469@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:40:32.518933	1787119832.518933: Call-Id: 117-27469@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:40:34.520338	1787119834.520338: Call-Id: 123-27469@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:40:36.513747	1787119836.513747: Call-Id: 129-27469@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:40:37.180239	1787119837.180239: Call-Id: 131-27469@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:40:37.510258	1787119837.510258: Call-Id: 132-27469@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
+2026-08-19	11:40:37.843299	1787119837.843299: Call-Id: 133-27469@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10

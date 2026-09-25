@@ -59,8 +59,10 @@ namespace voiceai {
 class EslEventListener : private NonCopyable, private NonMovable {
 public:
     using HangupHandler = std::function<void(const std::string& uuid)>;
+    using DtmfHandler = std::function<void(const std::string& uuid, const std::string& digit)>;
 
     EslEventListener(EslConfig cfg, Logger& logger, HangupHandler on_hangup,
+                      DtmfHandler on_dtmf,
                       TransferCorrelator& transfer_correlator,
                       TransferCorrelator& job_correlator);
     ~EslEventListener();
@@ -79,6 +81,7 @@ private:
     EslConfig           cfg_;
     Logger&             logger_;
     HangupHandler       on_hangup_;
+    DtmfHandler         on_dtmf_;
     TransferCorrelator& transfer_correlator_;
     TransferCorrelator& job_correlator_;
 

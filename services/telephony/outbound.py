@@ -74,20 +74,20 @@ async def place_call(
             hangup_url=f"{_public_base_url()}/{provider}/status/{account.account_ref}?idem={idempotency_key}&event=hangup",
             ring_url=f"{_public_base_url()}/{provider}/status/{account.account_ref}?idem={idempotency_key}&event=ring",
         )
+        # Remember under the vendor's returned call_id immediately — Cloudonix's
+        # fixed answer_url can't carry our ?idem= param, so this is the only way
+        # to match the answer webhook if it fires before this function returns.
+        if identity.agent_slug is not None:
+            outbound_identities.remember(
+                provider, account.account_ref, call_id,
+                tenant_slug=identity.tenant_slug, agent_slug=identity.agent_slug,
+            )
     except (asyncio.TimeoutError, httpx.TimeoutException):
         return await _reconcile_timeout(provider, identity, account, idempotency_key)
     except Exception as exc:
         outcome = {"state": "failed", "error": str(exc)}
         await idempotency.finalize(provider, identity.tenant_id, idempotency_key, outcome)
         return 200, {"ok": False, "error": str(exc)}
-
-    # Also remembered under the vendor's returned call_id — Cloudonix's
-    # fixed answer_url can't carry our ?idem= param, only this.
-    if identity.agent_slug is not None:
-        outbound_identities.remember(
-            provider, account.account_ref, call_id,
-            tenant_slug=identity.tenant_slug, agent_slug=identity.agent_slug,
-        )
 
     outcome = {"state": "done", "call_uuid": call_id}
     await idempotency.finalize(provider, identity.tenant_id, idempotency_key, outcome)
@@ -129,7 +129,11 @@ async def _reconcile_timeout(
     provider: str, identity: OutboundIdentity, account: Account, idempotency_key: str, *, id_field: str = "call_uuid",
 ) -> OutboundResult:
     observed = await idempotency.observed_call_id(provider, identity.tenant_id, idempotency_key)
-    result = await account.instance.reconcile_call(reference=idempotency_key, observed_call_id=observed)
+
+    if id_field == "message_id":
+        result = await account.instance.reconcile_message(reference=idempotency_key, observed_message_id=observed)
+    else:
+        result = await account.instance.reconcile_call(reference=idempotency_key, observed_call_id=observed)
 
     if result.outcome == "placed":
         outcome = {"state": "done", id_field: result.provider_call_id}

@@ -170,8 +170,12 @@ class ToolCallOrchestrator:
                         event, policies_by_name, tenant_id, agent_id, call_id, session_id, turn_id,
                         iteration, caller_number, cancel_event,
                     ))
-                    yield ToolCallStartedEvent(tool_name=event.tool_name)
-                    result = await execute_task
+                    try:
+                        yield ToolCallStartedEvent(tool_name=event.tool_name)
+                        result = await execute_task
+                    except BaseException:
+                        execute_task.cancel()
+                        raise
                 _fold_tool_result_into_history(history, event, result)
                 if result.deterministic_response is not None:
                     yield DeterministicSpokenEvent(

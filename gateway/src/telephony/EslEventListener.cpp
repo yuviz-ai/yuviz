@@ -113,11 +113,13 @@ std::string parse_background_job_result(const std::string& body) {
 } // namespace
 
 EslEventListener::EslEventListener(EslConfig cfg, Logger& logger, HangupHandler on_hangup,
+                                    DtmfHandler on_dtmf,
                                     TransferCorrelator& transfer_correlator,
                                     TransferCorrelator& job_correlator)
     : cfg_(std::move(cfg))
     , logger_(logger)
     , on_hangup_(std::move(on_hangup))
+    , on_dtmf_(std::move(on_dtmf))
     , transfer_correlator_(transfer_correlator)
     , job_correlator_(job_correlator)
 {}
@@ -200,9 +202,10 @@ bool EslEventListener::connect_and_subscribe() {
     // the auth handshake and the outer Content-Length header block.
     // CHANNEL_ANSWER and BACKGROUND_JOB added for warm transfer (see class
     // doc comment) — one subscription command can list multiple event
-    // names space-separated.
+    // names space-separated. DTMF added for DTMF key collection (menu
+    // navigation in call flows).
     const std::string sub_cmd =
-        "event plain CHANNEL_HANGUP CHANNEL_BRIDGE CHANNEL_ANSWER BACKGROUND_JOB\n\n";
+        "event plain CHANNEL_HANGUP CHANNEL_BRIDGE CHANNEL_ANSWER BACKGROUND_JOB DTMF\n\n";
     if (::send(fd, sub_cmd.data(), sub_cmd.size(), 0) < 0) {
         logger_.warn("EslEventListener: send(event subscribe) failed errno={}", errno);
         ::close(fd);
@@ -311,6 +314,12 @@ void EslEventListener::run_loop() {
             } else {
                 logger_.info("EslEventListener: CHANNEL_HANGUP uuid={}", uuid);
                 if (on_hangup_) on_hangup_(uuid);
+            }
+        } else if (event_name == "DTMF") {
+            const std::string digit = parse_header_value(body, "DTMF-Digit");
+            if (!digit.empty() && on_dtmf_) {
+                logger_.info("EslEventListener: DTMF uuid={} digit={}", uuid, digit);
+                on_dtmf_(uuid, digit);
             }
         }
         // Defensive — the subscription already filters to these event
