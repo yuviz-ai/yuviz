@@ -47,7 +47,7 @@ os.environ.setdefault("TOOLEXEC_TENANT_SECRET_ROOT", "/tmp/voiceai-toolexec-test
 os.environ.setdefault("KNOWLEDGE_STORAGE_ROOT", "/tmp/voiceai-knowledge-test-storage")
 os.environ.setdefault("TOOLEXEC_TEST_HMAC_KEY", "dev-only-insecure-hmac-key-do-not-deploy-1")
 os.environ.setdefault("TOOLEXEC_ARGS_HMAC_KEY_REF", "env:TOOLEXEC_TEST_HMAC_KEY")
-os.environ.setdefault("VOBIZ_PUBLIC_BASE_URL", "https://test.example.com")
+os.environ.setdefault("TELEPHONY_PUBLIC_BASE_URL", "https://test.example.com")
 os.makedirs(os.environ["TOOLEXEC_TENANT_SECRET_ROOT"], exist_ok=True)
 if "SECRET_ENCRYPTION_KEY" not in os.environ:
     from cryptography.fernet import Fernet
@@ -166,10 +166,10 @@ def _all_apps():
     from services.config.app import app as config_app
     from services.did.app import app as did_app
     from services.knowledge.app import app as knowledge_app
+    from services.telephony.app import app as telephony_app
     from services.toolexec.app import app as toolexec_app
-    from services.vobiz.app import app as vobiz_app
 
-    return [config_app, campaigns_app, knowledge_app, toolexec_app, did_app, vobiz_app]
+    return [config_app, campaigns_app, knowledge_app, toolexec_app, did_app, telephony_app]
 
 
 # `services/config/routers/tenants.py` mounts under `/tenants/{...}` too
@@ -227,6 +227,17 @@ _TIER3_MODULES = {
     "services.toolexec.routers.custom_apis": ([], {"_authorize_custom_api", "assert_tenant_access"}),
     "services.toolexec.routers.agent_apis": (["services.toolexec.agent_apis"], {"_authorize_agent_api"}),
     "services.did.routers.numbers": ([], {"assert_tenant_access"}),
+    # services/telephony/app.py's outbound routes (/{provider}/call,
+    # /{provider}/call/idempotency/{key}) check the tenant through
+    # auth.resolve_caller_tenant, which awaits assert_tenant_access — a
+    # sibling module, same shape as toolexec's agent_apis delegation above.
+    # The module's two INBOUND webhook routes (/{provider}/voice/{account_ref},
+    # /{provider}/status/{account_ref}) are a deliberately different trust
+    # boundary — the vendor's own signature is the only gate, never a tenant
+    # check (design "Interfaces": inbound routes take no Depends) — this
+    # module-level marker check cannot see that distinction, same coarseness
+    # `services.config.routers.calls` already has for its own mixed routes.
+    "services.telephony.app": (["services.telephony.auth"], {"assert_tenant_access"}),
 }
 
 # The one Tier 4 route this walk can even see: a Tier 4 route is exempted by
@@ -312,6 +323,7 @@ _BYPASS_REASONS = {
     "agent-apis-admin-by-id", "agent-apis-admin-mutation", "agent-apis-chain-runs",
     "did-purchased-number-by-id",
     "conversation-reconcile-sweep",
+    "telephony-account-preload",
 }
 
 # Sites where a platform-branch mutation genuinely has no tenant to stamp

@@ -96,8 +96,8 @@ export const createTenant = (body: TenantCreate) =>
   request<Tenant>("/tenants", { method: "POST", body: JSON.stringify(body) });
 export const updateTenant = (tenantId: string, body: TenantUpdate) =>
   request<Tenant>(`/tenants/${tenantId}`, { method: "PATCH", body: JSON.stringify(body) });
-export const deleteTenant = (tenantId: string) =>
-  request<void>(`/tenants/${tenantId}`, { method: "DELETE" });
+export const deleteTenant = (tenantId: string, force?: boolean) =>
+  request<void>(`/tenants/${tenantId}${force ? "?force=true" : ""}`, { method: "DELETE" });
 
 // ── Provider Configs ─────────────────────────────────────────────────────
 
@@ -167,8 +167,8 @@ export interface ProviderConfigUpdate {
 
 export const updateProvider = (providerId: string, body: ProviderConfigUpdate) =>
   request<ProviderConfig>(`/providers/${providerId}`, { method: "PATCH", body: JSON.stringify(body) });
-export const deleteProvider = (providerId: string) =>
-  request<void>(`/providers/${providerId}`, { method: "DELETE" });
+export const deleteProvider = (providerId: string, force?: boolean) =>
+  request<void>(`/providers/${providerId}${force ? "?force=true" : ""}`, { method: "DELETE" });
 
 export interface ElevenLabsVoiceVerifiedLanguage {
   language: string; // validated ISO 639-1 code — unlike labels.language, which is arbitrary free text
@@ -385,6 +385,7 @@ export interface PhoneNumber {
   agent_id: string | null;
   fallback_agent_id: string | null;
   carrier_id: string | null;
+  telephony_config_id: string | null;
   status: PhoneNumberStatus;
   region: string | null;
   created_at: string;
@@ -396,6 +397,7 @@ export interface PhoneNumberCreate {
   agent_id?: string;
   fallback_agent_id?: string;
   carrier_id?: string;
+  telephony_config_id?: string;
   region?: string;
   status?: PhoneNumberStatus;
 }
@@ -404,6 +406,9 @@ export interface PhoneNumberUpdate {
   did?: string;
   agent_id?: string | null;
   fallback_agent_id?: string | null;
+  carrier_id?: string | null;
+  telephony_config_id?: string | null;
+  region?: string;
   status?: PhoneNumberStatus;
 }
 
@@ -439,9 +444,64 @@ export interface CarrierCreate {
   carrier_account_ref?: string;
 }
 
+export interface CarrierUpdate {
+  name?: string;
+  auth_id?: string;
+  auth_token_ref?: string;
+  carrier_account_ref?: string;
+}
+
 export const listCarriers = (tenantId: string) => request<Carrier[]>(`/tenants/${tenantId}/carriers`);
 export const createCarrier = (tenantId: string, body: CarrierCreate) =>
   request<Carrier>(`/tenants/${tenantId}/carriers`, { method: "POST", body: JSON.stringify(body) });
+export const updateCarrier = (carrierId: string, body: CarrierUpdate) =>
+  request<Carrier>(`/carriers/${carrierId}`, { method: "PATCH", body: JSON.stringify(body) });
+
+// ── Telephony Configs ────────────────────────────────────────────────────
+// Cloudonix/Vobiz — webhook-style providers, no DID purchasing. Kept as a
+// separate table/service from Carriers (see services/config/telephony_configs.py) —
+// this binding mirrors listCarriers/createCarrier above rather than being
+// folded into it.
+
+export type TrunkHealth = "healthy" | "degraded" | "standby";
+
+export interface TelephonyConfig {
+  id: string;
+  tenant_id: string;
+  name: string;
+  provider: string;
+  credentials: Record<string, unknown>;
+  is_default_outbound: boolean;
+  health?: { status: TrunkHealth; checked_at: string | null };
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TelephonyConfigCreate {
+  name: string;
+  provider: string;
+  credentials: Record<string, unknown>;
+  is_default_outbound?: boolean;
+}
+
+export interface TelephonyConfigUpdate {
+  name?: string;
+  credentials?: Record<string, unknown>;
+  is_default_outbound?: boolean;
+}
+
+export const listTelephonyConfigs = (tenantId: string) =>
+  request<TelephonyConfig[]>(`/tenants/${tenantId}/telephony-configs`);
+export const createTelephonyConfig = (tenantId: string, body: TelephonyConfigCreate) =>
+  request<TelephonyConfig>(`/tenants/${tenantId}/telephony-configs`, { method: "POST", body: JSON.stringify(body) });
+export const getTelephonyConfig = (configId: string) =>
+  request<TelephonyConfig>(`/telephony-configs/${configId}`);
+export const updateTelephonyConfig = (configId: string, body: TelephonyConfigUpdate) =>
+  request<TelephonyConfig>(`/telephony-configs/${configId}`, { method: "PATCH", body: JSON.stringify(body) });
+export const setDefaultOutboundTelephonyConfig = (configId: string) =>
+  request<TelephonyConfig>(`/telephony-configs/${configId}/set-default-outbound`, { method: "POST" });
+export const listTelephonyProviders = () =>
+  request<Record<string, { required: string[]; sensitive: string[] }>>("/telephony-providers");
 
 // Same reasoning as listAllAgents() — no cross-tenant list endpoint exists
 // server-side, composed client-side for the Admin UI's aggregate view.
@@ -1206,6 +1266,9 @@ export const assignPurchasedNumber = (purchasedNumberId: string, phoneNumberId: 
     `/numbers/${purchasedNumberId}/assign?phone_number_id=${encodeURIComponent(phoneNumberId)}`,
     { method: "PATCH" },
   );
+
+export const releaseNumber = (purchasedNumberId: string) =>
+  didRequest<PurchasedNumber>(`/numbers/${purchasedNumberId}/release`, { method: "POST" });
 
 // ── Campaign Service (services/campaigns/, port 8400) ───────────────────
 // Own service/port, same reasoning as DID Service above — outbound calling

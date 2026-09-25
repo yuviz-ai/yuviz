@@ -47,6 +47,12 @@ async def create_campaign(
     # misleading "blocked by CORS policy" fetch failure).
     if not await campaigns_service.agent_exists_for_tenant(tenant_id, body.agent_id):
         raise HTTPException(status_code=422, detail="agent_id must reference an existing agent for this tenant")
+    # caller_id is the outbound caller-id identity every dial presents —
+    # unvalidated, a campaign could present another tenant's provisioned
+    # DID (or an arbitrary number) as its own (security finding: unowned
+    # caller_id falls through to the unchecked ESL path at dial time).
+    if not await campaigns_service.caller_id_owned_by_tenant(tenant_id, body.caller_id):
+        raise HTTPException(status_code=422, detail="caller_id must be a DID provisioned for this tenant")
     return await campaigns_service.create_campaign(
         tenant_id, agent_id=body.agent_id, name=body.name, caller_id=body.caller_id,
         max_concurrent_calls=body.max_concurrent_calls, pacing_seconds=body.pacing_seconds,
@@ -77,6 +83,10 @@ async def update_campaign(
         f"campaign {campaign_id!r} not found",
     )
     await assert_tenant_access(campaign["tenant_id"], current_user)
+    if body.caller_id is not None and not await campaigns_service.caller_id_owned_by_tenant(
+        campaign["tenant_id"], body.caller_id,
+    ):
+        raise HTTPException(status_code=422, detail="caller_id must be a DID provisioned for this tenant")
     return await campaigns_service.update_campaign(
         campaign_id, body.model_dump(),
         platform_scoped=is_platform_scoped(current_user), user_id=current_user.id, user_email=current_user.email,
@@ -90,7 +100,7 @@ async def get_progress(campaign_id: str, current_user: CurrentUser = Depends(get
         f"campaign {campaign_id!r} not found",
     )
     await assert_tenant_access(campaign["tenant_id"], current_user)
-    return await campaigns_service.get_progress(campaign_id)
+    return await campaigns_service.get_progress(campaign_id, platform_scoped=is_platform_scoped(current_user))
 
 
 @router.get("/{campaign_id}/contacts")
@@ -103,7 +113,9 @@ async def list_contacts(
         f"campaign {campaign_id!r} not found",
     )
     await assert_tenant_access(campaign["tenant_id"], current_user)
-    return await campaign_contacts.list_contacts(campaign_id, status=status)
+    return await campaign_contacts.list_contacts(
+        campaign_id, status=status, platform_scoped=is_platform_scoped(current_user),
+    )
 
 
 @router.post("/{campaign_id}/contacts/upload", status_code=201)
@@ -126,11 +138,16 @@ async def upload_contacts(
     # blocked number never even enters the queue as 'pending' — the
     # worker's own check is defense in depth for numbers added to the DNC
     # list after upload, not the primary enforcement point.
-    blocked = {dnc.normalize_phone(row["phone_number"]) for row in await dnc.list_numbers(campaign["tenant_id"])}
+    blocked = {
+        dnc.normalize_phone(row["phone_number"])
+        for row in await dnc.list_numbers(campaign["tenant_id"], platform_scoped=is_platform_scoped(current_user))
+    }
     allowed = [c for c in contacts if dnc.normalize_phone(c["phone_number"]) not in blocked]
     skipped_dnc = len(contacts) - len(allowed)
 
-    inserted = await campaign_contacts.bulk_insert_contacts(campaign_id, allowed)
+    inserted = await campaign_contacts.bulk_insert_contacts(
+        campaign_id, allowed, platform_scoped=is_platform_scoped(current_user),
+    )
     return {"inserted": inserted, "skipped_dnc": skipped_dnc}
 
 

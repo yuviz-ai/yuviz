@@ -343,21 +343,23 @@ class CarrierUpdate(BaseModel):
 
 
 class PhoneNumberCreate(BaseModel):
-    did:               str
-    agent_id:          str | None = None
-    fallback_agent_id: str | None = None
-    carrier_id:        str | None = None
-    region:            str | None = None
-    status:            Literal["active", "inactive", "suspended"] = "active"
+    did:                 str
+    agent_id:            str | None = None
+    fallback_agent_id:   str | None = None
+    carrier_id:          str | None = None
+    telephony_config_id: str | None = None
+    region:              str | None = None
+    status:              Literal["active", "inactive", "suspended"] = "active"
 
 
 class PhoneNumberUpdate(BaseModel):
-    did:               str | None = None
-    agent_id:          str | None = None
-    fallback_agent_id: str | None = None
-    carrier_id:        str | None = None
-    region:            str | None = None
-    status:            Literal["active", "inactive", "suspended"] | None = None
+    did:                 str | None = None
+    agent_id:            str | None = None
+    fallback_agent_id:   str | None = None
+    carrier_id:          str | None = None
+    telephony_config_id: str | None = None
+    region:              str | None = None
+    status:              Literal["active", "inactive", "suspended"] | None = None
 
 
 class LoginRequest(BaseModel):

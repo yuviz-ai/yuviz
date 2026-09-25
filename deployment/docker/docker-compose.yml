@@ -196,6 +196,35 @@ services:
       retries: 30
       start_period: 15s
 
+  telephony:
+    <<: *python-service
+    command: ["python", "-m", "services.telephony"]
+    environment:
+      PORT: "8750"
+      TELEPHONY_PUBLIC_BASE_URL: ${TELEPHONY_PUBLIC_BASE_URL:-}
+      CONFIG_SERVICE_URL: http://config:8000
+      CONFIG_SERVICE_EMAIL: ${CONFIG_SERVICE_EMAIL}
+      CONFIG_SERVICE_PASSWORD: ${CONFIG_SERVICE_PASSWORD}
+      SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:-}
+      CAMPAIGNS_SERVICE_URL: http://campaigns:8400
+      CONVERSATION_SVC_TARGET: conversation:50051
+      LOG_LEVEL: INFO
+    # Own bind/port variables, never the shared BIND_ADDR — that variable
+    # also publishes Postgres, Redis and the unauthenticated conversation
+    # gRPC port (docs/docker-startup.md:423). See docs/telephony.md for
+    # the exposure model this service actually needs.
+    ports:
+      - "${TELEPHONY_BIND_ADDR:-127.0.0.1}:${TELEPHONY_PORT:-8750}:8750"
+    depends_on:
+      conversation:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8750/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+
   admin-ui:
     build:
       context: .

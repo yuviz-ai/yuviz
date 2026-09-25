@@ -54,6 +54,14 @@ TRANSCRIPT_ROLES = frozenset({"superadmin", "admin"})
 
 AUTHORITY_MEMO_TTL_S = 60
 
+# Same TTL as the live-calls memo below, kept as its own constant/dict
+# (_console_authority_memo, not _live_calls_authority_memo) because the two
+# checks mean different things — this one just answers "does this user's row
+# still exist", not "is this role still in some route-specific set" — and
+# sharing one dict for both would let either concern silently affect the
+# other's cached result.
+CONSOLE_AUTHORITY_MEMO_TTL_S = 60
+
 # scope_key is attacker-influenced (it's the tenant_slug query/body param) —
 # an actor hammering GET/POST live-calls with many distinct nonexistent
 # slugs must not be able to grow the memo without bound (finding #8). This
@@ -79,7 +87,16 @@ async def get_authenticated_user(authorization: str | None = Header(default=None
     return user
 
 
-async def get_current_user(user: CurrentUser = Depends(get_authenticated_user)) -> CurrentUser:
+async def get_current_user(
+    request: Request, user: CurrentUser = Depends(get_authenticated_user),
+) -> CurrentUser:
+    # Re-reads `users` (memoized — see fresh_console_authority) before the
+    # role gate below, so a soft-deleted user's still-valid-until-expiry JWT
+    # is rejected here instead of only at /auth/me (lesson 35: a JWT claim is
+    # a login-time snapshot, not a live fact). This is every console route's
+    # shared identity-resolution point, so putting the check here — rather
+    # than in each router — is what actually closes it everywhere at once.
+    user = await fresh_console_authority(request.app.state, user)
     if user.role not in CONSOLE_ROLES:
         raise HTTPException(status_code=403, detail=f"role {user.role!r} cannot access this service")
     return user
@@ -230,6 +247,55 @@ async def assert_current_authority(user: CurrentUser) -> CurrentUser:
     if fresh_tenant_id != user.tenant_id:
         raise HTTPException(status_code=403, detail="account tenant has changed; sign in again")
     return _row_to_effective_user(row)
+
+
+async def fresh_console_authority(app_state: Any, user: CurrentUser) -> CurrentUser:
+    """The console-wide analogue of fresh_authority() below, run inside
+    get_current_user() itself so no router can be missed. Re-reads `users`
+    WHERE id=$1 AND deleted_at IS NULL and 401s if the row is gone — closing
+    the gap where a soft-deleted user's JWT kept full API access (including
+    writes) until natural expiry, with only /auth/me re-checking the
+    database (07-qa-report.md finding #1).
+
+    Only checks existence, not role/tenant drift — get_current_user()'s own
+    CONSOLE_ROLES gate runs on the row's current role (via
+    _row_to_effective_user) immediately after this returns, so a demoted
+    user is still caught there rather than silently kept at their token's
+    stale role.
+
+    Memoized per user.id for CONSOLE_AUTHORITY_MEMO_TTL_S in an in-process
+    dict on app_state (same bounded/LRU-evicted shape as fresh_authority()'s
+    memo, just keyed on user.id alone — there is no per-request scope_key
+    here, unlike the live-calls tenant-switch case) — bounds worst-case
+    revocation lag to that TTL instead of the token's full ACCESS_TOKEN_TTL
+    (12h), at the cost of one Postgres row-read per cache miss instead of
+    per request."""
+    memo: OrderedDict[str, tuple[float, CurrentUser]] = getattr(
+        app_state, "_console_authority_memo", None,
+    )
+    if memo is None:
+        memo = OrderedDict()
+        app_state._console_authority_memo = memo
+
+    now = time.monotonic()
+    cached = memo.get(user.id)
+    if cached is not None and now - cached[0] < CONSOLE_AUTHORITY_MEMO_TTL_S:
+        memo.move_to_end(user.id)
+        return cached[1]
+
+    row = await users_service.get_user_by_id(user.id)
+    if row is None:
+        # Same posture as /auth/me: a validly-signed token whose user row is
+        # gone is treated as an expired token (401), not a 404 that would
+        # leak whether the id ever existed.
+        raise HTTPException(status_code=401, detail="user no longer exists")
+
+    effective_user = _row_to_effective_user(row)
+    memo[user.id] = (now, effective_user)
+    memo.move_to_end(user.id)
+    while len(memo) > AUTHORITY_MEMO_MAX_ENTRIES:
+        memo.popitem(last=False)
+    return effective_user
 
 
 async def fresh_authority(

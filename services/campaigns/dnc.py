@@ -53,22 +53,21 @@ async def remove_number(dnc_id: Any, *, platform_scoped: bool = False, stamp_ten
         await conn.execute("DELETE FROM dnc_numbers WHERE id = $1", dnc_id)
 
 
-async def list_numbers(tenant_id: Any) -> list[dict[str, Any]]:
+async def list_numbers(tenant_id: Any, *, platform_scoped: bool = False) -> list[dict[str, Any]]:
     pool = await db.get_pool()
-    async with tenant_conn(pool) as conn:
+    conn_cm = platform_conn(pool, reason="campaign-by-id") if platform_scoped else tenant_conn(pool)
+    async with conn_cm as conn:
         rows = await conn.fetch(
             "SELECT * FROM dnc_numbers WHERE tenant_id = $1 ORDER BY created_at DESC", tenant_id,
         )
     return [dict(row) for row in rows]
 
 
-async def is_blocked(tenant_id: Any, phone_number: str) -> bool:
-    """Loads the tenant's DNC list and matches client-side by normalized
-    digits — same shape as cal_com.py's find_upcoming_bookings(), and
-    small enough (a tenant's own opt-out list, not a global registry) that
-    this isn't a real cost even called once per contact per CSV upload."""
+async def is_blocked(tenant_id: Any, phone_number: str, *, platform_scoped: bool = False) -> bool:
+    """Loads the tenant's DNC list and matches client-side by normalized digits."""
     pool = await db.get_pool()
-    async with tenant_conn(pool) as conn:
+    conn_cm = platform_conn(pool, reason="campaign-by-id") if platform_scoped else tenant_conn(pool)
+    async with conn_cm as conn:
         rows = await conn.fetch("SELECT phone_number FROM dnc_numbers WHERE tenant_id = $1", tenant_id)
     target = normalize_phone(phone_number)
     return any(normalize_phone(row["phone_number"]) == target for row in rows)

@@ -2,22 +2,24 @@
 
 import { useEffect, useState } from "react";
 import {
+  Agent,
   ApiError,
   createProvider,
   deleteProvider,
+  listAgents,
   listProviders,
-  listTenants,
   ProviderConfig,
   ProviderConfigCreate,
   ProviderConfigUpdate,
   ProviderEnvironment,
   ProviderRole,
-  Tenant,
   updateProvider,
 } from "@/lib/api";
+import { listKnowledgeBases } from "@/lib/knowledgeApi";
 import { Modal } from "@/components/Modal";
 import { SecretRefInput, secretPayload } from "./SecretRefInput";
 import { EMBEDDING_MODELS_BY_ENGINE, ENGINES_BY_ROLE, LOCAL_ENGINES, MODELS_BY_ENGINE, OTHER, VOICES_BY_ENGINE } from "@/lib/engineCatalog";
+import { useActiveTenant } from "@/lib/useActiveTenant";
 
 const ALL_ROLES: ProviderRole[] = ["stt", "llm", "tts"];
 const ENVIRONMENTS: ProviderEnvironment[] = ["prod", "staging", "dev"];
@@ -31,13 +33,21 @@ const emptyForm = (defaultRole: ProviderRole): ProviderConfigCreate => ({
 
 export function ProvidersPanel({ allowedRoles = ALL_ROLES, title }: { allowedRoles?: ProviderRole[]; title?: string }) {
   const ROLES = allowedRoles;
-  const [tenants, setTenants] = useState<Tenant[]>([]);
-  const [tenantId, setTenantId] = useState<string>("");
+  const { tenant: activeTenant, isAllTenants, loading: tenantLoading } = useActiveTenant();
+  const tenantId = activeTenant?.id ?? "";
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<ProviderConfig | null>(null);
+
+  const [deleteTarget, setDeleteTarget] = useState<ProviderConfig | null>(null);
+  // null = still checking; stt/llm/tts are used by agents, embedding by knowledge bases.
+  const [deleteResourceType, setDeleteResourceType] = useState<"agent" | "knowledge_base" | null>(null);
+  const [deleteResourceNames, setDeleteResourceNames] = useState<string[] | null>(null);
+  const [deleteChecking, setDeleteChecking] = useState(false);
+  const [deleteSubmitting, setDeleteSubmitting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const [form, setForm] = useState<ProviderConfigCreate>(emptyForm(allowedRoles[0]));
   const [modelChoice, setModelChoice] = useState<string>("");
@@ -46,13 +56,6 @@ export function ProvidersPanel({ allowedRoles = ALL_ROLES, title }: { allowedRol
   const [customVoice, setCustomVoice] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
-
-  useEffect(() => {
-    listTenants().then((ts) => {
-      setTenants(ts);
-      if (ts.length > 0) setTenantId(ts[0].id);
-    });
-  }, []);
 
   const refresh = () => {
     if (!tenantId) return;
@@ -84,9 +87,7 @@ export function ProvidersPanel({ allowedRoles = ALL_ROLES, title }: { allowedRol
   };
 
   const handleEngineChange = (engine: string) => {
-    // Local engines have no credential of their own — drop whatever was
-    // typed for the previous (cloud) engine rather than silently saving
-    // it against one that will never read it.
+    // Local engines have no credential of their own.
     setForm({ ...form, engine, api_key_ref: LOCAL_ENGINES.has(engine) ? undefined : form.api_key_ref });
     setModelChoice("");
     setCustomModel("");
@@ -125,8 +126,6 @@ export function ProvidersPanel({ allowedRoles = ALL_ROLES, title }: { allowedRol
           environment: form.environment,
           model,
           voice,
-          // A pasted key goes to `api_key` (encrypted server-side); a
-          // pointer goes to api_key_ref verbatim. See secretPayload.
           ...secretPayload(form.api_key_ref || "", editing.api_key_ref || ""),
         };
         await updateProvider(editing.id, body);
@@ -144,13 +143,71 @@ export function ProvidersPanel({ allowedRoles = ALL_ROLES, title }: { allowedRol
     }
   };
 
-  const handleDelete = async (p: ProviderConfig) => {
-    if (!confirm(`Delete provider "${p.name}"? This cannot be undone.`)) return;
+  const openDelete = async (p: ProviderConfig) => {
+    setDeleteTarget(p);
+    setDeleteResourceType(null);
+    setDeleteResourceNames(null);
+    setDeleteError(null);
+    setDeleteChecking(true);
     try {
-      await deleteProvider(p.id);
+      if (p.role === "embedding") {
+        const kbs = await listKnowledgeBases(p.tenant_id);
+        setDeleteResourceType("knowledge_base");
+        setDeleteResourceNames(
+          kbs.filter((k) => k.status === "active" && k.embedding_config_id === p.id).map((k) => k.name),
+        );
+      } else if (p.role === "stt" || p.role === "llm" || p.role === "tts") {
+        const tenantSlug = activeTenant?.id === p.tenant_id ? activeTenant.slug : undefined;
+        const agents: Agent[] = tenantSlug ? await listAgents(tenantSlug) : [];
+        const column = `${p.role}_config_id` as "stt_config_id" | "llm_config_id" | "tts_config_id";
+        setDeleteResourceType("agent");
+        setDeleteResourceNames(
+          agents.filter((a) => a.status === "active" && a[column] === p.id).map((a) => a.name),
+        );
+      } else {
+        setDeleteResourceNames([]);
+      }
+    } catch (e) {
+      setDeleteError(e instanceof ApiError ? e.detail : String(e));
+    } finally {
+      setDeleteChecking(false);
+    }
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!deleteTarget) return;
+    setDeleteSubmitting(true);
+    setDeleteError(null);
+    try {
+      await deleteProvider(deleteTarget.id);
+      setDeleteTarget(null);
       refresh();
     } catch (e) {
-      setError(e instanceof ApiError ? e.detail : String(e));
+      // 409 carries resource names — switch to the blocked variant.
+      if (e instanceof ApiError && e.status === 409 && e.body?.resource_names) {
+        setDeleteResourceType(e.body.resource_type as "agent" | "knowledge_base");
+        setDeleteResourceNames(e.body.resource_names as string[]);
+      } else {
+        setDeleteError(e instanceof ApiError ? e.detail : String(e));
+      }
+    } finally {
+      setDeleteSubmitting(false);
+    }
+  };
+
+  const handleForceDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleteSubmitting(true);
+    setDeleteError(null);
+    try {
+      await deleteProvider(deleteTarget.id, true);
+      setDeleteTarget(null);
+      setDeleteResourceNames(null);
+      refresh();
+    } catch (e) {
+      setDeleteError(e instanceof ApiError ? e.detail : String(e));
+    } finally {
+      setDeleteSubmitting(false);
     }
   };
 
@@ -159,14 +216,7 @@ export function ProvidersPanel({ allowedRoles = ALL_ROLES, title }: { allowedRol
 
   return (
     <>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 14, gap: 10 }}>
-        <select className="form-select" style={{ width: 240 }} value={tenantId} onChange={(e) => setTenantId(e.target.value)}>
-          {tenants.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.name}
-            </option>
-          ))}
-        </select>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14, gap: 10 }}>
         <button className="btn btn-primary btn-sm" onClick={openCreate} disabled={!tenantId}>
           + New Provider
         </button>
@@ -180,8 +230,10 @@ export function ProvidersPanel({ allowedRoles = ALL_ROLES, title }: { allowedRol
             <div className="card-title">{title}</div>
           </div>
         )}
-        {loading ? (
+        {tenantLoading || loading ? (
           <div className="empty-state">Loading…</div>
+        ) : isAllTenants ? (
+          <div className="empty-state">Select a specific account above to view and manage its providers.</div>
         ) : providers.length === 0 ? (
           <div className="empty-state">No providers configured for this tenant yet.</div>
         ) : (
@@ -214,7 +266,7 @@ export function ProvidersPanel({ allowedRoles = ALL_ROLES, title }: { allowedRol
                     <button className="btn btn-ghost btn-sm" onClick={() => openEdit(p)}>
                       Edit
                     </button>{" "}
-                    <button className="btn btn-danger btn-sm" onClick={() => handleDelete(p)}>
+                    <button className="btn btn-danger btn-sm" onClick={() => openDelete(p)}>
                       Delete
                     </button>
                   </td>
@@ -400,6 +452,85 @@ export function ProvidersPanel({ allowedRoles = ALL_ROLES, title }: { allowedRol
           </div>
         )}
       </Modal>
+
+      {(() => {
+        const isBlocked = deleteResourceNames !== null && deleteResourceNames.length > 0;
+        const resourceLabel = deleteResourceType === "knowledge_base" ? "Knowledge bases" : "Agents";
+        return (
+          <Modal
+            open={deleteTarget !== null}
+            title={
+              deleteChecking
+                ? `Checking "${deleteTarget?.name}"…`
+                : isBlocked
+                  ? `Can't delete "${deleteTarget?.name}"`
+                  : `Delete "${deleteTarget?.name}"?`
+            }
+            onClose={() => setDeleteTarget(null)}
+            footer={
+              deleteChecking ? (
+                <button className="btn btn-ghost btn-sm" onClick={() => setDeleteTarget(null)}>Cancel</button>
+              ) : isBlocked ? (
+                <>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setDeleteTarget(null)}>Cancel</button>
+                  <button className="btn btn-danger btn-sm" onClick={handleForceDelete} disabled={deleteSubmitting}>
+                    {deleteSubmitting ? "Deleting…" : "Force delete anyway"}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setDeleteTarget(null)}>Cancel</button>
+                  <button className="btn btn-danger btn-sm" onClick={handleDeleteConfirm} disabled={deleteSubmitting}>
+                    {deleteSubmitting ? "Deleting…" : "Delete provider"}
+                  </button>
+                </>
+              )
+            }
+          >
+            {deleteError && <div className="error-banner">{deleteError}</div>}
+            {deleteChecking ? (
+              <p style={{ fontSize: ".78rem", color: "var(--text-3)" }}>
+                Checking for agents and knowledge bases still using this provider…
+              </p>
+            ) : isBlocked && deleteResourceNames ? (
+              <>
+                <div style={{ padding: "10px 0", borderBottom: "1px solid var(--border-2)", marginBottom: 12 }}>
+                  <div style={{ fontSize: ".64rem", color: "var(--text-3)", textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 3 }}>
+                    {resourceLabel} using this provider
+                  </div>
+                  <div style={{ fontSize: "1rem", fontFamily: "var(--mono)", color: "var(--text)" }}>{deleteResourceNames.length}</div>
+                </div>
+                <p style={{
+                  fontSize: ".78rem", color: "var(--text-2)", lineHeight: 1.5,
+                  borderLeft: "2px solid var(--red-border)", padding: "6px 0 6px 10px", margin: 0,
+                }}>
+                  {(() => {
+                    const many = deleteResourceNames.length > 1;
+                    const consequence = deleteResourceType === "knowledge_base"
+                      ? `the next document it ingests, or query it answers, would fail to resolve its embedding provider the moment this provider is gone. Reassign ${many ? "them" : "it"} to a different embedding provider first`
+                      : `the next call ${many ? "either handles" : "it handles"} would fail to resolve it mid-setup the moment this provider is gone. Reassign ${many ? "them" : "it"} to a different provider first`;
+                    return (
+                      <>
+                        <b>{deleteResourceNames.join(", ")}</b>{" "}
+                        {`${many ? "use" : "uses"} this provider right now — ${consequence}, or force the delete if you're certain.`}
+                      </>
+                    );
+                  })()}
+                </p>
+              </>
+            ) : (
+              <p style={{
+                fontSize: ".78rem", color: "var(--text-2)", lineHeight: 1.5,
+                borderLeft: "2px solid var(--green-border)", padding: "6px 0 6px 10px", margin: 0,
+              }}>
+                {deleteResourceType === "knowledge_base"
+                  ? "No active knowledge bases use this provider."
+                  : "No active agents use this provider."} This cannot be undone.
+              </p>
+            )}
+          </Modal>
+        );
+      })()}
     </>
   );
 }

@@ -35,9 +35,11 @@ from .directives import (
     TransferRequest,
     strip_markdown_chars,
 )
+from .fillers import FillerSelector
 from .guardrails import GuardrailCounter, GuardrailDetector
 from .metrics import IMetrics, NullMetrics
 from .provider_bundle import ProviderBundle
+from .tool_latency import ToolLatencyStore
 from .providers.interfaces import ChatMessage, SttResult
 from .session import HandlerResponse
 from .session_finalizer import FinalizationResult, SessionFinalizer
@@ -78,7 +80,7 @@ class _SessionState:
     pending_transfer:                "TransferRequest | None" = None
     transfer_requested:              bool = False
     pending_recovery_turns:          list[tuple[str, str, bool]] = field(default_factory=list)
-    tool_call_filler_index:          int = 0
+    tool_call_filler_last_phrase:    str | None = None
     tool_call_filler_last_spoken:    float | None = None
     first_turn_filler_spoken:        bool = False
     fabrication_triggered_transfer:  bool = False
@@ -279,20 +281,6 @@ _MAX_DURATION_GOODBYE = (
 # conversational choice — same posture as _FALLBACK_GOODBYE above.
 _FALLBACK_LLM_ERROR = "Sorry, I'm having a little trouble right now. Could you say that again?"
 
-# Spoken the instant a tool call starts — covers dead air during a slow
-# tool round-trip (e.g. a calendar API call). Rotates (not one fixed
-# phrase) since a multi-tool-call turn repeating the same line sounded
-# robotic; see _TOOL_CALL_FILLER_MIN_GAP_S for the other half (spacing).
-_TOOL_CALL_FILLERS = (
-    "Let me check that for you.",
-    "One moment.",
-    "Just a second.",
-    "Give me a moment.",
-)
-
-# Collapses a rapid-fire tool-call burst (no real user speech between
-# calls — see orchestrator.py's run_turn() while-loop) down to one filler
-# instead of several stacked back to back.
 _TOOL_CALL_FILLER_MIN_GAP_S = 4.0
 
 # Spoken on the caller's very first utterance, before the LLM call starts —
@@ -475,7 +463,11 @@ class PipelineConversationHandler:
         tool_orchestrator: ToolCallOrchestrator | None = None,
         has_booking_tool: bool = False,
         initial_variables: dict[str, Any] | None = None,
+        latency_store: ToolLatencyStore | None = None,
+        filler_selector: FillerSelector | None = None,
     ) -> None:
+        self._latency_store = latency_store
+        self._filler_selector = filler_selector or FillerSelector()
         self._default_system_prompt = (default_system_prompt or "").strip()
         self._stt          = provider_bundle.stt
         self._llm          = provider_bundle.llm
@@ -1089,7 +1081,19 @@ class PipelineConversationHandler:
         # them talking means the agent's decision to end the call is stale.
         # Also not if a transfer is about to happen instead (see comment
         # above) — ending the call would make the transfer unreachable.
-        if end_call and not cancel_event.is_set() and transfer_request is None:
+        # Also not on a fabricated booking claim that DIDN'T escalate to a
+        # transfer (an escalating one already has transfer_request set by
+        # now, so it's covered by the check above): confirmed live, this
+        # exact turn shape — a false "booked" claim plus the LLM's own
+        # [[END_CALL]] marker in the same reply — ended the call with the
+        # lie as the last thing the caller heard, before the "Correction"
+        # message injected into history above ever got a turn to be
+        # spoken. Suppressing end_call here just keeps the line open for
+        # that correction turn; it does not undo the fabricated claim
+        # already streamed to TTS (see the comment above
+        # fabricated_booking_claim's definition — that's still unfixable
+        # after the fact).
+        if end_call and not cancel_event.is_set() and transfer_request is None and not fabricated_booking_claim:
             got_farewell_audio = False
             if self._farewell_message:
                 # Scripted farewell — spoken verbatim as the turn's closing
@@ -1551,17 +1555,19 @@ class PipelineConversationHandler:
                             first = False
                     continue
                 if isinstance(item, ToolCallStartedEvent):
-                    # Rotates through _TOOL_CALL_FILLERS, gap-suppressed by
-                    # _TOOL_CALL_FILLER_MIN_GAP_S — see both constants' own
-                    # comments for why neither alone was enough.
                     now = time.monotonic()
                     state = self._session(session_id)
                     last_spoken = state.tool_call_filler_last_spoken
                     if last_spoken is None or (now - last_spoken) >= _TOOL_CALL_FILLER_MIN_GAP_S:
                         state.tool_call_filler_last_spoken = now
-                        idx = state.tool_call_filler_index
-                        state.tool_call_filler_index = idx + 1
-                        phrase = _TOOL_CALL_FILLERS[idx % len(_TOOL_CALL_FILLERS)]
+                        average_ms = (
+                            self._latency_store.average_ms(self._tenant_id, self._agent_id or "", item.tool_name)
+                            if self._latency_store is not None else None
+                        )
+                        phrase = self._filler_selector.select_tool_filler(
+                            item.tool_name, state.tool_call_filler_last_phrase, average_ms,
+                        )
+                        state.tool_call_filler_last_phrase = phrase
                         any_filler_chunk = False
                         async for chunk in self._synthesize_sentence_stream(phrase, session_id):
                             if not any_filler_chunk:

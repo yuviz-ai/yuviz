@@ -13,6 +13,7 @@ live validation is a separate, manual, uncommitted concern.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
@@ -175,6 +176,57 @@ async def test_cancel_stream_closes_the_connection_without_finalizing():
     # stream was already dropped by cancel_stream, not left dangling.
     result = await stt.finalize_stream("s1", b"unused", 16000)
     assert result.text == ""
+
+
+async def test_keepalive_sent_during_silence(monkeypatch):
+    # Real interval is 8s — shrink it so the test doesn't actually wait.
+    monkeypatch.setattr(
+        "services.conversation.providers.stt.deepgram._KEEPALIVE_INTERVAL_S", 0.01,
+    )
+    stt, fake_ws = _make_streaming_stt([])
+
+    await stt.feed_stream("s1", b"\x01", 16000)
+    await asyncio.sleep(0.05)  # let the keepalive loop fire at least once
+
+    assert json.loads(fake_ws.sent[-1]) == {"type": "KeepAlive"}
+
+    await stt.cancel_stream("s1")
+
+
+async def test_feed_stream_evicts_dead_connection_and_reconnects_on_next_chunk():
+    connect_calls = []
+    total_sends = {"count": 0}
+
+    class ConnectionClosedError_stub(Exception):
+        pass
+
+    class _DyingWs(_FakeLiveWs):
+        """The very first send across the whole test raises like a
+        server-closed connection would (Deepgram's own idle-timeout close)
+        — feed_stream must not keep handing this dead object back on the
+        next call; it should open a fresh connection instead."""
+
+        async def send(self, data):
+            total_sends["count"] += 1
+            if total_sends["count"] == 1:
+                raise ConnectionClosedError_stub()
+            await super().send(data)
+
+    async def _fake_connect(url, **kwargs):
+        ws = _DyingWs([])
+        connect_calls.append(ws)
+        return ws
+
+    stt = DeepgramSTT(api_key="test-key")
+    stt._ws_connect = _fake_connect
+
+    await stt.feed_stream("s1", b"\x01", 16000)  # opens conn #1, send raises, gets evicted
+    assert len(connect_calls) == 1
+    assert "s1" not in stt._streams
+
+    await stt.feed_stream("s1", b"\x02", 16000)  # must open a FRESH connection, not reuse the dead one
+    assert len(connect_calls) == 2
+    assert connect_calls[1].sent == [b"\x02"]
 
 
 async def test_two_sessions_get_independent_connections():

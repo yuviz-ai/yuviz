@@ -59,13 +59,22 @@ def _client_as(user: dict) -> AsyncClient:
     )
 
 
-def _service_account_user() -> dict:
+@pytest_asyncio.fixture
+async def service_account(pool):
     """The conversation service account: tenant_id IS NULL, role='viewer' —
-    the platform-scoped-but-not-superadmin shape (lesson 24)."""
-    return {
-        "id": str(uuid.uuid4()), "email": "conversation@example.com",
-        "role": "viewer", "tenant_id": None, "is_service_account": True,
-    }
+    the platform-scoped-but-not-superadmin shape (lesson 24). A real row,
+    not just a signed token: get_current_user() re-reads it
+    (fresh_console_authority), so a fabricated id with no backing row now
+    401s before the route ever runs."""
+    user_id = str(uuid.uuid4())
+    email = f"test-svc-{uuid.uuid4().hex[:8]}@example.com"
+    await pool.execute(
+        "INSERT INTO users (id, email, password_hash, role, tenant_id, is_service_account) "
+        "VALUES ($1, $2, 'x', 'viewer', NULL, true)",
+        user_id, email,
+    )
+    yield {"id": user_id, "email": email, "role": "viewer", "tenant_id": None, "is_service_account": True}
+    await pool.execute("UPDATE users SET deleted_at = now() WHERE id = $1", user_id)
 
 
 async def _create_tenant(pool, *, name: str = "Other Tenant") -> dict:
@@ -199,9 +208,9 @@ async def test_resolved_tts_config_id_null_for_cross_tenant_or_non_tts_provider(
     await pool.execute("DELETE FROM tenants WHERE id = $1", other_tenant["id"])
 
 
-async def test_published_route_returns_payload_for_service_account(test_tenant):
+async def test_published_route_returns_payload_for_service_account(test_tenant, service_account):
     flow = await _flow(test_tenant)
-    async with _client_as(_service_account_user()) as client:
+    async with _client_as(service_account) as client:
         resp = await client.get(f"/tenants/{test_tenant['slug']}/call-flows/{flow['id']}/published")
     assert resp.status_code == 200
     assert resp.json()["id"] == str(flow["id"])
@@ -285,7 +294,7 @@ def _detail_with_id_normalised(resp) -> str:
 
 
 async def test_published_route_404_is_invariant_for_service_account_regardless_of_target(
-    test_tenant, pool,
+    test_tenant, pool, service_account,
 ):
     """Same property, for the platform-scoped conversation service account,
     with the tenant SLUG held fixed at test_tenant's own real slug (the
@@ -314,7 +323,7 @@ async def test_published_route_404_is_invariant_for_service_account_regardless_o
     key = call_flows._runtime_cache_key(test_tenant["slug"], flow_id)
     url = f"/tenants/{test_tenant['slug']}/call-flows/{flow_id}/published"
 
-    async with _client_as(_service_account_user()) as client:
+    async with _client_as(service_account) as client:
         await pool.execute("UPDATE call_flows SET graph = NULL WHERE id = $1", flow_id)
         await cache.invalidate(key)
         unpublished_resp = await client.get(url)
@@ -348,7 +357,7 @@ async def test_published_route_404_is_invariant_for_service_account_regardless_o
     await pool.execute("DELETE FROM call_flows WHERE id = $1", flow_id)
 
 
-async def test_published_route_never_403s_for_either_caller_shape(test_tenant, test_admin, pool):
+async def test_published_route_never_403s_for_either_caller_shape(test_tenant, test_admin, pool, service_account):
     """The one cross-caller property actually worth comparing (lesson 2):
     both an ordinary tenant admin and the platform-scoped service account
     get 404, never 403, when the target isn't theirs — a 403 here would
@@ -360,7 +369,7 @@ async def test_published_route_never_403s_for_either_caller_shape(test_tenant, t
         admin_resp = await client.get(
             f"/tenants/{other_tenant['slug']}/call-flows/{other_flow['id']}/published"
         )
-    async with _client_as(_service_account_user()) as client:
+    async with _client_as(service_account) as client:
         service_resp = await client.get(
             f"/tenants/{test_tenant['slug']}/call-flows/{other_flow['id']}/published"
         )
@@ -372,7 +381,7 @@ async def test_published_route_never_403s_for_either_caller_shape(test_tenant, t
     await pool.execute("DELETE FROM tenants WHERE id = $1", other_tenant["id"])
 
 
-async def test_published_route_404s_for_unpublished_and_outbound_and_soft_deleted(test_tenant, pool):
+async def test_published_route_404s_for_unpublished_and_outbound_and_soft_deleted(test_tenant, pool, service_account):
     with _as_tenant(test_tenant["id"]):
         draft_flow = await call_flows.create_call_flow(
             tenant_id=test_tenant["id"], slug=f"flow-{uuid.uuid4().hex[:6]}", name="Draft",
@@ -385,7 +394,7 @@ async def test_published_route_404s_for_unpublished_and_outbound_and_soft_delete
     with _as_tenant(test_tenant["id"]):
         await call_flows.delete_call_flow(deleted_flow["id"])
 
-    async with _client_as(_service_account_user()) as client:
+    async with _client_as(service_account) as client:
         draft_resp = await client.get(f"/tenants/{test_tenant['slug']}/call-flows/{draft_flow['id']}/published")
         outbound_resp = await client.get(f"/tenants/{test_tenant['slug']}/call-flows/{outbound_flow['id']}/published")
         deleted_resp = await client.get(f"/tenants/{test_tenant['slug']}/call-flows/{deleted_flow['id']}/published")

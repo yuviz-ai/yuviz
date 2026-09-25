@@ -20,7 +20,25 @@ made to implement this interface.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
+
+from .exceptions import TelephonyTransferUnsupported
+
+
+@dataclass(frozen=True)
+class NormalizedInboundCall:
+    provider_call_id: str
+    from_number: str
+    to_number: str
+    known_tenant_slug: str | None  # filled by adapters whose account binds the tenant
+    raw: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ReconcileResult:
+    outcome: Literal["placed", "not_placed", "indeterminate"]
+    provider_call_id: str | None = None
 
 
 class ITelephonyProvider(ABC):
@@ -72,3 +90,74 @@ class ITelephonyProvider(ABC):
     def build_answer_response(self, websocket_url: str) -> str:
         """The provider-specific XML/markup response to the answer webhook
         that tells the provider to open a media WebSocket to websocket_url."""
+
+    @abstractmethod
+    def normalize_inbound_webhook(
+        self, *, url: str, headers: dict[str, str], fields: dict[str, Any],
+        account_tenant_slug: str,
+    ) -> NormalizedInboundCall:
+        """Parses the vendor's inbound-call webhook shape into the
+        provider-agnostic NormalizedInboundCall. Raises WebhookRejected for
+        a vendor-specific rejection (Cloudonix's domain mismatch). Contains
+        NO DID lookup and NO call-context work (AC9) — that is the
+        orchestrator's job, not the adapter's."""
+
+    @classmethod
+    def sensitive_credential_fields(cls) -> list[str]:
+        """Field names in `credentials` this provider needs encrypted at
+        rest — usable default (AC1): a provider with no secrets need not
+        override this."""
+        return []
+
+    async def check_health(self) -> bool:
+        """Cheap liveness probe against the vendor, called only from the
+        health loop's own asyncio task — never on a request path. Usable
+        default (AC3): a provider with no probe endpoint is always
+        healthy."""
+        return True
+
+    async def transfer_call(self, *, call_id: str, destination: str) -> None:
+        raise TelephonyTransferUnsupported(f"{self.PROVIDER_NAME}: transfer_call not yet supported")
+
+    async def reconcile_call(
+        self, *, reference: str, observed_call_id: str | None,
+    ) -> ReconcileResult:
+        """Default: if a callback already observed a vendor call id for this
+        reference, confirm it with get_call_status() and report placed/
+        not_placed; otherwise 'indeterminate'. A provider whose API can
+        look up by our own reference overrides this. Never guesses
+        'not_placed' (AC16/17)."""
+        if observed_call_id is None:
+            return ReconcileResult(outcome="indeterminate")
+        try:
+            await self.get_call_status(observed_call_id)
+        except Exception:
+            return ReconcileResult(outcome="indeterminate")
+        return ReconcileResult(outcome="placed", provider_call_id=observed_call_id)
+
+
+class ISmsProvider(ABC):
+    PROVIDER_NAME: str
+
+    @classmethod
+    def sensitive_credential_fields(cls) -> list[str]:
+        return []
+
+    @abstractmethod
+    async def send_sms(self, *, from_number: str, to_number: str, text: str) -> str:
+        """Places an outbound SMS, returns the provider's own message id."""
+
+    @abstractmethod
+    async def get_message_status(self, message_id: str) -> dict[str, Any]:
+        ...
+
+    async def reconcile_message(
+        self, *, reference: str, observed_message_id: str | None,
+    ) -> ReconcileResult:
+        if observed_message_id is None:
+            return ReconcileResult(outcome="indeterminate")
+        try:
+            await self.get_message_status(observed_message_id)
+        except Exception:
+            return ReconcileResult(outcome="indeterminate")
+        return ReconcileResult(outcome="placed", provider_call_id=observed_message_id)

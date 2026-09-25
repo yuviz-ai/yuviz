@@ -32,6 +32,15 @@ log = logging.getLogger(__name__)
 _DEFAULT_BASE_URL = "https://api.deepgram.com"
 _LIVE_WS_URL = "wss://api.deepgram.com/v1/listen"
 
+# Deepgram closes a live connection that receives neither audio nor a text
+# message for ~10-12s (confirmed live: "did not receive audio data or a
+# text message within the timeout window"). feed_stream() only sends real
+# audio, so any gap longer than that — the agent's own TTS playing, a
+# caller pause — kills the connection outright. Below that threshold, a
+# periodic KeepAlive message (Deepgram's own documented keepalive type)
+# keeps it open through silence.
+_KEEPALIVE_INTERVAL_S = 8.0
+
 
 class _LiveStream:
     def __init__(self, ws) -> None:
@@ -39,6 +48,7 @@ class _LiveStream:
         self.final_segments: list[str] = []
         self.last_confidence: float = 1.0
         self.reader_task: asyncio.Task | None = None
+        self.keepalive_task: asyncio.Task | None = None
 
 
 class DeepgramSTT:
@@ -141,7 +151,22 @@ class DeepgramSTT:
         try:
             await stream.ws.send(chunk)
         except Exception:
-            log.exception("DeepgramSTT: failed to send audio chunk session=%s", session_id)
+            log.exception(
+                "DeepgramSTT: failed to send audio chunk session=%s — evicting dead "
+                "stream, next chunk will open a fresh one", session_id,
+            )
+            # Deepgram already closed its end (e.g. the idle timeout above) —
+            # without this, self._streams keeps handing back the same dead
+            # socket forever and every remaining chunk this call fails the
+            # same way, silently losing STT for the rest of the call.
+            self._evict_stream(session_id, stream)
+
+    def _evict_stream(self, session_id: str, stream: "_LiveStream") -> None:
+        if self._streams.get(session_id) is stream:
+            del self._streams[session_id]
+        for task in (stream.reader_task, stream.keepalive_task):
+            if task is not None:
+                task.cancel()
 
     async def _open_stream(self, session_id: str, sample_rate: int) -> _LiveStream:
         ws = await self._ws_connect(
@@ -150,7 +175,25 @@ class DeepgramSTT:
         )
         stream = _LiveStream(ws)
         stream.reader_task = asyncio.create_task(self._read_loop(stream, session_id))
+        stream.keepalive_task = asyncio.create_task(self._keepalive_loop(stream, session_id))
         return stream
+
+    async def _keepalive_loop(self, stream: "_LiveStream", session_id: str) -> None:
+        """Sends Deepgram's KeepAlive message every _KEEPALIVE_INTERVAL_S
+        while the stream is open — real audio chunks from feed_stream()
+        share the same connection, so this only matters during a gap with
+        no audio (agent speaking, caller pause). Cancelled by
+        _evict_stream()/finalize_stream()/cancel_stream(); a send failure
+        here just ends the loop quietly — feed_stream()'s own eviction
+        path handles the dead connection when the next real chunk arrives."""
+        try:
+            while True:
+                await asyncio.sleep(_KEEPALIVE_INTERVAL_S)
+                await stream.ws.send(json.dumps({"type": "KeepAlive"}))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.info("DeepgramSTT: keepalive send failed session=%s — stream likely closed", session_id)
 
     async def _read_loop(self, stream: _LiveStream, session_id: str) -> None:
         # Collects every is_final segment Deepgram sends during the live
@@ -186,6 +229,8 @@ class DeepgramSTT:
             # feed_stream() was never called (e.g. a 0-chunk utterance) —
             # nothing was ever streamed.
             return SttResult(text="")
+        if stream.keepalive_task:
+            stream.keepalive_task.cancel()
         try:
             await stream.ws.send(json.dumps({"type": "CloseStream"}))
             if stream.reader_task:
@@ -207,6 +252,8 @@ class DeepgramSTT:
             return
         if stream.reader_task:
             stream.reader_task.cancel()
+        if stream.keepalive_task:
+            stream.keepalive_task.cancel()
         try:
             await stream.ws.close()
         except Exception:

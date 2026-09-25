@@ -36,6 +36,7 @@ from .callflow.handler import CallFlowConversationHandler
 from .callflow.resolver import resolve_call_flow
 from .callflow.runner import CallFlowRunner
 from .echo import EchoConversationHandler
+from .fillers import FillerSelector
 from .pipeline import PipelineConversationHandler
 from .pipeline_config import PipelineConfig
 from .provider_bundle import ProviderRegistry, _to_ai_provider_config
@@ -53,6 +54,7 @@ from .tools.provider_manager import ToolProviderManager
 from .tools.registry import ToolRegistry
 from .providers.llm.openai import OpenAILLM
 from .sentiment import SentimentScorer
+from .tool_latency import ToolLatencyStore
 from .transcript_builder import TranscriptBuilder
 from .workflow import graph_for
 from .generated.voiceai.v1 import conversation_pb2_grpc as pb_grpc
@@ -171,6 +173,24 @@ async def serve(port: int, args: argparse.Namespace) -> None:
     log = logging.getLogger(__name__)
     cfg = PipelineConfig()
 
+    if not os.environ.get("VOICEAI_LLM_MODEL"):
+        try:
+            import asyncpg
+            conn = await asyncpg.connect(dsn=os.environ.get("POSTGRES_DSN"))
+            try:
+                model = await conn.fetchval(
+                    "SELECT pc.model FROM tenants t "
+                    "JOIN provider_configs pc ON pc.id = t.default_llm_config_id "
+                    "WHERE t.slug = 'default' AND pc.model IS NOT NULL"
+                )
+            finally:
+                await conn.close()
+            if model:
+                cfg.llm.model = model
+                log.info("Legacy LLM fallback model resolved from tenant 'default' config: %s", model)
+        except Exception:
+            log.exception("Failed to resolve legacy LLM fallback model from DB — keeping built-in default %s", cfg.llm.model)
+
     # hostname:port identifies this specific process instance (see
     # TranscriptBuilder's docstring on conv_node/reconcile_stale_calls) —
     # this project runs two Conversation Service processes (:50051,
@@ -262,6 +282,13 @@ async def serve(port: int, args: argparse.Namespace) -> None:
     # since different tenants/agents can resolve to different LLM engines.
     tool_registry = ToolRegistry()
     executor_registry = ExecutorRegistry()
+
+    # Dynamic call fillers: one process-scoped store/selector, shared across
+    # every stream — calibration must survive across calls, and both are
+    # safe to share because the store's keys are tenant/agent-scoped and its
+    # eviction budget is per tenant (see tool_latency.py).
+    tool_latency_store = ToolLatencyStore()
+    filler_selector = FillerSelector()
     # execute_api is the ONLY DB-gated tool, and so the only entry here —
     # the agent's other tool, search_knowledge, is an in-process local tool
     # supplied by pipeline.py and never reaches an executor factory (see
@@ -324,6 +351,7 @@ async def serve(port: int, args: argparse.Namespace) -> None:
                 policy_resolver=tool_policy_resolver,
                 provider_manager=tool_provider_manager,
                 executor_registry=executor_registry,
+                latency_store=tool_latency_store,
             )
 
             # Whether this agent can DO anything (as opposed to only
@@ -354,6 +382,8 @@ async def serve(port: int, args: argparse.Namespace) -> None:
                 knowledge=knowledge,
                 has_booking_tool=has_booking_tool,
                 initial_variables=initial_variables,
+                latency_store=tool_latency_store,
+                filler_selector=filler_selector,
             )
 
         async def handler_factory(ctx: SessionContext) -> PipelineConversationHandler:

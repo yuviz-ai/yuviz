@@ -14,6 +14,7 @@
   --text: #17201e; --text-2: #5c645f; --text-3: #636c67;
   --sidebar-text: #e9e5dc; --sidebar-text-dim: #7e8a85; --sidebar-active-bg: #0b5f5a;
   --cyan-border: #cfe3df; --green-border: #cfe3d4; --amber-border: #efe3c9; --red-border: #efd3c9;
+  --indigo-border: #c7cafb;
   --font: 'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --mono: 'Geist Mono', ui-monospace, 'SF Mono', monospace;
   --r: 12px; --rs: 8px; --sidebar-w: 224px;
@@ -35,6 +36,7 @@
   --text: #e9e5dc; --text-2: #a9b0ab; --text-3: #7e8a85;
   --cyan-border: rgba(79, 179, 172, .35); --green-border: rgba(79, 189, 125, .35);
   --amber-border: rgba(215, 177, 100, .35); --red-border: rgba(224, 104, 90, .35);
+  --indigo-border: rgba(129, 140, 248, .35);
   color-scheme: dark;
 }
 
@@ -194,7 +196,7 @@ body {
 .btn {
   display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: var(--rs);
   font-size: .77rem; font-weight: 600; cursor: pointer; border: 1px solid transparent; transition: all .15s;
-  font-family: var(--font);
+  font-family: var(--font); text-decoration: none;
 }
 .btn-primary { background: var(--cyan); color: #fff; }
 .btn-primary:hover { background: #08423e; }
@@ -203,6 +205,8 @@ body {
 .btn-sm { padding: 4px 10px; font-size: .71rem; }
 .btn-danger { background: var(--red-dim); color: var(--red); border-color: var(--red-border); }
 .btn-danger:hover { background: var(--red-dim-2); }
+.btn-indigo { background: var(--indigo-dim); color: var(--indigo); border-color: var(--indigo-border); }
+.btn-indigo:hover { filter: brightness(0.95); }
 .btn:disabled { opacity: .4; cursor: not-allowed; }
 
 /* ═══ Cards / tables ═══ */
@@ -227,7 +231,7 @@ body {
 .tbl td.bold { color: var(--text); font-weight: 500; }
 .tbl td.mono { font-family: var(--mono); font-size: .71rem; color: var(--text-3); }
 
-.badge { display: inline-flex; align-items: center; gap: 4px; font-size: .68rem; font-weight: 500; padding: 2px 8px; border-radius: 6px; border: 1px solid transparent; white-space: nowrap; }
+.badge { display: inline-flex; align-items: center; gap: 4px; font-size: .68rem; font-weight: 500; padding: 2px 8px; border-radius: 6px; border: 1px solid transparent; white-space: nowrap; text-decoration: none; }
 .badge.green { background: var(--green-dim); color: var(--green); border-color: var(--green-border); }
 .badge.amber { background: var(--amber-dim); color: var(--amber); border-color: var(--amber-border); }
 .badge.red { background: var(--red-dim); color: var(--red); border-color: var(--red-border); }

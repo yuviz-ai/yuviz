@@ -1,0 +1,4 @@
+# Review: 03-tasks.md
+VERDICT: AMBER
+
+1. [minor] T16's "done when" scopes changes to `docs/cloudonix.md` only, but the design explicitly anticipates a live-verification outcome that requires a code change (02-design.md lines 262-267: "if the trial call shows Cloudonix does not send this field under this name, the check is dropped with a note in docs/cloudonix.md" — meaning the Domain check must be removed from `services/cloudonix/app.py`) — the plan has no task file-scoped to `services/cloudonix/app.py` for acting on that finding, only for recording it. Fix: add `services/cloudonix/app.py` to T16's file list and its done-when, or add a conditional follow-up task for dropping the Domain check / adjusting `DID_REDIS_TIMEOUT_MS`/rate-limit defaults based on the trial's OQ1-4 results before merge.

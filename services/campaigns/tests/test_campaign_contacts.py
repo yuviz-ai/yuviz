@@ -51,7 +51,7 @@ async def _make_campaign(test_tenant, test_agent):
     )
 
 
-async def test_bulk_insert_and_list_contacts(test_tenant, test_agent):
+async def test_bulk_insert_and_list_contacts(test_tenant, test_agent, scoped):
     campaign = await _make_campaign(test_tenant, test_agent)
     inserted = await campaign_contacts.bulk_insert_contacts(
         campaign["id"], [{"phone_number": "+14155551111", "name": "Alice"}],
@@ -63,12 +63,12 @@ async def test_bulk_insert_and_list_contacts(test_tenant, test_agent):
     assert contacts[0]["status"] == "pending"
 
 
-async def test_bulk_insert_empty_list_is_noop(test_tenant, test_agent):
+async def test_bulk_insert_empty_list_is_noop(test_tenant, test_agent, scoped):
     campaign = await _make_campaign(test_tenant, test_agent)
     assert await campaign_contacts.bulk_insert_contacts(campaign["id"], []) == 0
 
 
-async def test_claim_next_pending_marks_calling_and_increments_attempts(test_tenant, test_agent):
+async def test_claim_next_pending_marks_calling_and_increments_attempts(test_tenant, test_agent, scoped):
     campaign = await _make_campaign(test_tenant, test_agent)
     await campaign_contacts.bulk_insert_contacts(campaign["id"], [{"phone_number": "+14155551111", "name": ""}])
 
@@ -78,12 +78,12 @@ async def test_claim_next_pending_marks_calling_and_increments_attempts(test_ten
     assert claimed["last_attempted_at"] is not None
 
 
-async def test_claim_next_pending_returns_none_when_empty(test_tenant, test_agent):
+async def test_claim_next_pending_returns_none_when_empty(test_tenant, test_agent, scoped):
     campaign = await _make_campaign(test_tenant, test_agent)
     assert await campaign_contacts.claim_next_pending(campaign["id"]) is None
 
 
-async def test_claim_next_pending_does_not_reclaim_already_calling(test_tenant, test_agent):
+async def test_claim_next_pending_does_not_reclaim_already_calling(test_tenant, test_agent, scoped):
     campaign = await _make_campaign(test_tenant, test_agent)
     await campaign_contacts.bulk_insert_contacts(campaign["id"], [{"phone_number": "+14155551111", "name": ""}])
 
@@ -93,7 +93,7 @@ async def test_claim_next_pending_does_not_reclaim_already_calling(test_tenant, 
     assert second is None
 
 
-async def test_mark_contact_status_updates_status_and_session(test_tenant, test_agent):
+async def test_mark_contact_status_updates_status_and_session(test_tenant, test_agent, scoped):
     campaign = await _make_campaign(test_tenant, test_agent)
     await campaign_contacts.bulk_insert_contacts(campaign["id"], [{"phone_number": "+14155551111", "name": ""}])
     claimed = await campaign_contacts.claim_next_pending(campaign["id"])

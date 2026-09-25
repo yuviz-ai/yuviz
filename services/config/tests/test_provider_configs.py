@@ -5,7 +5,7 @@ import pytest
 from services.config import cache, provider_configs
 
 
-async def test_create_and_get_provider_config(test_tenant):
+async def test_create_and_get_provider_config(test_tenant, scoped):
     created = await provider_configs.create_provider_config(
         tenant_id=test_tenant["id"], name="Deepgram Nova-3", role="stt", engine="deepgram",
         environment="prod", model="nova-3", api_key_ref="k8s:voiceai/deepgram-api-key",
@@ -19,7 +19,7 @@ async def test_create_and_get_provider_config(test_tenant):
     assert fetched["engine"] == "deepgram"
 
 
-async def test_list_provider_configs_filters_by_role_and_environment(test_tenant):
+async def test_list_provider_configs_filters_by_role_and_environment(test_tenant, scoped):
     await provider_configs.create_provider_config(
         tenant_id=test_tenant["id"], name="Deepgram", role="stt", engine="deepgram", environment="prod",
     )
@@ -39,7 +39,7 @@ async def test_list_provider_configs_filters_by_role_and_environment(test_tenant
     assert [p["engine"] for p in prod_stt_only] == ["deepgram"]
 
 
-async def test_update_provider_config_invalidates_cache(test_tenant):
+async def test_update_provider_config_invalidates_cache(test_tenant, scoped):
     created = await provider_configs.create_provider_config(
         tenant_id=test_tenant["id"], name="Deepgram", role="stt", engine="deepgram",
     )
@@ -51,7 +51,7 @@ async def test_update_provider_config_invalidates_cache(test_tenant):
     assert await cache.get_json(f"provider:{created['id']}") is None
 
 
-async def test_update_provider_config_publishes_change_notification(test_tenant):
+async def test_update_provider_config_publishes_change_notification(test_tenant, scoped):
     """The other half of instant cache invalidation (see cache.py's
     publish() docstring): Conversation Service subscribes to this exact
     channel/message shape to evict its own cached provider client. Uses a
@@ -76,14 +76,14 @@ async def test_update_provider_config_publishes_change_notification(test_tenant)
     await subscriber.aclose()
 
 
-async def test_provider_config_role_check_constraint_rejects_bad_role(test_tenant):
+async def test_provider_config_role_check_constraint_rejects_bad_role(test_tenant, scoped):
     with pytest.raises(Exception):
         await provider_configs.create_provider_config(
             tenant_id=test_tenant["id"], name="Bad", role="not-a-real-role", engine="x",
         )
 
 
-async def test_audit_log_redacts_api_key_ref(test_tenant, pool):
+async def test_audit_log_redacts_api_key_ref(test_tenant, scoped, pool):
     created = await provider_configs.create_provider_config(
         tenant_id=test_tenant["id"], name="Deepgram", role="stt", engine="deepgram",
         api_key_ref="k8s:voiceai/deepgram-api-key",

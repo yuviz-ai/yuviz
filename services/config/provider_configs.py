@@ -85,6 +85,7 @@ async def get_provider_config(provider_id: Any, *, platform_scoped: bool = False
         return None
 
     result = dict(row)
+    result["extra"] = db.json_col(result["extra"])
     await cache.set_json(_cache_key(provider_id), result)
     return result
 
@@ -110,7 +111,10 @@ async def list_provider_configs(
             f"SELECT * FROM provider_configs WHERE {' AND '.join(conditions)} ORDER BY name",
             *params,
         )
-    return [dict(row) for row in rows]
+    results = [dict(row) for row in rows]
+    for result in results:
+        result["extra"] = db.json_col(result["extra"])
+    return results
 
 
 async def create_provider_config(
@@ -145,6 +149,7 @@ async def create_provider_config(
             _json.dumps(extra) if extra is not None else None,
         )
         result = dict(row)
+        result["extra"] = db.json_col(result["extra"])
         await audit.write_audit(
             conn,
             entity_type="provider_config",
@@ -193,6 +198,7 @@ async def update_provider_config(
         if old_row is None:
             raise LookupError(f"provider_config {provider_id} not found")
         old = dict(old_row)
+        old["extra"] = db.json_col(old["extra"])
 
         columns = list(fields.keys())
         set_parts = []
@@ -205,6 +211,7 @@ async def update_provider_config(
             provider_id, *(fields[col] for col in columns),
         )
         new = dict(new_row)
+        new["extra"] = db.json_col(new["extra"])
 
         # Scoped to the written columns, not the full row — otherwise
         # api_key_ref (redacted either way) rides along on every update
@@ -226,8 +233,45 @@ async def update_provider_config(
     return new
 
 
+class ProviderConfigInUse(Exception):
+    """Raised instead of deleting when active agents (stt/llm/tts roles) or
+    active knowledge bases (embedding role) still have this provider
+    assigned and the caller didn't pass force=True — whichever one points
+    at a deleted provider fails to resolve it the next time it needs it
+    (an agent mid-call-setup; a knowledge base mid-ingest or mid-retrieval,
+    see services/knowledge/{retrieval,ingestion_worker}.py's own
+    _fetch_embedding_config, which raises outright on a missing row).
+    Resource names, not just a count, so the admin sees exactly who's
+    affected without a second lookup. `resource_type` tells the caller
+    which noun to use in copy — "agent" or "knowledge_base" — since the
+    same shape covers both dependency kinds."""
+
+    def __init__(self, resource_type: str, resource_count: int, resource_names: list[str]) -> None:
+        self.resource_type = resource_type
+        self.resource_count = resource_count
+        self.resource_names = resource_names
+        noun = "agent" if resource_type == "agent" else "knowledge base"
+        super().__init__(
+            f"{resource_count} active {noun}(s) use this provider — pass force=True to delete anyway"
+        )
+
+
+# role -> (table to check, its tenant-scope FK column, the column pointing
+# at this provider, resource_type label). stt/llm/tts are referenced by
+# agents directly; embedding is referenced by knowledge_bases instead (see
+# database/knowledge_schema.sql's embedding_config_id) — agents never point
+# at an embedding provider directly, so checking agents for that role would
+# silently miss the real dependency.
+_ROLE_TO_USAGE_CHECK = {
+    "stt":       ("agents", "tenant_id", "stt_config_id", "agent"),
+    "llm":       ("agents", "tenant_id", "llm_config_id", "agent"),
+    "tts":       ("agents", "tenant_id", "tts_config_id", "agent"),
+    "embedding": ("knowledge_bases", "tenant_id", "embedding_config_id", "knowledge_base"),
+}
+
+
 async def soft_delete_provider_config(
-    provider_id: Any, *, user_id: Any | None = None, user_email: str | None = None,
+    provider_id: Any, *, user_id: Any | None = None, user_email: str | None = None, force: bool = False,
 ) -> None:
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
@@ -237,6 +281,19 @@ async def soft_delete_provider_config(
         if old_row is None:
             raise LookupError(f"provider_config {provider_id} not found")
         old = dict(old_row)
+        old["extra"] = db.json_col(old["extra"])
+
+        if not force:
+            check = _ROLE_TO_USAGE_CHECK.get(old["role"])
+            if check is not None:
+                table, tenant_column, ref_column, resource_type = check
+                rows = await conn.fetch(
+                    f"SELECT name FROM {table} WHERE {tenant_column} = $1 AND deleted_at IS NULL "
+                    f"AND status = 'active' AND {ref_column} = $2",
+                    old["tenant_id"], provider_id,
+                )
+                if rows:
+                    raise ProviderConfigInUse(resource_type, len(rows), [r["name"] for r in rows])
 
         await conn.execute(
             "UPDATE provider_configs SET deleted_at = now() WHERE id = $1", provider_id,

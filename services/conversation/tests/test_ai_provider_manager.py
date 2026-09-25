@@ -217,10 +217,24 @@ class TestPrewarm:
 
 # ── Real-engine tests — Ollama and macOS TTS only (see module docstring) ────
 
+async def _first_available_ollama_model() -> str | None:
+    try:
+        async with httpx.AsyncClient(base_url="http://localhost:11434", timeout=5.0) as client:
+            resp = await client.get("/api/tags")
+            resp.raise_for_status()
+            models = resp.json().get("models", [])
+    except (httpx.HTTPError, ValueError):
+        return None
+    return models[0]["name"] if models else None
+
+
 class TestRealOllamaFactory:
     async def test_get_llm_creates_real_ollama_instance(self):
+        model = await _first_available_ollama_model()
+        if model is None:
+            pytest.skip("no Ollama models available locally")
         manager = AIProviderManager(FakeSecretResolver())  # real default registry
-        cfg = ProviderConfig(id="llm-1", role="llm", engine="ollama", model="llama3.2")
+        cfg = ProviderConfig(id="llm-1", role="llm", engine="ollama", model=model)
 
         instance = await manager.get_llm(cfg)
         assert type(instance).__name__ == "OllamaLLM"
@@ -228,8 +242,11 @@ class TestRealOllamaFactory:
     async def test_real_ollama_generates_a_token_stream(self):
         from ..providers.interfaces import ChatMessage
 
+        model = await _first_available_ollama_model()
+        if model is None:
+            pytest.skip("no Ollama models available locally")
         manager = AIProviderManager(FakeSecretResolver())
-        cfg = ProviderConfig(id="llm-1", role="llm", engine="ollama", model="llama3.2")
+        cfg = ProviderConfig(id="llm-1", role="llm", engine="ollama", model=model)
         llm = await manager.get_llm(cfg)
 
         tokens = []

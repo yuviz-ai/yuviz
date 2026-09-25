@@ -18,6 +18,7 @@ import asyncpg
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from . import db
 from .routers import campaigns
@@ -77,3 +78,19 @@ async def fk_violation_handler(request: Request, exc: asyncpg.ForeignKeyViolatio
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+class VobizCallResolved(BaseModel):
+    call_uuid: str
+    succeeded: bool
+    detail: str = ""
+    call_session_id: str | None = None
+
+
+@app.post("/internal/vobiz-call-resolved")
+async def vobiz_call_resolved(body: VobizCallResolved) -> dict:
+    """Internal, service-to-service only — no auth, same as /vobiz/call."""
+    await _worker.on_call_resolved(
+        body.call_uuid, body.succeeded, body.detail, call_session_id=body.call_session_id,
+    )
+    return {"ok": True}
