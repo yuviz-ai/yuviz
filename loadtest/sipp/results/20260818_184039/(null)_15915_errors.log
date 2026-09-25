@@ -1,2 +1,0 @@
-The following events occurred:
-2026-08-18	18:40:39.983354	1787058639.983354: <recv> before <send> sequence without a mandatory message. Please remove one 'optional=true' (element 9).

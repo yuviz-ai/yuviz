@@ -1,7 +1,0 @@
-The following events occurred:
-2026-08-19	17:59:13.490926	1787142553.490926: Call-Id: 1-38328@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
-2026-08-19	17:59:14.486450	1787142554.486450: Call-Id: 2-38328@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
-2026-08-19	17:59:15.490130	1787142555.490130: Call-Id: 3-38328@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
-2026-08-19	18:00:14.491792	1787142614.491792: Call-Id: 4-38328@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
-2026-08-19	18:00:15.485795	1787142615.485795: Call-Id: 5-38328@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
-2026-08-19	18:00:16.485743	1787142616.485743: Call-Id: 6-38328@192.168.0.116, receive timeout on message Yuviz.ai Human Caller Simulation:7, jumping to label 10
