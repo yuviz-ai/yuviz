@@ -202,6 +202,8 @@ services:
     environment:
       PORT: "8750"
       TELEPHONY_PUBLIC_BASE_URL: ${TELEPHONY_PUBLIC_BASE_URL:-}
+      JWT_SECRET: ${JWT_SECRET}
+      REDIS_URL: ${REDIS_URL}
       CONFIG_SERVICE_URL: http://config:8000
       CONFIG_SERVICE_EMAIL: ${CONFIG_SERVICE_EMAIL}
       CONFIG_SERVICE_PASSWORD: ${CONFIG_SERVICE_PASSWORD}
@@ -216,6 +218,10 @@ services:
     ports:
       - "${TELEPHONY_BIND_ADDR:-127.0.0.1}:${TELEPHONY_PORT:-8750}:8750"
     depends_on:
+      config:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
       conversation:
         condition: service_healthy
     healthcheck:
