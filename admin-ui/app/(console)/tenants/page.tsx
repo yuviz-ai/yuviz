@@ -308,7 +308,7 @@ export default function TenantsPage() {
         </div>
         <div className="form-group">
           <label className="form-label">
-            Max Concurrent Calls <span className="hint">the channel cap Live Calls' utilization KPI is measured against — blank means not set yet (never defaulted to a number)</span>
+            Max Concurrent Calls <span className="hint">the channel cap Live Calls&apos; utilization KPI is measured against — blank means not set yet (never defaulted to a number)</span>
           </label>
           <input
             className="form-input"

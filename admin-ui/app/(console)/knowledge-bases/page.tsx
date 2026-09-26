@@ -164,7 +164,7 @@ export default function KnowledgeBasesPage() {
 
   useEffect(() => {
     if (tenantLoading) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+     
     refresh();
     getCurrentUser()
       .then((me) => setCanManage(me.role === "superadmin" || me.role === "admin"))

@@ -138,6 +138,7 @@ export default function NewAgentPage() {
   // silently overwritten by a later step change.
   useEffect(() => {
     if (promptEdited) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSystemPrompt(
       buildSystemPrompt({
         name,
@@ -152,7 +153,7 @@ export default function NewAgentPage() {
         fallbackResponse,
       }),
     );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [
     name, purpose, persona, tone, language, selectedKbIds.size, transferType, transferCondition,
     complianceInstructions, fallbackResponse, promptEdited,
@@ -203,7 +204,8 @@ export default function NewAgentPage() {
         fallback_response: fallbackResponse,
         llm_config_id: llmId,
       });
-      setSystemPrompt(system_prompt);
+       
+    setSystemPrompt(system_prompt);
       setPromptEdited(true);
     } catch (e) {
       setGenerateError(e instanceof ApiError ? e.detail : String(e));
@@ -340,7 +342,7 @@ export default function NewAgentPage() {
           </div>
           <div className="card-body">
             <div className="form-group">
-              <label className="form-label">Language <span className="hint">overrides the STT/TTS provider's own language when set</span></label>
+              <label className="form-label">Language <span className="hint">overrides the STT/TTS provider&apos;s own language when set</span></label>
               <select className="form-select" value={languageChoice} onChange={(e) => setLanguageChoice(e.target.value)}>
                 <option value="">— derive from provider —</option>
                 {LANGUAGES.map((l) => (
@@ -548,7 +550,7 @@ export default function NewAgentPage() {
               />
             </div>
             <div className="form-group">
-              <label className="form-label">Fallback Response <span className="hint">said when the agent genuinely doesn't know the answer</span></label>
+              <label className="form-label">Fallback Response <span className="hint">said when the agent genuinely doesn&apos;t know the answer</span></label>
               <textarea
                 className="form-textarea"
                 style={{ minHeight: 48 }}
@@ -640,7 +642,8 @@ export default function NewAgentPage() {
                 style={{ minHeight: 160 }}
                 value={systemPrompt}
                 onChange={(e) => {
-                  setSystemPrompt(e.target.value);
+                   
+    setSystemPrompt(e.target.value);
                   setPromptEdited(true);
                 }}
               />

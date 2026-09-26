@@ -186,6 +186,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [theme]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setNavOpen(false);
   }, [pathname]);
 
