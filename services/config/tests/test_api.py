@@ -16,6 +16,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from libs.config_sdk.secrets import generate_key
+from libs.tenancy import set_target_tenant
 from services.config import auth
 from services.config import users as users_service
 from services.config.app import app
@@ -110,6 +111,60 @@ class TestTenantEndpoints:
         assert resp.status_code == 404  # soft-deleted, excluded from reads
 
         await pool.execute("DELETE FROM tenants WHERE id = $1", tenant["id"])
+
+    async def test_delete_tenant_with_active_agent_is_409(self, client, test_tenant):
+        # A deleted tenant's DIDs stop resolving immediately (get_by_did()'s
+        # own `t.deleted_at IS NULL` check) — deleting a tenant with a live
+        # agent still attached is an instant outage for its callers, not a
+        # "some calls might slip through" risk, so this must be blocked by
+        # default rather than left to a bare confirm() dialog.
+        agent = await client.post(
+            f"/tenants/{test_tenant['slug']}/agents", json={"slug": "support-agent", "name": "Support"},
+        )
+        assert agent.status_code == 201
+
+        resp = await client.delete(f"/tenants/{test_tenant['id']}")
+        assert resp.status_code == 409
+        body = resp.json()
+        assert body["active_agents"] == 1
+        assert body["active_phone_numbers"] == 0
+
+        # Untouched — still there, tenant not deleted.
+        still_there = await client.get(f"/tenants/{test_tenant['slug']}")
+        assert still_there.status_code == 200
+
+    async def test_delete_tenant_with_active_phone_number_is_409(self, client, test_tenant, pool):
+        did = f"test-did-{uuid.uuid4().hex[:8]}"
+        await pool.execute(
+            "INSERT INTO phone_numbers (tenant_id, did, status) VALUES ($1, $2, 'active')",
+            test_tenant["id"], did,
+        )
+        try:
+            resp = await client.delete(f"/tenants/{test_tenant['id']}")
+            assert resp.status_code == 409
+            body = resp.json()
+            assert body["active_agents"] == 0
+            assert body["active_phone_numbers"] == 1
+        finally:
+            await pool.execute("DELETE FROM phone_numbers WHERE did = $1", did)
+
+    async def test_delete_tenant_force_true_bypasses_the_block(self, client, test_tenant):
+        agent = await client.post(
+            f"/tenants/{test_tenant['slug']}/agents", json={"slug": "support-agent", "name": "Support"},
+        )
+        assert agent.status_code == 201
+
+        resp = await client.delete(f"/tenants/{test_tenant['id']}?force=true")
+        assert resp.status_code == 204
+
+        gone = await client.get(f"/tenants/{test_tenant['slug']}")
+        assert gone.status_code == 404
+
+    async def test_delete_tenant_with_nothing_attached_needs_no_force(self, client, test_tenant):
+        # The common case — the check itself must not become an extra
+        # confirmation step when there's genuinely nothing to warn about.
+        resp = await client.delete(f"/tenants/{test_tenant['id']}")
+        assert resp.status_code == 204
 
     # Cross-tenant disclosure fix: list_tenants/get_tenant used to be gated
     # on Depends(get_current_user) alone, no tenant scoping at all — a
@@ -355,10 +410,17 @@ class TestAgentEndpoints:
         )
         try:
             from services.config import agents as agents_service
-            victim = await agents_service.create_agent(
-                tenant_id=other["id"], slug="victim", name="Victim",
-                system_prompt="secret prompt IP",
-            )
+            # Direct service-layer call, no ambient RLS scope from a real
+            # request — set/reset it here, same as libs.tenancy everywhere
+            # else a test calls services/config functions directly.
+            set_target_tenant(str(other["id"]))
+            try:
+                victim = await agents_service.create_agent(
+                    tenant_id=other["id"], slug="victim", name="Victim",
+                    system_prompt="secret prompt IP",
+                )
+            finally:
+                set_target_tenant(None)
             # Wrong-tenant slug is 404 (not 403) — same as a missing tenant.
             list_resp = await admin_client.get(f"/tenants/{other['slug']}/agents")
             assert list_resp.status_code == 404
@@ -685,6 +747,71 @@ class TestProviderConfigEndpoints:
 
         resp = await client.get(f"/providers/{provider_id}")
         assert resp.status_code == 404
+
+    async def test_delete_provider_in_use_is_409(self, client, test_tenant):
+        stt = await client.post(
+            f"/tenants/{test_tenant['id']}/providers",
+            json={"name": "Deepgram", "role": "stt", "engine": "deepgram"},
+        )
+        provider_id = stt.json()["id"]
+        agent = await client.post(
+            f"/tenants/{test_tenant['slug']}/agents",
+            json={"slug": "support-agent", "name": "Support", "stt_config_id": provider_id},
+        )
+        assert agent.status_code == 201
+
+        resp = await client.delete(f"/providers/{provider_id}")
+        assert resp.status_code == 409
+        body = resp.json()
+        assert body["resource_type"] == "agent"
+        assert body["resource_count"] == 1
+        assert body["resource_names"] == ["Support"]
+
+        # Untouched — still there.
+        still_there = await client.get(f"/providers/{provider_id}")
+        assert still_there.status_code == 200
+
+    async def test_delete_embedding_provider_in_use_by_kb_is_409(self, client, test_tenant, pool):
+        # Agents never reference an embedding provider directly (see
+        # database/knowledge_schema.sql) — knowledge_bases.embedding_config_id
+        # is the real dependency, checked separately from the agent columns.
+        emb = await client.post(
+            f"/tenants/{test_tenant['id']}/providers",
+            json={"name": "Ollama Embedding", "role": "embedding", "engine": "ollama"},
+        )
+        provider_id = emb.json()["id"]
+        kb_id = await pool.fetchval(
+            "INSERT INTO knowledge_bases (tenant_id, slug, name, embedding_config_id) "
+            "VALUES ($1, 'support-kb', 'Support KB', $2) RETURNING id",
+            test_tenant["id"], provider_id,
+        )
+        try:
+            resp = await client.delete(f"/providers/{provider_id}")
+            assert resp.status_code == 409
+            body = resp.json()
+            assert body["resource_type"] == "knowledge_base"
+            assert body["resource_count"] == 1
+            assert body["resource_names"] == ["Support KB"]
+
+            still_there = await client.get(f"/providers/{provider_id}")
+            assert still_there.status_code == 200
+        finally:
+            await pool.execute("DELETE FROM knowledge_bases WHERE id = $1", kb_id)
+
+    async def test_delete_provider_force_true_bypasses_the_block(self, client, test_tenant):
+        stt = await client.post(
+            f"/tenants/{test_tenant['id']}/providers",
+            json={"name": "Deepgram", "role": "stt", "engine": "deepgram"},
+        )
+        provider_id = stt.json()["id"]
+        agent = await client.post(
+            f"/tenants/{test_tenant['slug']}/agents",
+            json={"slug": "support-agent", "name": "Support", "stt_config_id": provider_id},
+        )
+        assert agent.status_code == 201
+
+        resp = await client.delete(f"/providers/{provider_id}?force=true")
+        assert resp.status_code == 204
 
     async def test_voices_requires_elevenlabs_engine(self, client, test_tenant):
         create = await client.post(

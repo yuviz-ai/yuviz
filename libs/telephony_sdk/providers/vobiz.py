@@ -20,8 +20,8 @@ from urllib.parse import urlparse, urlunparse
 import httpx
 
 from ..exceptions import TelephonyProviderError
-from ..interface import ITelephonyProvider
-from ..registry import TelephonyProviderRegistry
+from ..interface import ISmsProvider, ITelephonyProvider, NormalizedInboundCall
+from ..registry import SmsProviderRegistry, TelephonyProviderRegistry
 
 _BASE_URL = "https://api.vobiz.ai/api"
 
@@ -37,7 +37,7 @@ def _expected_signature(auth_token: str, base_url: str, nonce: str, version: str
     return base64.b64encode(digest).decode("ascii")
 
 
-class VobizTelephonyProvider(ITelephonyProvider):
+class VobizTelephonyProvider(ITelephonyProvider, ISmsProvider):
     PROVIDER_NAME = "vobiz"
 
     def __init__(self, credentials: dict[str, Any]) -> None:
@@ -144,5 +144,79 @@ class VobizTelephonyProvider(ITelephonyProvider):
             '</Response>'
         )
 
+    @classmethod
+    def sensitive_credential_fields(cls) -> list[str]:
+        return ["auth_token"]
+
+    def normalize_inbound_webhook(
+        self, *, url: str, headers: dict[str, str], fields: dict[str, Any],
+        account_tenant_slug: str,
+    ) -> NormalizedInboundCall:
+        """Vobiz's answer webhook is a form-encoded POST carrying
+        CallUUID/To/From (case-tolerant, matching services/vobiz/app.py's
+        existing `form.get("CallUUID") or form.get("call_uuid")` habit).
+        known_tenant_slug is always None: unlike Cloudonix's per-account
+        domain, a Vobiz account does not itself bind a tenant — the
+        orchestrator falls back to account.tenant_slug."""
+        lowered = {k.lower(): v for k, v in fields.items()}
+        call_uuid = lowered.get("calluuid") or lowered.get("call_uuid") or ""
+        to_number = lowered.get("to") or ""
+        from_number = lowered.get("from") or ""
+        return NormalizedInboundCall(
+            provider_call_id=str(call_uuid),
+            from_number=str(from_number),
+            to_number=str(to_number),
+            known_tenant_slug=None,
+            raw=dict(fields),
+        )
+
+    def parse_dtmf_digit(self, fields: dict[str, Any]) -> str | None:
+        lowered = {k.lower(): v for k, v in fields.items()}
+        digit = lowered.get("digit") or lowered.get("dtmf") or lowered.get("digits")
+        return str(digit)[0] if digit else None
+
+    async def check_health(self) -> bool:
+        """GETs the account endpoint used by get_call_status/hangup_call —
+        any 2xx/4xx response means the credentials at least reach Vobiz;
+        only a transport failure or 5xx counts as unhealthy."""
+        endpoint = f"{_BASE_URL}/v1/Account/{self._auth_id}/"
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(endpoint, headers=self._headers)
+        except httpx.HTTPError:
+            return False
+        return resp.status_code < 500
+
+    async def send_sms(self, *, from_number: str, to_number: str, text: str) -> str:
+        """Vobiz's Message API mirrors its Call API on the same auth
+        headers (unverified live, see design Risks)."""
+        body = {
+            "from": from_number.lstrip("+"),
+            "to": to_number.lstrip("+"),
+            "text": text,
+        }
+        endpoint = f"{_BASE_URL}/v1/Account/{self._auth_id}/Message/"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(endpoint, json=body, headers=self._headers)
+
+        if resp.status_code != 201:
+            raise TelephonyProviderError(f"Vobiz send_sms returned {resp.status_code}: {resp.text}")
+
+        data = resp.json()
+        message_id = data.get("message_uuid") or data.get("MessageUUID")
+        if not message_id:
+            raise TelephonyProviderError(f"Vobiz send_sms response missing message identifier: {data}")
+        return message_id
+
+    async def get_message_status(self, message_id: str) -> dict[str, Any]:
+        endpoint = f"{_BASE_URL}/v1/Account/{self._auth_id}/Message/{message_id}/"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(endpoint, headers=self._headers)
+
+        if resp.status_code != 200:
+            raise TelephonyProviderError(f"Vobiz get_message_status returned {resp.status_code}: {resp.text}")
+        return resp.json()
+
 
 TelephonyProviderRegistry.register("vobiz", VobizTelephonyProvider)
+SmsProviderRegistry.register("vobiz", VobizTelephonyProvider)

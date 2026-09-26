@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from libs.tenancy import set_target_tenant
 
@@ -55,6 +55,20 @@ async def create_telephony_config(
         user_id=current_user.id,
         user_email=current_user.email,
     )
+
+
+@router.get("")
+async def list_telephony_configs_by_provider(
+    provider: str = Query(...), current_user: CurrentUser = Depends(get_current_user),
+):
+    """The Cloudonix service's cold-path account preload — platform-scoped
+    only (`tenant_id is None`, never `role == "superadmin"`, lesson 24),
+    same shape as Conversation's prewarm. `credentials.api_keys` comes back
+    as sealed `enc:` Fernet tokens, worthless without
+    SECRET_ENCRYPTION_KEY (same stance as provider_configs.py's note)."""
+    if not is_platform_scoped(current_user):
+        raise HTTPException(status_code=403, detail="platform-scoped access required")
+    return await telephony_configs_service.list_configs_by_provider(provider)
 
 
 async def _authorize_telephony_config(config_id: str, current_user: CurrentUser) -> dict:

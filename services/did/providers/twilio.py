@@ -75,26 +75,43 @@ class TwilioProvider:
         if area_code:
             params["AreaCode"] = area_code
 
-        try:
-            resp = await self._client.get(f"/AvailablePhoneNumbers/{country.upper()}/Local.json", params=params)
-        except httpx.HTTPError as exc:
-            raise DidProviderError(f"Twilio unreachable: {exc}") from exc
-        if resp.status_code >= 400:
-            raise DidProviderError(
-                f"Twilio /AvailablePhoneNumbers/{country}/Local.json search returned "
-                f"{resp.status_code}: {resp.text}"
-            )
+        # Not every country sells every Twilio number type: "Local" 404s
+        # outright (not an empty list) for countries that only offer Mobile
+        # (e.g. India) — confirmed live, not a guess. Try Local first (it's
+        # what most countries, including the US, actually have) and fall
+        # back to Mobile only on that specific 404, so a real error on
+        # either attempt still surfaces instead of being swallowed.
+        last_error: tuple[int, str, str] | None = None
+        for number_type in ("Local", "Mobile"):
+            try:
+                resp = await self._client.get(f"/AvailablePhoneNumbers/{country.upper()}/{number_type}.json", params=params)
+            except httpx.HTTPError as exc:
+                raise DidProviderError(f"Twilio unreachable: {exc}") from exc
+            if resp.status_code == 404:
+                last_error = (resp.status_code, number_type, resp.text)
+                continue
+            if resp.status_code >= 400:
+                raise DidProviderError(
+                    f"Twilio /AvailablePhoneNumbers/{country}/{number_type}.json search returned "
+                    f"{resp.status_code}: {resp.text}"
+                )
+            data = resp.json()
+            return [
+                AvailableNumber(
+                    phone_number=obj["phone_number"],
+                    region=obj.get("region") or obj.get("locality"),
+                    monthly_price=None,  # not returned by this endpoint — see module docstring
+                    capabilities=_capabilities_from(obj),
+                )
+                for obj in data.get("available_phone_numbers", [])
+            ]
 
-        data = resp.json()
-        return [
-            AvailableNumber(
-                phone_number=obj["phone_number"],
-                region=obj.get("region") or obj.get("locality"),
-                monthly_price=None,  # not returned by this endpoint — see module docstring
-                capabilities=_capabilities_from(obj),
-            )
-            for obj in data.get("available_phone_numbers", [])
-        ]
+        assert last_error is not None
+        status, number_type, text = last_error
+        raise DidProviderError(
+            f"Twilio has no Local or Mobile numbers available for country={country!r} "
+            f"(last attempt /AvailablePhoneNumbers/{country}/{number_type}.json returned {status}: {text})"
+        )
 
     async def purchase_number(self, phone_number: str) -> PurchasedNumber:
         try:

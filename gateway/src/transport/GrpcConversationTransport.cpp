@@ -265,6 +265,21 @@ void GrpcConversationTransport::send_transfer_failed(const std::string& session_
         send_queue_->cv.notify_one();
 }
 
+void GrpcConversationTransport::send_dtmf(const std::string& session_id,
+                                          const std::string& digit) {
+    if (!stream_open_.load(std::memory_order_acquire)) return;
+
+    ::voiceai::v1::GatewayMessage msg;
+    auto* dtmf = msg.mutable_dtmf();
+    dtmf->set_session_id(session_id);
+    dtmf->set_digit(digit);
+
+    if (!send_queue_->q.push(std::move(msg)))
+        logger_.warn("GrpcTransport: send_queue_ full, dropping dtmf session={} digit={}", session_id, digit);
+    else
+        send_queue_->cv.notify_one();
+}
+
 // ── Writer loop ───────────────────────────────────────────────────────────────
 
 void GrpcConversationTransport::writer_loop() noexcept {

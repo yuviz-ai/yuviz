@@ -35,6 +35,7 @@ public:
                                  const std::string& transfer_id) override;
     void send_transfer_failed(const std::string& session_id, const std::string& destination,
                               const std::string& reason, const std::string& transfer_id) override;
+    void send_dtmf(const std::string& session_id, const std::string& digit) override;
     void set_callbacks(ConversationTransportCallbacks cbs) override;
 
 private:

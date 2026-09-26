@@ -1,10 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { Agent, AgentStatus, AgentUpdate, ApiError, deleteAgent, getAgent, listProviders, ProviderConfig, updateAgent, updateProvider } from "@/lib/api";
+import { Agent, AgentStatus, AgentUpdate, ApiError, deleteAgent, getAgent, getLiveCalls, listProviders, ProviderConfig, updateAgent, updateProvider } from "@/lib/api";
 import { KnowledgeBaseTabs } from "@/components/KnowledgeBaseTabs";
 import { ToolsPanel } from "@/components/ToolsPanel";
+import { Modal } from "@/components/Modal";
 import { SipPanel } from "@/components/SipPanel";
 import { LocalVoicePicker } from "@/components/LocalVoicePicker";
 import { ElevenLabsVoicePicker } from "@/components/ElevenLabsVoicePicker";
@@ -41,6 +43,12 @@ export default function AgentDetailPage() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  // null = still checking; a number once the real check has run (no
+  // override anywhere in this flow — a call in progress is a real person
+  // on the phone, not administrative housekeeping that can wait).
+  const [liveCallCount, setLiveCallCount] = useState<number | null>(null);
+  const [deleteChecking, setDeleteChecking] = useState(false);
 
   const [form, setForm] = useState<AgentUpdate>({});
   const [languageChoice, setLanguageChoice] = useState<string>("");
@@ -53,6 +61,9 @@ export default function AgentDetailPage() {
   // to a different provider without it being obvious that happened).
   const [chosenEngine, setChosenEngine] = useState<"macos" | "kokoro" | "elevenlabs" | null>(null);
   const [showEngineChooser, setShowEngineChooser] = useState(false);
+  // Local slider value while dragging — only PATCHed on release/keyup, not on
+  // every pixel of drag, which a plain onChange on a range input would do.
+  const [ttsSpeedDraft, setTtsSpeedDraft] = useState<number | null>(null);
 
   // Greeting / system prompt are edited here again (Prompt tab), not only on
   // the canvas: they are agent columns, and update_agent mirrors them into
@@ -146,14 +157,44 @@ export default function AgentDetailPage() {
     }
   };
 
+  const openDeleteConfirm = async () => {
+    if (!agent) return;
+    setDeleteConfirmOpen(true);
+    setLiveCallCount(null);
+    setSaveError(null);
+    setDeleteChecking(true);
+    try {
+      // No agent_id on LiveCall (see lib/api.ts) — matched by name, scoped
+      // to this tenant by getLiveCalls(tenantSlug) already. A same-tenant
+      // name collision would undercount, but agent names are admin-chosen
+      // and this is a pre-check only — the DELETE call itself, backed by a
+      // real agent_id match server-side, is still the authoritative one.
+      const snapshot = await getLiveCalls(tenantSlug);
+      setLiveCallCount(snapshot.items.filter((c) => c.agent_name === agent.name).length);
+    } catch (e) {
+      setSaveError(e instanceof ApiError ? e.detail : String(e));
+    } finally {
+      setDeleteChecking(false);
+    }
+  };
+
   const handleDelete = async () => {
     if (!agent) return;
-    if (!window.confirm(`Delete agent "${agent.name}"? Any DIDs still pointing at it will fall back to their fallback agent, or default.`)) return;
     setDeleting(true);
     try {
       await deleteAgent(tenantSlug, agent.id);
       router.push("/agents");
     } catch (e) {
+      // A blocked delete (409) carries the live call count in the body —
+      // switch this same modal to the blocked variant. Authoritative
+      // check; the pre-check on open only decides which copy to show
+      // first, so a race (a call starting between opening the modal and
+      // clicking) still lands here correctly instead of deleting mid-call.
+      if (e instanceof ApiError && e.status === 409 && e.body?.live_call_count !== undefined) {
+        setLiveCallCount(Number(e.body.live_call_count));
+        setDeleting(false);
+        return;
+      }
       setSaveError(e instanceof ApiError ? e.detail : String(e));
       setDeleting(false);
     }
@@ -491,36 +532,43 @@ export default function AgentDetailPage() {
                 })()}
                 {(() => {
                   const selectedTts = providers.find((p) => p.id === form.tts_config_id);
-                  const speed = Number((selectedTts?.extra as Record<string, unknown> | null)?.speed ?? 1.0);
+                  const savedSpeed = Number((selectedTts?.extra as Record<string, unknown> | null)?.speed ?? 1.0);
+                  const speed = ttsSpeedDraft ?? savedSpeed;
+                  const commit = async (v: number) => {
+                    setTtsSpeedDraft(null);
+                    if (!selectedTts || v === savedSpeed) return;
+                    try {
+                      const updated = await updateProvider(selectedTts.id, {
+                        extra: { ...((selectedTts.extra as Record<string, unknown>) || {}), speed: v },
+                      });
+                      setProviders(providers.map((p) => (p.id === updated.id ? updated : p)));
+                    } catch (err) {
+                      setError(err instanceof ApiError ? err.detail : String(err));
+                    }
+                  };
                   return (
                     <div className="form-group" style={{ marginTop: 12, marginBottom: 0 }}>
                       <label className="form-label">
                         Speaking Speed <span className="hint">0.7 (slower) – 1.2 (faster), default 1.0 — saved on the selected voice, applies immediately to the next call</span>
                       </label>
-                      <select
-                        className="form-select"
-                        style={{ width: 140 }}
-                        value={String(speed)}
-                        disabled={!selectedTts}
-                        onChange={async (e) => {
-                          if (!selectedTts) return;
-                          const v = Number(e.target.value);
-                          try {
-                            const updated = await updateProvider(selectedTts.id, {
-                              extra: { ...((selectedTts.extra as Record<string, unknown>) || {}), speed: v },
-                            });
-                            setProviders(providers.map((p) => (p.id === updated.id ? updated : p)));
-                          } catch (err) {
-                            setError(err instanceof ApiError ? err.detail : String(err));
-                          }
-                        }}
-                      >
-                        {[0.7, 0.8, 0.9, 1.0, 1.1, 1.2].map((v) => (
-                          <option key={v} value={String(v)}>
-                            {v.toFixed(1)}{v === 1.0 ? " (default)" : ""}
-                          </option>
-                        ))}
-                      </select>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <input
+                          type="range"
+                          min={0.7}
+                          max={1.2}
+                          step={0.05}
+                          value={speed}
+                          disabled={!selectedTts}
+                          style={{ flex: 1, accentColor: "var(--cyan)" }}
+                          onChange={(e) => setTtsSpeedDraft(Number(e.target.value))}
+                          onMouseUp={(e) => commit(Number((e.target as HTMLInputElement).value))}
+                          onTouchEnd={(e) => commit(Number((e.target as HTMLInputElement).value))}
+                          onKeyUp={(e) => commit(Number((e.target as HTMLInputElement).value))}
+                        />
+                        <span className="mono" style={{ fontSize: ".78rem", color: "var(--text)", width: 68, flexShrink: 0 }}>
+                          {speed.toFixed(2)}{speed === 1.0 ? " (default)" : ""}
+                        </span>
+                      </div>
                     </div>
                   );
                 })()}
@@ -555,6 +603,45 @@ export default function AgentDetailPage() {
                     );
                   })}
                 </div>
+                {(() => {
+                  const selectedLlm = providers.find((p) => p.id === form.llm_config_id);
+                  // Ollama's "think" field only exists for a handful of models
+                  // (gemma4 family confirmed live) — every other engine/model
+                  // combination doesn't support it, so the toggle only
+                  // appears when it would actually do something. Mirrors the
+                  // scoping in services/conversation/ai_provider_manager.py's
+                  // _is_thinking_capable().
+                  const isThinkingCapable = selectedLlm?.engine === "ollama" && !!selectedLlm.model?.startsWith("gemma4");
+                  if (!isThinkingCapable || !selectedLlm) return null;
+                  const thinking = Boolean((selectedLlm.extra as Record<string, unknown> | null)?.think ?? false);
+                  return (
+                    <div className="form-group" style={{ marginTop: 12, marginBottom: 0 }}>
+                      <label className="form-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        Thinking
+                        <span className="hint">
+                          {selectedLlm.model} can reason before answering — off by default (adds 5-8s/turn when on)
+                        </span>
+                      </label>
+                      <label className="toggle-switch">
+                        <input
+                          type="checkbox"
+                          checked={thinking}
+                          onChange={async (e) => {
+                            try {
+                              const updated = await updateProvider(selectedLlm.id, {
+                                extra: { ...((selectedLlm.extra as Record<string, unknown>) || {}), think: e.target.checked },
+                              });
+                              setProviders(providers.map((p) => (p.id === updated.id ? updated : p)));
+                            } catch (err) {
+                              setError(err instanceof ApiError ? err.detail : String(err));
+                            }
+                          }}
+                        />
+                        <span className="toggle-slider" />
+                      </label>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           </div>
@@ -757,7 +844,7 @@ export default function AgentDetailPage() {
       {tab !== "knowledge" && (
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
           {saved && <span style={{ alignSelf: "center", fontSize: ".76rem", color: "var(--green)" }}>Saved ✓</span>}
-          <button className="btn btn-danger btn-sm" onClick={handleDelete} disabled={deleting}>
+          <button className="btn btn-danger btn-sm" onClick={openDeleteConfirm} disabled={deleting}>
             {deleting ? "Deleting…" : "Delete Agent"}
           </button>
           <button className="btn btn-primary btn-sm" onClick={handleSave} disabled={saving}>
@@ -765,6 +852,59 @@ export default function AgentDetailPage() {
           </button>
         </div>
       )}
+
+      <Modal
+        open={deleteConfirmOpen}
+        title={
+          deleteChecking
+            ? `Checking "${agent.name}"…`
+            : liveCallCount
+              ? `Can't delete "${agent.name}" right now`
+              : `Delete "${agent.name}"?`
+        }
+        onClose={() => setDeleteConfirmOpen(false)}
+        footer={
+          deleteChecking ? (
+            <button className="btn btn-ghost btn-sm" onClick={() => setDeleteConfirmOpen(false)}>Cancel</button>
+          ) : liveCallCount ? (
+            // Deliberately no "force delete" here — unlike Accounts and
+            // Providers, this blocks a real call in progress, not
+            // administrative housekeeping. Wait for the call to end, then
+            // delete; re-opening this a minute later just works.
+            <>
+              <button className="btn btn-ghost btn-sm" onClick={() => setDeleteConfirmOpen(false)}>Cancel</button>
+              <Link href="/live-calls" className="btn btn-ghost btn-sm">View live calls</Link>
+            </>
+          ) : (
+            <>
+              <button className="btn btn-ghost btn-sm" onClick={() => setDeleteConfirmOpen(false)}>Cancel</button>
+              <button className="btn btn-danger btn-sm" onClick={handleDelete} disabled={deleting}>
+                {deleting ? "Deleting…" : "Delete agent"}
+              </button>
+            </>
+          )
+        }
+      >
+        {deleteChecking ? (
+          <p style={{ fontSize: ".78rem", color: "var(--text-3)" }}>Checking for calls in progress on this agent…</p>
+        ) : liveCallCount ? (
+          <p style={{
+            fontSize: ".78rem", color: "var(--text-2)", lineHeight: 1.5,
+            borderLeft: "2px solid var(--red-border)", padding: "6px 0 6px 10px", margin: 0,
+          }}>
+            <b>{`${liveCallCount} call${liveCallCount === 1 ? " is" : "s are"} in progress`}</b>{" "}
+            {`on this agent right now. Deleting it would cut ${liveCallCount === 1 ? "that caller" : "those callers"} off mid-conversation — this isn't housekeeping that can wait a moment, it's a real person on the phone. Wait for the call to end, then delete.`}
+          </p>
+        ) : (
+          <p style={{
+            fontSize: ".78rem", color: "var(--text-2)", lineHeight: 1.5,
+            borderLeft: "2px solid var(--green-border)", padding: "6px 0 6px 10px", margin: 0,
+          }}>
+            No calls in progress. Any DIDs still pointing at it will fall back to their fallback agent, or
+            default.
+          </p>
+        )}
+      </Modal>
     </>
   );
 }

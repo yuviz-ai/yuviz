@@ -400,6 +400,19 @@ async def update_agent(
     return _public_agent(new)
 
 
+class AgentHasLiveCalls(Exception):
+    """Raised instead of deleting an agent with a call in progress right
+    now — deliberately no force override anywhere in this feature (unlike
+    TenantHasActiveResources/ProviderConfigInUse): those are administrative
+    housekeeping that can wait a moment; this is a real person on the
+    phone. `ended_at IS NULL` is the same "live" signal live_calls.py's own
+    KPIs already use for "in progress," not a new definition."""
+
+    def __init__(self, live_call_count: int) -> None:
+        self.live_call_count = live_call_count
+        super().__init__(f"{live_call_count} call(s) in progress on this agent — wait for them to end")
+
+
 async def soft_delete_agent(
     agent_id: Any,
     *,
@@ -418,6 +431,12 @@ async def soft_delete_agent(
         if old_row is None:
             raise LookupError(f"agent {agent_id} not found under tenant {tenant_slug!r}")
         old = _row(old_row)
+
+        live_calls = await conn.fetchval(
+            "SELECT count(*) FROM calls WHERE agent_id = $1 AND ended_at IS NULL", agent_id,
+        )
+        if live_calls:
+            raise AgentHasLiveCalls(live_calls)
 
         await conn.execute("UPDATE agents SET deleted_at = now() WHERE id = $1", agent_id)
         await audit.write_audit(

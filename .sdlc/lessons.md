@@ -174,7 +174,11 @@ Tags: [prd] [architect] [planner] [implementer] [critic] [security] [tester] [qa
     Conversation and vobiz service accounts authenticate as `role="viewer"` with a NULL tenant and
     legitimately need platform-wide reads.
     *Earned: scoping a leaky tenant listing on role would have closed the leak and simultaneously
-    broken Conversation's startup prewarm and vobiz's per-call telephony lookup.*
+    broken Conversation's startup prewarm and vobiz's per-call telephony lookup. Recurred on the
+    telephony service design: a caller-role allowlist for outbound calls/SMS was about to exclude
+    `viewer` outright, which would have broken Campaigns' and Conversation's own service accounts —
+    fixed with a second explicit `is_service_account AND tenant_id IS NULL` clause alongside the
+    role check, not by including `viewer` back in the role list.*
 
 25. [implementer][tester][critic] A test that reconfigures a tuning constant to make its scenario
     reachable is testing a system that never ships. Exercise the deployed value, or the test proves
@@ -284,3 +288,35 @@ Tags: [prd] [architect] [planner] [implementer] [critic] [security] [tester] [qa
     three cross-tenant tests pass on the predicate alone. Related: [[31]] — `agents.call_flow_id`
     was a bare `REFERENCES call_flows(id)` with nothing stopping it pointing at another tenant's
     flow, fixed with a composite FK onto `(id, tenant_id)`.*
+
+37. [architect][security] Wiring a new tenant-writable field into a shared, trust-assuming utility
+    (a secret resolver, a template engine, a query builder) carries that utility's *original* trust
+    boundary into the new caller unexamined. Fixing the named finding does not re-check whether the
+    same utility is now reachable from the newly-untrusted input somewhere else in the same design —
+    check every existing consumer of that utility, not just the one the finding pointed at.
+    *Earned: three straight security rounds on the Cloudonix design each closed the named finding
+    while the same class resurfaced one layer downstream — a rewritten tenant boundary (R2) reopened
+    at the very next step (R3 finding 3), and closing `app_id` shadowing (R2) left tenant-writable
+    `api_key_refs` still resolving through `CompositeSecretResolver`'s `env:`/`k8s:` schemes — a
+    resolver built for admin-entered infra config, now an arbitrary env-var/file-read oracle once fed
+    a tenant's own input.*
+
+38. [architect][implementer][security][tester] A design or implementation that calls an `async def`
+    guard without `await` fails open, not closed — the coroutine is created, never runs, and raises
+    nothing. Trace every security-gate call site to confirm it is actually awaited; a mechanical AST
+    check (the call wrapped in `Await`) catches what a read-through misses.
+    *Earned: `resolve_caller_tenant` called `async def assert_tenant_access` without `await` on the
+    telephony service design — the entire tenant gate silently never executed, and the downstream
+    DID/agent ownership checks then validated against the attacker-named tenant and passed too.
+    Caught only by re-tracing the literal call expression across every route that reaches it.*
+
+39. [architect][implementer][security] A nullable/optional field that can arise from two different
+    causes will get consumed as if it only means one of them. Name each cause as its own field —
+    never let a downstream `if x is None` branch stand in for "and therefore not owned" when a
+    sibling cause ("owned, just unbound") produces the identical `None`.
+    *Earned: a campaign's `resolve_outbound_route()` returned `provider: None` both for "caller_id
+    not owned by this tenant at all" and "owned, but a legitimate native DID with no REST binding" —
+    the dispatcher's `else` branch treated both as "take the ESL path," so an arbitrary or
+    another-tenant's-DID caller_id dialed with zero ownership check. Fixed by splitting the query
+    into two independent fields, `provider` and `caller_id_owned`, and gating dispatch on the latter
+    before the provider branch runs at all.*

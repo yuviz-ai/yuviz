@@ -192,6 +192,11 @@ void CallSession::terminate(const std::string& reason) {
     });
 }
 
+void CallSession::push_dtmf(const std::string& digit) {
+    if (transport_)
+        transport_->send_dtmf(ctx_.obs.session_id, digit);
+}
+
 const std::string& CallSession::session_id() const noexcept {
     return ctx_.obs.session_id;
 }

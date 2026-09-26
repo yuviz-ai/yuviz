@@ -58,6 +58,8 @@ public:
     // e.g. the session already tore itself down for an unrelated reason.
     void terminate_by_call_id(const std::string& call_id, const std::string& reason);
 
+    void push_dtmf_to_call(const std::string& call_id, const std::string& digit);
+
     [[nodiscard]] size_t active_count() const;
 
 private:

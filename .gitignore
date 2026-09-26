@@ -56,3 +56,16 @@ docs/warm_transfer_architecture.md
 # Locally-generated CA bundle (corporate TLS-interception root + certifi).
 # Machine-specific and regenerable — see docs, never commit.
 certs/
+
+# Local testing and temporary files — never commit.
+# Load test results and temporary test artifacts.
+loadtest/sipp/results/
+db.sqlite3
+*.sqlite3
+*.db
+test_dtmf_api.py
+dtmf_cli_test.sh
+setup_and_test_dtmf.sh
+*_cli_test.sh
+*_quick_reference.md
+*_talking_scripts.md

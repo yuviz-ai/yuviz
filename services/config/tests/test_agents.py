@@ -23,7 +23,7 @@ async def other_tenant(pool):
     await pool.execute("DELETE FROM tenants WHERE id = $1", tenant["id"])
 
 
-async def test_create_and_get_agent(test_tenant):
+async def test_create_and_get_agent(test_tenant, scoped):
     created = await agents.create_agent(
         tenant_id=test_tenant["id"], slug="support-agent", name="Support",
         greeting="Hi there", system_prompt="Be helpful.",
@@ -37,14 +37,14 @@ async def test_create_and_get_agent(test_tenant):
     assert fetched["id"] == created["id"]
 
 
-async def test_get_agent_returns_none_for_wrong_tenant(test_tenant):
+async def test_get_agent_returns_none_for_wrong_tenant(test_tenant, scoped):
     await agents.create_agent(
         tenant_id=test_tenant["id"], slug="support-agent", name="Support",
     )
     assert await agents.get_agent("not-a-real-tenant-slug", "support-agent") is None
 
 
-async def test_create_agent_warms_cache_when_tenant_slug_given(test_tenant):
+async def test_create_agent_warms_cache_when_tenant_slug_given(test_tenant, scoped):
     await cache.invalidate(f"agent:{test_tenant['slug']}:warm-test")
     await agents.create_agent(
         tenant_id=test_tenant["id"], slug="warm-test", name="Warm Test",
@@ -53,7 +53,7 @@ async def test_create_agent_warms_cache_when_tenant_slug_given(test_tenant):
     assert await cache.get_json(f"agent:{test_tenant['slug']}:warm-test") is not None
 
 
-async def test_create_agent_without_tenant_slug_does_not_warm_cache(test_tenant):
+async def test_create_agent_without_tenant_slug_does_not_warm_cache(test_tenant, scoped):
     await cache.invalidate(f"agent:{test_tenant['slug']}:no-warm-test")
     await agents.create_agent(
         tenant_id=test_tenant["id"], slug="no-warm-test", name="No Warm Test",
@@ -61,7 +61,7 @@ async def test_create_agent_without_tenant_slug_does_not_warm_cache(test_tenant)
     assert await cache.get_json(f"agent:{test_tenant['slug']}:no-warm-test") is None
 
 
-async def test_update_agent_transfer_config_and_invalidates_cache(test_tenant):
+async def test_update_agent_transfer_config_and_invalidates_cache(test_tenant, scoped):
     created = await agents.create_agent(
         tenant_id=test_tenant["id"], slug="support-agent", name="Support",
     )
@@ -80,7 +80,7 @@ async def test_update_agent_transfer_config_and_invalidates_cache(test_tenant):
     assert await cache.get_json(f"agent:{test_tenant['slug']}:support-agent") is None
 
 
-async def test_update_agent_rejects_unknown_field(test_tenant):
+async def test_update_agent_rejects_unknown_field(test_tenant, scoped):
     created = await agents.create_agent(
         tenant_id=test_tenant["id"], slug="support-agent", name="Support",
     )
@@ -90,7 +90,7 @@ async def test_update_agent_rejects_unknown_field(test_tenant):
         )
 
 
-async def test_soft_delete_agent_excluded_from_get(test_tenant):
+async def test_soft_delete_agent_excluded_from_get(test_tenant, scoped):
     created = await agents.create_agent(
         tenant_id=test_tenant["id"], slug="support-agent", name="Support",
     )
@@ -98,7 +98,7 @@ async def test_soft_delete_agent_excluded_from_get(test_tenant):
     assert await agents.get_agent(test_tenant["slug"], "support-agent") is None
 
 
-async def test_update_agent_rejects_cross_tenant_hijack(test_tenant, other_tenant):
+async def test_update_agent_rejects_cross_tenant_hijack(test_tenant, scoped, other_tenant):
     """Regression test for a confirmed live hijack: PATCHing an agent through
     a *different* tenant's slug must not touch it — an agent_id that exists
     but belongs to another tenant must be indistinguishable from not found."""
@@ -116,7 +116,7 @@ async def test_update_agent_rejects_cross_tenant_hijack(test_tenant, other_tenan
     assert unchanged["name"] == "Original"
 
 
-async def test_soft_delete_agent_rejects_cross_tenant_deletion(test_tenant, other_tenant):
+async def test_soft_delete_agent_rejects_cross_tenant_deletion(test_tenant, scoped, other_tenant):
     created = await agents.create_agent(
         tenant_id=test_tenant["id"], slug="support-agent", name="Support",
     )
@@ -126,3 +126,44 @@ async def test_soft_delete_agent_rejects_cross_tenant_deletion(test_tenant, othe
 
     # Still alive under its real tenant.
     assert await agents.get_agent(test_tenant["slug"], "support-agent") is not None
+
+
+async def test_soft_delete_agent_rejects_a_live_call(test_tenant, scoped, pool):
+    # Deliberately no force override for this one (unlike the tenant/
+    # provider-config guards) — this is a call happening to a real person
+    # right now, not administrative housekeeping.
+    created = await agents.create_agent(
+        tenant_id=test_tenant["id"], slug="support-agent", name="Support",
+    )
+    session_id = f"test-live-{uuid.uuid4().hex[:8]}"
+    await pool.execute(
+        "INSERT INTO calls (session_id, tenant_id, direction, agent_id, ended_at) "
+        "VALUES ($1, $2, 'inbound', $3, NULL)",
+        session_id, test_tenant["slug"], created["id"],
+    )
+    try:
+        with pytest.raises(agents.AgentHasLiveCalls) as exc_info:
+            await agents.soft_delete_agent(created["id"], tenant_slug=test_tenant["slug"])
+        assert exc_info.value.live_call_count == 1
+
+        # Untouched — still there.
+        assert await agents.get_agent(test_tenant["slug"], "support-agent") is not None
+    finally:
+        await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
+
+
+async def test_soft_delete_agent_allowed_once_call_ends(test_tenant, scoped, pool):
+    created = await agents.create_agent(
+        tenant_id=test_tenant["id"], slug="support-agent", name="Support",
+    )
+    session_id = f"test-ended-{uuid.uuid4().hex[:8]}"
+    await pool.execute(
+        "INSERT INTO calls (session_id, tenant_id, direction, agent_id, ended_at) "
+        "VALUES ($1, $2, 'inbound', $3, NOW())",
+        session_id, test_tenant["slug"], created["id"],
+    )
+    try:
+        await agents.soft_delete_agent(created["id"], tenant_slug=test_tenant["slug"])
+        assert await agents.get_agent(test_tenant["slug"], "support-agent") is None
+    finally:
+        await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)

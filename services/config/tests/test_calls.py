@@ -14,7 +14,7 @@ async def _insert_call(pool, *, tenant_slug, session_id, direction="inbound", en
     )
 
 
-async def test_list_calls_scoped_to_tenant_and_decorated(test_tenant, pool):
+async def test_list_calls_scoped_to_tenant_and_decorated(test_tenant, scoped, pool):
     session_id = f"test-call-{uuid.uuid4().hex[:8]}"
     await _insert_call(pool, tenant_slug=test_tenant["slug"], session_id=session_id)
 
@@ -29,7 +29,7 @@ async def test_list_calls_scoped_to_tenant_and_decorated(test_tenant, pool):
     await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
 
 
-async def test_outbound_call_derives_webrtc_mode(test_tenant, pool):
+async def test_outbound_call_derives_webrtc_mode(test_tenant, scoped, pool):
     session_id = f"test-call-{uuid.uuid4().hex[:8]}"
     await _insert_call(pool, tenant_slug=test_tenant["slug"], session_id=session_id, direction="outbound")
 
@@ -39,7 +39,7 @@ async def test_outbound_call_derives_webrtc_mode(test_tenant, pool):
     await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
 
 
-async def test_ended_call_derives_completed_status(test_tenant, pool):
+async def test_ended_call_derives_completed_status(test_tenant, scoped, pool):
     session_id = f"test-call-{uuid.uuid4().hex[:8]}"
     await pool.execute(
         "INSERT INTO calls (session_id, tenant_id, direction, ended_at) VALUES ($1, $2, 'inbound', NOW())",
@@ -52,7 +52,7 @@ async def test_ended_call_derives_completed_status(test_tenant, pool):
     await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
 
 
-async def test_list_calls_filters_by_direction(test_tenant, pool):
+async def test_list_calls_filters_by_direction(test_tenant, scoped, pool):
     inbound_id = f"test-call-{uuid.uuid4().hex[:8]}"
     outbound_id = f"test-call-{uuid.uuid4().hex[:8]}"
     await _insert_call(pool, tenant_slug=test_tenant["slug"], session_id=inbound_id, direction="inbound")
@@ -68,7 +68,7 @@ async def test_get_call_unknown_returns_none():
     assert await calls.get_call("does-not-exist") is None
 
 
-async def test_get_call_wrong_tenant_returns_none(test_tenant, pool):
+async def test_get_call_wrong_tenant_returns_none(test_tenant, scoped, pool):
     other = await pool.fetchrow(
         "INSERT INTO tenants (name, slug) VALUES ($1, $2) RETURNING *",
         "Call Cross Tenant", f"test-call-x-{uuid.uuid4().hex[:8]}",
@@ -84,7 +84,7 @@ async def test_get_call_wrong_tenant_returns_none(test_tenant, pool):
         await pool.execute("DELETE FROM tenants WHERE id = $1", other["id"])
 
 
-async def test_get_transcript_wrong_tenant_returns_empty(test_tenant, pool):
+async def test_get_transcript_wrong_tenant_returns_empty(test_tenant, scoped, pool):
     other = await pool.fetchrow(
         "INSERT INTO tenants (name, slug) VALUES ($1, $2) RETURNING *",
         "Transcript Cross Tenant", f"test-tr-x-{uuid.uuid4().hex[:8]}",
@@ -105,7 +105,7 @@ async def test_get_transcript_wrong_tenant_returns_empty(test_tenant, pool):
         await pool.execute("DELETE FROM tenants WHERE id = $1", other["id"])
 
 
-async def test_get_latency_stats_computes_percentiles_per_agent_and_engine(test_tenant, pool):
+async def test_get_latency_stats_computes_percentiles_per_agent_and_engine(test_tenant, scoped, pool):
     session_id = f"test-call-{uuid.uuid4().hex[:8]}"
     await _insert_call(pool, tenant_slug=test_tenant["slug"], session_id=session_id)
     await pool.execute(
@@ -138,7 +138,7 @@ async def test_get_latency_stats_computes_percentiles_per_agent_and_engine(test_
     await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
 
 
-async def test_get_latency_stats_respects_hours_window(test_tenant, pool):
+async def test_get_latency_stats_respects_hours_window(test_tenant, scoped, pool):
     session_id = f"test-call-{uuid.uuid4().hex[:8]}"
     await _insert_call(pool, tenant_slug=test_tenant["slug"], session_id=session_id)
     await pool.execute(
@@ -155,7 +155,7 @@ async def test_get_latency_stats_respects_hours_window(test_tenant, pool):
     await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
 
 
-async def test_get_transcript_returns_turns_in_order(test_tenant, pool):
+async def test_get_transcript_returns_turns_in_order(test_tenant, scoped, pool):
     session_id = f"test-call-{uuid.uuid4().hex[:8]}"
     await _insert_call(pool, tenant_slug=test_tenant["slug"], session_id=session_id)
     await pool.execute(
@@ -171,7 +171,7 @@ async def test_get_transcript_returns_turns_in_order(test_tenant, pool):
     await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
 
 
-async def test_get_dashboard_stats_counts_and_sums_minutes(test_tenant, pool):
+async def test_get_dashboard_stats_counts_and_sums_minutes(test_tenant, scoped, pool):
     ok_id, failed_id, live_id = (f"test-call-{uuid.uuid4().hex[:8]}" for _ in range(3))
     await pool.execute(
         "INSERT INTO calls (session_id, tenant_id, direction, duration_ms, turn_count, close_reason, ended_at) "
@@ -201,7 +201,7 @@ async def test_get_dashboard_stats_counts_and_sums_minutes(test_tenant, pool):
         await pool.execute("DELETE FROM calls WHERE session_id = $1", sid)
 
 
-async def test_get_dashboard_stats_respects_hours_window(test_tenant, pool):
+async def test_get_dashboard_stats_respects_hours_window(test_tenant, scoped, pool):
     session_id = f"test-call-{uuid.uuid4().hex[:8]}"
     await pool.execute(
         "INSERT INTO calls (session_id, tenant_id, direction, started_at, ended_at) "
@@ -216,7 +216,7 @@ async def test_get_dashboard_stats_respects_hours_window(test_tenant, pool):
     await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
 
 
-async def test_get_usage_trend_groups_by_day(test_tenant, pool):
+async def test_get_usage_trend_groups_by_day(test_tenant, scoped, pool):
     today_id, yesterday_id = (f"test-call-{uuid.uuid4().hex[:8]}" for _ in range(2))
     await pool.execute(
         "INSERT INTO calls (session_id, tenant_id, direction, duration_ms, started_at, ended_at) "
@@ -238,7 +238,7 @@ async def test_get_usage_trend_groups_by_day(test_tenant, pool):
         await pool.execute("DELETE FROM calls WHERE session_id = $1", sid)
 
 
-async def test_get_todays_activity_buckets_by_hour_and_direction(test_tenant, pool):
+async def test_get_todays_activity_buckets_by_hour_and_direction(test_tenant, scoped, pool):
     inbound_id, outbound_id = (f"test-call-{uuid.uuid4().hex[:8]}" for _ in range(2))
     await pool.execute(
         "INSERT INTO calls (session_id, tenant_id, direction, started_at) VALUES ($1, $2, 'inbound', NOW())",
@@ -259,7 +259,7 @@ async def test_get_todays_activity_buckets_by_hour_and_direction(test_tenant, po
         await pool.execute("DELETE FROM calls WHERE session_id = $1", sid)
 
 
-async def test_get_dashboard_stats_aht_denominator_skips_null_durations(test_tenant, pool):
+async def test_get_dashboard_stats_aht_denominator_skips_null_durations(test_tenant, scoped, pool):
     """AHT must divide by calls that REPORTED a duration, not by every ended
     call — duration_ms is NULL on reconciled/dead-node calls, and counting
     those in the denominator would drag the average toward zero in exact
@@ -286,7 +286,7 @@ async def test_get_dashboard_stats_aht_denominator_skips_null_durations(test_ten
         await pool.execute("DELETE FROM calls WHERE session_id = $1", sid)
 
 
-async def test_get_dashboard_stats_counts_handoffs_apart_from_escalations(test_tenant, pool):
+async def test_get_dashboard_stats_counts_handoffs_apart_from_escalations(test_tenant, scoped, pool):
     """A handoff is a transfer that REACHED a human (TRANSFER_SUCCESS); an
     escalation is any attempt. Containment is the complement of the latter,
     so the two counts must not collapse into one."""
@@ -310,7 +310,7 @@ async def test_get_dashboard_stats_counts_handoffs_apart_from_escalations(test_t
         await pool.execute("DELETE FROM calls WHERE session_id = $1", sid)
 
 
-async def test_get_dashboard_stats_prev_window_is_the_preceding_equal_window(test_tenant, pool):
+async def test_get_dashboard_stats_prev_window_is_the_preceding_equal_window(test_tenant, scoped, pool):
     """prev_* powers the trend deltas, so it must cover exactly the window
     immediately before the current one — not all history before it."""
     recent_id, prev_id, ancient_id = (f"test-call-{uuid.uuid4().hex[:8]}" for _ in range(3))
@@ -340,7 +340,7 @@ async def test_get_dashboard_stats_prev_window_is_the_preceding_equal_window(tes
         await pool.execute("DELETE FROM calls WHERE session_id = $1", sid)
 
 
-async def test_get_disposition_mix_groups_ended_calls_only(test_tenant, pool):
+async def test_get_disposition_mix_groups_ended_calls_only(test_tenant, scoped, pool):
     """Live calls have no disposition yet, so they must not appear — and the
     raw close_reason strings come back unlabelled for the UI to map."""
     a_id, b_id, xfer_id, live_id = (f"test-call-{uuid.uuid4().hex[:8]}" for _ in range(4))

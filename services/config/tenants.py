@@ -161,8 +161,26 @@ async def update_tenant(
     return new
 
 
+class TenantHasActiveResources(Exception):
+    """Raised instead of deleting when the tenant still has active agents
+    or active phone numbers attached and the caller didn't pass force=True
+    — a deleted tenant's DIDs stop resolving immediately (get_by_did()'s
+    own `t.deleted_at IS NULL` check), so this isn't "some calls might slip
+    through," it's an instant, total outage for that tenant's callers with
+    zero warning today. Counts are exposed so the caller (the router, then
+    the Admin UI) can show them without a second query."""
+
+    def __init__(self, active_agents: int, active_phone_numbers: int) -> None:
+        self.active_agents = active_agents
+        self.active_phone_numbers = active_phone_numbers
+        super().__init__(
+            f"tenant has {active_agents} active agent(s) and {active_phone_numbers} "
+            "active phone number(s) — pass force=True to delete anyway"
+        )
+
+
 async def soft_delete_tenant(
-    tenant_id: Any, *, user_id: Any | None = None, user_email: str | None = None,
+    tenant_id: Any, *, user_id: Any | None = None, user_email: str | None = None, force: bool = False,
 ) -> None:
     pool = await db.get_pool()
     async with platform_conn(pool, reason="tenants-out-of-rls-scope") as conn:
@@ -172,6 +190,18 @@ async def soft_delete_tenant(
         if old_row is None:
             raise LookupError(f"tenant {tenant_id} not found")
         old = dict(old_row)
+
+        if not force:
+            active_agents = await conn.fetchval(
+                "SELECT count(*) FROM agents WHERE tenant_id = $1 AND deleted_at IS NULL AND status = 'active'",
+                tenant_id,
+            )
+            active_phone_numbers = await conn.fetchval(
+                "SELECT count(*) FROM phone_numbers WHERE tenant_id = $1 AND deleted_at IS NULL AND status = 'active'",
+                tenant_id,
+            )
+            if active_agents or active_phone_numbers:
+                raise TenantHasActiveResources(active_agents, active_phone_numbers)
 
         await conn.execute(
             "UPDATE tenants SET deleted_at = now() WHERE id = $1", tenant_id,

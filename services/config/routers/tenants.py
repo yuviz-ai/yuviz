@@ -100,5 +100,9 @@ async def update_tenant_concurrency(
 
 
 @router.delete("/{tenant_id}", status_code=204)
-async def delete_tenant(tenant_id: str, current_user: CurrentUser = Depends(require_role("superadmin"))):
-    await tenants_service.soft_delete_tenant(tenant_id, user_id=current_user.id, user_email=current_user.email)
+async def delete_tenant(
+    tenant_id: str, force: bool = False, current_user: CurrentUser = Depends(require_role("superadmin")),
+):
+    await tenants_service.soft_delete_tenant(
+        tenant_id, user_id=current_user.id, user_email=current_user.email, force=force,
+    )

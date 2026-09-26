@@ -63,6 +63,37 @@ async def test_search_empty_result_is_empty_list_not_error():
     assert await provider.search_available_numbers("US") == []
 
 
+async def test_search_falls_back_to_mobile_when_local_404s():
+    # Confirmed live: countries that only sell Mobile numbers (e.g. India)
+    # 404 outright on /Local.json rather than returning an empty list.
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path.endswith("/Local.json"):
+            return httpx.Response(404, json={"code": 20404, "message": "not found"})
+        assert request.url.path.endswith("/Mobile.json")
+        return httpx.Response(200, json=_SEARCH_RESPONSE)
+
+    provider = _make_provider(handler)
+    results = await provider.search_available_numbers("IN")
+
+    assert len(results) == 1
+    assert calls == [
+        "/2010-04-01/Accounts/ACtest/AvailablePhoneNumbers/IN/Local.json",
+        "/2010-04-01/Accounts/ACtest/AvailablePhoneNumbers/IN/Mobile.json",
+    ]
+
+
+async def test_search_raises_when_both_local_and_mobile_404():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"code": 20404, "message": "not found"})
+
+    provider = _make_provider(handler)
+    with pytest.raises(DidProviderError):
+        await provider.search_available_numbers("XX")
+
+
 async def test_search_4xx_raises_did_provider_error():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, json={"code": 20003, "message": "Authenticate"})

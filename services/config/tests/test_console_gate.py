@@ -12,6 +12,7 @@ correct too.
 
 from __future__ import annotations
 
+import types
 import uuid
 
 import pytest
@@ -32,6 +33,14 @@ def _make_user(role: str, *, tenant_id: str | None = "11111111-1111-1111-1111-11
     }
 
 
+def _fake_request():
+    """A minimal stand-in for FastAPI's Request, carrying only what
+    get_current_user() actually touches (request.app.state) — used by the
+    module-level tests below, which call get_current_user() directly rather
+    than through real dependency injection."""
+    return types.SimpleNamespace(app=types.SimpleNamespace(state=types.SimpleNamespace()))
+
+
 class TestConsoleGateModule:
     """No FastAPI app — protects services/config/deps.py for every service
     that imports it, not just this one's routes."""
@@ -43,31 +52,81 @@ class TestConsoleGateModule:
             user = await deps.get_authenticated_user(authorization=authorization)
             assert user.role == role
 
-    async def test_get_current_user_403s_non_console_roles(self):
+    async def test_get_current_user_403s_non_console_roles(self, pool, test_tenant):
+        # get_current_user() now re-reads the row (fresh_console_authority),
+        # so — unlike the fabricated-token tests above — this needs a real
+        # user to exist, or the 401 existence check would fire before the
+        # role gate ever runs.
         for role in ("supervisor", "agent"):
-            token = auth.create_access_token(_make_user(role))
-            authorization = f"Bearer {token}"
-            authed = await deps.get_authenticated_user(authorization=authorization)
-            with pytest.raises(Exception) as exc_info:
-                await deps.get_current_user(user=authed)
-            assert exc_info.value.status_code == 403
+            user = await users_service.create_user(
+                email=f"test-{role}-{uuid.uuid4().hex[:8]}@example.com",
+                password="test-password-not-real", role=role, tenant_id=test_tenant["id"],
+            )
+            try:
+                token = auth.create_access_token(user)
+                authed = await deps.get_authenticated_user(authorization=f"Bearer {token}")
+                with pytest.raises(Exception) as exc_info:
+                    await deps.get_current_user(request=_fake_request(), user=authed)
+                assert exc_info.value.status_code == 403
+            finally:
+                await pool.execute("UPDATE users SET deleted_at = now() WHERE id = $1", user["id"])
 
-    async def test_get_current_user_allows_console_roles(self):
+    async def test_get_current_user_allows_console_roles(self, pool, test_tenant):
         for role in ("superadmin", "admin", "viewer"):
-            token = auth.create_access_token(_make_user(role))
-            authorization = f"Bearer {token}"
-            authed = await deps.get_authenticated_user(authorization=authorization)
-            user = await deps.get_current_user(user=authed)
-            assert user.role == role
+            user = await users_service.create_user(
+                email=f"test-{role}-{uuid.uuid4().hex[:8]}@example.com",
+                password="test-password-not-real", role=role, tenant_id=test_tenant["id"],
+            )
+            try:
+                token = auth.create_access_token(user)
+                authed = await deps.get_authenticated_user(authorization=f"Bearer {token}")
+                current = await deps.get_current_user(request=_fake_request(), user=authed)
+                assert current.role == role
+            finally:
+                await pool.execute("UPDATE users SET deleted_at = now() WHERE id = $1", user["id"])
 
-    async def test_get_current_user_allows_service_account_viewer_with_no_tenant(self):
+    async def test_get_current_user_allows_service_account_viewer_with_no_tenant(self, pool):
         # scripts/create_service_account.py:33's exact shape — Conversation
-        # and Knowledge must not be locked out by this gate.
-        token = auth.create_access_token(_make_user("viewer", tenant_id=None, is_service_account=True))
+        # and Knowledge must not be locked out by this gate. is_service_account
+        # isn't settable via create_user() (see users.py), so this inserts the
+        # row directly, matching that script's own shape.
+        user_id = str(uuid.uuid4())
+        email = f"test-svc-{uuid.uuid4().hex[:8]}@example.com"
+        await pool.execute(
+            "INSERT INTO users (id, email, password_hash, role, tenant_id, is_service_account) "
+            "VALUES ($1, $2, 'x', 'viewer', NULL, true)",
+            user_id, email,
+        )
+        try:
+            token = auth.create_access_token(
+                {"id": user_id, "email": email, "role": "viewer", "tenant_id": None, "is_service_account": True},
+            )
+            authed = await deps.get_authenticated_user(authorization=f"Bearer {token}")
+            user = await deps.get_current_user(request=_fake_request(), user=authed)
+            assert user.role == "viewer"
+            assert user.tenant_id is None
+        finally:
+            await pool.execute("UPDATE users SET deleted_at = now() WHERE id = $1", user_id)
+
+    async def test_get_current_user_rejects_soft_deleted_user(self, pool, test_tenant):
+        # The actual regression this closes (07-qa-report.md finding #1): a
+        # soft-deleted user's still-validly-signed JWT must lose console
+        # access immediately, not just at /auth/me.
+        user = await users_service.create_user(
+            email=f"test-offboarded-{uuid.uuid4().hex[:8]}@example.com",
+            password="test-password-not-real", role="admin", tenant_id=test_tenant["id"],
+        )
+        token = auth.create_access_token(user)
         authed = await deps.get_authenticated_user(authorization=f"Bearer {token}")
-        user = await deps.get_current_user(user=authed)
-        assert user.role == "viewer"
-        assert user.tenant_id is None
+        # Sanity check: the token works before the delete.
+        current = await deps.get_current_user(request=_fake_request(), user=authed)
+        assert current.role == "admin"
+
+        await pool.execute("UPDATE users SET deleted_at = now() WHERE id = $1", user["id"])
+
+        with pytest.raises(Exception) as exc_info:
+            await deps.get_current_user(request=_fake_request(), user=authed)
+        assert exc_info.value.status_code == 401
 
     def test_console_roles_is_an_explicit_allowlist_of_users_role_check(self):
         # Every role the CHECK constraint accepts must be explicitly
@@ -87,8 +146,7 @@ class TestConsoleGateApp:
         async with AsyncClient(transport=transport, base_url="http://test") as c:
             yield c
 
-    def _client_as(self, role: str, tenant_id: str | None):
-        token = auth.create_access_token(_make_user(role, tenant_id=tenant_id))
+    def _client_with_token(self, token: str) -> AsyncClient:
         transport = ASGITransport(app=app)
         return AsyncClient(
             transport=transport, base_url="http://test",
@@ -96,20 +154,31 @@ class TestConsoleGateApp:
         )
 
     @pytest.mark.parametrize("role", ["supervisor", "agent"])
-    async def test_non_console_role_403s_on_console_routes(self, role, test_tenant):
+    async def test_non_console_role_403s_on_console_routes(self, role, pool, test_tenant):
         # No bare "list" route exists for carriers/providers/calls — each is
         # only reachable by id (see routers/carriers.py etc) — but the gate
         # runs during dependency resolution, before the handler ever checks
         # whether that id exists, so a made-up uuid still proves the 403
-        # comes from the gate, not a 404.
+        # comes from the gate, not a 404. A real user row is required now
+        # that get_current_user() re-reads it (fresh_console_authority) —
+        # a fabricated token for a nonexistent id would 401 before the role
+        # gate ever ran.
         fake_id = "00000000-0000-0000-0000-000000000000"
-        async with self._client_as(role, test_tenant["id"]) as client:
-            for path in (
-                "/users", f"/providers/{fake_id}", f"/carriers/{fake_id}",
-                f"/calls/{fake_id}", "/audit-log",
-            ):
-                resp = await client.get(path)
-                assert resp.status_code == 403, f"{path} -> {resp.status_code}"
+        user = await users_service.create_user(
+            email=f"test-{role}-{uuid.uuid4().hex[:8]}@example.com",
+            password="test-password-not-real", role=role, tenant_id=test_tenant["id"],
+        )
+        try:
+            token = auth.create_access_token(user)
+            async with self._client_with_token(token) as client:
+                for path in (
+                    "/users", f"/providers/{fake_id}", f"/carriers/{fake_id}",
+                    f"/calls/{fake_id}", "/audit-log",
+                ):
+                    resp = await client.get(path)
+                    assert resp.status_code == 403, f"{path} -> {resp.status_code}"
+        finally:
+            await pool.execute("UPDATE users SET deleted_at = now() WHERE id = $1", user["id"])
 
     @pytest.mark.parametrize("role", ["supervisor", "agent"])
     async def test_non_console_role_still_reaches_self_service_auth(self, role, pool, test_tenant):
@@ -142,7 +211,10 @@ class TestConsoleGateApp:
             await pool.execute("UPDATE users SET deleted_at = now() WHERE id = $1", user["id"])
 
     async def test_viewer_still_reads_console_routes(self, test_viewer):
-        async with self._client_as("viewer", test_viewer["user"]["tenant_id"]) as client:
+        # Uses the fixture's own real token (a real DB row backs it) rather
+        # than a fabricated one — get_current_user() now requires the row to
+        # exist.
+        async with self._client_with_token(test_viewer["token"]) as client:
             resp = await client.get("/users")
             assert resp.status_code == 200
 

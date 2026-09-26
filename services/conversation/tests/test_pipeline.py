@@ -38,15 +38,17 @@ from ..directives import (
     TransferType,
 )
 from .. import pipeline as pipeline_module
+from ..fillers import _TOOL_FILLERS
 from ..pipeline import (
     PipelineConversationHandler,
     _END_CALL_MARKER,
     _FALLBACK_GOODBYE,
     _FIRST_TURN_FILLER,
     _TOOL_CALL_FILLER_MIN_GAP_S,
-    _TOOL_CALL_FILLERS,
     _TRANSFER_FAILED_FALLBACK,
 )
+
+_TOOL_CALL_FILLERS = {t for t, _ in _TOOL_FILLERS}
 from ..provider_bundle import ProviderBundle
 from ..providers.interfaces import ChatMessage, SttResult
 from ..session import CallFsmState, ConversationSession, HandlerResponse, SessionContext
@@ -2415,6 +2417,40 @@ async def test_fabricated_booking_claim_escalates_on_first_offense():
     transfer_responses = [r for r in responses if r.transfer_request]
     assert len(transfer_responses) == 1
     assert transfer_responses[0].transfer_request.destination == "1000"
+
+
+@pytest.mark.asyncio
+async def test_end_call_suppressed_on_fabricated_claim_below_escalation_threshold():
+    """Confirmed live: a first-offense fabricated booking claim (no
+    transfer configured, so it can't escalate) landed in the same turn as
+    the LLM's own [[END_CALL]] marker — the call ended with the false
+    "booked" claim as the last thing the caller heard, before the
+    "Correction" message this same code path appends to history ever got
+    a turn to actually be spoken. Unlike
+    test_pending_transfer_survives_same_turn_end_call_marker (the
+    escalated case, where transfer_request already suppresses end_call),
+    this is the far more common below-threshold case, with no transfer at
+    all — end_call must still be suppressed so the corrected next turn has
+    a chance to reach the caller."""
+    from ..tools.llm_adapter import TokenEvent as ToolTokenEvent
+
+    stt = _make_stt("book me tomorrow at 3")
+    llm = _make_llm(["should never be called"])
+    tts = _make_tts(b"\x00" * 640)
+    orchestrator = _FakeToolOrchestrator([
+        ToolTokenEvent(text="Booked! Your appointment is confirmed. [[END_CALL]]"),
+    ])
+    handler = _make_handler(
+        stt, llm, tts, system_prompt="You are a scheduler.",
+        tool_orchestrator=orchestrator, has_booking_tool=True,
+    )  # transfer_type="none" (default) — nothing to escalate to.
+
+    responses = [r async for r in handler.on_speech_ended("s1", _silence(), 300, -20.0)]
+
+    assert not any(r.end_call for r in responses)
+    history = handler._get_history("s1")
+    assert history[-1].role == "system"
+    assert "did not call any tool" in history[-1].content
 
 
 @pytest.mark.asyncio

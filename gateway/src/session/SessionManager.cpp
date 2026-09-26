@@ -65,6 +65,16 @@ void SessionManager::terminate_by_call_id(const std::string& call_id, const std:
                  call_id, reason);
 }
 
+void SessionManager::push_dtmf_to_call(const std::string& call_id, const std::string& digit) {
+    std::shared_lock lock{mutex_};
+    for (auto& [conn_id, session] : sessions_) {
+        if (session->session_id() == call_id) {
+            session->push_dtmf(digit);
+            return;
+        }
+    }
+}
+
 size_t SessionManager::active_count() const {
     std::shared_lock lock{mutex_};
     return sessions_.size();

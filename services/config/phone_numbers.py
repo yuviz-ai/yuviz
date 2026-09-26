@@ -27,7 +27,7 @@ from . import audit, cache, db
 
 log = logging.getLogger(__name__)
 
-_UPDATABLE_FIELDS = {"did", "agent_id", "fallback_agent_id", "carrier_id", "region", "status"}
+_UPDATABLE_FIELDS = {"did", "agent_id", "fallback_agent_id", "carrier_id", "telephony_config_id", "region", "status"}
 
 # DID -> tenant/agent routing has NO TTL at all — deliberately, per canonical
 # design (project memory 2026-07-14). Two TTL-based designs were tried and
@@ -158,6 +158,7 @@ async def create_phone_number(
     agent_id: Any | None = None,
     fallback_agent_id: Any | None = None,
     carrier_id: Any | None = None,
+    telephony_config_id: Any | None = None,
     region: str | None = None,
     status: str = "active",
     user_id: Any | None = None,
@@ -167,9 +168,9 @@ async def create_phone_number(
     async with tenant_conn(pool) as conn:
         row = await conn.fetchrow(
             "INSERT INTO phone_numbers "
-            "(tenant_id, did, agent_id, fallback_agent_id, carrier_id, region, status) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *",
-            tenant_id, did, agent_id, fallback_agent_id, carrier_id, region, status,
+            "(tenant_id, did, agent_id, fallback_agent_id, carrier_id, telephony_config_id, region, status) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *",
+            tenant_id, did, agent_id, fallback_agent_id, carrier_id, telephony_config_id, region, status,
         )
         result = dict(row)
         await audit.write_audit(

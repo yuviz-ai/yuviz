@@ -23,6 +23,7 @@ os.environ.setdefault("JWT_SECRET", "dev-only-insecure-secret-do-not-deploy-" * 
 
 from services.config import auth, cache, db  # noqa: E402  (env defaults must land first)
 from services.config import users as users_service  # noqa: E402
+from libs.tenancy import set_target_tenant  # noqa: E402
 
 
 @pytest_asyncio.fixture(loop_scope="session")
@@ -70,6 +71,21 @@ async def test_tenant(pool):
     # constraint as test_superadmin). Detach it instead of deleting it.
     await pool.execute("UPDATE users SET tenant_id = NULL WHERE tenant_id = $1", tenant["id"])
     await pool.execute("DELETE FROM tenants WHERE id = $1", tenant["id"])
+
+
+@pytest_asyncio.fixture
+async def scoped(test_tenant):
+    """Sets the ambient RLS tenant scope (libs.tenancy) for tests that call
+    services/config functions directly, bypassing the HTTP layer that
+    normally sets it via deps.get_authenticated_user/bind_path_tenant —
+    without this, tenant_conn() raises TenantUnresolved (rls-tenant-isolation).
+    Reset to None after: the scope ContextVar is set on the
+    ambient context, and this suite's tests share one event loop
+    (asyncio_default_fixture_loop_scope), so a value left behind would leak
+    into whichever test runs next."""
+    set_target_tenant(str(test_tenant["id"]))
+    yield
+    set_target_tenant(None)
 
 
 @pytest_asyncio.fixture(loop_scope="session")

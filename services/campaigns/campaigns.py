@@ -60,6 +60,27 @@ async def agent_exists_for_tenant(tenant_id: Any, agent_id: Any) -> bool:
     return row is not None
 
 
+async def caller_id_owned_by_tenant(tenant_id: Any, caller_id: str | None) -> bool:
+    """A `caller_id` a campaign dials out with must be a DID this tenant
+    actually provisioned (`phone_numbers.did`) — same tenant-ownership
+    predicate `services/telephony/ownership.py`'s outbound-trigger path
+    enforces (there, via the Redis `did:{did}` cache; here, cold-path
+    against Postgres directly, matching `agent_exists_for_tenant`'s
+    existing shape). `caller_id` is optional on a campaign row
+    (`None` means "not yet configured, cannot start") — that case is
+    valid at create/update time and is instead caught by worker.py's own
+    "no caller_id configured, skipping" guard before any dial."""
+    if not caller_id:
+        return True
+    pool = await db.get_pool()
+    async with tenant_conn(pool) as conn:
+        row = await conn.fetchrow(
+            "SELECT 1 FROM phone_numbers WHERE tenant_id = $1 AND did = $2 AND deleted_at IS NULL",
+            tenant_id, caller_id,
+        )
+    return row is not None
+
+
 async def create_campaign(
     tenant_id: Any, *, agent_id: Any, name: str, caller_id: str | None,
     max_concurrent_calls: int, pacing_seconds: int, max_attempts: int,
@@ -132,9 +153,10 @@ async def set_status(
     )
 
 
-async def get_progress(campaign_id: Any) -> dict[str, Any]:
+async def get_progress(campaign_id: Any, *, platform_scoped: bool = False) -> dict[str, Any]:
     pool = await db.get_pool()
-    async with tenant_conn(pool) as conn:
+    conn_cm = platform_conn(pool, reason="campaign-by-id") if platform_scoped else tenant_conn(pool)
+    async with conn_cm as conn:
         row = await conn.fetchrow(
             """
             SELECT
@@ -148,5 +170,37 @@ async def get_progress(campaign_id: Any) -> dict[str, Any]:
             FROM campaign_contacts WHERE campaign_id = $1
             """,
             campaign_id,
+        )
+    return dict(row)
+
+
+async def resolve_outbound_route(
+    tenant_id: Any, agent_id: Any, caller_id: str, *, platform_scoped: bool = False,
+) -> dict[str, Any]:
+    """Which telephony provider a caller_id DID is bound to, plus the tenant/agent
+    slugs a REST provider (Vobiz) needs.
+
+    `caller_id_owned` is the tenant-ownership fact worker.py's dispatch
+    must gate on: True only when `caller_id` is an actual
+    `phone_numbers.did` row for THIS tenant. `provider` is a second,
+    separate fact — None either for an unowned caller_id OR for an owned
+    one with no REST `telephony_configs` binding (a legitimate native/ESL
+    DID) — so the two must never be conflated: a caller_id this tenant
+    never provisioned must be refused outright, never silently routed to
+    the ESL path, while an owned-but-native DID must still dial."""
+    pool = await db.get_pool()
+    conn_cm = platform_conn(pool, reason="campaign-by-id") if platform_scoped else tenant_conn(pool)
+    async with conn_cm as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT t.slug AS tenant_slug, a.slug AS agent_slug, tc.provider AS provider,
+                   (pn.id IS NOT NULL) AS caller_id_owned
+            FROM tenants t
+            JOIN agents a ON a.id = $2
+            LEFT JOIN phone_numbers pn ON pn.tenant_id = t.id AND pn.did = $3 AND pn.deleted_at IS NULL
+            LEFT JOIN telephony_configs tc ON tc.id = pn.telephony_config_id AND tc.tenant_id = t.id AND tc.deleted_at IS NULL
+            WHERE t.id = $1
+            """,
+            tenant_id, agent_id, caller_id,
         )
     return dict(row)

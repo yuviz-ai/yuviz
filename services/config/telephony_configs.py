@@ -18,8 +18,9 @@ from __future__ import annotations
 import json as _json
 from typing import Any
 
+from libs.config_sdk.secrets import encrypt_secret, is_encrypted
 from libs.telephony_sdk.exceptions import TelephonyProviderError
-from libs.telephony_sdk.providers import vobiz as _vobiz  # noqa: F401 — registers providers
+from libs.telephony_sdk import providers as _providers  # noqa: F401 — registers every built-in provider
 from libs.telephony_sdk.registry import TelephonyProviderRegistry
 from libs.tenancy import platform_conn, tenant_conn
 
@@ -27,16 +28,65 @@ from . import audit, cache, db
 
 _UPDATABLE_FIELDS = {"name", "credentials", "is_default_outbound"}
 
+# 'native' is the 5000-5009 Kamailio/FreeSWITCH rows after the relabel
+# migration (T23) — the REST plane never serves them, so there is no
+# ITelephonyProvider to validate/normalize credentials against and no
+# health to probe. Every other registered provider name is REST-capable.
+_NON_REST_PROVIDERS = frozenset({"native"})
+
 
 def _cache_key(config_id: Any) -> str:
     return f"telephony_config:{config_id}"
+
+
+def _normalize_scalar_or_list(field_name: str, value: Any) -> Any:
+    """Seals a scalar sensitive field (Vobiz's auth_token) or every entry
+    of a list-valued one (Cloudonix's api_keys): a plaintext value is
+    encrypted, an existing `enc:` token is kept verbatim, and anything
+    else — including `env:`/`k8s:` — is rejected. `telephony_configs.
+    credentials` is tenant-writable JSONB, and `CompositeSecretResolver`'s
+    `env:`/`k8s:` schemes were built for admin-entered infra config, not
+    tenant input (lesson 37)."""
+    if isinstance(value, list):
+        return [_normalize_one(field_name, entry) for entry in value]
+    return _normalize_one(field_name, value)
+
+
+def _normalize_one(field_name: str, entry: Any) -> str:
+    if not isinstance(entry, str) or not entry:
+        raise ValueError(f"{field_name} entries must be non-empty strings")
+    if is_encrypted(entry):
+        return entry
+    if entry.startswith(("env:", "k8s:")):
+        raise ValueError(f"{field_name} must be the credential itself, not an env:/k8s: reference")
+    return encrypt_secret(entry)
+
+
+def _normalize_credentials(provider: str, credentials: dict[str, Any]) -> dict[str, Any]:
+    """Provider-agnostic over `sensitive_credential_fields()` — scalar and
+    list-valued fields both seal the same way. `provider in
+    _NON_REST_PROVIDERS` (native's 5000-5009 rows) is returned verbatim:
+    there is no ITelephonyProvider to consult, and no credential to seal."""
+    if provider in _NON_REST_PROVIDERS:
+        return credentials
+    provider_cls = TelephonyProviderRegistry.get(provider)
+    sealed = dict(credentials)
+    for field_name in provider_cls.sensitive_credential_fields():
+        if field_name in sealed:
+            sealed[field_name] = _normalize_scalar_or_list(field_name, sealed[field_name])
+    return sealed
 
 
 def validate_credentials(provider: str, credentials: dict[str, Any]) -> None:
     """Raises ValueError (not TelephonyProviderError) so this flows through
     Config Service's existing ValueError -> 400 handler (app.py) without a
     new exception-handler registration — libs/telephony_sdk stays
-    HTTP-agnostic, this is where it's adapted to REST semantics."""
+    HTTP-agnostic, this is where it's adapted to REST semantics. The
+    relabelled 5000-5009 rows (provider='native') skip validation
+    entirely — there is no ITelephonyProvider for them, and they must stay
+    editable from the Telephony page after the migration."""
+    if provider in _NON_REST_PROVIDERS:
+        return
     try:
         provider_cls = TelephonyProviderRegistry.get(provider)
         provider_cls.validate_credentials(credentials)
@@ -44,13 +94,17 @@ def validate_credentials(provider: str, credentials: dict[str, Any]) -> None:
         raise ValueError(str(exc)) from exc
 
 
-def list_supported_providers() -> dict[str, list[str]]:
+def list_supported_providers() -> dict[str, dict[str, list[str]]]:
     """Backs the discovery endpoint ("List Supported Providers") — name ->
-    required credential fields, so an admin UI can render the right form
-    without hardcoding per-provider fields."""
+    {required, sensitive} credential fields, so an admin UI can render the
+    right form without hardcoding per-provider fields. Built from
+    TelephonyProviderRegistry.visible() so "fake" never appears (AC4)."""
     return {
-        name: provider_cls.required_credential_fields()
-        for name, provider_cls in TelephonyProviderRegistry.all().items()
+        name: {
+            "required": provider_cls.required_credential_fields(),
+            "sensitive": provider_cls.sensitive_credential_fields(),
+        }
+        for name, provider_cls in TelephonyProviderRegistry.visible().items()
     }
 
 
@@ -69,6 +123,7 @@ async def get_telephony_config(config_id: Any, *, platform_scoped: bool = False)
         return None
 
     result = dict(row)
+    result["credentials"] = db.json_col(result["credentials"])
     await cache.set_json(_cache_key(config_id), result)
     return result
 
@@ -81,7 +136,11 @@ async def get_default_outbound_config(tenant_id: Any) -> dict[str, Any] | None:
             "AND deleted_at IS NULL",
             tenant_id,
         )
-    return dict(row) if row is not None else None
+    if row is None:
+        return None
+    result = dict(row)
+    result["credentials"] = db.json_col(result["credentials"])
+    return result
 
 
 async def list_telephony_configs(tenant_id: Any) -> list[dict[str, Any]]:
@@ -91,7 +150,38 @@ async def list_telephony_configs(tenant_id: Any) -> list[dict[str, Any]]:
             "SELECT * FROM telephony_configs WHERE tenant_id = $1 AND deleted_at IS NULL ORDER BY name",
             tenant_id,
         )
-    return [dict(row) for row in rows]
+    results = [dict(row) for row in rows]
+    for result in results:
+        result["credentials"] = db.json_col(result["credentials"])
+        # One cache.get_json per row, deliberately NOT folded into the
+        # telephony_config:{id} cached row (a 60s TTL there would freeze a
+        # stale badge). A Redis outage degrades every badge to Standby,
+        # matching cache.py's never-fail contract — never None here.
+        health = await cache.get_json(f"telephony:health:{result['id']}")
+        result["health"] = health or {"status": "standby", "checked_at": None}
+    return results
+
+
+async def list_configs_by_provider(provider: str) -> list[dict[str, Any]]:
+    """Cross-tenant by construction — the Telephony service's cold-path
+    account preload needs every tenant's rows for a given provider, not
+    one tenant's. `platform_conn` is the greppable, named bypass
+    (CURSOR.md) for exactly this shape of read."""
+    pool = await db.get_pool()
+    async with platform_conn(pool, reason="telephony-account-preload") as conn:
+        rows = await conn.fetch(
+            "SELECT tc.id, tc.tenant_id, t.slug AS tenant_slug, tc.provider, "
+            "tc.is_default_outbound, tc.credentials "
+            "FROM telephony_configs tc JOIN tenants t ON t.id = tc.tenant_id "
+            "WHERE tc.provider = $1 AND tc.deleted_at IS NULL",
+            provider,
+        )
+    results = []
+    for row in rows:
+        result = dict(row)
+        result["credentials"] = db.json_col(result["credentials"])
+        results.append(result)
+    return results
 
 
 async def create_telephony_config(
@@ -104,6 +194,7 @@ async def create_telephony_config(
     user_id: Any | None = None,
     user_email: str | None = None,
 ) -> dict[str, Any]:
+    credentials = _normalize_credentials(provider, credentials)
     validate_credentials(provider, credentials)
 
     pool = await db.get_pool()
@@ -118,6 +209,7 @@ async def create_telephony_config(
             tenant_id, name, provider, _json.dumps(credentials), is_default_outbound,
         )
         result = dict(row)
+        result["credentials"] = db.json_col(result["credentials"])
         await audit.write_audit(
             conn,
             entity_type="telephony_config",
@@ -153,8 +245,9 @@ async def update_telephony_config(
         old = dict(old_row)
 
         if "credentials" in fields and fields["credentials"] is not None:
-            validate_credentials(old["provider"], fields["credentials"])
-            fields = {**fields, "credentials": _json.dumps(fields["credentials"])}
+            new_credentials = _normalize_credentials(old["provider"], fields["credentials"])
+            validate_credentials(old["provider"], new_credentials)
+            fields = {**fields, "credentials": _json.dumps(new_credentials)}
 
         if fields.get("is_default_outbound") is True:
             await _clear_default_outbound(conn, old["tenant_id"], exclude_id=config_id)
@@ -195,6 +288,7 @@ async def update_telephony_config(
         )
 
     await cache.invalidate(_cache_key(config_id))
+    new["credentials"] = db.json_col(new["credentials"])
     return new
 
 
@@ -235,6 +329,7 @@ async def set_default_outbound(
         )
 
     await cache.invalidate(_cache_key(config_id))
+    new["credentials"] = db.json_col(new["credentials"])
     return new
 
 

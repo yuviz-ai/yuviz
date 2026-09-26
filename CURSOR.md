@@ -22,7 +22,8 @@ PostgreSQL (source of truth) + Redis (cache / DID routing / config pub-sub)
 | Custom API chains | `services/toolexec/` |
 | DID / number purchase | `services/did/` |
 | Browser media bridge | `services/webcall/` |
-| Shared libraries | `libs/` (`config_sdk`, `knowledge_sdk`, `telephony_sdk`, `vad_sdk`) |
+| Unified telephony (webhooks, outbound, SMS) | `services/telephony/` |
+| Shared libraries | `libs/` (`config_sdk`, `knowledge_sdk`, `telephony_sdk`, `vad_sdk`, `media_stream_sdk`) |
 | C++ media gateway | `gateway/` |
 | Admin UI | `admin-ui/` (Next.js 16 — read `admin-ui/AGENTS.md` before UI work) |
 | Schemas | `database/*.sql` (idempotent; no Alembic) |

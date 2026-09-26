@@ -1,0 +1,5 @@
+# Review: 01-prd.md
+VERDICT: AMBER
+
+1. [minor] AC27 codifies "Degraded = failed probe, not yet 2 consecutive failures" from the upstream request but never states what status is reported at 2+ consecutive failures — the AC set only defines Healthy/Degraded/Standby, leaving the "2 consecutive" clause dangling with no target state to assert against. — .sdlc/unified-telephony-service/01-prd.md:154-156 — fix: either state that 2+ consecutive failures still reports Degraded (no fourth state exists) or name the fourth state explicitly.
+2. [minor] AC9 ("neither adapter contains DID-resolution or call-context-construction logic") is a code-shape assertion, not a runtime-observable behavior, so it can't be verified the same way as the other Given/When/Then criteria — fine for a design-conformance review but will read as untestable to whoever writes the test plan. — .sdlc/unified-telephony-service/01-prd.md:86-89 — fix: reframe as a review-checklist item or drop the Given/When/Then framing for this one criterion.

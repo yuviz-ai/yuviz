@@ -98,6 +98,11 @@ void NullConversationTransport::send_transfer_failed(const std::string& session_
                   session_id, destination);
 }
 
+void NullConversationTransport::send_dtmf(const std::string& session_id,
+                                          const std::string& digit) {
+    logger_.debug("NullConversationTransport::send_dtmf session={} digit={}", session_id, digit);
+}
+
 void NullConversationTransport::set_callbacks(ConversationTransportCallbacks cbs) {
     callbacks_ = std::move(cbs);
 }

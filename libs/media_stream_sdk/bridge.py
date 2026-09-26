@@ -1,40 +1,42 @@
 """
-Vobiz <-> Conversation Service bridge — same WS<->gRPC shuttling role as
-services/webcall/__main__.py, adapted for Vobiz's continuous-streaming
-media protocol instead of webcall's push-to-talk model:
+Provider-agnostic Media Stream <-> Conversation Service bridge — same WS
+<-> gRPC shuttling role as services/webcall/__main__.py, adapted for a
+continuous-streaming media protocol (Vobiz, Cloudonix) instead of
+webcall's push-to-talk model:
 
   - webcall: browser sends raw PCM16 binary frames + an explicit
     {"type":"speech_ended"} control message when the human tester
     releases a talk button.
-  - Vobiz: JSON-framed base64 mu-law audio streams continuously for the
-    whole call, no equivalent client-driven signal exists. Speech
-    start/end is instead detected locally with SileroVAD (silero_vad.py),
-    a faithful port of the Gateway's own default VAD, so a real
-    inbound/outbound Vobiz call gets the same "caller stopped talking"
-    behavior real telephony already gets from the C++ Gateway. (An earlier
-    version of this file used EnergyVAD, vad.py's simple amplitude
-    threshold — replaced after confirming live that a real Vobiz call's
-    line noise/echo was loud enough to trigger false barge-ins, up to
-    -13dB, well above EnergyVAD's -35dB cutoff. SileroVAD actually
-    classifies speech vs. non-speech instead of just measuring loudness.)
+  - Media Streams providers: JSON-framed base64 mu-law audio streams
+    continuously for the whole call, no equivalent client-driven signal
+    exists. Speech start/end is instead detected locally with SileroVAD
+    (silero_vad.py), a faithful port of the Gateway's own default VAD, so
+    a real inbound/outbound call gets the same "caller stopped talking"
+    behavior real telephony already gets from the C++ Gateway. (An
+    earlier version of this file used EnergyVAD, vad.py's simple
+    amplitude threshold — replaced after confirming live that a real
+    Vobiz call's line noise/echo was loud enough to trigger false
+    barge-ins, up to -13dB, well above EnergyVAD's -35dB cutoff. SileroVAD
+    actually classifies speech vs. non-speech instead of just measuring
+    loudness.)
 
-Audio flows: Vobiz media event (b64 mulaw @8k) -> AudioBridge -> PCM16
+Audio flows: inbound media event (b64 mulaw @8k) -> AudioBridge -> PCM16
 @16k -> gRPC AudioChunk. VAD runs on the same PCM16 @16k frames (32ms =
 1024 bytes, SileroVAD's fixed window size) to emit SpeechEndedNotification
 at the right moment. On the way back: gRPC TtsChunk (PCM16 @16k) ->
-AudioBridge -> mulaw @8k -> paced into 20ms frames -> Vobiz "playAudio"
-events.
+AudioBridge -> mulaw @8k -> paced into 20ms frames -> outbound playback
+events (encoded by the serializer).
 
 Playback is paced at real time (~100ms lead), never sent as fast as it
 arrives from gRPC — confirmed live as a real bug, not a theoretical one:
 without pacing, an entire TTS response (synthesized far faster than it
-takes to speak) lands in Vobiz's buffer within milliseconds of the first
-gRPC chunk, so by the time the caller actually hears the agent talking
-and tries to interrupt, there is nothing left queued for "clearAudio" to
-clear — every barge-in during real playback silently no-ops. This is the
-exact same failure mode already documented for the Gateway's own
-PlaybackDrain (project memory "project_bargein_playback_design": "without
-pacing the whole response lands in the buffer within ms — cancel_playback
+takes to speak) lands in the provider's buffer within milliseconds of the
+first gRPC chunk, so by the time the caller actually hears the agent
+talking and tries to interrupt, there is nothing left queued for
+"clear playback" to clear — every barge-in during real playback silently
+no-ops. This is the exact same failure mode already documented for the
+Gateway's own PlaybackDrain (project memory "project_bargein_playback_design":
+"without pacing the whole response lands in the buffer within ms — cancel_playback
 has nothing to clear"). _playback_pacer (below) drains a 20ms-frame queue
 at real time, and barge-in drops whatever's still queued instead of
 relying on a flag that (without pacing) was already stale by the time it
@@ -57,10 +59,10 @@ one, so it processed both, producing confused, out-of-context replies.
 _turn_active tracks "is there a turn in flight at all" (from the moment
 speech_ended is sent until it resolves via a final tts_chunk, an error,
 end_call, or our own cancel); VAD SpeechStart while it's true always
-sends CancelGeneration, and additionally sends "clearAudio" if audio was
-actually playing. Sent the instant SpeechStart fires, not deferred until
-cancel_ack comes back — the ack only exists for the pipeline's own FSM
-bookkeeping.
+sends CancelGeneration, and additionally sends "clear playback" if audio
+was actually playing. Sent the instant SpeechStart fires, not deferred
+until cancel_ack comes back — the ack only exists for the pipeline's own
+FSM bookkeeping.
 
 Caller audio to gRPC is paced through a short pre-roll delay buffer
 (_AUDIO_DELAY_S), not written to the stream the instant it arrives — a
@@ -83,13 +85,14 @@ instead of guessing from arrival order.
 from __future__ import annotations
 
 import asyncio
-import base64
 import collections
 import json
 import logging
 import os
 import time
 import uuid
+import wave
+from typing import Callable
 
 import grpc
 from starlette.websockets import WebSocketDisconnect
@@ -102,8 +105,7 @@ from libs.vad_sdk.silero_vad import SileroVAD, WINDOW_BYTES as _VAD_FRAME_BYTES
 from libs.vad_sdk.vad import VADEvent
 
 from .audio import AudioBridge
-
-log = logging.getLogger("vobiz.bridge")
+from .serializers import MediaStreamSerializer
 
 PROTOCOL_VERSION = "1.0"
 PIPELINE_SAMPLE_RATE = 16000
@@ -136,18 +138,28 @@ _FINAL_MARKER = object()
 _TURN_WATCHDOG_S = 12.0
 
 
-class VobizCallBridge:
-    """One instance per live call, created when the Vobiz WebSocket
-    connects and torn down when it closes."""
+class MediaStreamBridge:
+    """One instance per live call, created when the provider's WebSocket
+    connects and torn down when it closes. Provider-specific wire shapes
+    (event names, streamId/streamSid, frame JSON) live only behind
+    `serializer` — see serializers.py."""
 
-    def __init__(self, *, call_uuid: str, tenant_slug: str, agent_slug: str,
-                 direction: str, caller_did: str = "", called_did: str = "") -> None:
-        self.call_uuid = call_uuid
+    def __init__(self, *, serializer: MediaStreamSerializer, call_id: str,
+                 tenant_slug: str, agent_slug: str, direction: str,
+                 caller_did: str = "", called_did: str = "",
+                 log_name: str = "media_stream",
+                 on_session_start: Callable[[str], None] | None = None) -> None:
+        self._serializer = serializer
+        self.call_id = call_id
         self.tenant_slug = tenant_slug
         self.agent_slug = agent_slug
         self.direction = direction
         self.caller_did = caller_did
         self.called_did = called_did
+        self.log = logging.getLogger(log_name)
+        # Called once with the session_id generated in run(), so a caller
+        # (e.g. Vobiz) can learn it while the call is still in progress.
+        self._on_session_start = on_session_start
 
         self._audio = AudioBridge()
         self._vad = SileroVAD()
@@ -172,6 +184,40 @@ class VobizCallBridge:
         self._grpc_write_queue: asyncio.Queue = asyncio.Queue()
         # (enqueued_at_monotonic, AudioChunk proto) pending their _AUDIO_DELAY_S hold.
         self._audio_delay_buf: collections.deque = collections.deque()
+
+        self._dump_dir = os.environ.get("MEDIA_STREAM_DUMP_DIR")
+        self._inbound_wav: wave.Wave_write | None = None
+        self._outbound_wav: wave.Wave_write | None = None
+
+    def _open_dumps(self) -> None:
+        """Debug aid only, opt-in via MEDIA_STREAM_DUMP_DIR (see
+        services/webcall/__main__.py's _write_wav_dump for the same
+        pattern): writes the whole call's inbound and outbound PCM16 to
+        WAV so it can actually be listened to, rather than per-utterance
+        since this bridge streams continuously instead of push-to-talk."""
+        if not self._dump_dir:
+            return
+        os.makedirs(self._dump_dir, exist_ok=True)
+        self._inbound_wav = wave.open(
+            os.path.join(self._dump_dir, f"{self.call_id}-inbound.wav"), "wb")
+        self._inbound_wav.setnchannels(1)
+        self._inbound_wav.setsampwidth(2)
+        self._inbound_wav.setframerate(PIPELINE_SAMPLE_RATE)
+        self._outbound_wav = wave.open(
+            os.path.join(self._dump_dir, f"{self.call_id}-outbound.wav"), "wb")
+        self._outbound_wav.setnchannels(1)
+        self._outbound_wav.setsampwidth(2)
+        self._outbound_wav.setframerate(PIPELINE_SAMPLE_RATE)
+
+    def _close_dumps(self) -> None:
+        if self._inbound_wav is not None:
+            self._inbound_wav.close()
+            self._inbound_wav = None
+        if self._outbound_wav is not None:
+            self._outbound_wav.close()
+            self._outbound_wav = None
+        if self._dump_dir:
+            self.log.info("wrote audio dumps for call=%s to %s", self.call_id, self._dump_dir)
 
     def _clear_playback_queue(self) -> None:
         """Drops every not-yet-sent frame — the barge-in equivalent of the
@@ -240,10 +286,10 @@ class VobizCallBridge:
     async def _turn_watchdog_fire(self, gen: int) -> None:
         await asyncio.sleep(_TURN_WATCHDOG_S)
         if self._turn_active and gen == self._turn_generation:
-            log.info(
-                "vobiz: turn watchdog fired call=%s — no is_final within %.0fs, "
+            self.log.info(
+                "turn watchdog fired call=%s — no is_final within %.0fs, "
                 "assuming silent/dropped turn resolved",
-                self.call_uuid, _TURN_WATCHDOG_S,
+                self.call_id, _TURN_WATCHDOG_S,
             )
             self._turn_active = False
             self._turn_watchdog = None
@@ -255,10 +301,13 @@ class VobizCallBridge:
         # call to :50051 — found live 2026-08-04 during a deployment audit.
         conv_target = os.environ.get("CONVERSATION_SVC_TARGET", "localhost:10000")
         session_id = str(uuid.uuid4())
-        log.info(
-            "vobiz: session=%s call=%s tenant=%s agent=%s dir=%s -> %s",
-            session_id, self.call_uuid, self.tenant_slug, self.agent_slug, self.direction, conv_target,
+        self.log.info(
+            "session=%s call=%s tenant=%s agent=%s dir=%s -> %s",
+            session_id, self.call_id, self.tenant_slug, self.agent_slug, self.direction, conv_target,
         )
+        if self._on_session_start is not None:
+            self._on_session_start(session_id)
+        self._open_dumps()
 
         async with grpc.aio.insecure_channel(conv_target) as channel:
             stub = pb_grpc.ConversationServiceStub(channel)
@@ -269,7 +318,7 @@ class VobizCallBridge:
                 session_id=session_id,
                 tenant_id=self.tenant_slug,
                 script_id=self.agent_slug,
-                call_id=self.call_uuid,
+                call_id=self.call_id,
                 caller_did=self.caller_did,
                 called_did=self.called_did,
                 codec=pb.AUDIO_CODEC_PCM_S16LE,
@@ -298,35 +347,54 @@ class VobizCallBridge:
                 for task in done:
                     task.result()
             except (WebSocketDisconnect, ConnectionClosed):
-                # Vobiz's own hangup callback already tells us the call
-                # ended; a trailing TTS chunk racing the caller's hangup
-                # is expected, not a bridge failure.
-                log.info("vobiz: caller disconnected mid-stream call=%s", self.call_uuid)
+                # The provider's own hangup callback already tells us the
+                # call ended; a trailing TTS chunk racing the caller's
+                # hangup is expected, not a bridge failure.
+                self.log.info("caller disconnected mid-stream call=%s", self.call_id)
+            except grpc.aio.AioRpcError as exc:
+                # A caller hangup that lands while _grpc_to_vobiz is mid
+                # `async for msg in call` tears the gRPC stream down from
+                # underneath it — surfaces here as CANCELLED, UNAVAILABLE, or
+                # INTERNAL "Stream removed (RST_STREAM ...)", never as
+                # WebSocketDisconnect/ConnectionClosed (confirmed live: the
+                # caller-side WS close doesn't turn into either of those on
+                # this path). Same benign hangup, logged the same way — any
+                # other status still falls through to the real-failure branch
+                # below.
+                if exc.code() in (
+                    grpc.StatusCode.CANCELLED, grpc.StatusCode.UNAVAILABLE,
+                ) or "RST_STREAM" in (exc.details() or ""):
+                    self.log.info("caller disconnected mid-stream call=%s", self.call_id)
+                else:
+                    self.log.exception("bridge error call=%s", self.call_id)
             except Exception:
-                log.exception("vobiz: bridge error call=%s", self.call_uuid)
+                self.log.exception("bridge error call=%s", self.call_id)
             finally:
                 for task in tasks:
                     task.cancel()
                 call.cancel()
                 if self._turn_watchdog is not None:
                     self._turn_watchdog.cancel()
+                self._close_dumps()
 
     async def _vobiz_to_grpc(self, ws, session_id: str) -> None:
         async for raw in ws.iter_text():
             try:
                 event = json.loads(raw)
             except json.JSONDecodeError:
-                log.warning("vobiz: malformed frame call=%s", self.call_uuid)
+                self.log.warning("malformed frame call=%s", self.call_id)
                 continue
 
-            kind = event.get("event")
+            kind = self._serializer.event_kind(event)
             if kind == "start":
-                self._stream_id = event.get("start", {}).get("streamId")
+                self._stream_id = self._serializer.stream_id(event)
             elif kind == "media":
-                payload_b64 = event.get("media", {}).get("payload")
+                payload_b64 = self._serializer.media_payload(event)
                 if not payload_b64:
                     continue
-                pcm16 = self._audio.vobiz_to_pcm16(payload_b64)
+                pcm16 = self._audio.to_pcm16(payload_b64)
+                if self._inbound_wav is not None:
+                    self._inbound_wav.writeframes(pcm16)
                 self._sequence_num += 1
                 audio_msg = pb.GatewayMessage(audio_chunk=pb.AudioChunk(
                     session_id=session_id,
@@ -340,10 +408,10 @@ class VobizCallBridge:
                 self._audio_delay_buf.append((time.monotonic(), audio_msg))
                 await self._run_vad(ws, session_id, pcm16)
             elif kind == "dtmf":
-                digit = event.get("dtmf", {}).get("digit")
+                digit = self._serializer.dtmf_digit(event)
                 if not digit:
                     continue
-                log.info("vobiz: dtmf received call=%s", self.call_uuid)
+                self.log.info("dtmf received call=%s", self.call_id)
                 # Flush held audio first (see module docstring's _AUDIO_DELAY_S
                 # note) so a digit keyed in during the delay window is
                 # ordered after the audio recorded at the same instant.
@@ -352,7 +420,7 @@ class VobizCallBridge:
                     dtmf=pb.DtmfDigit(session_id=session_id, digit=digit),
                 ))
             elif kind == "stop":
-                log.info("vobiz: stream stop call=%s", self.call_uuid)
+                self.log.info("stream stop call=%s", self.call_id)
                 return
 
     async def _run_vad(self, ws, session_id: str, pcm16: bytes) -> None:
@@ -369,12 +437,14 @@ class VobizCallBridge:
                     self._resolve_turn()
                     self._clear_playback_queue()
                     self._playing_tts = False
-                    log.info(
-                        "vobiz: barge-in detected call=%s (was_playing=%s, speech_prob=%.3f)",
-                        self.call_uuid, was_playing, self._vad.last_speech_prob,
+                    self.log.info(
+                        "barge-in detected call=%s (was_playing=%s, speech_prob=%.3f)",
+                        self.call_id, was_playing, self._vad.last_speech_prob,
                     )
                     if was_playing:
-                        await ws.send_text(json.dumps({"event": "clearAudio", "streamId": self._stream_id}))
+                        clear_frame = self._serializer.clear_playback(self._stream_id)
+                        if clear_frame is not None:
+                            await ws.send_text(clear_frame)
                     # CancelGeneration enqueued FIRST, then the pre-roll
                     # audio still held in _audio_delay_buf (the caller's
                     # actual first words that triggered this barge-in) —
@@ -401,13 +471,15 @@ class VobizCallBridge:
 
     async def _grpc_to_vobiz(self, ws, call) -> None:
         """Feeds paced-out audio into self._play_queue rather than sending
-        it straight to Vobiz — see module docstring for why sending it
-        unpaced silently defeats barge-in."""
+        it straight to the provider — see module docstring for why sending
+        it unpaced silently defeats barge-in."""
         async for msg in call:
             which = msg.WhichOneof("payload")
             if which == "tts_chunk":
                 if msg.tts_chunk.payload:
-                    ulaw = self._audio.pcm16_to_vobiz_bytes(msg.tts_chunk.payload)
+                    if self._outbound_wav is not None:
+                        self._outbound_wav.writeframes(msg.tts_chunk.payload)
+                    ulaw = self._audio.from_pcm16(msg.tts_chunk.payload)
                     self._play_buf.extend(ulaw)
                     while len(self._play_buf) >= _ULAW_FRAME_BYTES:
                         frame = bytes(self._play_buf[:_ULAW_FRAME_BYTES])
@@ -419,26 +491,26 @@ class VobizCallBridge:
                         self._play_buf.clear()
                     await self._play_queue.put(_FINAL_MARKER)
             elif which == "cancel_ack":
-                # clearAudio already went out the instant barge-in was
+                # clear playback already went out the instant barge-in was
                 # detected (_run_vad), and _turn_active was already
                 # cleared there too — this ack is just the pipeline's
                 # own FSM bookkeeping, nothing left to do here.
-                log.debug("vobiz: cancel_ack call=%s", self.call_uuid)
+                self.log.debug("cancel_ack call=%s", self.call_id)
             elif which == "error":
-                log.warning("vobiz: pipeline error call=%s code=%s message=%s",
-                            self.call_uuid, msg.error.code, msg.error.message)
+                self.log.warning("pipeline error call=%s code=%s message=%s",
+                                  self.call_id, msg.error.code, msg.error.message)
                 self._clear_playback_queue()
                 self._playing_tts = False
                 self._resolve_turn()
                 if msg.error.fatal:
                     return
             elif which == "end_call":
-                log.info("vobiz: end_call reason=%s call=%s", msg.end_call.reason, self.call_uuid)
+                self.log.info("end_call reason=%s call=%s", msg.end_call.reason, self.call_id)
                 return
 
     async def _playback_pacer(self, ws) -> None:
         """Drains self._play_queue at real time (~100ms lead), so a
-        barge-in's clearAudio actually has unsent audio left to drop —
+        barge-in's clear-playback actually has unsent audio left to drop —
         see module docstring. Runs for the lifetime of the call; the
         FIRST_COMPLETED wait in run() tears it down when the call ends."""
         while True:
@@ -460,12 +532,4 @@ class VobizCallBridge:
                 await asyncio.sleep(target - now)
             self._frames_sent += 1
 
-            await ws.send_text(json.dumps({
-                "event": "playAudio",
-                "media": {
-                    "contentType": "audio/x-mulaw",
-                    "sampleRate": 8000,
-                    "payload": base64.b64encode(frame).decode("ascii"),
-                },
-                "streamId": self._stream_id,
-            }))
+            await ws.send_text(self._serializer.play_frame(self._stream_id, frame))

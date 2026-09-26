@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-# Same generated-stubs import shim services/webcall/__main__.py uses —
+# Same generated-stubs import shim services/cloudonix/__main__.py uses —
 # conversation_pb2_grpc.py imports "from voiceai.v1 import
 # conversation_pb2" as an absolute package path, so this must happen
 # before anything that transitively imports it.
@@ -18,8 +18,8 @@ import uvicorn
 
 def main() -> None:
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
-    port = int(os.environ.get("PORT", "8500"))  # 8400 collides with services.campaigns
-    uvicorn.run("services.vobiz.app:app", host="0.0.0.0", port=port, log_level="info")
+    port = int(os.environ.get("PORT", "8750"))
+    uvicorn.run("services.telephony.app:app", host="0.0.0.0", port=port, log_level="info")
 
 
 if __name__ == "__main__":

@@ -21,6 +21,7 @@ from unittest.mock import patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from libs.tenancy import set_target_tenant
 from services.config import invites as invites_service
 from services.config import users as users_service
 from services.config.app import app
@@ -117,11 +118,18 @@ class TestScoping:
         resp = await _create_invite(admin_client, tenant_id=test_tenant["id"])
         assert resp.status_code == 201
         own_invite_id = resp.json()["id"]
-        other_row, _ = await invites_service.create_invite(
-            email=f"other-tenant-invite-{uuid.uuid4().hex[:8]}@example.com", role="viewer",
-            tenant_id=other["id"], team=None,
-            actor=_actor(test_superadmin["user"]),
-        )
+        # Direct service-layer call, no ambient RLS scope from a real
+        # request — set/reset it here, matching every other test that
+        # calls services/config functions directly.
+        set_target_tenant(str(other["id"]))
+        try:
+            other_row, _ = await invites_service.create_invite(
+                email=f"other-tenant-invite-{uuid.uuid4().hex[:8]}@example.com", role="viewer",
+                tenant_id=other["id"], team=None,
+                actor=_actor(test_superadmin["user"]),
+            )
+        finally:
+            set_target_tenant(None)
         try:
             resp = await superadmin_client.get("/invites")
             assert resp.status_code == 200
@@ -146,11 +154,15 @@ class TestScoping:
         other_admin = await users_service.create_user(
             email=other_admin_email, password="a-real-password", role="admin", tenant_id=other["id"],
         )
-        row, _ = await invites_service.create_invite(
-            email=f"target-{uuid.uuid4().hex[:8]}@example.com", role="viewer",
-            tenant_id=other["id"], team=None,
-            actor=_actor(other_admin),
-        )
+        set_target_tenant(str(other["id"]))
+        try:
+            row, _ = await invites_service.create_invite(
+                email=f"target-{uuid.uuid4().hex[:8]}@example.com", role="viewer",
+                tenant_id=other["id"], team=None,
+                actor=_actor(other_admin),
+            )
+        finally:
+            set_target_tenant(None)
         try:
             async with _client(test_admin["token"]) as attacker:
                 resend_resp = await attacker.post(f"/invites/{row['id']}/resend")
@@ -220,7 +232,7 @@ class TestAcceptRoutesArePublic:
         assert get_resp.status_code == 404
         assert post_resp.status_code == 404
 
-    async def test_get_accept_returns_only_invitee_shape(self, test_admin, test_tenant, pool):
+    async def test_get_accept_returns_only_invitee_shape(self, test_admin, test_tenant, scoped, pool):
         # The HTTP response never carries the raw token (only email.py ever
         # sees it, per design) — call invites.create_invite directly to get
         # one, the same pattern test_invites.py uses throughout.
@@ -241,7 +253,7 @@ class TestAcceptRoutesArePublic:
 
 
 class TestProbeThrottle:
-    async def test_31st_create_attempt_is_429_and_outcome_blind(self, test_admin, test_tenant, pool):
+    async def test_31st_create_attempt_is_429_and_outcome_blind(self, test_admin, test_tenant, scoped, pool):
         # An already-taken email, created directly through invites.py (not
         # through the HTTP router), so this setup call doesn't itself count
         # against the actor's probe quota.
@@ -310,7 +322,7 @@ class TestResendCooldown:
 
 class TestAcceptIpThrottle:
     async def test_11th_accept_request_in_a_minute_is_429_regardless_of_token_validity(
-        self, test_admin, test_tenant, pool,
+        self, test_admin, test_tenant, scoped, pool,
     ):
         host = _fake_host()
         async with _client(host=host) as c:

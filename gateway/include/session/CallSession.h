@@ -71,6 +71,11 @@ public:
     // Safe to call from any thread.
     void terminate(const std::string& reason = "caller_hangup");
 
+    // Post a DTMF digit to the control queue for call-flow menu navigation.
+    // Called by EslEventListener when FreeSWITCH reports a DTMF event.
+    // Safe to call from any thread.
+    void push_dtmf(const std::string& digit);
+
     [[nodiscard]] const std::string& session_id() const noexcept;
     [[nodiscard]] CallFsmState       fsm_state()  const noexcept;
     [[nodiscard]] bool               is_terminal() const noexcept;

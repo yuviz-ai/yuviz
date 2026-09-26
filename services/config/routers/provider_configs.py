@@ -140,12 +140,12 @@ async def update_provider_config(
 
 @router.delete("/{provider_id}", status_code=204)
 async def delete_provider_config(
-    provider_id: str, current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
+    provider_id: str, force: bool = False, current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
 ):
     cfg = await _authorize_provider(provider_id, current_user)
     set_target_tenant(cfg["tenant_id"])
     await provider_configs_service.soft_delete_provider_config(
-        provider_id, user_id=current_user.id, user_email=current_user.email,
+        provider_id, user_id=current_user.id, user_email=current_user.email, force=force,
     )
 
 

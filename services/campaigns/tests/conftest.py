@@ -8,6 +8,7 @@ os.environ.setdefault("JWT_SECRET", "dev-only-insecure-secret-do-not-deploy-" * 
 
 import pytest_asyncio
 
+from libs.tenancy import set_target_tenant  # noqa: E402
 from services.campaigns import db  # noqa: E402
 
 
@@ -42,3 +43,14 @@ async def test_agent(pool, test_tenant):
         test_tenant["id"],
     )
     return dict(row)
+
+
+@pytest_asyncio.fixture
+async def scoped(test_tenant):
+    """Sets the ambient RLS tenant scope for tests that call services/campaigns
+    functions directly, bypassing the HTTP layer — without this, tenant_conn()
+    raises TenantUnresolved. Mirrors services/config/tests/conftest.py's fixture
+    of the same name."""
+    set_target_tenant(str(test_tenant["id"]))
+    yield
+    set_target_tenant(None)

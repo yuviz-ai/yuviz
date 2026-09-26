@@ -175,14 +175,14 @@ class TestNewToken:
 
 
 class TestCreateInvite:
-    async def test_denies_privilege_escalation(self, pool, test_admin, test_tenant):
+    async def test_denies_privilege_escalation(self, scoped, pool, test_admin, test_tenant):
         with pytest.raises(invites.PermissionDenied):
             await invites.create_invite(
                 email="nobody@example.com", role="superadmin", tenant_id=test_tenant["id"],
                 team=None, actor=_actor(test_admin["user"]),
             )
 
-    async def test_success_returns_row_and_raw_token_and_audits(self, pool, test_admin, test_tenant):
+    async def test_success_returns_row_and_raw_token_and_audits(self, scoped, pool, test_admin, test_tenant):
         email = f"invitee-{uuid.uuid4().hex[:8]}@example.com"
         try:
             row, raw_token = await invites.create_invite(
@@ -217,7 +217,7 @@ class TestCreateInvite:
             await _cleanup_invite(pool, row["id"])
 
     async def test_cross_tenant_conflict_is_tenant_blind_and_matches_own_tenant_conflict(
-        self, pool, test_admin, test_tenant, test_superadmin,
+        self, scoped, pool, test_admin, test_tenant, test_superadmin,
     ):
         # The actual CRITICAL finding this code exists to fix: a live
         # account in a DIFFERENT tenant than the actor's must not leak that
@@ -279,7 +279,7 @@ class TestCreateInvite:
             await pool.execute("UPDATE users SET tenant_id = NULL WHERE tenant_id = $1", other["id"])
             await pool.execute("DELETE FROM tenants WHERE id = $1", other["id"])
 
-    async def test_duplicate_pending_invite_same_tenant_is_conflict(self, pool, test_admin, test_tenant):
+    async def test_duplicate_pending_invite_same_tenant_is_conflict(self, scoped, pool, test_admin, test_tenant):
         # PR #19 finding 1: a still-*live* pending invite raises the
         # distinct PendingInviteConflict, not EmailConflict — no account
         # exists here, the remedy is "revoke the existing invite first".
@@ -298,7 +298,7 @@ class TestCreateInvite:
             await _cleanup_invite(pool, row["id"])
 
     async def test_expired_pending_invite_is_self_healed_and_does_not_block_reinvite(
-        self, pool, test_admin, test_tenant,
+        self, scoped, pool, test_admin, test_tenant,
     ):
         # PR #19 finding 1 (BLOCKING): expiry is derived, not stored, so an
         # expired invite is still status='pending' and would otherwise
@@ -342,7 +342,7 @@ class TestCreateInvite:
             await _cleanup_invite(pool, old_row["id"])
 
     async def test_self_heal_does_not_reclaim_a_role_the_actor_could_not_revoke(
-        self, pool, test_admin, test_tenant,
+        self, scoped, pool, test_admin, test_tenant,
     ):
         # PR #19 round-2 finding [low, security]: revoke_invite refuses
         # target_role='superadmin' for an admin actor (may_invite). The
@@ -380,7 +380,7 @@ class TestCreateInvite:
         finally:
             await _cleanup_invite(pool, stale["id"])
 
-    async def test_same_email_different_tenants_both_insert(self, pool, test_admin, test_tenant):
+    async def test_same_email_different_tenants_both_insert(self, scoped, pool, test_admin, test_tenant):
         # A second, independent tenant so the pending-email index's per-
         # tenant scope (T5) is exercised from the invites.py side too.
         other = await pool.fetchrow(
@@ -413,7 +413,7 @@ class TestCreateInvite:
 
 
     async def test_conflict_check_is_case_insensitive_against_existing_account(
-        self, pool, test_admin, test_tenant,
+        self, scoped, pool, test_admin, test_tenant,
     ):
         # Design test plan, "Normalization (finding 8, round 1)": an account
         # created as bob@x.com must block an invite to Bob@X.com. Genuinely
@@ -437,7 +437,7 @@ class TestCreateInvite:
 
 
 class TestResendAndRevoke:
-    async def test_resend_rotates_token_old_404s_new_accepts(self, pool, test_admin, test_tenant):
+    async def test_resend_rotates_token_old_404s_new_accepts(self, scoped, pool, test_admin, test_tenant):
         email = f"resend-{uuid.uuid4().hex[:8]}@example.com"
         row, old_token = await invites.create_invite(
             email=email, role="viewer", tenant_id=test_tenant["id"], team=None,
@@ -481,7 +481,7 @@ class TestResendAndRevoke:
             await _cleanup_invite(pool, row["id"])
             await _cleanup_user_by_email(pool, email)
 
-    async def test_resend_within_60s_raises_resend_cooldown(self, pool, test_admin, test_tenant):
+    async def test_resend_within_60s_raises_resend_cooldown(self, scoped, pool, test_admin, test_tenant):
         # T18: the cooldown lives inside resend_invite's own locked
         # transaction (not a router-level check-then-act) so two
         # concurrent resends of the same row can't both slip past it
@@ -508,12 +508,12 @@ class TestResendAndRevoke:
         finally:
             await _cleanup_invite(pool, row["id"])
 
-    async def test_resend_404s_before_403s_on_missing_row(self, test_admin):
+    async def test_resend_404s_before_403s_on_missing_row(self, scoped, test_admin):
         with pytest.raises(LookupError):
             await invites.resend_invite(str(uuid.uuid4()), actor=_actor(test_admin["user"]))
 
     async def test_resend_of_another_tenants_invite_is_forbidden_not_404(
-        self, pool, test_admin, test_tenant, test_superadmin,
+        self, scoped, pool, test_admin, test_tenant, test_superadmin,
     ):
         # Invite created by a superadmin in a *different* tenant than
         # test_admin's — an IDOR against the stored row, not the request.
@@ -534,7 +534,7 @@ class TestResendAndRevoke:
             await _cleanup_invite(pool, row["id"])
             await pool.execute("DELETE FROM tenants WHERE id = $1", other["id"])
 
-    async def test_revoke_blocks_accept(self, pool, test_admin, test_tenant):
+    async def test_revoke_blocks_accept(self, scoped, pool, test_admin, test_tenant):
         email = f"revoke-{uuid.uuid4().hex[:8]}@example.com"
         row, raw_token = await invites.create_invite(
             email=email, role="viewer", tenant_id=test_tenant["id"], team=None,
@@ -560,7 +560,7 @@ class TestResendAndRevoke:
             await _cleanup_invite(pool, row["id"])
 
     async def test_revoke_after_accept_does_not_touch_the_created_user(
-        self, pool, test_admin, test_tenant,
+        self, scoped, pool, test_admin, test_tenant,
     ):
         # AC8: "revoking an accepted invite does not delete the resulting
         # user." revoke_invite's actual current behaviour on a non-pending
@@ -592,7 +592,7 @@ class TestResendAndRevoke:
 
 
 class TestAcceptInvite:
-    async def test_creates_user_with_invites_role_tenant_team(self, pool, test_admin, test_tenant):
+    async def test_creates_user_with_invites_role_tenant_team(self, scoped, pool, test_admin, test_tenant):
         email = f"accept-{uuid.uuid4().hex[:8]}@example.com"
         row, raw_token = await invites.create_invite(
             email=email, role="viewer", tenant_id=test_tenant["id"], team="ops",
@@ -624,7 +624,7 @@ class TestAcceptInvite:
             await _cleanup_invite(pool, row["id"])
             await _cleanup_user_by_email(pool, email)
 
-    async def test_expired_invite_raises_invite_expired(self, pool, test_admin, test_tenant):
+    async def test_expired_invite_raises_invite_expired(self, scoped, pool, test_admin, test_tenant):
         email = f"expired-{uuid.uuid4().hex[:8]}@example.com"
         row, raw_token = await invites.create_invite(
             email=email, role="viewer", tenant_id=test_tenant["id"], team=None,
@@ -640,7 +640,7 @@ class TestAcceptInvite:
             await _cleanup_invite(pool, row["id"])
 
     async def test_replay_of_accepted_token_raises_invite_used_distinct_from_expired_and_revoked(
-        self, pool, test_admin, test_tenant,
+        self, scoped, pool, test_admin, test_tenant,
     ):
         email = f"replay-{uuid.uuid4().hex[:8]}@example.com"
         row, raw_token = await invites.create_invite(
@@ -656,7 +656,7 @@ class TestAcceptInvite:
             await _cleanup_user_by_email(pool, email)
 
     async def test_concurrent_accept_produces_exactly_one_user_and_one_invite_used(
-        self, pool, test_admin, test_tenant,
+        self, scoped, pool, test_admin, test_tenant,
     ):
         email = f"race-{uuid.uuid4().hex[:8]}@example.com"
         row, raw_token = await invites.create_invite(
@@ -682,7 +682,7 @@ class TestAcceptInvite:
             await _cleanup_user_by_email(pool, email)
 
     async def test_squatting_accept_raises_email_taken_and_leaves_invite_pending(
-        self, pool, test_admin, test_tenant, test_superadmin,
+        self, scoped, pool, test_admin, test_tenant, test_superadmin,
     ):
         other = await pool.fetchrow(
             "INSERT INTO tenants (name, slug) VALUES ($1, $2) RETURNING *",
@@ -715,7 +715,7 @@ class TestAcceptInvite:
             await pool.execute("DELETE FROM tenants WHERE id = $1", other["id"])
 
     async def test_invite_stored_and_accepted_email_is_lower_cased_regardless_of_input_case(
-        self, pool, test_admin, test_tenant,
+        self, scoped, pool, test_admin, test_tenant,
     ):
         # Design test plan, "Normalization": an invite stored from a
         # mixed-case address must resolve to one lower-cased user row, not
@@ -741,7 +741,7 @@ class TestAcceptInvite:
             await _cleanup_user_by_email(pool, mixed_email)
 
     async def test_inviter_soft_deleted_before_accept_raises_invite_context_gone(
-        self, pool, test_admin, test_tenant,
+        self, scoped, pool, test_admin, test_tenant,
     ):
         # Security finding: de-provisioning the inviter must de-provision
         # what they already granted, up to 7 days later.
@@ -768,7 +768,7 @@ class TestAcceptInvite:
             await _cleanup_invite(pool, row["id"])
 
     async def test_inviter_demoted_before_accept_raises_invite_context_gone(
-        self, pool, test_admin, test_tenant,
+        self, scoped, pool, test_admin, test_tenant,
     ):
         # Inviter still exists and isn't soft-deleted, but no longer holds a
         # role that could have issued this exact grant — re-run may_invite
@@ -789,7 +789,7 @@ class TestAcceptInvite:
             await pool.execute("UPDATE users SET role = 'admin' WHERE id = $1", test_admin["user"]["id"])
 
     async def test_target_tenant_soft_deleted_before_accept_raises_invite_context_gone(
-        self, pool, test_admin, test_tenant,
+        self, scoped, pool, test_admin, test_tenant,
     ):
         email = f"gone-tenant-{uuid.uuid4().hex[:8]}@example.com"
         row, raw_token = await invites.create_invite(
@@ -815,7 +815,7 @@ class TestGetInviteForAccept:
     returns a dict instead of raising)."""
 
     async def test_inviter_soft_deleted_makes_get_raise_context_gone(
-        self, pool, test_admin, test_tenant,
+        self, scoped, pool, test_admin, test_tenant,
     ):
         email = f"gone-inviter-get-{uuid.uuid4().hex[:8]}@example.com"
         row, raw_token = await invites.create_invite(
@@ -832,7 +832,7 @@ class TestGetInviteForAccept:
             await _cleanup_invite(pool, row["id"])
 
     async def test_target_tenant_soft_deleted_makes_get_raise_context_gone(
-        self, pool, test_admin, test_tenant,
+        self, scoped, pool, test_admin, test_tenant,
     ):
         email = f"gone-tenant-get-{uuid.uuid4().hex[:8]}@example.com"
         row, raw_token = await invites.create_invite(
@@ -846,7 +846,7 @@ class TestGetInviteForAccept:
         finally:
             await _cleanup_invite(pool, row["id"])
 
-    async def test_still_live_invite_is_returned_by_get(self, pool, test_admin, test_tenant):
+    async def test_still_live_invite_is_returned_by_get(self, scoped, pool, test_admin, test_tenant):
         # Control: a live invite's granting context is unaffected, so GET
         # must still return normally — proves the check above isn't
         # unconditionally raising.
@@ -865,7 +865,7 @@ class TestGetInviteForAccept:
 
 class TestSoftDeleteReinvite:
     async def test_reinvite_after_soft_delete_creates_second_live_row_and_retires_old_password(
-        self, pool, test_admin, test_tenant,
+        self, scoped, pool, test_admin, test_tenant,
     ):
         # T23 / design "Soft-delete re-invite (finding 4)": invite -> accept
         # -> soft-delete the resulting user -> re-invite the SAME address ->

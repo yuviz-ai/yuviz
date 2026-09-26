@@ -14,6 +14,7 @@ from typing import Any, AsyncGenerator, Awaitable, Callable, TypeAlias
 
 from ..metrics import IMetrics
 from ..providers.interfaces import ChatMessage
+from ..tool_latency import ToolLatencyStore
 from .executor_registry import ExecutorRegistry
 from .llm_adapter import (
     DeterministicSpokenEvent,
@@ -53,6 +54,7 @@ class ToolCallOrchestrator:
         metrics:           IMetrics | None = None,
         max_tool_iterations: int = DEFAULT_MAX_TOOL_ITERATIONS,
         max_local_tool_calls: int = DEFAULT_MAX_LOCAL_TOOL_CALLS,
+        latency_store: ToolLatencyStore | None = None,
     ) -> None:
         self._llm_adapter = llm_adapter
         self._policy_resolver = policy_resolver
@@ -61,6 +63,7 @@ class ToolCallOrchestrator:
         self._metrics = metrics
         self._max_tool_iterations = max_tool_iterations
         self._max_local_tool_calls = max_local_tool_calls
+        self._latency_store = latency_store
 
     async def run_turn(
         self, agent_id: str, tenant_id: str, call_id: str, session_id: str, history: list[ChatMessage],
@@ -155,11 +158,24 @@ class ToolCallOrchestrator:
                     )
                 else:
                     iteration += 1  # remote only — locals must not burn this budget
-                    yield ToolCallStartedEvent(tool_name=event.tool_name)
-                    result = await self._execute_tool_call(
+                    # Start the real work before announcing it, not after:
+                    # yielding first (as this used to) suspends this
+                    # generator until the whole filler finishes
+                    # synthesizing, so the tool call didn't actually begin
+                    # until the filler was done speaking — the opposite of
+                    # "the filler covers the wait." Starting the task first
+                    # means the filler genuinely overlaps real work instead
+                    # of prepending to it.
+                    execute_task = asyncio.ensure_future(self._execute_tool_call(
                         event, policies_by_name, tenant_id, agent_id, call_id, session_id, turn_id,
                         iteration, caller_number, cancel_event,
-                    )
+                    ))
+                    try:
+                        yield ToolCallStartedEvent(tool_name=event.tool_name)
+                        result = await execute_task
+                    except BaseException:
+                        execute_task.cancel()
+                        raise
                 _fold_tool_result_into_history(history, event, result)
                 if result.deterministic_response is not None:
                     yield DeterministicSpokenEvent(
@@ -201,6 +217,7 @@ class ToolCallOrchestrator:
         chain = build_default_chain(
             executor, timeout_ms=timeout_ms, metrics=self._metrics,
             redact_arg_keys=policy.sensitive_arg_keys,
+            latency_store=self._latency_store,
         )
 
         request = ToolExecutionRequest(

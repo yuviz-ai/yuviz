@@ -76,7 +76,7 @@ class SttConfig:
 
 @dataclass
 class LlmConfig:
-    model:       str   = "llama3.2"
+    model:       str   = "qwen2.5:7b"
     system:      str   = ("You are a helpful voice assistant. "
                           "Keep responses concise and natural for speech.")
     temperature: float = 0.7

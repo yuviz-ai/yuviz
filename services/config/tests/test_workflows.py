@@ -43,7 +43,7 @@ async def _agent(test_tenant, slug="wf-agent"):
     )
 
 
-async def test_draft_autosave_does_not_bump_config_version(test_tenant, pool):
+async def test_draft_autosave_does_not_bump_config_version(test_tenant, scoped, pool):
     agent = await _agent(test_tenant)
     before = await pool.fetchrow("SELECT config_version, updated_at FROM agents WHERE id = $1", agent["id"])
 
@@ -60,7 +60,7 @@ async def test_draft_autosave_does_not_bump_config_version(test_tenant, pool):
     assert state["workflow"] == CREATED_GRAPH and state["published"] is True
 
 
-async def test_a_normal_agent_edit_still_bumps_config_version(test_tenant, pool):
+async def test_a_normal_agent_edit_still_bumps_config_version(test_tenant, scoped, pool):
     agent = await _agent(test_tenant)
     updated = await agents.update_agent(
         agent["id"], tenant_slug=test_tenant["slug"], name="Renamed",
@@ -68,7 +68,7 @@ async def test_a_normal_agent_edit_still_bumps_config_version(test_tenant, pool)
     assert updated["config_version"] == agent["config_version"] + 1
 
 
-async def test_publish_writes_the_live_graph_bumps_version_and_appends_history(test_tenant):
+async def test_publish_writes_the_live_graph_bumps_version_and_appends_history(test_tenant, scoped):
     agent = await _agent(test_tenant)
     await workflows.save_draft(agent["id"], tenant_slug=test_tenant["slug"], graph=GRAPH)
 
@@ -87,7 +87,7 @@ async def test_publish_writes_the_live_graph_bumps_version_and_appends_history(t
     assert versions[0]["node_count"] == 3 and versions[0]["edge_count"] == 2
 
 
-async def test_an_invalid_graph_can_never_reach_the_live_column(test_tenant):
+async def test_an_invalid_graph_can_never_reach_the_live_column(test_tenant, scoped):
     agent = await _agent(test_tenant)
     await workflows.save_draft(agent["id"], tenant_slug=test_tenant["slug"], graph=DEAD_END)
 
@@ -101,7 +101,7 @@ async def test_an_invalid_graph_can_never_reach_the_live_column(test_tenant):
     assert [v["version"] for v in versions] == [1]
 
 
-async def test_a_new_agent_is_born_running_a_graph(test_tenant):
+async def test_a_new_agent_is_born_running_a_graph(test_tenant, scoped):
     agent = await _agent(test_tenant)
 
     state = await workflows.get_workflow(agent["id"], test_tenant["slug"])
@@ -114,14 +114,14 @@ async def test_a_new_agent_is_born_running_a_graph(test_tenant):
     assert versions[0]["note"] == "created with the agent"
 
 
-async def test_the_system_prompt_given_at_create_lands_on_the_global_node(test_tenant):
+async def test_the_system_prompt_given_at_create_lands_on_the_global_node(test_tenant, scoped):
     agent = await _agent(test_tenant, slug="wf-global")
     state = await workflows.get_workflow(agent["id"], test_tenant["slug"])
     node = next(n for n in state["workflow"]["nodes"] if n["type"] == "global")
     assert node["data"]["prompt"] == AGENT_PROMPT
 
 
-async def test_the_greeting_given_at_create_lands_on_the_start_node(test_tenant):
+async def test_the_greeting_given_at_create_lands_on_the_start_node(test_tenant, scoped):
     agent = await agents.create_agent(
         tenant_id=test_tenant["id"], slug="wf-greet", name="Greeter",
         greeting="Thanks for calling Acme.",
@@ -131,7 +131,7 @@ async def test_the_greeting_given_at_create_lands_on_the_start_node(test_tenant)
     assert start["data"]["greeting"] == "Thanks for calling Acme."
 
 
-async def test_a_caller_supplied_graph_is_validated_at_create(test_tenant):
+async def test_a_caller_supplied_graph_is_validated_at_create(test_tenant, scoped):
     with pytest.raises(workflows.WorkflowValidationError):
         await agents.create_agent(
             tenant_id=test_tenant["id"], slug="wf-bad", name="Broken",
@@ -139,7 +139,7 @@ async def test_a_caller_supplied_graph_is_validated_at_create(test_tenant):
         )
 
 
-async def test_warnings_do_not_block_a_publish(test_tenant):
+async def test_warnings_do_not_block_a_publish(test_tenant, scoped):
     orphaned = {
         "version": 1,
         "nodes": GRAPH["nodes"] + [
@@ -158,7 +158,7 @@ async def test_warnings_do_not_block_a_publish(test_tenant):
     assert state["published"] is True
 
 
-async def test_rollback_republishes_as_a_new_version_never_rewriting_history(test_tenant):
+async def test_rollback_republishes_as_a_new_version_never_rewriting_history(test_tenant, scoped):
     agent = await _agent(test_tenant)
     await workflows.publish(agent["id"], tenant_slug=test_tenant["slug"], graph=GRAPH)
     changed = {**GRAPH, "nodes": [
@@ -178,7 +178,7 @@ async def test_rollback_republishes_as_a_new_version_never_rewriting_history(tes
     assert versions[0]["note"] == "rollback to version 2"
 
 
-async def test_another_tenants_agent_id_is_indistinguishable_from_missing(test_tenant):
+async def test_another_tenants_agent_id_is_indistinguishable_from_missing(test_tenant, scoped):
     agent = await _agent(test_tenant)
     with pytest.raises(LookupError):
         await workflows.save_draft(agent["id"], tenant_slug="not-this-tenant", graph=GRAPH)
@@ -186,14 +186,14 @@ async def test_another_tenants_agent_id_is_indistinguishable_from_missing(test_t
         await workflows.publish(agent["id"], tenant_slug="not-this-tenant", graph=GRAPH)
 
 
-async def test_draft_autosave_rejects_a_soft_deleted_agent(test_tenant):
+async def test_draft_autosave_rejects_a_soft_deleted_agent(test_tenant, scoped):
     agent = await _agent(test_tenant, slug="wf-deleted")
     await agents.soft_delete_agent(agent["id"], tenant_slug=test_tenant["slug"])
     with pytest.raises(LookupError):
         await workflows.save_draft(agent["id"], tenant_slug=test_tenant["slug"], graph=GRAPH)
 
 
-async def test_republishing_the_same_graph_is_a_noop(test_tenant, pool):
+async def test_republishing_the_same_graph_is_a_noop(test_tenant, scoped, pool):
     agent = await _agent(test_tenant, slug="wf-noop")
     first = await workflows.publish(
         agent["id"], tenant_slug=test_tenant["slug"], graph=GRAPH,
@@ -213,7 +213,7 @@ async def test_republishing_the_same_graph_is_a_noop(test_tenant, pool):
     assert [v["version"] for v in versions_after] == [v["version"] for v in versions_before]
 
 
-async def test_chrome_only_publish_writes_live_positions(test_tenant, pool):
+async def test_chrome_only_publish_writes_live_positions(test_tenant, scoped, pool):
     """Position-only publish must update agents.workflow (editor compares positions)."""
     agent = await _agent(test_tenant, slug="wf-chrome")
     first = await workflows.publish(agent["id"], tenant_slug=test_tenant["slug"], graph=GRAPH)
@@ -236,7 +236,7 @@ async def test_chrome_only_publish_writes_live_positions(test_tenant, pool):
     assert state["workflow_draft"]["nodes"] == moved["nodes"]
 
 
-async def test_draft_save_with_stale_config_version_is_rejected(test_tenant):
+async def test_draft_save_with_stale_config_version_is_rejected(test_tenant, scoped):
     agent = await _agent(test_tenant, slug="wf-stale")
     state = await workflows.get_workflow(agent["id"], test_tenant["slug"])
     base = state["config_version"]
@@ -253,7 +253,7 @@ async def test_draft_save_with_stale_config_version_is_rejected(test_tenant):
     assert after["config_version"] == base + 1
 
 
-async def test_rollback_to_the_already_live_version_is_a_noop(test_tenant):
+async def test_rollback_to_the_already_live_version_is_a_noop(test_tenant, scoped):
     agent = await _agent(test_tenant, slug="wf-rb-noop")
     published = await workflows.publish(
         agent["id"], tenant_slug=test_tenant["slug"], graph=GRAPH,
@@ -267,7 +267,7 @@ async def test_rollback_to_the_already_live_version_is_a_noop(test_tenant):
     assert [v["version"] for v in versions] == [published["version"], 1]
 
 
-async def test_empty_workflow_object_at_create_uses_the_starter_graph(test_tenant):
+async def test_empty_workflow_object_at_create_uses_the_starter_graph(test_tenant, scoped):
     agent = await agents.create_agent(
         tenant_id=test_tenant["id"], slug="wf-empty", name="Empty",
         system_prompt=AGENT_PROMPT, workflow={},
@@ -278,7 +278,7 @@ async def test_empty_workflow_object_at_create_uses_the_starter_graph(test_tenan
     assert [v["version"] for v in versions] == [1]
 
 
-async def test_republishing_with_only_position_changes_updates_live_chrome(test_tenant, pool):
+async def test_republishing_with_only_position_changes_updates_live_chrome(test_tenant, scoped, pool):
     agent = await _agent(test_tenant, slug="wf-pos-noop")
     first = await workflows.publish(
         agent["id"], tenant_slug=test_tenant["slug"], graph=GRAPH,
@@ -301,7 +301,7 @@ async def test_republishing_with_only_position_changes_updates_live_chrome(test_
     assert state["workflow"]["nodes"] == moved["nodes"]
 
 
-async def test_get_agent_does_not_expose_or_cache_the_draft(test_tenant):
+async def test_get_agent_does_not_expose_or_cache_the_draft(test_tenant, scoped):
     agent = await agents.create_agent(
         tenant_id=test_tenant["id"], slug="wf-no-draft", name="No Draft",
         system_prompt=AGENT_PROMPT, tenant_slug=test_tenant["slug"],
@@ -325,7 +325,7 @@ async def test_get_agent_does_not_expose_or_cache_the_draft(test_tenant):
     assert state["workflow_draft"] == DEAD_END
 
 
-async def test_patching_greeting_mirrors_into_the_published_graph(test_tenant, pool):
+async def test_patching_greeting_mirrors_into_the_published_graph(test_tenant, scoped, pool):
     agent = await agents.create_agent(
         tenant_id=test_tenant["id"], slug="wf-mirror", name="Mirror",
         greeting="Old hello", system_prompt=AGENT_PROMPT,
@@ -353,7 +353,7 @@ async def test_patching_greeting_mirrors_into_the_published_graph(test_tenant, p
     assert "workflow" in new_value
 
 
-async def test_publish_mirrors_greeting_back_into_the_agent_columns(test_tenant):
+async def test_publish_mirrors_greeting_back_into_the_agent_columns(test_tenant, scoped):
     agent = await agents.create_agent(
         tenant_id=test_tenant["id"], slug="wf-pub-mirror", name="Pub Mirror",
         greeting="Column greeting", system_prompt="Column prompt",
@@ -407,7 +407,7 @@ async def test_starter_graph_sql_matches_python_starter_graph(pool):
     assert sql3 == starter_graph("Thanks for calling.", "Be helpful.", ["book_appointment"])
 
 
-async def test_create_with_a_graph_stores_prompts_from_the_graph_not_the_body(test_tenant):
+async def test_create_with_a_graph_stores_prompts_from_the_graph_not_the_body(test_tenant, scoped):
     graph = {
         "version": 1,
         "nodes": [
@@ -432,7 +432,7 @@ async def test_create_with_a_graph_stores_prompts_from_the_graph_not_the_body(te
     assert agent["system_prompt"] == "Graph prompt"
 
 
-async def test_publish_without_a_global_node_clears_system_prompt(test_tenant):
+async def test_publish_without_a_global_node_clears_system_prompt(test_tenant, scoped):
     agent = await _agent(test_tenant, slug="wf-no-global")
     assert agent["system_prompt"] == AGENT_PROMPT
     await workflows.publish(agent["id"], tenant_slug=test_tenant["slug"], graph=GRAPH)
@@ -442,7 +442,7 @@ async def test_publish_without_a_global_node_clears_system_prompt(test_tenant):
     assert fetched["greeting"] == (start["data"].get("greeting") or "")
 
 
-async def test_patch_system_prompt_rejects_a_graph_with_no_global_node(test_tenant):
+async def test_patch_system_prompt_rejects_a_graph_with_no_global_node(test_tenant, scoped):
     agent = await agents.create_agent(
         tenant_id=test_tenant["id"], slug="wf-no-global-patch", name="No Global",
         workflow=GRAPH,

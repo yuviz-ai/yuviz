@@ -5,7 +5,7 @@ import pytest
 from services.campaigns import campaigns
 
 
-async def test_create_and_get_campaign(test_tenant, test_agent):
+async def test_create_and_get_campaign(test_tenant, test_agent, scoped):
     row = await campaigns.create_campaign(
         test_tenant["id"], agent_id=test_agent["id"], name="Renewal reminders",
         caller_id="+14155550100", max_concurrent_calls=2, pacing_seconds=10, max_attempts=2,
@@ -17,7 +17,7 @@ async def test_create_and_get_campaign(test_tenant, test_agent):
     assert fetched["name"] == "Renewal reminders"
 
 
-async def test_list_campaigns_scoped_to_tenant(test_tenant, test_agent):
+async def test_list_campaigns_scoped_to_tenant(test_tenant, test_agent, scoped):
     await campaigns.create_campaign(
         test_tenant["id"], agent_id=test_agent["id"], name="A",
         caller_id=None, max_concurrent_calls=1, pacing_seconds=5, max_attempts=1,
@@ -26,7 +26,7 @@ async def test_list_campaigns_scoped_to_tenant(test_tenant, test_agent):
     assert any(c["name"] == "A" for c in result)
 
 
-async def test_update_campaign_changes_only_given_fields(test_tenant, test_agent):
+async def test_update_campaign_changes_only_given_fields(test_tenant, test_agent, scoped):
     row = await campaigns.create_campaign(
         test_tenant["id"], agent_id=test_agent["id"], name="Original",
         caller_id="+14155550100", max_concurrent_calls=1, pacing_seconds=5, max_attempts=1,
@@ -36,7 +36,7 @@ async def test_update_campaign_changes_only_given_fields(test_tenant, test_agent
     assert updated["caller_id"] == "+14155550100"  # None in the update dict is dropped, not applied
 
 
-async def test_set_status_transitions(test_tenant, test_agent):
+async def test_set_status_transitions(test_tenant, test_agent, scoped):
     row = await campaigns.create_campaign(
         test_tenant["id"], agent_id=test_agent["id"], name="X",
         caller_id="+14155550100", max_concurrent_calls=1, pacing_seconds=5, max_attempts=1,
@@ -48,12 +48,53 @@ async def test_set_status_transitions(test_tenant, test_agent):
     assert paused["status"] == "paused"
 
 
-async def test_update_unknown_campaign_raises_lookup_error():
+async def test_update_unknown_campaign_raises_lookup_error(scoped):
     with pytest.raises(LookupError):
         await campaigns.update_campaign("00000000-0000-0000-0000-000000000000", {"name": "x"})
 
 
-async def test_get_progress_counts_by_status(test_tenant, test_agent, pool):
+# ── caller_id tenant ownership (security finding: unowned caller_id must
+# never reach a dial) ─────────────────────────────────────────────────────
+
+async def test_caller_id_owned_by_tenant_true_for_provisioned_did(test_tenant, pool, scoped):
+    await pool.execute(
+        "INSERT INTO phone_numbers (did, tenant_id) VALUES ($1, $2)",
+        "+14155551234", test_tenant["id"],
+    )
+    try:
+        assert await campaigns.caller_id_owned_by_tenant(test_tenant["id"], "+14155551234") is True
+    finally:
+        await pool.execute("DELETE FROM phone_numbers WHERE did = $1", "+14155551234")
+
+
+async def test_caller_id_owned_by_tenant_false_for_another_tenants_did(test_tenant, pool, scoped):
+    other = await pool.fetchrow(
+        "INSERT INTO tenants (name, slug) VALUES ('Other', $1) RETURNING id",
+        f"other-{test_tenant['id']}",
+    )
+    await pool.execute(
+        "INSERT INTO phone_numbers (did, tenant_id) VALUES ($1, $2)",
+        "+14155559999", other["id"],
+    )
+    try:
+        assert await campaigns.caller_id_owned_by_tenant(test_tenant["id"], "+14155559999") is False
+    finally:
+        await pool.execute("DELETE FROM phone_numbers WHERE did = $1", "+14155559999")
+        await pool.execute("DELETE FROM tenants WHERE id = $1", other["id"])
+
+
+async def test_caller_id_owned_by_tenant_false_for_unprovisioned_number(test_tenant, scoped):
+    assert await campaigns.caller_id_owned_by_tenant(test_tenant["id"], "+19995550000") is False
+
+
+async def test_caller_id_owned_by_tenant_true_when_none(test_tenant):
+    # A campaign with no caller_id configured yet is valid at create/update
+    # time — worker.py's own "no caller_id configured" guard is what stops
+    # it from dialing, not this check.
+    assert await campaigns.caller_id_owned_by_tenant(test_tenant["id"], None) is True
+
+
+async def test_get_progress_counts_by_status(test_tenant, test_agent, pool, scoped):
     row = await campaigns.create_campaign(
         test_tenant["id"], agent_id=test_agent["id"], name="Progress test",
         caller_id="+14155550100", max_concurrent_calls=1, pacing_seconds=5, max_attempts=1,

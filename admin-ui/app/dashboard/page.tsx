@@ -132,7 +132,7 @@ function StackedBars({ points }: { points: TodaysActivityPoint[] }) {
                     page already sets (app/calls/page.tsx's direction badge).
                     Do not re-pick these per screen — the same colour has to
                     mean the same direction everywhere in the console. */}
-                <div style={{ flex: p.inbound, background: "var(--cyan)" }} />
+                <div style={{ flex: p.inbound, background: "var(--text-2)" }} />
                 <div style={{ flex: p.outbound, background: "var(--amber)" }} />
               </div>
             </div>
@@ -163,7 +163,7 @@ const BADGE_VAR: Record<BadgeTone, string> = {
   amber: "var(--amber)",
   red: "var(--red)",
   gray: "var(--text-3)",
-  cyan: "var(--cyan)",
+  cyan: "var(--text-2)",
 };
 
 function dispositionTone(closeReason: string): BadgeTone {
@@ -394,7 +394,7 @@ export default function DashboardPage() {
 
   const trendSeries = useMemo(
     () => [
-      { name: "Calls", color: "var(--cyan)", values: trend.map((p) => p.calls) },
+      { name: "Calls", color: "var(--text-2)", values: trend.map((p) => p.calls) },
       { name: "Minutes", color: "var(--indigo)", values: trend.map((p) => p.minutes) },
     ],
     [trend],
@@ -445,8 +445,16 @@ export default function DashboardPage() {
             {fmtInt(activeAgents)} active agent{activeAgents === 1 ? "" : "s"}
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <div style={{ display: "flex", gap: 4, marginRight: 4 }}>
+        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap-reverse", justifyContent: "flex-end" }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            <Link href="/calls" className="btn btn-ghost" style={{ whiteSpace: "nowrap" }}>
+              <span style={{ marginRight: 4 }}>📊</span>Open live monitor
+            </Link>
+            <Link href="/campaigns" className="btn btn-ghost" style={{ whiteSpace: "nowrap" }}>
+              <span style={{ marginRight: 4 }}>🚀</span>New campaign
+            </Link>
+          </div>
+          <div style={{ display: "flex", gap: 4, borderLeft: "1px solid var(--border)", paddingLeft: 12 }}>
             {RANGE_OPTIONS.map((o) => (
               <button
                 key={o.label}
@@ -457,8 +465,6 @@ export default function DashboardPage() {
               </button>
             ))}
           </div>
-          <Link href="/calls" className="btn">Open live monitor</Link>
-          <Link href="/campaigns" className="btn btn-primary">New campaign</Link>
         </div>
       </div>
 
@@ -530,7 +536,7 @@ export default function DashboardPage() {
             <div className="card-sub">Today</div>
             <div style={{ marginLeft: "auto", display: "flex", gap: 14 }}>
               {[
-                { name: "Inbound", color: "var(--cyan)" },
+                { name: "Inbound", color: "var(--text-2)" },
                 { name: "Outbound", color: "var(--amber)" },
               ].map((s) => (
                 <span key={s.name} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: ".72rem", color: "var(--text-2)" }}>

@@ -1,13 +1,17 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
-  ApiError, createTenant, deleteTenant, listAgents, listTenants, Tenant, TenantUpdate,
+  ApiError, createTenant, deleteTenant, listAgents, listPhoneNumbers, listTenants, Tenant, TenantUpdate,
   updateTenant, updateTenantConcurrency,
 } from "@/lib/api";
+import { ACTIVE_TENANT_STORAGE_KEY } from "@/components/AppShell";
 import { Modal } from "@/components/Modal";
+import { useActiveTenant } from "@/lib/useActiveTenant";
 
 export default function TenantsPage() {
+  const { tenant: activeTenant, isAllTenants } = useActiveTenant();
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [agentCounts, setAgentCounts] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
@@ -24,12 +28,16 @@ export default function TenantsPage() {
   const [editForm, setEditForm] = useState<TenantUpdate>({});
   const [editSubmitting, setEditSubmitting] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
-  // Separate from editForm/updateTenant() on purpose: this goes through its
-  // own PATCH /tenants/{id}/concurrency (services/config/routers/tenants.py),
-  // not the superadmin-only PATCH /tenants/{id} — that's what lets an
-  // admin (not just superadmin) edit their own tenant's cap. "" means
-  // "leave it unchanged," never "clear it to NULL" (that endpoint doesn't
-  // offer clearing — see schemas.py's TenantConcurrencyUpdate).
+
+  const [deleteTarget, setDeleteTarget] = useState<Tenant | null>(null);
+  // null = still checking; never claim "nothing attached" before the real check runs.
+  const [deleteCounts, setDeleteCounts] = useState<{
+    active_agents: number; active_phone_numbers: number; inactive_agents: number;
+  } | null>(null);
+  const [deleteChecking, setDeleteChecking] = useState(false);
+  const [deleteSubmitting, setDeleteSubmitting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  // "" means "leave unchanged" — the concurrency endpoint has no way to clear to NULL.
   const [maxConcurrentCalls, setMaxConcurrentCalls] = useState<number | "">("");
 
   const refresh = () => {
@@ -52,6 +60,8 @@ export default function TenantsPage() {
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(refresh, []);
 
+  const visibleTenants = isAllTenants ? tenants : tenants.filter((t) => t.id === activeTenant?.id);
+
   const handleCreate = async () => {
     setSubmitting(true);
     setFormError(null);
@@ -69,13 +79,63 @@ export default function TenantsPage() {
     }
   };
 
-  const handleDelete = async (t: Tenant) => {
-    if (!window.confirm(`Delete tenant "${t.name}"? Its agents, providers, and phone numbers remain in the database but will no longer resolve.`)) return;
+  const openDelete = async (t: Tenant) => {
+    setDeleteTarget(t);
+    setDeleteCounts(null);
+    setDeleteError(null);
+    setDeleteChecking(true);
     try {
-      await deleteTenant(t.id);
+      const [agents, numbers] = await Promise.all([listAgents(t.slug), listPhoneNumbers(t.id)]);
+      setDeleteCounts({
+        active_agents: agents.filter((a) => a.status === "active").length,
+        inactive_agents: agents.filter((a) => a.status !== "active").length,
+        active_phone_numbers: numbers.filter((n) => n.status === "active").length,
+      });
+    } catch (e) {
+      setDeleteError(e instanceof ApiError ? e.detail : String(e));
+    } finally {
+      setDeleteChecking(false);
+    }
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!deleteTarget) return;
+    setDeleteSubmitting(true);
+    setDeleteError(null);
+    try {
+      await deleteTenant(deleteTarget.id);
+      setDeleteTarget(null);
       refresh();
     } catch (e) {
-      setError(e instanceof ApiError ? e.detail : String(e));
+      // 409 carries counts — switch to the blocked variant instead of a plain error.
+      if (e instanceof ApiError && e.status === 409 && e.body) {
+        // inactive_agents isn't in the 409 body — carry it forward from the pre-check.
+        setDeleteCounts((prev) => ({
+          active_agents: Number(e.body!.active_agents ?? 0),
+          active_phone_numbers: Number(e.body!.active_phone_numbers ?? 0),
+          inactive_agents: prev?.inactive_agents ?? 0,
+        }));
+      } else {
+        setDeleteError(e instanceof ApiError ? e.detail : String(e));
+      }
+    } finally {
+      setDeleteSubmitting(false);
+    }
+  };
+
+  const handleForceDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleteSubmitting(true);
+    setDeleteError(null);
+    try {
+      await deleteTenant(deleteTarget.id, true);
+      setDeleteTarget(null);
+      setDeleteCounts(null);
+      refresh();
+    } catch (e) {
+      setDeleteError(e instanceof ApiError ? e.detail : String(e));
+    } finally {
+      setDeleteSubmitting(false);
     }
   };
 
@@ -95,15 +155,8 @@ export default function TenantsPage() {
     if (!editTarget) return;
     setEditSubmitting(true);
     setEditError(null);
-    // Two independent calls, not one folded into the other: PATCH
-    // /tenants/{id} (name/region/timeouts) is superadmin-only
-    // (require_role("superadmin") — routers/tenants.py), but PATCH
-    // /tenants/{id}/concurrency is the route T17 built specifically so a
-    // tenant_admin can set their OWN tenant's cap. Calling updateTenant()
-    // first and letting its 403 abort the handler made that route
-    // unreachable from this page for exactly the role it was built for —
-    // concurrency must be attempted regardless of whether the other PATCH
-    // succeeds, fails, or isn't applicable to this actor's role.
+    // Two independent calls: PATCH /tenants/{id} is superadmin-only, but PATCH
+    // /tenants/{id}/concurrency also allows a tenant_admin — must attempt both.
     const concurrencyChanged =
       maxConcurrentCalls !== "" && maxConcurrentCalls !== editTarget.max_concurrent_calls;
     const otherFieldsChanged =
@@ -115,9 +168,6 @@ export default function TenantsPage() {
     const errors: string[] = [];
     if (concurrencyChanged) {
       try {
-        // Its own audited/cache-invalidated write (T16/T17) — the next
-        // Live Calls poll for this tenant reflects the new utilization_pct
-        // because update_tenant()'s cache.invalidate() fires either way.
         await updateTenantConcurrency(editTarget.id, maxConcurrentCalls);
       } catch (e) {
         errors.push(e instanceof ApiError ? e.detail : String(e));
@@ -154,8 +204,10 @@ export default function TenantsPage() {
       <div className="card">
         {loading ? (
           <div className="empty-state">Loading…</div>
-        ) : tenants.length === 0 ? (
-          <div className="empty-state">No tenants yet. Create one to get started.</div>
+        ) : visibleTenants.length === 0 ? (
+          <div className="empty-state">
+            {tenants.length === 0 ? "No tenants yet. Create one to get started." : "No tenant matches the selected account."}
+          </div>
         ) : (
           <table className="tbl">
             <thead>
@@ -170,13 +222,13 @@ export default function TenantsPage() {
               </tr>
             </thead>
             <tbody>
-              {tenants.map((t) => (
+              {visibleTenants.map((t) => (
                 <tr key={t.id}>
                   <td className="bold">{t.name}</td>
                   <td className="mono">{t.slug}</td>
                   <td>{t.region}</td>
                   <td>
-                    <span className="badge indigo">{agentCounts[t.id] ?? "…"}</span>
+                    <span className="ver-badge">{agentCounts[t.id] ?? "…"}</span>
                   </td>
                   <td>
                     <span className="ver-badge">v{t.config_version}</span>
@@ -188,7 +240,7 @@ export default function TenantsPage() {
                     <button className="btn btn-ghost btn-sm" onClick={() => openEdit(t)}>
                       Edit
                     </button>
-                    <button className="btn btn-danger btn-sm" onClick={() => handleDelete(t)}>
+                    <button className="btn btn-danger btn-sm" onClick={() => openDelete(t)}>
                       Delete
                     </button>
                   </td>
@@ -324,6 +376,114 @@ export default function TenantsPage() {
         </div>
         <div className="form-hint">Slug can&apos;t be changed after creation — it&apos;s used in Redis routing keys.</div>
       </Modal>
+
+      {(() => {
+        const isBlocked = deleteCounts !== null && (deleteCounts.active_agents > 0 || deleteCounts.active_phone_numbers > 0);
+        return (
+          <Modal
+            open={deleteTarget !== null}
+            title={
+              deleteChecking
+                ? `Checking "${deleteTarget?.name}"…`
+                : isBlocked
+                  ? `Can't delete "${deleteTarget?.name}"`
+                  : `Delete "${deleteTarget?.name}"?`
+            }
+            onClose={() => setDeleteTarget(null)}
+            footer={
+              deleteChecking ? (
+                <button className="btn btn-ghost btn-sm" onClick={() => setDeleteTarget(null)}>Cancel</button>
+              ) : isBlocked ? (
+                <>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setDeleteTarget(null)}>Cancel</button>
+                  {!!deleteCounts?.active_agents && (
+                    <Link
+                      href="/agents"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => {
+                        if (deleteTarget) window.localStorage.setItem(ACTIVE_TENANT_STORAGE_KEY, deleteTarget.slug);
+                      }}
+                    >
+                      Deactivate agents
+                    </Link>
+                  )}
+                  {!!deleteCounts?.active_phone_numbers && (
+                    <Link
+                      href="/telephony"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => {
+                        if (deleteTarget) window.localStorage.setItem(ACTIVE_TENANT_STORAGE_KEY, deleteTarget.slug);
+                      }}
+                    >
+                      Detach numbers
+                    </Link>
+                  )}
+                  <button className="btn btn-danger btn-sm" onClick={handleForceDelete} disabled={deleteSubmitting}>
+                    {deleteSubmitting ? "Deleting…" : "Force delete anyway"}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setDeleteTarget(null)}>Cancel</button>
+                  <button className="btn btn-danger btn-sm" onClick={handleDeleteConfirm} disabled={deleteSubmitting}>
+                    {deleteSubmitting ? "Deleting…" : "Delete account"}
+                  </button>
+                </>
+              )
+            }
+          >
+            {deleteError && <div className="error-banner">{deleteError}</div>}
+            {deleteChecking ? (
+              <p style={{ fontSize: ".78rem", color: "var(--text-3)" }}>
+                Checking for active agents and phone numbers still attached to this account…
+              </p>
+            ) : isBlocked && deleteCounts ? (
+              <>
+                <div style={{ display: "flex", gap: 28, padding: "10px 0", borderBottom: "1px solid var(--border-2)", marginBottom: 12 }}>
+                  <div>
+                    <div style={{ fontSize: ".64rem", color: "var(--text-3)", textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 3 }}>
+                      Active agents
+                    </div>
+                    <div style={{ fontSize: "1rem", fontFamily: "var(--mono)", color: "var(--text)" }}>{deleteCounts.active_agents}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: ".64rem", color: "var(--text-3)", textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 3 }}>
+                      Active phone numbers
+                    </div>
+                    <div style={{ fontSize: "1rem", fontFamily: "var(--mono)", color: "var(--text)" }}>{deleteCounts.active_phone_numbers}</div>
+                  </div>
+                  {!!deleteCounts.inactive_agents && (
+                    <div>
+                      <div style={{ fontSize: ".64rem", color: "var(--text-3)", textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 3 }}>
+                        Inactive agents
+                      </div>
+                      <div style={{ fontSize: "1rem", fontFamily: "var(--mono)", color: "var(--text-3)" }}>{deleteCounts.inactive_agents}</div>
+                    </div>
+                  )}
+                </div>
+                <p style={{
+                  fontSize: ".78rem", color: "var(--text-2)", lineHeight: 1.5,
+                  borderLeft: "2px solid var(--red-border)", padding: "6px 0 6px 10px", margin: 0,
+                }}>
+                  Calls to these numbers would stop resolving the moment this account is deleted — deleted
+                  tenants are excluded from DID routing immediately, so this is an instant outage for this
+                  account&apos;s callers, not a small risk. Deactivate the agents and detach the phone numbers
+                  first, or force the delete if you&apos;re certain.
+                </p>
+              </>
+            ) : (
+              <p style={{
+                fontSize: ".78rem", color: "var(--text-2)", lineHeight: 1.5,
+                borderLeft: "2px solid var(--green-border)", padding: "6px 0 6px 10px", margin: 0,
+              }}>
+                Nothing is attached — no active agents, no active phone numbers. Its providers, past calls, and
+                audit history remain in the database for reference but will no longer be reachable from the
+                console.
+              </p>
+            )}
+          </Modal>
+        );
+      })()}
     </>
   );
 }

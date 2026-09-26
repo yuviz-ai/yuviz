@@ -26,6 +26,7 @@ import asyncpg
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from libs.tenancy import set_target_tenant
 from services.config import audit
 from services.config import auth, cache, db, deps
 from services.config import live_calls
@@ -190,7 +191,7 @@ class TestFreshAuthority:
 # ── T4 — get_live_calls query shape ──────────────────────────────────────
 
 class TestGetLiveCallsQuery:
-    async def test_withheld_transcript_is_never_fetched(self, pool, test_tenant, monkeypatch):
+    async def test_withheld_transcript_is_never_fetched(self, scoped, pool, test_tenant, monkeypatch):
         session_id = await _insert_call(pool, tenant_slug=test_tenant["slug"])
         await _insert_transcript_turn(pool, session_id=session_id, caller_text="secret caller text")
         try:
@@ -211,7 +212,7 @@ class TestGetLiveCallsQuery:
         finally:
             await _cleanup_call(pool, session_id)
 
-    async def test_included_transcript_is_fetched(self, pool, test_tenant):
+    async def test_included_transcript_is_fetched(self, scoped, pool, test_tenant):
         session_id = await _insert_call(pool, tenant_slug=test_tenant["slug"])
         await _insert_transcript_turn(pool, session_id=session_id, caller_text="hello there")
         try:
@@ -222,7 +223,7 @@ class TestGetLiveCallsQuery:
         finally:
             await _cleanup_call(pool, session_id)
 
-    async def test_cross_tenant_agent_id_never_leaks_agent_name(self, pool, test_tenant):
+    async def test_cross_tenant_agent_id_never_leaks_agent_name(self, scoped, pool, test_tenant):
         other_tenant = await pool.fetchrow(
             "INSERT INTO tenants (name, slug) VALUES ($1, $2) RETURNING *",
             "Other Tenant", f"test-other-{uuid.uuid4().hex[:8]}",
@@ -596,7 +597,7 @@ async def _set_max_concurrent_calls(pool, tenant_slug: str, value: int | None) -
 
 
 class TestKpis:
-    async def test_stage_split_and_masked_numbers(self, pool, test_tenant):
+    async def test_stage_split_and_masked_numbers(self, scoped, pool, test_tenant):
         await _set_max_concurrent_calls(pool, test_tenant["slug"], 20)
         session_ids = [
             await _insert_call(pool, tenant_slug=test_tenant["slug"], live_stage=None),
@@ -630,8 +631,19 @@ class TestKpis:
         call_b1 = await _insert_call(pool, tenant_slug=other_tenant["slug"])
         call_b2 = await _insert_call(pool, tenant_slug=other_tenant["slug"])
         try:
-            result_a = await live_calls.get_live_calls(test_tenant["slug"], include_transcript=False)
-            result_b = await live_calls.get_live_calls(other_tenant["slug"], include_transcript=False)
+            # get_live_calls reads current_tenant() as its own authority
+            # check (not just the tenant_slug argument) — set/reset it
+            # around each call, switching tenants in between.
+            set_target_tenant(str(test_tenant["id"]))
+            try:
+                result_a = await live_calls.get_live_calls(test_tenant["slug"], include_transcript=False)
+            finally:
+                set_target_tenant(None)
+            set_target_tenant(str(other_tenant["id"]))
+            try:
+                result_b = await live_calls.get_live_calls(other_tenant["slug"], include_transcript=False)
+            finally:
+                set_target_tenant(None)
             assert result_a["kpis"]["utilization_pct"] == 10.0  # 1 / 10
             assert result_b["kpis"]["utilization_pct"] == 50.0  # 2 / 4
         finally:
@@ -641,7 +653,7 @@ class TestKpis:
             await _set_max_concurrent_calls(pool, test_tenant["slug"], None)
             await _cleanup_tenant(pool, other_tenant)
 
-    async def test_nullable_cap_has_no_numeric_fallback(self, pool, test_tenant):
+    async def test_nullable_cap_has_no_numeric_fallback(self, scoped, pool, test_tenant):
         # test_tenant's cap is NULL by default — no default per T1's schema.
         session_id = await _insert_call(pool, tenant_slug=test_tenant["slug"])
         try:
@@ -651,7 +663,7 @@ class TestKpis:
         finally:
             await _cleanup_call(pool, session_id)
 
-    async def test_ended_call_disappears_and_counts_decrement(self, pool, test_tenant):
+    async def test_ended_call_disappears_and_counts_decrement(self, scoped, pool, test_tenant):
         session_id = await _insert_call(pool, tenant_slug=test_tenant["slug"])
         try:
             before = await live_calls.get_live_calls(test_tenant["slug"], include_transcript=False)
@@ -719,7 +731,7 @@ class TestRateLimitAndAcquireTimeout:
             fifth = await client.get("/live-calls")
             assert fifth.status_code == 429
 
-    async def test_acquire_times_out_when_pool_is_saturated_rather_than_hangs(self, test_tenant):
+    async def test_acquire_times_out_when_pool_is_saturated_rather_than_hangs(self, scoped, test_tenant):
         # Pre-warm the Redis-cached tenant lookup so the saturated-pool
         # assertion below exercises the acquire timeout itself, not an
         # unrelated (uncapped) wait on tenants_service.get_tenant()'s own
@@ -758,7 +770,7 @@ async def _count_audit_rows(pool, entity_id, outcome: str) -> int:
 
 
 class TestRequestInterventionServiceFunction:
-    async def test_cross_tenant_session_id_binds_the_slug_and_returns_none(self, pool, test_tenant):
+    async def test_cross_tenant_session_id_binds_the_slug_and_returns_none(self, scoped, pool, test_tenant):
         other_tenant = await _create_tenant(pool)
         # Agent and call both belong to tenant B; the "caller" (tenant A) is
         # simulated by resolving against test_tenant's own slug/id while the

@@ -15,9 +15,12 @@ import logging
 from contextlib import asynccontextmanager
 
 import asyncpg
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
+from services.config.deps import get_authenticated_user
 
 from . import db
 from .routers import campaigns
@@ -77,3 +80,22 @@ async def fk_violation_handler(request: Request, exc: asyncpg.ForeignKeyViolatio
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+class VobizCallResolved(BaseModel):
+    call_uuid: str
+    succeeded: bool
+    detail: str = ""
+    call_session_id: str | None = None
+
+
+@app.post("/internal/vobiz-call-resolved")
+async def vobiz_call_resolved(
+    body: VobizCallResolved,
+    user=Depends(get_authenticated_user),
+) -> dict:
+    """Internal, service-to-service only — requires service-account JWT auth."""
+    await _worker.on_call_resolved(
+        body.call_uuid, body.succeeded, body.detail, call_session_id=body.call_session_id,
+    )
+    return {"ok": True}

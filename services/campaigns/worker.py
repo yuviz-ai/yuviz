@@ -17,18 +17,25 @@ working AI phone call once a real trunk/DID exists.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
+from libs.telephony_sdk import providers as _telephony_providers  # noqa: F401 — registers every built-in provider
+from libs.telephony_sdk.registry import TelephonyProviderRegistry
 from libs.tenancy import platform_conn
 
-from . import campaign_contacts, campaigns, db, dnc, originate
+from . import campaign_contacts, campaigns, db, dnc, originate, telephony_originate
 
 log = logging.getLogger(__name__)
 
 _TICK_INTERVAL_S = 2.0
+
+
+def _idempotency_key(campaign_id: str, contact_id: str, attempt_count: int) -> str:
+    return hashlib.sha256(f"{campaign_id}:{contact_id}:{attempt_count}".encode()).hexdigest()
 
 
 def _parse_hhmm(value: str) -> dtime:
@@ -61,6 +68,12 @@ class CampaignWorker:
         # max_attempts/attempt_count captured here so _on_job_complete can
         # decide retry-vs-exhaust without an extra DB round trip.
         self._job_to_contact: dict[str, tuple[str, str, int, int]] = {}
+        # (campaign_id, contact_id) -> (provider, tenant_slug, idempotency_key,
+        # max_attempts, attempt_count) — a REST provider's 202 leaves the
+        # contact at 'calling' rather than requeueing it, since the vendor
+        # may already have dialled; resolved via poll_idempotency on a
+        # later tick instead of the ESL job-event listener.
+        self._pending_idem: dict[tuple[str, str], tuple[str, str, str, int, int]] = {}
         self._event_listener = originate.EslJobEventListener(self._on_job_complete)
 
     def start(self) -> None:
@@ -97,6 +110,24 @@ class CampaignWorker:
             running = await conn.fetch("SELECT * FROM campaigns WHERE status = 'running' AND deleted_at IS NULL")
         for row in running:
             await self._tick_campaign(dict(row))
+        await self._resolve_pending_idem()
+
+    async def _resolve_pending_idem(self) -> None:
+        for key, (provider, tenant_slug, idem_key, max_attempts, attempt_count) in list(self._pending_idem.items()):
+            campaign_id, contact_id = key
+            try:
+                call_id = await telephony_originate.poll_idempotency(
+                    provider=provider, tenant_slug=tenant_slug, idempotency_key=idem_key,
+                )
+            except telephony_originate.TelephonyOriginateError:
+                log.exception("CampaignWorker: poll_idempotency failed contact=%s", contact_id)
+                self._pending_idem.pop(key, None)
+                await self._resolve_with_retry(campaign_id, contact_id, max_attempts, attempt_count, "failed")
+                continue
+            if call_id is None:
+                continue  # still pending — try again next tick
+            self._pending_idem.pop(key, None)
+            await self._resolve_contact(campaign_id, contact_id, "completed", call_session_id=call_id)
 
     async def _tick_campaign(self, campaign: dict) -> None:
         campaign_id = str(campaign["id"])
@@ -117,13 +148,13 @@ class CampaignWorker:
         if not _within_calling_hours(campaign):
             return  # outside the configured window — try again next tick, no pacing/attempt cost
 
-        contact = await campaign_contacts.claim_next_pending(campaign_id)
+        contact = await campaign_contacts.claim_next_pending(campaign_id, platform_scoped=True)
         if contact is None:
-            progress = await campaigns.get_progress(campaign_id)
+            progress = await campaigns.get_progress(campaign_id, platform_scoped=True)
             if progress["calling"] == 0:
                 # No pending contacts left and nothing still in flight —
                 # the campaign is genuinely done, not just paced-out.
-                await campaigns.set_status(campaign_id, "completed")
+                await campaigns.set_status(campaign_id, "completed", platform_scoped=True)
                 log.info("CampaignWorker: campaign=%s completed (no contacts remain)", campaign_id)
             return
 
@@ -134,9 +165,9 @@ class CampaignWorker:
         # campaign that's already running. Deliberately doesn't touch
         # pacing/in_flight — no real dial attempt happens, so it shouldn't
         # cost this campaign a pacing slot.
-        if await dnc.is_blocked(campaign["tenant_id"], contact["phone_number"]):
+        if await dnc.is_blocked(campaign["tenant_id"], contact["phone_number"], platform_scoped=True):
             log.info("CampaignWorker: contact=%s phone=%s is on the DNC list — blocking", contact["id"], contact["phone_number"])
-            await campaign_contacts.mark_contact_status(contact["id"], "blocked")
+            await campaign_contacts.mark_contact_status(contact["id"], "blocked", platform_scoped=True)
             return
 
         self._last_attempt_at[campaign_id] = now
@@ -144,36 +175,80 @@ class CampaignWorker:
         max_attempts = campaign["max_attempts"]
         attempt_count = contact["attempt_count"]
 
-        try:
-            job_uuid = await originate.originate_call(contact["phone_number"], campaign["caller_id"])
-            if job_uuid:
-                self._job_to_contact[job_uuid] = (campaign_id, str(contact["id"]), max_attempts, attempt_count)
-            else:
-                # Accepted but FreeSWITCH didn't report a Job-UUID we can
-                # track — can't resolve this one via the event listener,
-                # so don't leave it stuck at 'calling' forever.
-                log.warning(
-                    "CampaignWorker: originate accepted with no Job-UUID contact=%s", contact["id"],
-                )
-                await self._resolve_with_retry(campaign_id, str(contact["id"]), max_attempts, attempt_count, "failed")
-        except originate.OriginateError:
-            log.exception("CampaignWorker: originate failed contact=%s", contact["id"])
-            await self._resolve_with_retry(campaign_id, str(contact["id"]), max_attempts, attempt_count, "failed")
+        route = await campaigns.resolve_outbound_route(
+            campaign["tenant_id"], campaign["agent_id"], campaign["caller_id"], platform_scoped=True,
+        )
 
-    async def _on_job_complete(self, job_uuid: str, succeeded: bool, detail: str) -> None:
+        contact_id = str(contact["id"])
+        if not route["caller_id_owned"]:
+            # caller_id is not a phone_numbers row for THIS tenant at all —
+            # routers/campaigns.py validates ownership at create/update
+            # time, but a DID can be deleted/reassigned afterward. This
+            # must refuse the dial, never fall through to the ESL path
+            # below: that path performs no caller-id ownership check at
+            # all (security finding: "not owned" is exactly the condition
+            # that used to route around the check). An OWNED DID with no
+            # REST telephony_config binding (route["provider"] is None) is
+            # a legitimate native/ESL number and is not refused here.
+            log.warning(
+                "CampaignWorker: caller_id=%s is not owned by tenant=%s, refusing to dial contact=%s",
+                campaign["caller_id"], campaign_id, contact_id,
+            )
+            await self._resolve_with_retry(campaign_id, contact_id, max_attempts, attempt_count, "failed")
+            return
+        try:
+            if route["provider"] in TelephonyProviderRegistry.all():
+                idem_key = _idempotency_key(campaign_id, contact_id, attempt_count)
+                try:
+                    job_uuid = await telephony_originate.originate_call(
+                        provider=route["provider"], phone_number=contact["phone_number"],
+                        caller_id=campaign["caller_id"], tenant_slug=route["tenant_slug"],
+                        agent_slug=route["agent_slug"], idempotency_key=idem_key,
+                    )
+                except telephony_originate.TelephonyOriginatePending:
+                    # The vendor accepted but hasn't confirmed yet — leave
+                    # the contact at 'calling' and resolve it on a later
+                    # tick via poll_idempotency, never requeue an attempt
+                    # the vendor may already have dialled.
+                    self._pending_idem[(campaign_id, contact_id)] = (
+                        route["provider"], route["tenant_slug"], idem_key, max_attempts, attempt_count,
+                    )
+                    return
+            else:
+                job_uuid = await originate.originate_call(contact["phone_number"], campaign["caller_id"])
+            if job_uuid:
+                self._job_to_contact[job_uuid] = (campaign_id, contact_id, max_attempts, attempt_count)
+            else:
+                # Accepted but no trackable id came back — can't resolve
+                # this one later, so don't leave it stuck at 'calling'.
+                log.warning(
+                    "CampaignWorker: originate accepted with no trackable id contact=%s", contact["id"],
+                )
+                await self._resolve_with_retry(campaign_id, contact_id, max_attempts, attempt_count, "failed")
+        except (originate.OriginateError, telephony_originate.TelephonyOriginateError):
+            log.exception("CampaignWorker: originate failed contact=%s", contact["id"])
+            await self._resolve_with_retry(campaign_id, contact_id, max_attempts, attempt_count, "failed")
+
+    async def on_call_resolved(
+        self, job_uuid: str, succeeded: bool, detail: str, *, call_session_id: str | None = None,
+    ) -> None:
+        """Called from a separate process (Vobiz, via app.py's /internal/vobiz-call-resolved)."""
+        await self._on_job_complete(job_uuid, succeeded, detail, call_session_id=call_session_id)
+
+    async def _on_job_complete(
+        self, job_uuid: str, succeeded: bool, detail: str, *, call_session_id: str | None = None,
+    ) -> None:
         entry = self._job_to_contact.pop(job_uuid, None)
         if entry is None:
             return  # a BACKGROUND_JOB event for something this worker didn't originate — ignore
         campaign_id, contact_id, max_attempts, attempt_count = entry
         status = "completed" if succeeded else ("no_answer" if "NO_ANSWER" in detail else "failed")
-        # On success `detail` is "+OK <channel-uuid>" — that channel UUID is
-        # exactly what the Gateway uses as calls.session_id for this leg
-        # (gateway/src/core/Application.cpp: ctx.obs.session_id = call_id,
-        # the real FreeSWITCH channel UUID). Storing it here — even before
-        # any calls row necessarily exists — lets the Admin UI join a
-        # campaign contact to its call/transcript once the Gateway path
-        # creates that row for the same UUID.
-        call_session_id = detail.removeprefix("+OK").strip() or None if succeeded else None
+        # ESL's `detail` is "+OK <channel-uuid>" on success; Vobiz passes
+        # call_session_id explicitly instead (see services/vobiz/app.py).
+        if call_session_id is None and succeeded:
+            call_session_id = detail.removeprefix("+OK").strip() or None
+        elif not succeeded:
+            call_session_id = None
         log.info(
             "CampaignWorker: job=%s contact=%s resolved status=%s call_session_id=%s detail=%s",
             job_uuid, contact_id, status, call_session_id, detail,
@@ -196,7 +271,7 @@ class CampaignWorker:
                 "CampaignWorker: contact=%s attempt=%s/%s ended %s — requeueing for retry",
                 contact_id, attempt_count, max_attempts, status,
             )
-            await campaign_contacts.mark_contact_status(contact_id, "pending")
+            await campaign_contacts.mark_contact_status(contact_id, "pending", platform_scoped=True)
             self._in_flight[campaign_id] = max(0, self._in_flight.get(campaign_id, 1) - 1)
         else:
             log.info(
@@ -208,5 +283,7 @@ class CampaignWorker:
     async def _resolve_contact(
         self, campaign_id: str, contact_id: str, status: str, *, call_session_id: str | None = None,
     ) -> None:
-        await campaign_contacts.mark_contact_status(contact_id, status, call_session_id=call_session_id)
+        await campaign_contacts.mark_contact_status(
+            contact_id, status, call_session_id=call_session_id, platform_scoped=True,
+        )
         self._in_flight[campaign_id] = max(0, self._in_flight.get(campaign_id, 1) - 1)
