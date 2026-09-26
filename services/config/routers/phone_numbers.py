@@ -45,8 +45,12 @@ async def _resolve_carrier_id(carrier_id: str | None) -> None:
     await validate_id_exists(carrier_id, carriers_service.get_carrier_by_id, "carrier")
 
 
-async def _resolve_telephony_config_id(telephony_config_id: str | None) -> None:
-    await validate_id_exists(telephony_config_id, telephony_configs_service.get_telephony_config, "telephony_config")
+async def _resolve_telephony_config_id(telephony_config_id: str | None, tenant_id: str) -> None:
+    if telephony_config_id is None:
+        return
+    cfg = await telephony_configs_service.get_telephony_config(telephony_config_id)
+    if cfg is None or cfg.get("tenant_id") != tenant_id:
+        raise HTTPException(status_code=404, detail="telephony_config not found")
 
 
 @tenant_scoped_router.get("")
@@ -64,7 +68,7 @@ async def create_phone_number(
     await _resolve_agent_id(body.agent_id)
     await _resolve_agent_id(body.fallback_agent_id)
     await _resolve_carrier_id(body.carrier_id)
-    await _resolve_telephony_config_id(body.telephony_config_id)
+    await _resolve_telephony_config_id(body.telephony_config_id, tenant_id)
     return await phone_numbers_service.create_phone_number(
         tenant_id=tenant_id,
         did=body.did,

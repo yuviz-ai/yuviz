@@ -197,8 +197,8 @@ async def resolve_outbound_route(
                    (pn.id IS NOT NULL) AS caller_id_owned
             FROM tenants t
             JOIN agents a ON a.id = $2
-            LEFT JOIN phone_numbers pn ON pn.tenant_id = t.id AND pn.did = $3
-            LEFT JOIN telephony_configs tc ON tc.id = pn.telephony_config_id
+            LEFT JOIN phone_numbers pn ON pn.tenant_id = t.id AND pn.did = $3 AND pn.deleted_at IS NULL
+            LEFT JOIN telephony_configs tc ON tc.id = pn.telephony_config_id AND tc.tenant_id = t.id AND tc.deleted_at IS NULL
             WHERE t.id = $1
             """,
             tenant_id, agent_id, caller_id,

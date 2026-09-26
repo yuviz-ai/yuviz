@@ -25,7 +25,7 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import Depends, FastAPI, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from websockets.exceptions import ConnectionClosed
 
 from libs.media_stream_sdk.bridge import MediaStreamBridge
@@ -170,7 +170,15 @@ class PlaceCallBody(BaseModel):
     agent_slug: str
     to: str
     from_: str = Field(alias="from")
-    idempotency_key: str
+    idempotency_key: str = Field(pattern=r"^[A-Za-z0-9_\-]{1,128}$")
+
+    @field_validator("idempotency_key", mode="before")
+    def validate_idempotency_key(cls, v: str) -> str:
+        if not v or len(v) > 128:
+            raise ValueError("idempotency_key must be 1-128 characters")
+        if not all(c.isalnum() or c in "_-" for c in v):
+            raise ValueError("idempotency_key must contain only alphanumeric, underscore, and hyphen characters")
+        return v
 
 
 class SmsBody(BaseModel):
@@ -180,7 +188,15 @@ class SmsBody(BaseModel):
     to: str
     from_: str = Field(alias="from")
     text: str
-    idempotency_key: str
+    idempotency_key: str = Field(pattern=r"^[A-Za-z0-9_\-]{1,128}$")
+
+    @field_validator("idempotency_key", mode="before")
+    def validate_idempotency_key(cls, v: str) -> str:
+        if not v or len(v) > 128:
+            raise ValueError("idempotency_key must be 1-128 characters")
+        if not all(c.isalnum() or c in "_-" for c in v):
+            raise ValueError("idempotency_key must contain only alphanumeric, underscore, and hyphen characters")
+        return v
 
 
 @app.post("/{provider}/call")

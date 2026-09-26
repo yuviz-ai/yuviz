@@ -115,9 +115,7 @@ class OutboundIdentityStore:
         now = time.monotonic()
         self._evict_expired(now)
         if len(self._entries) >= self._MAX_PENDING:
-            # Best-effort: a full map just means this one call falls back
-            # to DID resolution, same as if it were never remembered.
-            return
+            raise HandoffCapacityError(f"outbound identity store at capacity ({self._MAX_PENDING})")
         self._entries[(provider, account_ref, idempotency_key)] = OutboundRouteInfo(
             tenant_slug=tenant_slug, agent_slug=agent_slug, remembered_at=now,
         )
