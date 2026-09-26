@@ -130,6 +130,7 @@ export default function NewCampaignPage() {
 
   useEffect(() => {
     const first = agentsForTenant(tenantId)[0];
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setForm((f) => ({ ...f, agent_id: first?.id || "" }));
     if (tenantId) listPurchasedNumbers(tenantId).then(setPurchasedNumbers).catch(() => setPurchasedNumbers([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps

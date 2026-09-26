@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/purity */
 "use client";
 
 // Call-flow canvas: draw the IVR, autosave a draft, publish when valid.
@@ -531,7 +532,7 @@ function Canvas({ flow, tenantSlug }: { flow: CallFlow; tenantSlug: string }) {
                       value={d.tts_config_id ?? ""}
                       onChange={(e) => patchNode(selected.id, { tts_config_id: e.target.value || undefined })}
                     >
-                      <option value="">— the account's default voice —</option>
+                      <option value="">— the account&apos;s default voice —</option>
                       {ttsProviders.map((p) => (
                         <option key={p.id} value={p.id}>
                           {p.name}{p.voice ? ` · ${p.voice}` : ""} ({p.engine})

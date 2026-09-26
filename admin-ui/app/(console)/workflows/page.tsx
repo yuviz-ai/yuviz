@@ -39,11 +39,12 @@ export default function CallFlowsPage() {
     if (tenantLoading) return;
     const targets = isAllTenants ? allTenants : tenant ? [tenant] : [];
     if (targets.length === 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setFlows([]);
       setLoading(false);
       return;
     }
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+     
     setLoading(true);
     Promise.allSettled(targets.map((t) => listCallFlows(t.slug).then((rows) => ({ t, rows }))))
       .then((results) => {

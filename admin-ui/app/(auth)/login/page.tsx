@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { ApiError, bootstrap, getSetupStatus, isConsoleRole, login } from "@/lib/api";
 import { setToken } from "@/lib/auth";
 
@@ -90,6 +91,26 @@ export default function LoginPage() {
 
   return (
     <div className="login-screen">
+      <Link
+        href="/"
+        style={{
+          position: 'fixed',
+          top: '1.25rem',
+          left: '1.5rem',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '0.375rem',
+          fontSize: '0.8125rem',
+          color: 'var(--text-2, #888)',
+          textDecoration: 'none',
+          transition: 'color 0.15s',
+          zIndex: 10,
+        }}
+        onMouseEnter={e => (e.currentTarget.style.color = 'var(--text, #fff)')}
+        onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-2, #888)')}
+      >
+        ← Back to homepage
+      </Link>
       <div className="login-card">
         <div className="login-logo">
           <div className="login-logo-icon">

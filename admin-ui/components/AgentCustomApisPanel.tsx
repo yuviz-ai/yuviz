@@ -28,7 +28,7 @@ const DEFAULT_STEP_TIMEOUT_MS = 6000;
 const DEFAULT_CHAIN_BUDGET_MS = 20000;
 const EXECUTE_API_TOOL_NAME = "execute_api";
 
-// Attach-only picker for a single agent: enable/disable the tenant's
+// Attach-only picker for a single agent: enable/disable the tenant&apos;s
 // registered custom APIs for this agent and detach them, plus the
 // execute_api master switch and whole-chain budget (both per-agent
 // agent_tool_policies data, so they live here rather than on the
@@ -225,7 +225,7 @@ export function AgentCustomApisPanel({ tenantId, agentId }: { tenantId: string; 
         <div className="card">
           <div className="card-hdr">
             <div className="card-title">Custom APIs</div>
-            <div className="card-sub">attach/enable this tenant's registered APIs for this agent</div>
+            <div className="card-sub">attach/enable this tenant&apos;s registered APIs for this agent</div>
           </div>
           {customApisError && <div className="error-banner">{customApisError}</div>}
           {agentCustomApisError && <div className="error-banner">{agentCustomApisError}</div>}
