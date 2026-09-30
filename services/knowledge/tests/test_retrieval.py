@@ -12,6 +12,8 @@ sql's dimension comment) and real pgvector — matching this project's
 
 from __future__ import annotations
 
+import pytest
+
 from services.config import provider_configs
 from services.knowledge import agent_kb as agent_kb_service
 from services.knowledge import documents as documents_service
@@ -22,6 +24,8 @@ from services.knowledge.retrieval import _resolve_policy, retrieve
 from services.knowledge.secret_resolver import CompositeSecretResolver
 from services.knowledge.storage import LocalStorageProvider
 from services.knowledge.vector_repository import PgVectorRepository
+
+pytestmark = pytest.mark.integration
 
 
 async def test_resolve_policy_uses_system_default_when_nothing_set(pool, tenant_agent):

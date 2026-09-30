@@ -6,6 +6,8 @@ import pytest
 
 from services.config import users
 
+pytestmark = pytest.mark.integration
+
 
 async def test_create_and_get_user_by_email(pool):
     email = f"test-user-{uuid.uuid4().hex[:8]}@example.com"

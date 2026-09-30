@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from services.campaigns import campaign_contacts, campaigns, dnc, originate
+from services.campaigns import worker as worker_module
 from services.campaigns.worker import CampaignWorker, _within_calling_hours
+
+pytestmark = pytest.mark.integration
 
 
 async def _make_running_campaign(test_tenant, test_agent, **overrides):
@@ -56,6 +62,25 @@ async def test_tick_campaign_respects_pacing(test_tenant, test_agent, monkeypatc
     await worker._tick_campaign(campaign)  # immediately again — pacing should block this
 
     assert len(calls) == 1
+
+
+async def test_first_dial_not_paced_on_freshly_booted_host(test_tenant, test_agent, monkeypatch):
+    campaign = await _make_running_campaign(test_tenant, test_agent, pacing_seconds=9999)
+    await campaign_contacts.bulk_insert_contacts(campaign["id"], [{"phone_number": "+14155551111", "name": ""}])
+
+    calls = []
+
+    async def fake_originate(phone_number, caller_id):
+        calls.append(phone_number)
+        return "job-1"
+
+    monkeypatch.setattr(originate, "originate_call", fake_originate)
+    # Monotonic time is seconds since boot; pretend the host came up 5s ago.
+    monkeypatch.setattr(worker_module, "time", SimpleNamespace(monotonic=lambda: 5.0))
+
+    await CampaignWorker()._tick_campaign(campaign)
+
+    assert calls == ["+14155551111"]
 
 
 async def test_tick_campaign_respects_concurrency_cap(test_tenant, test_agent, monkeypatch):

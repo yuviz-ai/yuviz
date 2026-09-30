@@ -1,0 +1,4 @@
+# Workflow and Actions config changes need maintainer review before merge.
+# This is merge-time friction only — it does not stop PR runs of mutated YAML.
+.github/ @anupPradhan0 @satishagrwal @ckss2k17
+.github/** @anupPradhan0 @satishagrwal @ckss2k17

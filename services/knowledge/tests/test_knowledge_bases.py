@@ -4,6 +4,8 @@ import pytest
 
 from services.knowledge import knowledge_bases as kb_service
 
+pytestmark = pytest.mark.integration
+
 
 async def test_create_and_get_round_trips(tenant_agent):
     tenant, _ = tenant_agent

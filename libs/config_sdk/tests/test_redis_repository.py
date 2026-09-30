@@ -7,9 +7,12 @@ import json
 import os
 import uuid
 
+import pytest
 import redis.asyncio as redis
 
 from libs.config_sdk.repositories.redis_repository import RedisConfigRepository
+
+pytestmark = pytest.mark.integration
 
 REDIS_URL = os.environ["REDIS_URL"]
 

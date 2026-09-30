@@ -26,6 +26,8 @@ from services.config import users as users_service
 from services.config.app import app
 from services.config.auth import CurrentUser
 
+pytestmark = pytest.mark.integration
+
 
 def _client(token: str | None = None, *, host: str = "127.0.0.1"):
     transport = ASGITransport(app=app, client=(host, 123))

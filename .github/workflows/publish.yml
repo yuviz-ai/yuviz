@@ -1,0 +1,75 @@
+name: Publish
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+jobs:
+  publish-python:
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    environment: ghcr-publish
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # head_branch is also 'main' for a tag named main. Fully qualified ref: a tag
+      # origin/main would shadow the short name. No -q: early exit SIGPIPEs rev-list.
+      - name: Require SHA on first-parent history of main
+        shell: bash -eo pipefail {0}
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if ! git rev-list --first-parent refs/remotes/origin/main | grep -Fx "$SHA" >/dev/null; then
+            echo "Refusing to publish $SHA: not on the first-parent history of refs/remotes/origin/main"
+            exit 1
+          fi
+
+      - name: Require Environment publish credentials
+        env:
+          GHCR_PUSH_USERNAME: ${{ secrets.GHCR_PUSH_USERNAME }}
+          GHCR_PUSH_TOKEN: ${{ secrets.GHCR_PUSH_TOKEN }}
+          GHCR_IMAGE: ${{ secrets.GHCR_IMAGE }}
+        run: |
+          : "${GHCR_PUSH_USERNAME:?GHCR_PUSH_USERNAME Environment secret is required}"
+          : "${GHCR_PUSH_TOKEN:?GHCR_PUSH_TOKEN Environment secret is required}"
+          : "${GHCR_IMAGE:?GHCR_IMAGE Environment secret is required}"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.GHCR_PUSH_USERNAME }}
+          password: ${{ secrets.GHCR_PUSH_TOKEN }}
+
+      - name: Build and push Python image
+        env:
+          GHCR_IMAGE: ${{ secrets.GHCR_IMAGE }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          : "${GHCR_IMAGE:?GHCR_IMAGE must be set}"
+          : "${SHA:?SHA must be set}"
+          torch_version="$(sed -n 's/^torch==//p' requirements.txt)"
+          test -n "$torch_version"
+          docker build -f deployment/docker/Dockerfile.python --build-arg TORCH_VERSION="$torch_version" -t "${GHCR_IMAGE}:${SHA}" .
+          docker push "${GHCR_IMAGE}:${SHA}"
+          # Refetch: the checkout-time ref is stale after a long build, and a re-run or
+          # slower older publish must not move :main backwards.
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if [ "$(git rev-parse refs/remotes/origin/main)" = "$SHA" ]; then
+            docker tag "${GHCR_IMAGE}:${SHA}" "${GHCR_IMAGE}:main"
+            docker push "${GHCR_IMAGE}:main"
+          else
+            echo "$SHA is no longer the tip of main; pushed the SHA tag only"
+          fi

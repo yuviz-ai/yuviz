@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import pytest
+
 from services.config import provider_configs
 from services.knowledge import agent_kb as agent_kb_service
 from services.knowledge import cache, knowledge_bases as kb_service
+
+pytestmark = pytest.mark.integration
 
 
 async def _make_kb(tenant):

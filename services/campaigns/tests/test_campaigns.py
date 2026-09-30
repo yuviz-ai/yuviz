@@ -4,6 +4,8 @@ import pytest
 
 from services.campaigns import campaigns
 
+pytestmark = pytest.mark.integration
+
 
 async def test_create_and_get_campaign(test_tenant, test_agent):
     row = await campaigns.create_campaign(

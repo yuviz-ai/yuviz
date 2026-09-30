@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
+
 from services.config import calls
+
+pytestmark = pytest.mark.integration
 
 
 async def _insert_call(pool, *, tenant_slug, session_id, direction="inbound", ended=False):

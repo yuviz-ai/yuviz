@@ -451,6 +451,8 @@ export interface TranscriptEntry {
   caller_text: string | null;
   ai_response: string | null;
   interrupted: boolean;
+  node_id: string | null;
+  node_name: string | null;
   created_at: string;
 }
 

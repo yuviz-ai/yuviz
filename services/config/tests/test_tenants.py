@@ -8,6 +8,8 @@ import pytest
 
 from services.config import cache, db, tenants
 
+pytestmark = pytest.mark.integration
+
 
 async def test_create_and_get_tenant():
     slug = f"test-{uuid.uuid4().hex[:8]}"

@@ -191,3 +191,9 @@ Tags: [prd] [architect] [planner] [implementer] [critic] [security] [tester] [qa
 28. [tester][qa] The suite and the reviewers test what someone thought to test. Running the merged
     app against edge cases found 17 defects after three review rounds, a green security audit and 330
     passing tests — including a high. Budget QA as its own stage, not as confirmation.
+
+29. [architect][implementer][critic][security] PR-run workflow YAML can grant itself any `GITHUB_TOKEN`
+    scope, and ref names are not provenance. Fence publish with credentials PR runs never receive.
+    *Earned: a read-only token default was assumed to block `packages: write`, and publish trusted
+    `workflow_run.head_branch == 'main'`, which a pushed tag named `main` (or `origin/main`) satisfied;
+    provenance now checks first-parent history of fully-qualified `refs/remotes/origin/main`.*

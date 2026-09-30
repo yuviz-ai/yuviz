@@ -20,6 +20,8 @@ from services.config import agents, provider_configs, tenants, users
 from services.config.app import app as config_app
 from services.knowledge.app import app as knowledge_app
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 async def service_account():

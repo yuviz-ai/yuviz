@@ -4,6 +4,8 @@ import pytest
 
 from services.did import purchased_numbers
 
+pytestmark = pytest.mark.integration
+
 
 async def test_record_purchase_and_get(test_tenant, test_carrier):
     created = await purchased_numbers.record_purchase(

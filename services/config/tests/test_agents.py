@@ -7,6 +7,8 @@ import pytest_asyncio
 
 from services.config import agents, cache
 
+pytestmark = pytest.mark.integration
+
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def other_tenant(pool):

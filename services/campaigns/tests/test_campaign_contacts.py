@@ -4,6 +4,8 @@ import pytest
 
 from services.campaigns import campaign_contacts, campaigns
 
+pytestmark = pytest.mark.integration
+
 
 def test_parse_contacts_csv_basic():
     content = b"phone_number,name\n+14155551111,Alice\n+14155552222,Bob\n"

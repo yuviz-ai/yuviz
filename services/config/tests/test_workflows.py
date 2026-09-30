@@ -7,6 +7,8 @@ import pytest
 from libs.config_sdk.workflow import starter_graph
 from services.config import agents, cache, workflows
 
+pytestmark = pytest.mark.integration
+
 GRAPH = {
     "version": 1,
     "nodes": [

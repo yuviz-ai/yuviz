@@ -20,6 +20,8 @@ from services.config import auth
 from services.config import users as users_service
 from services.config.app import app
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 async def client(test_superadmin):

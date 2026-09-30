@@ -6,6 +6,8 @@ from services.knowledge import documents as documents_service
 from services.knowledge import knowledge_bases as kb_service
 from services.knowledge.storage import LocalStorageProvider
 
+pytestmark = pytest.mark.integration
+
 
 async def _make_kb(tenant):
     return await kb_service.create_knowledge_base(tenant_id=tenant["id"], slug="policies", name="Policies")

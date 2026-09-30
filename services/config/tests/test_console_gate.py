@@ -23,6 +23,8 @@ from services.config import auth, deps
 from services.config import users as users_service
 from services.config.app import app
 
+pytestmark = pytest.mark.integration
+
 
 def _make_user(role: str, *, tenant_id: str | None = "11111111-1111-1111-1111-111111111111",
                 is_service_account: bool = False) -> dict:

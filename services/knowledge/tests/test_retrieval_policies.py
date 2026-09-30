@@ -4,6 +4,8 @@ import pytest
 
 from services.knowledge import retrieval_policies as policy_service
 
+pytestmark = pytest.mark.integration
+
 
 async def test_get_policy_returns_none_when_unset(tenant_agent):
     _, agent = tenant_agent

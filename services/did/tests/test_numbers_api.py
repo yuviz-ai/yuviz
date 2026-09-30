@@ -16,6 +16,8 @@ from services.did.provider_manager import DidProviderManager
 from services.did.providers.interface import AvailableNumber, DidProviderError, PurchasedNumber
 from services.did.runtime import get_provider_manager
 
+pytestmark = pytest.mark.integration
+
 
 class _FakeSecretResolver:
     async def resolve(self, ref: str) -> str:

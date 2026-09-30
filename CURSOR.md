@@ -64,6 +64,8 @@ Routers are thin HTTP wrappers; business logic lives in sibling modules (`agents
 ```bash
 # Python (from repo root, with venv + POSTGRES_DSN/REDIS as tests expect)
 pytest
+pytest -m "not integration"   # unit only; no Postgres/Redis needed
+pytest -m integration         # needs local Postgres + Redis with schemas applied
 # or narrower: pytest services/config/tests/test_agents.py
 
 # C++ gateway

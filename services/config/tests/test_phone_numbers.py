@@ -6,6 +6,8 @@ import pytest
 
 from services.config import agents, cache, phone_numbers
 
+pytestmark = pytest.mark.integration
+
 
 async def test_create_and_get_by_did_resolves_tenant_and_agent(test_tenant, pool):
     agent = await agents.create_agent(

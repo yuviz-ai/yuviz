@@ -7,6 +7,8 @@ convention for infra that's fast/available locally.
 
 from __future__ import annotations
 
+import pytest
+
 from services.config import provider_configs
 from services.knowledge import documents as documents_service
 from services.knowledge import knowledge_bases as kb_service
@@ -14,6 +16,8 @@ from services.knowledge.embedding_manager import EmbeddingProviderManager
 from services.knowledge.ingestion_worker import process_one_job
 from services.knowledge.secret_resolver import CompositeSecretResolver
 from services.knowledge.storage import LocalStorageProvider
+
+pytestmark = pytest.mark.integration
 
 
 async def test_process_one_job_success_produces_ready_document_and_chunks(tenant_agent, pool):

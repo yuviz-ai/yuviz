@@ -4,6 +4,8 @@ import pytest
 
 from services.config import cache, provider_configs
 
+pytestmark = pytest.mark.integration
+
 
 async def test_create_and_get_provider_config(test_tenant):
     created = await provider_configs.create_provider_config(

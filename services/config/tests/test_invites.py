@@ -29,6 +29,8 @@ from services.config import invites
 from services.config import users as users_service
 from services.config.auth import CurrentUser
 
+pytestmark = pytest.mark.integration
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCHEMA_SQL = (REPO_ROOT / "database" / "schema.sql").read_text()
 

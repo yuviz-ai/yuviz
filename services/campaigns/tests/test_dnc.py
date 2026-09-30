@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
 from services.campaigns import dnc
+
+pytestmark = pytest.mark.integration
 
 
 def test_normalize_phone_strips_formatting():

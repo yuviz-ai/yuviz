@@ -9,10 +9,13 @@ from __future__ import annotations
 import asyncio
 import os
 
+import pytest
 import redis.asyncio as redis
 
 from ..ai_provider_manager import AIProviderManager, ProviderConfig
 from ..provider_config_subscriber import CHANNEL, ProviderConfigSubscriber
+
+pytestmark = pytest.mark.integration
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 

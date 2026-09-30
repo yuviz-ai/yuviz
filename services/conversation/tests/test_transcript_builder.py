@@ -3,9 +3,13 @@ from __future__ import annotations
 import os
 import uuid
 
+import pytest
+
 os.environ.setdefault("POSTGRES_DSN", "postgresql://satish@localhost:5432/voiceai")
 
 from ..transcript_builder import TranscriptBuilder  # noqa: E402
+
+pytestmark = pytest.mark.integration
 
 
 async def _insert_live_call(pool, session_id: str, *, conv_node: str | None) -> None:

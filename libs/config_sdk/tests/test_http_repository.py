@@ -18,14 +18,18 @@ from libs.config_sdk.repositories.http_repository import HttpConfigRepository
 from services.config import agents, provider_configs, tenants, users
 from services.config.app import app
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 async def service_account():
     email = f"test-service-{uuid.uuid4().hex[:8]}@example.com"
     user = await users.create_user(email=email, password="service-password", role="viewer")
-    yield {"email": email, "password": "service-password"}
     from services.config import db
     pool = await db.get_pool()
+    # Same flag scripts/create_service_account.py sets; agent routes require it.
+    await pool.execute("UPDATE users SET is_service_account = true WHERE id = $1", user["id"])
+    yield {"email": email, "password": "service-password"}
     await pool.execute("UPDATE users SET deleted_at = now() WHERE id = $1", user["id"])
 
 
