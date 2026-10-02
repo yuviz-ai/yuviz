@@ -1,10 +1,4 @@
-"""
-Campaign Service — FastAPI app + the CampaignWorker background task. Same
-"routers translate, business logic lives in the modules" convention as
-services/config/app.py, services/knowledge/app.py, services/did/app.py.
-
-Auth: imports services.config.auth/deps directly, same temporary choice
-services/knowledge/app.py and services/did/app.py already made.
+"""Campaign Service — FastAPI app + the CampaignWorker background task.
 
 Run: uvicorn services.campaigns.app:app --reload --port 8400
 """
@@ -26,11 +20,7 @@ from . import db
 from .routers import campaigns
 from .worker import CampaignWorker
 
-# Without this, log.info() calls in originate.py/worker.py are silently
-# dropped: uvicorn only configures its own uvicorn.* loggers, so the root
-# logger stays at its default WARNING level and this module's INFO-level
-# origination/job-resolution traces never appear anywhere — confirmed the
-# hard way debugging a real outbound call live.
+# uvicorn only configures uvicorn.* loggers; without this, INFO logs are dropped.
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 log = logging.getLogger(__name__)

@@ -1,8 +1,4 @@
-"""
-Middleware chain tests — pure unit tests, no network. Uses a fake
-IToolExecutor stand-in so each middleware's behavior can be verified in
-isolation and in combination.
-"""
+"""Middleware chain unit tests with a fake IToolExecutor."""
 
 from __future__ import annotations
 

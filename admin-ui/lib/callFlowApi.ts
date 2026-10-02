@@ -1,8 +1,4 @@
-// Call flows (IVR/OBD) — see services/config/routers/call_flows.py.
-// Distinct from lib/workflowApi.ts, which drives an *agent's* conversational
-// graph: that one is keyed by agent id and its edges carry natural-language
-// conditions; this one is keyed by a flow id of its own and its edges carry
-// a keypress.
+// Call flows (IVR/OBD): edges carry keypresses. Not the agent workflow graph in workflowApi.ts.
 
 import { request } from "./api";
 
@@ -127,9 +123,7 @@ export const saveCallFlowDraft = (
     body: JSON.stringify({ graph, expected_version: expectedVersion }),
   });
 
-// Validation failures come back as a 400 whose body carries per-node/per-edge
-// problems, so this resolves either way and the caller reads `.problems`
-// rather than having to catch to find out what is wrong with the canvas.
+// Validation failures are a 400 with problems in the body; resolve with them instead of throwing.
 export const validateCallFlow = async (
   callFlowId: string,
   graph: CallFlowGraph,

@@ -1,10 +1,4 @@
-"""
-Postgres connection pool for Campaign Service — its own process-wide pool,
-not a shared import from services.config.db. Same microservice-boundary
-reasoning as services/did/db.py and services/knowledge/db.py: all point at
-the same physical Postgres database (voiceai), but each service owns its
-own connection lifecycle.
-"""
+"""Campaign Service's own process-wide Postgres pool (shared database, separate lifecycle)."""
 
 from __future__ import annotations
 

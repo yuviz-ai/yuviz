@@ -1,11 +1,8 @@
 import "@/app/globals.css";
 import Link from "next/link";
 
-// /docs lives outside app/(console)/ on purpose: it must render when the
-// console (auth, API, AppShell) is what's broken. That also means nothing
-// above it imports the stylesheet or offers a way back, so both are here.
-// Theme follows the OS preference (globals.css), since AppShell, which
-// sets data-theme, is not mounted on this route.
+// Outside app/(console)/ so it renders even when auth/API/AppShell is broken;
+// hence it imports the stylesheet itself and the theme follows the OS.
 export default function DocsLayout({
   children,
 }: {

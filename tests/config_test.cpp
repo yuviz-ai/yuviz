@@ -134,7 +134,7 @@ gateway:
     EXPECT_EQ(cfg.conversation().connect_timeout_ms, 3000u);
 }
 
-// ── Redis section (Phase 5) ──────────────────────────────────────────────────
+// ── Redis section ────────────────────────────────────────────────────────────
 
 TEST_F(ConfigTest, RedisSectionDefaultsToDisabled) {
     write_yaml("gateway:\n");
@@ -166,10 +166,7 @@ gateway:
 }
 
 // ── TenantConfig::from_redis() ───────────────────────────────────────────────
-// Only the disabled-Redis path is exercised here — this test suite is
-// hermetic by convention (no other test connects to a live external service;
-// EslClient has no dedicated test file for the same reason). The live
-// Redis roundtrip is verified manually, not via ctest.
+// Hermetic: only the disabled-Redis path is tested; live Redis is verified manually.
 
 TEST_F(ConfigTest, FromRedisFallsBackToDefaultsWhenRedisDisabled) {
     write_yaml("gateway:\n");
@@ -189,9 +186,7 @@ TEST_F(ConfigTest, FromRedisFallsBackToDefaultsWhenRedisDisabled) {
 }
 
 // ── PhoneRoute::from_redis() ─────────────────────────────────────────────────
-// Same hermetic convention as FromRedisFallsBackToDefaultsWhenRedisDisabled
-// above — only the disabled/missing-key fallback path is exercised here; the
-// live Redis roundtrip is verified manually, not via ctest.
+// Hermetic: only the disabled/missing-key fallback is tested.
 
 TEST_F(ConfigTest, PhoneRouteFallsBackToDefaultsWhenRedisDisabled) {
     write_yaml("gateway:\n");
@@ -224,7 +219,6 @@ TEST_F(ConfigTest, PhoneRouteFallsBackToDefaultsOnEmptyDid) {
 }
 
 // ── CallMetadata::parse() ────────────────────────────────────────────────────
-// Pure function, no I/O — hermetic by construction, not just by convention.
 
 TEST_F(ConfigTest, CallMetadataParsesAllFields) {
     const auto md = voiceai::CallMetadata::parse(
@@ -268,11 +262,8 @@ TEST_F(ConfigTest, CallMetadataIgnoresWrongTypedFields) {
 
 } // namespace
 
-// ── CallFsmTimerConfig transfer timeout (Phase 5F) ───────────────────────────
-// The Redis overlay's bounds logic itself needs a live/fake Redis (see the
-// hermetic-suite convention above) — verified live instead. What IS asserted
-// hermetically: the compiled default and the bound ordering the overlay
-// clamps against.
+// ── CallFsmTimerConfig transfer timeout ──────────────────────────────────────
+// Asserts the compiled default and bound ordering; the Redis overlay needs live Redis.
 
 TEST_F(ConfigTest, TransferTimeoutDefaultIs45sWithSaneBounds) {
     const voiceai::CallFsmTimerConfig t{};
@@ -359,11 +350,8 @@ TEST_F(EslEnvConfigTest, DisabledEslNeedsNoPassword) {
     EXPECT_NO_THROW(cfg.load(tmp_yaml_.string()));
 }
 
-// The shipped files must leave the proxy host unset until
-// scripts/update_kamailio_ip.sh writes it. .env.example's SIP_PROXY_HOST is
-// exported by _load_env and overrides the yaml, so a default there (it was
-// 127.0.0.1) silently replaced the Gateway's sip_proxy_host_unset refusal
-// with an INVITE to a host Kamailio does not listen on.
+// Shipped files must leave the proxy host unset (update_kamailio_ip.sh writes it);
+// an .env.example default would override the yaml and bypass the unset refusal.
 TEST_F(EslEnvConfigTest, ShippedConfigAndEnvExampleLeaveNumbersRefused) {
     const std::filesystem::path src{YUVIZ_SOURCE_DIR};
     std::ifstream example{src / ".env.example"};

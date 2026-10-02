@@ -257,13 +257,8 @@ def _str_names_from_raw(raw: dict[str, Any] | None, field: str) -> list[str]:
 
 
 def graph_for(runtime_config: RuntimeConfig, *, draft: bool = False) -> WorkflowGraph:
-    """Never raises. Missing/bad published graph → starter seeded from column
-    greeting/system_prompt (until PR11 drops those columns).
-
-    draft=True prefers workflow_draft; invalid draft falls back to published.
-    Callers that want draft testing must pass draft=True (admin test-call path;
-    not wired on SessionOpenRequest yet — PR10).
-    """
+    """Never raises: missing/bad published graph → starter from greeting/system_prompt.
+    draft=True prefers workflow_draft, falling back to published if invalid."""
     raw = runtime_config.conversation.workflow
     if draft and runtime_config.conversation.workflow_draft:
         raw = runtime_config.conversation.workflow_draft
@@ -304,8 +299,7 @@ def graph_for(runtime_config: RuntimeConfig, *, draft: bool = False) -> Workflow
 def _fallback_graph(
     runtime_config: RuntimeConfig, *, raw: dict[str, Any] | None,
 ) -> WorkflowGraph:
-    # Prefer RuntimeConfig.tools; scrape broken published JSON so a parse
-    # failure does not silently strip booking/SMS (Node.tools is default-deny).
+    # Scrape broken JSON so a parse failure doesn't strip tools (Node.tools is default-deny).
     tools = [t.name for t in runtime_config.tools] or _str_names_from_raw(raw, "tools")
     kb_ids = _str_names_from_raw(raw, "knowledge_base_ids")
     return parse_graph(starter_graph(

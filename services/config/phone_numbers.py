@@ -1,19 +1,7 @@
-"""
-Phone number (DID) CRUD — same cache-aside + audited-mutation pattern as
-tenants.py/agents.py/provider_configs.py.
+"""Phone number (DID) CRUD with cache-aside reads and audited mutations.
 
-Two distinct read shapes, deliberately not unified:
-  - get_by_did() returns a DENORMALIZED {"tenant_slug", "agent_slug", "version"}
-    dict, cached under "did:{did}" — this is the exact JSON shape the
-    Gateway's C++ RedisClient reads directly on every inbound call (see
-    gateway/src/config/Config.cpp's PhoneRoute::from_redis()), so the hot
-    path never needs a second Postgres join at call time. "version" is the
-    resolved agent's config_version (null if agent_slug fell through to the
-    literal 'default' with no real agent row) — lets a consumer detect a
-    stale-vs-current resolved agent config without a second lookup.
-  - Everything else (get/list/create/update/soft_delete) operates on the raw
-    phone_numbers row (ids, not slugs) — this is what the Admin UI's
-    CRUD forms actually edit.
+get_by_did() returns the denormalized route the Gateway reads from Redis on every
+inbound call; everything else operates on raw phone_numbers rows.
 """
 
 from __future__ import annotations
@@ -31,33 +19,8 @@ log = logging.getLogger(__name__)
 
 _UPDATABLE_FIELDS = {"did", "agent_id", "fallback_agent_id", "carrier_id", "telephony_config_id", "region", "status"}
 
-# DID -> tenant/agent routing has NO TTL at all — deliberately, per canonical
-# design (project memory). Two TTL-based designs were tried and
-# rejected here before landing on this one:
-#   - cache.DEFAULT_TTL_SECONDS (60s): far too short, expires mid-session.
-#   - A custom longer TTL (tried: 600s, then 86400s): still wrong in kind,
-#     not just degree. The Gateway's PhoneRoute::from_redis() NEVER falls
-#     through to Postgres on a miss (hot-path rule: Redis-only) — so ANY
-#     expiry, no matter how generous, is a live landmine: the entry goes
-#     cold, and every subsequent real call silently and PERMANENTLY
-#     misroutes to tenant=default/agent=default until something unrelated
-#     happens to re-read that exact DID. This bit for real, twice, at two
-#     different TTL values (see project memory).
-#
-# The actual fix is to stop expiring this data at all: DID->tenant/agent
-# assignment changes at provisioning time, not mid-session, so Redis can
-# just hold the current value forever, updated in lockstep with Postgres:
-#   - create_phone_number() writes the fresh value straight into Redis.
-#   - update_phone_number() writes the fresh value straight into Redis
-#     (not just invalidate-and-hope-something-reads-it-soon).
-#   - soft_delete_phone_number() deletes the key (the DID no longer routes
-#     anywhere, so there's nothing to keep cached).
-#   - prewarm() (services/config/app.py's lifespan) preloads every active
-#     DID once at startup, covering a fresh/flushed Redis.
-# Every code path that can change a DID's route already runs synchronously
-# against Postgres in the same request, so "keep Redis and Postgres in sync
-# on every write" is exactly as strong a guarantee as a TTL ever was, minus
-# the window where a stale/absent entry silently misroutes a real call.
+# did:{did} routes have no TTL: the Gateway never falls back to Postgres on a miss,
+# so any expiry misroutes calls. Every write path updates Redis; prewarm() covers a flushed Redis.
 
 
 async def _lock_live_telephony_config(conn: Any, telephony_config_id: Any) -> None:
@@ -77,9 +40,7 @@ def _cache_key(did: str) -> str:
 
 
 async def get_by_did(did: str, *, platform_scoped: bool = False) -> dict[str, Any] | None:
-    """`platform_scoped=True` only for prewarm()'s startup sweep, which has
-    no request tenant to scope to; every in-request caller (post-write
-    warm below) takes the ambient tenant_conn() ceiling instead."""
+    """`platform_scoped=True` only for prewarm(), which has no request tenant."""
     cached = await cache.get_json(_cache_key(did))
     if cached is not None:
         return cached
@@ -90,15 +51,8 @@ async def get_by_did(did: str, *, platform_scoped: bool = False) -> dict[str, An
         if platform_scoped
         else tenant_conn(pool)
     )
-    # A non-'active' phone_numbers.status routes exactly like an unrecognized
-    # DID (falls through to the caller's default) — a suspended/inactive
-    # number must not keep resolving to its normal agent just because the
-    # row still exists. agent_slug prefers the primary agent, falls back to
-    # fallback_agent_id if the primary is unset, deleted, OR itself
-    # deactivated (agents.status = 'inactive' — a reversible pause, distinct
-    # from deleted_at), and finally to "default" if neither resolves — same
-    # three-tier fallback PhoneRoute::from_redis() already applies for a
-    # total miss.
+    # Inactive numbers route like unknown DIDs. Agent falls back primary -> fallback -> 'default',
+    # matching the Gateway's PhoneRoute::from_redis().
     async with conn_cm as conn:
         row = await conn.fetchrow(
             "SELECT t.slug AS tenant_slug, "
@@ -118,11 +72,7 @@ async def get_by_did(did: str, *, platform_scoped: bool = False) -> dict[str, An
     result = {
         "tenant_slug": row["tenant_slug"],
         "agent_slug": row["agent_slug"],
-        # Agent's config_version — lets a consumer detect "the resolved
-        # agent's config has changed since this route was cached" (e.g. for
-        # logging/observability). null when agent_slug fell all the way
-        # through to the literal 'default' with no real agent row backing
-        # it (a phone_numbers row with no agent_id/fallback_agent_id set).
+        # null when agent_slug fell through to the literal 'default'.
         "version": row["agent_config_version"],
     }
     await cache.set_json(_cache_key(did), result, ttl=None)
@@ -130,11 +80,7 @@ async def get_by_did(did: str, *, platform_scoped: bool = False) -> dict[str, An
 
 
 async def prewarm() -> int:
-    """Populate did:{did} for every active phone number. Called once at
-    Config Service startup (see app.py's lifespan) — covers a fresh/flushed
-    Redis, the one gap not already handled by write-through (see top-of-file
-    comment). Returns the number of DIDs warmed, for startup logging.
-    """
+    """Populate did:{did} for every active number at startup; returns the count warmed."""
     pool = await db.get_pool()
     async with platform_conn(pool, reason="phone-numbers-prewarm") as conn:
         rows = await conn.fetch(
@@ -235,9 +181,7 @@ async def create_phone_number(
             user_email=user_email,
             new_value=result,
         )
-    # Warm the cache immediately rather than lazily on first call — see this
-    # module's top-of-file comment for why. Invalidate first: a re-added DID
-    # may still have its previous owner's route cached.
+    # Invalidate first: a re-added DID may still have its previous owner's route cached.
     await cache.invalidate(_cache_key(did))
     await get_by_did(did)
     return result
@@ -258,9 +202,7 @@ async def update_phone_number(
 
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
-        # FOR UPDATE — see tenants.py's update_tenant() comment: without
-        # it, a concurrent update could make this transaction's audit
-        # entry record a stale old_value.
+        # FOR UPDATE so a concurrent update can't make the audit old_value stale.
         old_row = await conn.fetchrow(
             "SELECT * FROM phone_numbers WHERE id = $1 FOR UPDATE", phone_number_id,
         )
@@ -293,12 +235,7 @@ async def update_phone_number(
             new_value=new,
         )
 
-    # Write-through (see top-of-file comment). Must invalidate new["did"]'s
-    # key BEFORE calling get_by_did(): if the did string itself didn't
-    # change, the old cached value sits under that exact same key, and
-    # get_by_did()'s cache-aside check would just return the stale hit
-    # instead of re-reading Postgres. If the DID itself changed, the *old*
-    # DID string no longer routes anywhere, so its key is deleted outright.
+    # Invalidate before get_by_did(), or its cache-aside read returns the stale route.
     if old["did"] != new["did"]:
         await cache.invalidate(_cache_key(old["did"]))
     await cache.invalidate(_cache_key(new["did"]))

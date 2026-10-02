@@ -1,8 +1,4 @@
-"""
-HTTP-layer tests for GET /knowledge-bases/{kb_id}/agents — the reverse
-lookup's caller-tenant predicate, exercised through the real ASGI app (same
-convention as services/did/tests/test_numbers_api.py).
-"""
+"""HTTP tests for GET /knowledge-bases/{kb_id}/agents tenant scoping."""
 
 from __future__ import annotations
 

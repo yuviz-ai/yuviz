@@ -7,10 +7,7 @@ via environment variables — no source edits needed for different environments.
 
 Environment-variable overrides (all optional):
   VOICEAI_STT_MODEL        — FasterWhisper model size (tiny/base/small/medium/large-v3,
-                              or the .en-suffixed English-only variant of each —
-                              skips language auto-detection entirely, eliminating
-                              the class of bug where a short noise blip gets
-                              transcribed as a wrong-language hallucination)
+                              or a .en variant, which skips language auto-detection)
   VOICEAI_STT_DEVICE       — inference device: "cpu" | "cuda" | "auto"
   VOICEAI_STT_LANGUAGE     — ISO-639-1 code, e.g. "en"; empty string = auto-detect
   VOICEAI_LLM_MODEL        — Ollama model name, e.g. "llama3.2" or "mistral"
@@ -33,9 +30,6 @@ Environment-variable overrides (all optional):
   VOICEAI_SENTIMENT_DISABLED — Set to any non-empty value to turn scoring off
   POSTGRES_DSN             — Postgres DSN for call/transcript persistence;
                               unset = persistence disabled (TranscriptBuilder no-ops).
-                              Same variable name and DSN services/config (FastAPI)
-                              connects with — one Postgres, one env var, not two
-                              per-service names for the same connection string.
 """
 
 from __future__ import annotations
@@ -109,23 +103,9 @@ class TtsConfig:
 
 @dataclass
 class SentimentConfig:
-    """Call-sentiment scoring at end_call (see sentiment.py).
+    """Call-sentiment scoring at end_call; separate from LlmConfig (off the latency path).
 
-    Deliberately NOT the conversational LlmConfig above. Scoring is a
-    classification over a finished transcript, not a voice turn, so it has
-    different requirements: it is off the latency path (a 30s ceiling is
-    fine where a live turn needs 300ms), it wants temperature 0, and it
-    needs a model that can actually follow an output contract.
-
-    Measured against the default local llama3.2:3b on six real
-    transcripts: the LABEL was usually right, but the one-line reason was
-    confidently fabricated — on a ThinkPad/MacBook pricing call it reported
-    a caller "asking for order status despite the agent asking for email
-    address", deterministically, on every rerun. A plausible-looking
-    explanation of a conversation that did not happen is worse next to a
-    call record than no explanation, so scoring defaults to a hosted model
-    and stays OFF when no key is configured rather than falling back to a
-    local model that invents its evidence.
+    Stays OFF without an API key: small local models fabricate the reason text.
     """
     api_key:     str | None = None    # None = scoring disabled entirely
     model:       str        = "gpt-4o-mini"
@@ -134,10 +114,6 @@ class SentimentConfig:
     max_turns:   int        = 40
 
     def __post_init__(self) -> None:
-        # VOICEAI_SENTIMENT_API_KEY first so sentiment scoring can be pointed
-        # at a different account/provider from anything else, but fall back to
-        # the ordinary OPENAI_API_KEY so a deployment that already has one
-        # gets this working without new configuration.
         self.api_key = _env("VOICEAI_SENTIMENT_API_KEY") or _env("OPENAI_API_KEY")
         if v := _env("VOICEAI_SENTIMENT_MODEL"):    self.model    = v
         if v := _env("VOICEAI_SENTIMENT_URL"):      self.base_url = v

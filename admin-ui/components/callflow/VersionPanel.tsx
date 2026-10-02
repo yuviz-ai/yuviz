@@ -1,21 +1,12 @@
 "use client";
 
-// Publish history and rollback for a call flow.
-//
-// Same shape as components/workflow/VersionPanel.tsx, and the same reasoning:
-// restoring republishes an old graph as a NEW version rather than moving a
-// pointer back, so the log stays append-only and "what was live when that
-// call came in" stays answerable. No structural diff — the need this serves
-// is undoing a bad publish, not auditing a graph line by line.
+// Publish history and rollback for a call flow. Restore republishes as a new version (append-only log).
 
 import { useEffect, useState } from "react";
 import { ApiError } from "@/lib/api";
 import { CallFlowVersion, listCallFlowVersions, rollbackCallFlow } from "@/lib/callFlowApi";
 
-// A refused restore comes back as 400 {"detail": "call flow is not valid",
-// "errors": [...]}, and the detail alone gives no node and no reason. On the
-// rollback path, usually an emergency, the reason (most often "the agent
-// this step hands the call to is no longer available") is the whole point.
+// A refused restore's `detail` is generic; the reasons are in `errors`.
 function errorText(e: unknown): string {
   if (!(e instanceof ApiError)) return String(e);
   const errors = e.body?.errors;

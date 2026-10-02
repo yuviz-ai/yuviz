@@ -1,21 +1,5 @@
-"""
-DidProviderManager — creates and caches IDidProvider instances per distinct
-carriers row, keyed by carrier_id. Mirrors ToolProviderManager/
-AIProviderManager exactly (see project memory
-did-management-platform-architecture principle #11): a registry of
-factories keyed by carriers.provider, not a growing if/elif chain — adding
-Bandwidth or a regional SIP carrier means writing one new class and
-registering it here, never touching this manager's own logic.
-
-_DEFAULT_REGISTRY has two entries — Plivo and Twilio — both added at the
-user's explicit request, ahead of having
-real trial-account credentials to confirm live API behavior against.
-providers/plivo.py and providers/twilio.py are both built from
-documentation only and say so loudly in their own module docstrings; do
-not treat their presence here as proof either one works. Once real
-credentials exist, live-verify each the same way Cal.com/Gemini were, and
-only then remove that provider's warning.
-"""
+"""DidProviderManager — creates and caches IDidProvider instances per carrier_id.
+Factories are registered by carriers.provider; see each provider module for its verification status."""
 
 from __future__ import annotations
 
@@ -28,9 +12,7 @@ from .secret_resolver import SecretResolver
 
 log = logging.getLogger(__name__)
 
-# A carriers table row (id, tenant_id, name, provider, auth_id,
-# auth_token_ref, carrier_account_ref, ...) — this manager only reads it,
-# never writes it (carriers.py in services/config owns that).
+# A carriers table row (read-only here).
 CarrierRecord = dict[str, Any]
 ProviderFactory = Callable[[CarrierRecord, str | None], Awaitable[Any]]
 

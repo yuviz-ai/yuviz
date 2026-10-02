@@ -1,39 +1,6 @@
-"""
-retrieve() — the one function backing POST /internal/retrieve, the single
-call Conversation Service's Knowledge SDK makes per user turn.
-
-_resolve_policy() is the "never hardcode retrieval knobs" mechanism: three
-tiers, most specific wins —
-    1. this call's explicit override (a non-None field on RetrieveRequest)
-    2. the agent's configured agent_retrieval_policies row
-    3. _SYSTEM_DEFAULT_POLICY (the one place a fixed number is allowed to
-       live, and only as the bottom of an explicit, visible chain — same
-       "agent override > tenant default" pattern libs.config_sdk's
-       CacheAsideConfigProvider already uses for provider config
-       resolution).
-
-Steps after that: find the agent's enabled+active KBs -> group them by
-embedding_config_id (an agent may attach KBs embedded with different
-providers; querying each group needs that group's own query embedding) ->
-embed the query once per group -> IVectorRepository.search() per group ->
-merge all groups' matches by score -> apply the resolved policy (top_k,
-minimum_score already applied per-group; max_tokens truncates the merged,
-sorted list here) -> shape the raw dict libs.knowledge_sdk.
-HttpKnowledgeRepository.retrieve() expects.
-
-usage_mode='prompt' documents (see kb_documents.usage_mode) are fetched
-separately via _fetch_prompt_mode_matches() and always included ahead of
-similarity-ranked matches, regardless of query relevance or top_k/
-minimum_score — they never go through PgVectorRepository.search() at all
-(it explicitly excludes them; see vector_repository.py), so a document
-that was never embedded (auto-inlined for being under
-ingestion_worker.AUTO_INLINE_THRESHOLD_BYTES) still surfaces correctly.
-
-Returns None when the agent has no eligible KB, or has eligible KBs but
-neither an always-include document nor a chunk clearing minimum_score —
-the router turns that into a 404, which the SDK's repository already
-treats as "no context" (see http_repository.py).
-"""
+"""retrieve() backs POST /internal/retrieve. Policy precedence: call override > agent row > system default.
+KBs are grouped by embedding config (one query embedding per group); usage_mode='prompt' docs are always
+included first. Returns None (router → 404, "no context") when nothing qualifies."""
 
 from __future__ import annotations
 
@@ -100,9 +67,7 @@ async def _fetch_embedding_config(conn: asyncpg.Connection, embedding_config_id:
 
 
 async def _agent_kb_groups(conn: asyncpg.Connection, tenant_slug: str, agent_slug: str) -> dict[str, list[str]]:
-    """Returns {embedding_config_id: [kb_id, ...]} for this agent's
-    enabled, active KBs — the grouping retrieve() needs before it can embed
-    the query even once."""
+    """{embedding_config_id: [kb_id, ...]} for the agent's enabled, active KBs."""
     rows = await conn.fetch(
         "SELECT kb.id AS kb_id, kb.embedding_config_id "
         "FROM agent_knowledge_bases akb "
@@ -119,10 +84,7 @@ async def _agent_kb_groups(conn: asyncpg.Connection, tenant_slug: str, agent_slu
 
 
 async def _agent_enabled_kb_ids(conn: asyncpg.Connection, tenant_slug: str, agent_slug: str) -> list[str]:
-    """Every enabled, active KB attached to this agent — unlike
-    _agent_kb_groups(), does NOT require embedding_config_id: a KB holding
-    only usage_mode='prompt' documents needs no embedding provider at all,
-    since those documents are never vector-searched."""
+    """Enabled, active KBs, including those with no embedding config (prompt-mode only)."""
     rows = await conn.fetch(
         "SELECT kb.id AS kb_id "
         "FROM agent_knowledge_bases akb "
@@ -136,14 +98,7 @@ async def _agent_enabled_kb_ids(conn: asyncpg.Connection, tenant_slug: str, agen
 
 
 async def _fetch_prompt_mode_matches(conn: asyncpg.Connection, kb_ids: list[str]) -> list[VectorMatch]:
-    """usage_mode='prompt' documents across kb_ids, one VectorMatch per
-    document (chunks reassembled in order) — score=1.0 is a sentinel
-    meaning "always relevant, not similarity-ranked", never compared
-    against minimum_score. page/language/tags/version are taken from the
-    document's first chunk; a document flagged 'prompt' rarely has more
-    than one (auto-inlined documents always have exactly one — see
-    ingestion_worker.py), so this is a reasonable representative value,
-    not a lossy average."""
+    """One VectorMatch per prompt-mode document (chunks reassembled); score=1.0 is an "always include" sentinel."""
     if not kb_ids:
         return []
     rows = await conn.fetch(
@@ -217,11 +172,7 @@ async def retrieve(
     if not kb_ids:
         return None
 
-    # Always-include documents first — never subject to top_k or
-    # minimum_score, and never truncated by the token budget (same
-    # "admin's explicit choice, not silently dropped" posture the prompt-
-    # mode feature is documented under — see module docstring). Fetched
-    # regardless of whether any KB here has an embedding provider at all.
+    # Prompt-mode docs bypass top_k, minimum_score and the token budget.
     prompt_matches = await _fetch_prompt_mode_matches(conn, kb_ids)
 
     groups = await _agent_kb_groups(conn, tenant_slug, agent_slug)

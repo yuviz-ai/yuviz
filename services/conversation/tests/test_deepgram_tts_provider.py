@@ -1,10 +1,4 @@
-"""
-DeepgramTTS tests use httpx.MockTransport — no real network call, no cost.
-synthesize_stream() is the one that matters: it must forward each chunk of
-the response body as it arrives rather than buffering the whole thing (see
-DeepgramTTS.synthesize_stream's docstring — this is the actual latency fix
-found live, not just an alternate way to get the same bytes).
-"""
+"""DeepgramTTS tests via httpx.MockTransport; synthesize_stream() must forward chunks as they arrive."""
 
 from __future__ import annotations
 
@@ -84,9 +78,7 @@ class _RawByteChunks(httpx.AsyncByteStream):
 
 
 async def test_synthesize_stream_realigns_odd_length_chunk_boundaries():
-    # A 5-byte chunk followed by a 3-byte chunk: neither is 16-bit-sample
-    # aligned on its own, but every *yielded* chunk must be, and the
-    # concatenated bytes (all 8 of them) must be unchanged and in order.
+    # 5- then 3-byte chunks: each yielded chunk must be sample-aligned, bytes unchanged.
     full = b"\x01\x02\x03\x04\x05\x06\x07\x08"
 
     def handler(request: httpx.Request) -> httpx.Response:

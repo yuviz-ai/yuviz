@@ -1,10 +1,4 @@
-"""
-Fake IConfigRepository implementations, not real Redis/HTTP — this file is
-about CacheAsideConfigProvider's own orchestration logic (fallback order,
-dict-to-DTO mapping, agent-override-vs-tenant-default, all-or-nothing
-resolution), which doesn't need real infra to prove. Real-infra coverage
-lives in test_redis_repository.py/test_http_repository.py.
-"""
+"""CacheAsideConfigProvider orchestration tests against fake in-memory repositories."""
 
 from __future__ import annotations
 
@@ -19,9 +13,7 @@ def _now():
 
 
 class FakeRepo:
-    """Implements IConfigRepository against an in-memory dict store —
-    counts calls so tests can assert the HTTP fallback was (or wasn't)
-    reached."""
+    """In-memory IConfigRepository that records calls."""
 
     def __init__(self, tenants=None, agents=None, providers=None, call_flows=None):
         self.tenants = tenants or {}
@@ -173,8 +165,7 @@ async def test_runtime_config_agent_override_takes_precedence_over_tenant_defaul
 
 
 async def test_runtime_config_missing_one_provider_role_returns_none():
-    # Tenant has stt+llm defaults but no tts default, agent has no override
-    # either — incomplete config is unavailable, not partially applied.
+    # No tts anywhere: incomplete config is unavailable, not partially applied.
     redis_repo = FakeRepo(
         tenants={"acme": _tenant_row("acme", default_stt_config_id="stt1", default_llm_config_id="llm1")},
         agents={("acme", "sup"): _agent_row("sup")},
@@ -230,7 +221,7 @@ async def test_runtime_config_media_flattens_voice_and_language_from_providers()
 
     rc = await provider.get_runtime_config("acme", "sup")
     assert rc.media.voice == "Rachel"
-    assert rc.media.language == "en"  # from STT, not TTS — see MediaInfo's docstring
+    assert rc.media.language == "en"  # from STT, not TTS
 
 
 async def test_runtime_config_media_language_agent_override_wins_over_provider():
@@ -271,10 +262,7 @@ async def test_runtime_config_policies_sourced_from_tenant_and_agent():
     assert rc.policies.vad_hold_ms == 500
     assert rc.policies.silence_timeout_ms == 8000
     assert rc.policies.goodbye_grace_ms == 4000
-    # No schema column exists for this yet — honestly None, not invented.
     assert rc.policies.barge_in_enabled is None
-    # max_call_duration_s does have a real column; unset on the row still
-    # means "unlimited" (None), not a magically invented default.
     assert rc.policies.max_call_duration_s is None
 
 
@@ -297,9 +285,7 @@ async def test_runtime_config_max_call_duration_sourced_from_agent():
 
 
 async def test_agent_transfer_fields_default_when_absent_from_row():
-    # Backward compatibility: a row cached before these columns existed (or
-    # a raw dict missing them for any other reason) must still deserialize,
-    # matching the column defaults (transfer_type='none', rest nullable).
+    # Rows cached before these columns existed must still deserialize.
     redis_repo = FakeRepo(agents={("acme", "sup"): _agent_row("sup")})
     provider = CacheAsideConfigProvider(redis_repo, FakeRepo())
 

@@ -1,22 +1,5 @@
-"""
-IVectorRepository — the one abstraction retrieval.py depends on for
-similarity search, so swapping pgvector for a dedicated vector store later
-(Qdrant, pgvector-on-a-different-node, ...) touches one class, never
-retrieval.py's ranking/policy logic.
-
-PgVectorRepository is the only implementation today: kb_chunks.embedding
-(vector(768), HNSW index, cosine ops — see database/knowledge_schema.sql)
-in the same Postgres database everything else in this service uses. The
-`<=>` operator is pgvector's cosine *distance*; similarity = 1 - distance,
-computed here so callers only ever see "higher is more relevant".
-
-search() only ever considers kb_documents.usage_mode = 'auto' — a
-'prompt'-mode document (always injected regardless of relevance; see
-kb_documents.usage_mode) is fetched by retrieval.py's separate
-always-include path instead, never by similarity search. Without this
-filter a manually-flipped-to-prompt document that already has real
-embeddings would show up in both paths and get double-counted.
-"""
+"""IVectorRepository — similarity search abstraction; PgVectorRepository returns 1 - cosine distance.
+search() only considers usage_mode='auto' docs, so prompt-mode docs aren't double-counted."""
 
 from __future__ import annotations
 
@@ -55,10 +38,7 @@ class IVectorRepository(Protocol):
 
 
 class PgVectorRepository:
-    """Stateless: the connection is opened by the caller (routers/retrieve.py,
-    under tenant_conn()/platform_conn()) and passed to search() rather than
-    held here, so this singleton never runs a query outside the request's
-    own resolved GUC scope (RLS design, libs/tenancy)."""
+    """Stateless; the caller passes a tenant-scoped connection so queries stay under its RLS scope."""
 
     async def search(
         self,

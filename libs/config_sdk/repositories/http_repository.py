@@ -1,17 +1,6 @@
-"""
-HttpConfigRepository — calls Config Service's real REST API (the same
-endpoints Admin UI uses), authenticated as a service account rather than a
-human user. Config Service's routes require a valid JWT on every request
-now (see services/config/deps.py) — this repository owns logging in once
-and re-authenticating on a 401, so nothing upstream (CacheAsideConfigProvider,
-agent_resolver.py) needs to know auth exists at all.
+"""Config Service REST client, authenticated as a service account (re-logs in on 401).
 
-Deliberately does NOT write to Redis on a miss: the GET endpoints it calls
-(services/config/{tenants,agents,provider_configs}.py) already populate
-Redis themselves as a side effect of the read (their own cache-aside,
-unchanged, still the single place that logic lives). Duplicating that write
-here would be a second implementation of the same cache-population logic
-that could silently drift from the first.
+Doesn't write to Redis: the GET endpoints it calls populate the cache themselves.
 """
 
 from __future__ import annotations
@@ -34,11 +23,7 @@ class HttpConfigRepository:
         service_password: str,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
-        # transport is a testing hook only (e.g. httpx.ASGITransport against
-        # services.config.app.app in-process, same convention test_api.py
-        # already uses) — production callers never pass it, so this stays a
-        # real network client by default; it does not weaken "the SDK
-        # exposes abstractions not transport details" for actual consumers.
+        # transport is a test hook (e.g. httpx.ASGITransport); production never passes it.
         self._base_url = base_url.rstrip("/")
         self._email = service_email
         self._password = service_password
@@ -68,9 +53,7 @@ class HttpConfigRepository:
             raise RepositoryUnavailableError(f"HttpConfigRepository: request failed path={path}: {exc}") from exc
 
         if resp.status_code == 401:
-            # Token expired or was never valid — re-authenticate once, not in
-            # a loop, so a genuinely broken service account fails loudly
-            # (RepositoryUnavailableError) instead of hammering /auth/login.
+            # Re-authenticate once, not in a loop, so a broken account fails loudly.
             self._token = await self._login()
             resp = await self._client.get(path, headers={"Authorization": f"Bearer {self._token}"})
 
@@ -95,9 +78,7 @@ class HttpConfigRepository:
         return await self._get(f"/tenants/{tenant_slug}/call-flows/{call_flow_id}/published")
 
     async def list_tenants(self) -> list[dict[str, Any]]:
-        """Enumeration, not per-call resolution — used only by startup
-        prewarming (see services/conversation/__main__.py), never on the
-        call path."""
+        """Startup prewarming only; never on the call path."""
         return await self._get("/tenants") or []
 
     async def list_agents(self, tenant_slug: str) -> list[dict[str, Any]]:

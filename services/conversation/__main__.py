@@ -84,12 +84,7 @@ def _build_tts(cfg: PipelineConfig):
 
 
 def _enabled(leg: str) -> bool:
-    """VOICEAI_ENABLE_STT / VOICEAI_ENABLE_TTS, set by deployment/sh/dev.sh's
-    --no-stt / --no-tts. Off means "don't spend startup on this leg" — the
-    models are hundreds of MB and are fetched the first time they're
-    touched, so warming them here is precisely what those flags exist to
-    avoid. Absent or anything but "0" means on: a real deployment sets
-    neither and behaves exactly as it always has."""
+    """VOICEAI_ENABLE_STT/TTS (dev.sh --no-stt/--no-tts); anything but "0" means on."""
     return os.environ.get(f"VOICEAI_ENABLE_{leg}", "1") != "0"
 
 
@@ -98,27 +93,11 @@ async def _prewarm_agents(
     provider_registry: ProviderRegistry,
     config: IConfigProvider,
 ) -> None:
-    """Load every active agent's STT/LLM/TTS providers once, at startup, via
-    the exact same resolve_handler_deps() path a real call uses — so the
-    first real call to any given agent never pays model-instantiation cost
-    (e.g. FasterWhisper's ~1s CTranslate2 load) synchronously during
-    session_open. Without this, whichever Conversation Service process
-    happens to serve an agent's first call pays that cost mid-call, which
-    read to the caller as added latency and choppy/robotic audio.
-
-    Never raises — a Config Service that's unreachable or has zero tenants
-    yet just means nothing gets prewarmed; the first real call still falls
-    back to on-demand loading via AIProviderManager's existing cache-miss
-    path, unchanged.
-    """
+    """Load every active agent's providers at startup so a first call never pays
+    model-load cost mid-call. Never raises; failures fall back to on-demand loading."""
     log = logging.getLogger(__name__)
 
-    # Either flag is enough to skip the whole thing: resolve_handler_deps()
-    # builds all three providers together and that is where the cost lives
-    # (_make_faster_whisper awaits inst.load(), KokoroTTS builds a
-    # KPipeline), so there is no way to warm one leg without paying for the
-    # other. Checked here rather than per agent — the answer is the same for
-    # the whole process, and this way it costs no Config Service calls.
+    # resolve_handler_deps() builds all three providers together, so one leg can't be warmed alone.
     if not _enabled("STT") or not _enabled("TTS"):
         log.info("prewarm: skipped (stt=%s tts=%s) — providers load on first use",
                  _enabled("STT"), _enabled("TTS"))
@@ -155,8 +134,7 @@ async def _prewarm_agents(
                 continue
             _, bundle = resolved
             graph = graph_for(resolved[0])
-            # Object construction != model loaded — Ollama needs a real
-            # request first (see OllamaLLM.warm()). No-op for cloud LLMs.
+            # Ollama only loads the model on a real request; no-op for cloud LLMs.
             warm = getattr(bundle.llm, "warm", None)
             if warm is not None:
                 try:
@@ -191,19 +169,10 @@ async def serve(port: int, args: argparse.Namespace) -> None:
         except Exception:
             log.exception("Failed to resolve legacy LLM fallback model from DB — keeping built-in default %s", cfg.llm.model)
 
-    # hostname:port identifies this specific process instance (see
-    # TranscriptBuilder's docstring on conv_node/reconcile_stale_calls) —
-    # this project runs two Conversation Service processes (:50051,
-    # :50052) behind Envoy, so "this process" is never "the only process."
+    # Several Conversation processes run behind Envoy; hostname:port identifies this one.
     node_id = f"{socket.gethostname()}:{port}"
 
-    # Call-sentiment scoring runs on its OWN hosted model, not the
-    # conversational provider built further down — see SentimentConfig for
-    # the measurement behind that. It is constructed here because
-    # TranscriptBuilder needs it at connect() time, and it is skipped
-    # entirely in echo mode (no real conversation to score) and whenever no
-    # key is configured, leaving calls.sentiment NULL rather than scoring
-    # with something that invents its evidence.
+    # Sentiment uses its own hosted model; without a key calls.sentiment stays NULL.
     sentiment_scorer: SentimentScorer | None = None
     sentiment_llm: OpenAILLM | None = None
     if args.mode != "echo" and cfg.sentiment.api_key:
@@ -236,14 +205,7 @@ async def serve(port: int, args: argparse.Namespace) -> None:
     )
     provider_config_subscriber.start()
 
-    # Config SDK — the only way this process talks to Config Service now
-    # (see libs/config_sdk/__init__.py and agent_resolver.py's docstring for
-    # why: no services.config import here or anywhere else in this
-    # package). Construction never fails even with blank/wrong service-
-    # account creds — HttpConfigRepository authenticates lazily on first
-    # fetch, and resolve_handler_deps() already degrades to the legacy YAML
-    # path on any resolution failure, so a misconfigured service account
-    # shows up as "always falls back," never a crash at startup.
+    # Authenticates lazily, so bad service-account creds fall back to YAML rather than crash.
     http_config_repo = HttpConfigRepository(
         base_url=os.environ.get("CONFIG_SERVICE_URL", "http://localhost:8000"),
         service_email=os.environ.get("CONFIG_SERVICE_EMAIL", ""),
@@ -254,12 +216,7 @@ async def serve(port: int, args: argparse.Namespace) -> None:
         http_repo=http_config_repo,
     )
 
-    # Knowledge SDK — same construction pattern as Config SDK: a Redis
-    # boolean pre-check (has this agent got any enabled KB?) plus an HTTP
-    # fallback/real-retrieval repository against Knowledge Service. Never
-    # fails at startup for the same reasons Config SDK's construction
-    # doesn't — CacheAsideKnowledgeProvider degrades to "no context" on
-    # any unreachable backend, not a crash (see cache_aside.py).
+    # Degrades to "no context" when a backend is unreachable.
     knowledge: IKnowledgeProvider = CacheAsideKnowledgeProvider(
         availability_repo=RedisKnowledgeRepository(os.environ.get("REDIS_URL", "redis://localhost:6379/0")),
         retrieval_repo=HttpKnowledgeRepository(
@@ -270,38 +227,16 @@ async def serve(port: int, args: argparse.Namespace) -> None:
         ),
     )
 
-    # Tool Execution Framework — shared across every stream, same
-    # "stateless/thread-safe, constructed once" posture as the STT/LLM/TTS
-    # providers just below. ToolRegistry/ExecutorRegistry are pure static
-    # catalogs; ToolProviderManager caches provider instances by
-    # tool_provider_config.id (mirrors AIProviderManager exactly);
-    # ToolPolicyResolver owns its own asyncpg pool (see its own docstring
-    # for why this is a direct-Postgres v1 simplification, not the full
-    # Config SDK cache-aside pattern). LLMAdapter, by contrast, wraps one
-    # specific ILLM instance and must be constructed per-handler below,
-    # since different tenants/agents can resolve to different LLM engines.
+    # Tool framework objects are shared across streams; LLMAdapter is per handler
+    # because agents can resolve to different LLMs.
     tool_registry = ToolRegistry()
     executor_registry = ExecutorRegistry()
 
-    # Dynamic call fillers: one process-scoped store/selector, shared across
-    # every stream — calibration must survive across calls, and both are
-    # safe to share because the store's keys are tenant/agent-scoped and its
-    # eviction budget is per tenant (see tool_latency.py).
+    # Process-scoped so filler calibration survives across calls; keys are tenant/agent-scoped.
     tool_latency_store = ToolLatencyStore()
     filler_selector = FillerSelector()
-    # execute_api is the ONLY DB-gated tool, and so the only entry here —
-    # the agent's other tool, search_knowledge, is an in-process local tool
-    # supplied by pipeline.py and never reaches an executor factory (see
-    # registry.py's SEARCH_KNOWLEDGE for why it is local).
-    #
-    # Its provider is a ToolExecClient (provider_manager.py's
-    # _make_toolexec, reading TOOLEXEC_SERVICE_URL). ApiExecExecutor's
-    # max_chain_depth is deliberately NOT baked in here: this factory is
-    # registered once at process startup, shared by every tenant/agent, so
-    # a per-agent override cannot live in a constructor arg closed over
-    # here — orchestrator.py threads policy.max_chain_depth into
-    # ToolExecutionContext per call instead, and ApiExecExecutor reads it
-    # from request.context there.
+    # execute_api is the only DB-gated tool. Per-agent max_chain_depth arrives via
+    # ToolExecutionContext, since this factory is shared by every tenant.
     executor_registry.register("execute_api", lambda provider: ApiExecExecutor(provider))
     tool_provider_manager = ToolProviderManager(CompositeSecretResolver())
     tool_policy_resolver = await ToolPolicyResolver.connect(
@@ -341,11 +276,7 @@ async def serve(port: int, args: argparse.Namespace) -> None:
             ctx: SessionContext, runtime_config, bundle,
             *, initial_variables: dict | None = None,
         ) -> PipelineConversationHandler:
-            """The tool-orchestrator/has_booking_tool/construction block
-            both the ordinary path and a call flow's `agent`-node handoff
-            need — factored out so a handoff builds the exact same kind of
-            handler a directly-dialed agent would, just with
-            initial_variables seeded from the flow (see callflow/handler.py)."""
+            """Build a pipeline handler; shared by direct calls and call-flow handoffs."""
             tool_orchestrator = ToolCallOrchestrator(
                 llm_adapter=LLMAdapter(bundle.llm),
                 policy_resolver=tool_policy_resolver,
@@ -354,14 +285,7 @@ async def serve(port: int, args: argparse.Namespace) -> None:
                 latency_store=tool_latency_store,
             )
 
-            # Whether this agent can DO anything (as opposed to only
-            # answering questions), which gates two things in the handler:
-            # the caller-ID block in the prompt suffix, and the fabricated-
-            # booking-claim guard. Since the calendar built-ins were
-            # removed, "can act" means execute_api is enabled — the tenant's
-            # own APIs are the only way an agent performs a real action now,
-            # and their names are per tenant so nothing here can look for a
-            # specific one.
+            # "Can act" (gates caller-ID prompt block and booking-claim guard) means execute_api is enabled.
             enabled_policies = await tool_policy_resolver.enabled_tools(
                 runtime_config.agent.id, runtime_config.tenant.slug,
             )
@@ -387,15 +311,7 @@ async def serve(port: int, args: argparse.Namespace) -> None:
             )
 
         async def handler_factory(ctx: SessionContext) -> PipelineConversationHandler:
-            # Live path: one Config SDK call resolves tenant + agent + all
-            # three provider roles into an immutable RuntimeConfig (Redis-
-            # cached, HTTP fallback to Config Service), then ProviderRegistry
-            # turns that into live instances. Falls back to the legacy YAML/
-            # global-singleton path below on any miss — never a mix of the
-            # two for one call (see agent_resolver.py). Both paths produce
-            # the exact same (RuntimeConfig, ProviderBundle) shape, so
-            # PipelineConversationHandler has one construction contract
-            # regardless of which path resolved it.
+            # Config SDK path, else legacy YAML path; never a mix for one call.
             resolved = await resolve_handler_deps(
                 ctx.tenant_id or "default", ctx.script_id or "default", provider_registry, config,
             )
@@ -410,11 +326,7 @@ async def serve(port: int, args: argparse.Namespace) -> None:
             if not runtime_config.agent.call_flow_id:
                 return await _build_pipeline_handler(ctx, runtime_config, bundle)
 
-            # AC 27/28 (OQ4, proposed pending sign-off): a resolution
-            # failure here falls through to the ordinary conversational
-            # agent — the DID already resolved a working agent, so the
-            # config-plane hiccup should not cost the call. Reversing this
-            # default is a one-branch change confined to this `if`.
+            # On flow-resolution failure fall back to the ordinary agent rather than drop the call.
             resolved_flow = await resolve_call_flow(runtime_config, config)
             if resolved_flow is None:
                 return await _build_pipeline_handler(ctx, runtime_config, bundle)
@@ -446,12 +358,7 @@ async def serve(port: int, args: argparse.Namespace) -> None:
                 )
 
             async def voice_for(tts_config_id: str):
-                # get_provider_config() takes no tenant argument (see
-                # libs/config_sdk/providers/cache_aside.py) — safe here only
-                # because tts_config_id is flow.resolved_tts_config_id, which
-                # Config Service already validated same-tenant/role='tts'
-                # before this process ever saw it (see the Data section of
-                # the design and CallFlowRunner's own docstring).
+                # Unscoped lookup is safe: Config Service already validated this id same-tenant, role='tts'.
                 provider_config = await config.get_provider_config(tts_config_id)
                 if provider_config is None:
                     return None
@@ -469,12 +376,7 @@ async def serve(port: int, args: argparse.Namespace) -> None:
                 agent_slugs=flow.agent_slugs,
             )
 
-    # grpc.aio.server() defaults to SO_REUSEPORT, which lets a second process
-    # silently bind the same port as an already-running instance instead of
-    # failing with "address already in use" — a stale/duplicate process from
-    # an earlier run then keeps serving requests invisibly, splitting traffic
-    # and logs between old and new. Disabling it makes a duplicate start fail
-    # loudly instead, which is what should happen.
+    # Disable SO_REUSEPORT so a duplicate process fails to bind instead of silently sharing the port.
     server = grpc.aio.server(options=[("grpc.so_reuseport", 0)])
 
     # Conversation service
@@ -504,20 +406,9 @@ async def serve(port: int, args: argparse.Namespace) -> None:
 
     load_task = asyncio.create_task(_load_and_promote())
 
-    # Heartbeat + dead-node reconciliation loop — entirely separate task
-    # from anything call-related (see transcript_builder.py's heartbeat()/
-    # reconcile_dead_nodes() docstrings on why this can't add latency to a
-    # live call: no shared lock/state, just a periodic tiny DB write).
-    # HEARTBEAT_INTERVAL_S=15 / stale-after-3x=45s is a deliberate choice:
-    # frequent enough that a dead node's calls don't stay wrongly "live"
-    # for long, infrequent enough to be background noise on the DB pool.
+    # Node is considered dead after 3 missed heartbeats (45s).
     HEARTBEAT_INTERVAL_S = 15
-    # A single call going silent (client vanished uncleanly — see
-    # reconcile_inactive_calls's own docstring) has nothing to do with node
-    # liveness, so it needs its own, much longer threshold: the Gateway's
-    # own no-speech-timeout already ends a genuinely silent-but-connected
-    # caller within ~19s, so anything still "live" after minutes of no
-    # transcript activity is a zombie connection, not a slow talker.
+    # Gateway ends silent callers in ~19s, so minutes without transcript activity means a zombie call.
     INACTIVE_CALL_TIMEOUT_S = 300
 
     async def _heartbeat_loop() -> None:

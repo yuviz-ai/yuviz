@@ -1,12 +1,4 @@
-"""
-ApiExecExecutor — the only IToolExecutor the LLM's execute_api tool call
-ever reaches; the single seam between the real-time turn and Tool
-Execution Service's outbound HTTP chain (services/toolexec/). Posts one
-request via ToolExecClient and maps the response back onto the shared
-ToolResult/ToolStatus vocabulary every other executor already uses —
-ToolCallOrchestrator sees exactly one execute(request) -> ToolResult call,
-identical in shape to any other tool.
-"""
+"""IToolExecutor for execute_api: posts to the Tool Execution Service and maps the response to ToolResult."""
 
 from __future__ import annotations
 
@@ -18,9 +10,7 @@ from ..providers.toolexec.client import ToolExecClient
 
 log = logging.getLogger(__name__)
 
-# graph.MAX_CHAIN_LEVELS in services/toolexec/graph.py — the platform
-# ceiling this client-side value can only ever LOWER, never raise (the
-# server clamps to min(request.max_chain_depth, MAX_CHAIN_LEVELS) itself).
+# Mirrors toolexec graph.MAX_CHAIN_LEVELS; a client value can only lower it (the server clamps too).
 _PLATFORM_MAX_CHAIN_DEPTH = 4
 
 # chain_status -> ToolStatus, 1:1 except "partial" (see execute() below).
@@ -39,27 +29,14 @@ class ApiExecExecutor:
         self._client = client
 
     async def execute(self, request: ToolExecutionRequest) -> ToolResult:
-        # Read per-call, from THIS agent's resolved execute_api policy
-        # (orchestrator.py threads policy.max_chain_depth into
-        # ToolExecutionContext) — never baked into this executor at
-        # construction time, since ExecutorRegistry builds one factory
-        # once at process startup, shared by every tenant/agent that
-        # calls execute_api. None = platform default; a configured value
-        # can only lower it, never exceed the platform ceiling (mirrors
-        # agent_tool_policies.max_chain_depth's own NULL-means-default
-        # contract, and agent_apis._effective_max_chain_depth's identical
-        # clamp on the toolexec side).
+        # Read per call: one executor factory is shared by every tenant/agent.
+        # None = platform default; a configured value can only lower the ceiling.
         max_chain_depth = min(request.context.max_chain_depth or _PLATFORM_MAX_CHAIN_DEPTH, _PLATFORM_MAX_CHAIN_DEPTH)
         api_name = request.arguments.get("api_name")
         if not api_name:
             return ToolResult(status=ToolStatus.INVALID_ARGUMENT, error="missing_api_name")
 
-        # The whole chain is bounded by the *existing* timeout_ms budget
-        # TimeoutMiddleware already enforces for this tool call (see
-        # ToolExecutionContext.deadline, set from that same budget in
-        # orchestrator.py) — this composes with the old ceiling instead of
-        # bypassing it. Floored at 0: a deadline already passed must still
-        # produce a valid (if hopeless) request, never a negative budget.
+        # Bounded by the tool's existing timeout budget; floored at 0 if the deadline already passed.
         chain_budget_ms = max(int((request.context.deadline - time.monotonic()) * 1000), 0)
 
         body = {
@@ -86,9 +63,7 @@ class ApiExecExecutor:
         status = _STATUS_MAP.get(chain_status, ToolStatus.FAILED)
         payload: dict = {}
         if chain_status == "partial":
-            # No direct ToolStatus counterpart — mapped to FAILED so the
-            # LLM never treats it as a success, with payload["partial"]
-            # flagging it distinct from an ordinary failure.
+            # No ToolStatus counterpart: FAILED so the LLM never treats it as success; payload["partial"] marks it.
             status = ToolStatus.FAILED
             payload["partial"] = True
         elif status is ToolStatus.SUCCESS:
@@ -96,9 +71,7 @@ class ApiExecExecutor:
             # never steps/completed_steps/failed_step.
             payload = dict(response.get("data") or {})
         elif status is ToolStatus.INVALID_ARGUMENT:
-            # Names the gap (e.g. a missing order id) so the LLM can ask
-            # the one question that would complete the task, same shape
-            # every other executor's missing_fields payload already uses.
+            # Lets the LLM ask for the one missing piece (e.g. an order id).
             payload["missing_fields"] = response.get("missing_fields") or []
 
         return ToolResult(

@@ -12,9 +12,7 @@ import { CallFlowPanel } from "@/components/callflow/CallFlowPanel";
 export default function CallFlowEditorPage() {
   const { callFlowId } = useParams<{ callFlowId: string }>();
   const [flow, setFlow] = useState<CallFlow | null>(null);
-  // The canvas needs a tenant *slug* to list that tenant's agents for the
-  // "AI agent" step, but a flow row only carries tenant_id — resolve it once
-  // here rather than adding a slug to every call-flow response.
+  // Flow rows only carry tenant_id; the canvas needs the slug to list agents.
   const [tenantSlug, setTenantSlug] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 

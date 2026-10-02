@@ -18,12 +18,8 @@ struct WebSocketConfig {
     uint32_t    max_connections{1000};
     uint32_t    timeout_ms{30000};
 
-    // Bounded wait for mod_audio_fork's metadata text frame (DID/ANI/
-    // direction) before falling back to PhoneRoute's {"default","default"}.
-    // Real calls resolve near-instantly — mod_audio_fork sends metadata as
-    // the guaranteed first write, before any audio — so this is headroom
-    // for a connection that never sends one (misconfigured caller, a raw
-    // test client), not an expected steady-state delay.
+    // Max wait for mod_audio_fork's metadata frame before routing to the default
+    // tenant/agent. Real calls send it first, so this only bounds misbehaving clients.
     uint32_t    metadata_wait_ms{300};
 };
 
@@ -59,12 +55,8 @@ struct ConversationTransportConfig {
     uint32_t    connect_timeout_ms{5000};
 };
 
-// FreeSWITCH Event Socket Library — used to issue call-control commands
-// (currently just uuid_kill for agent-initiated hangup) that the WebSocket/
-// gRPC path has no way to express.  Disabled by default: an agent deciding
-// to end the call still closes the WebSocket/RTP audio path either way, so
-// leaving this off only means the SIP leg itself lingers until the caller
-// hangs up — a safe degradation, not a broken state.
+// FreeSWITCH ESL for call-control commands the WebSocket path can't express.
+// When disabled, agent hangup closes audio but the SIP leg lingers until the caller hangs up.
 struct EslConfig {
     bool        enabled{false};
     std::string host{"127.0.0.1"};
@@ -72,31 +64,13 @@ struct EslConfig {
     std::string password;              // FREESWITCH_ESL_PASSWORD (or esl.password); required when enabled
     uint32_t    connect_timeout_ms{2000};
 
-    // Every number the Gateway dials — a cold transfer (EslClient::transfer)
-    // and a warm transfer's agent leg (EslClient::originate_async) — goes out
-    // as sofia/external/sip:<dest>@<sip_proxy_host>:<sip_proxy_port>, never
-    // through a FreeSWITCH dialplan context and never via FreeSWITCH's own
-    // "user/<id>" channel type: in any deployment fronted by a SIP
-    // proxy/registrar (Kamailio, here — see docs/warm_transfer_architecture.md
-    // §6), real phones register with the proxy, not with FreeSWITCH, so
-    // "user/<id>" fails with USER_NOT_REGISTERED even when the destination is
-    // genuinely online.
-    //
-    // Must be the IP Kamailio listens on, which is host-specific. The setting
-    // is SIP_PROXY_HOST in .env (scripts/update_kamailio_ip.sh writes it); a
-    // non-blank env value overrides config/gateway.yaml, which is only the
-    // fallback and ships empty. Empty (the default) means not configured:
-    // EslClient logs an error at startup and refuses every transfer to a
-    // number with "sip_proxy_host_unset", rather than sending the INVITE to a
-    // wrong host and leaving the caller in silence until SIP Timer B (~32 s).
+    // All dialed numbers go via sofia/external/sip:<dest>@<sip_proxy_host> because phones
+    // register with Kamailio, not FreeSWITCH. Empty = transfers refused (sip_proxy_host_unset).
     std::string sip_proxy_host{};
     uint16_t    sip_proxy_port{5060};
 };
 
-// Redis — the Phase 5 config-plane cache (see project_phase5_schema_design.md).
-// Disabled by default: TenantConfig::from_redis() degrades to from_default()
-// on any connect/lookup/parse failure, so a missing or unreachable Redis
-// never rejects a call — same "safe degradation" discipline as EslConfig.
+// Config-plane cache. Any Redis failure degrades to defaults; it never rejects a call.
 struct RedisConfig {
     bool        enabled{false};
     std::string host{"127.0.0.1"};
@@ -123,14 +97,7 @@ struct BackpressureConfig {
     size_t max_outbound_queue_frames{3000}; // PlaybackQueue capacity (60s at 20ms/frame)
 };
 
-// Per-session configuration snapshot — Principle 6.
-//
-// Bound once at call creation; never mutated during a call.
-// Populated per-tenant via from_redis() (see below), falling back to
-// from_default(GatewayConfig) process defaults on any cache/parse failure.
-//
-// All sub-configs mirror the types their consumers accept directly, so
-// construction becomes a single assignment rather than field-by-field copy.
+// Per-session config snapshot, bound once at call creation and never mutated.
 struct TenantConfig {
     std::string tenant_id;
 
@@ -148,15 +115,8 @@ struct TenantConfig {
     // Build a TenantConfig from GatewayConfig process-level defaults.
     [[nodiscard]] static TenantConfig from_default(const GatewayConfig& cfg) noexcept;
 
-    // Phase 5: look up `tenant:{tenant_id}` in Redis (the same key + JSON
-    // shape services/config/tenants.py writes) and overlay any present
-    // fields onto from_default()'s baseline. On a cache miss, a Redis
-    // connection/command failure, or a JSON parse error, silently falls back
-    // to from_default(cfg) in full — a config-plane outage must never reject
-    // a call (see project_phase5_schema_design.md's Redis cache strategy).
-    // logger (optional): used only to surface config-validation warnings
-    // (e.g. an out-of-bounds transfer_timeout_ms falling back to default);
-    // resolution behavior is identical with or without it.
+    // Overlays Redis `tenant:{tenant_id}` onto from_default(); any failure falls back to
+    // from_default(cfg) in full. logger only surfaces validation warnings.
     [[nodiscard]] static TenantConfig from_redis(
         class RedisClient&  redis,
         const std::string&  tenant_id,
@@ -164,52 +124,27 @@ struct TenantConfig {
         class Logger*        logger = nullptr) noexcept;
 };
 
-// DID → tenant/agent routing result. Resolved once per new WebSocket
-// connection (see Application.cpp's connect handler), before TenantConfig
-// itself is resolved — the tenant_slug this produces is what gets passed to
-// TenantConfig::from_redis().
-//
-// Defaults to {"default", "default"} — the same safe-degrade contract as
-// TenantConfig::from_redis(): an unknown DID, a Redis miss, a connection
-// failure, or a malformed cache entry must never reject a call, they just
-// mean the call resolves to the same 'default' tenant/agent every unrouted
-// call used before this feature existed.
+// DID → tenant/agent routing. Any lookup failure degrades to {"default", "default"};
+// it never rejects a call.
 struct PhoneRoute {
     std::string tenant_slug{"default"};
     std::string agent_slug{"default"};
-    // Resolved agent's config_version (see agents.config_version, bumped by
-    // a trigger on every UPDATE) — 0 when absent (agent_slug fell through to
-    // the literal 'default' with no real agent row, or the field was
-    // missing/null). Observability only today (logged, not yet acted on) —
-    // lets a future consumer detect "this route was cached against an
-    // older agent config" without a second lookup.
+    // Agent config_version; 0 when absent. Observability only.
     uint32_t    version{0};
 
-    // Looks up `did:{did}` in Redis (the same key + JSON shape
-    // services/config/phone_numbers.py's get_by_did() writes:
-    // {"tenant_slug": ..., "agent_slug": ..., "version": ...}, already
-    // denormalized so this hot path never needs a second Postgres join).
+    // Looks up `did:{did}` in Redis (written by services/config/phone_numbers.py).
     [[nodiscard]] static PhoneRoute from_redis(
         class RedisClient& redis, const std::string& did) noexcept;
 };
 
-// Parsed from the WS text frame mod_audio_fork sends (via its `metadata`
-// uuid_audio_fork argument) before any audio, carrying the DID/ANI/direction
-// the Lua dialplan script collected from FreeSWITCH channel variables.
-//
-// Never throws; a missing frame (no metadata sent, or the connection closed
-// before it arrived) or malformed/partial JSON both degrade to the same
-// {"", "", "inbound"} baseline — PhoneRoute::from_redis("") behaves exactly
-// like an unknown DID, falling back to {"default","default"} — never a
-// rejected call.
+// DID/ANI/direction from mod_audio_fork's first WS text frame.
+// Missing or malformed input degrades to {"", "", "inbound"}; never throws.
 struct CallMetadata {
     std::string did;              // called number — feeds PhoneRoute::from_redis()
     std::string ani;              // calling number — feeds SessionContext::caller_did
     std::string direction{"inbound"};
 
-    // raw is nullopt when no text frame arrived in time (or the connection
-    // closed first) — treated identically to a present-but-malformed frame:
-    // full default CallMetadata{}.
+    // raw is nullopt when no frame arrived in time.
     [[nodiscard]] static CallMetadata parse(
         const std::optional<std::string>& raw) noexcept;
 };

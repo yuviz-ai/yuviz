@@ -1,8 +1,4 @@
-"""
-Encrypted provider credentials. A credential store that quietly stops
-encrypting is worse than one that refuses to start, so most of what's
-asserted here is the refusing.
-"""
+"""Encrypted provider credentials: round-trip, and refusing rather than degrading."""
 
 from __future__ import annotations
 

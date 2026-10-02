@@ -1,14 +1,4 @@
-"""
-PlivoProvider tests — httpx.MockTransport, no real network.
-
-*** These test the ASSUMED shape documented in providers/plivo.py's module
-docstring, not a confirmed real API contract *** — unlike
-test_cal_com_provider.py (which mirrors shapes actually captured live),
-these mocks encode a hypothesis. When real Plivo credentials exist and
-this provider is live-verified, these tests should be checked against
-whatever the real API actually returns and corrected if anything differs
-— do not treat a pass here as proof the provider works.
-"""
+"""PlivoProvider tests via MockTransport; mocks encode the assumed (unverified) API shape."""
 
 from __future__ import annotations
 

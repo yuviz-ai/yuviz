@@ -1,11 +1,7 @@
 """
-DeepgramTTS — cloud synthesis via Deepgram's Aura text-to-speech endpoint.
+DeepgramTTS — cloud synthesis via Deepgram's Aura endpoint.
 
-Unlike ElevenLabs, Deepgram's /v1/speak accepts an arbitrary linear16 sample
-rate directly (encoding=linear16&sample_rate=<rate>&container=none) — no
-fixed-rate-then-resample dance needed here.
-
-pip install httpx (already a dependency via OllamaLLM)
+/v1/speak accepts any linear16 sample rate directly, so no resampling is needed.
 """
 
 from __future__ import annotations
@@ -21,13 +17,7 @@ _DEFAULT_BASE_URL = "https://api.deepgram.com"
 
 
 class DeepgramTTS:
-    """
-    ITTS implementation backed by Deepgram's /v1/speak (Aura).
-
-    api_key — resolved once at construction by AIProviderManager via
-              SecretResolver, never re-resolved per call.
-    voice   — an Aura model name, e.g. "aura-asteria-en".
-    """
+    """ITTS backed by Deepgram's /v1/speak; voice is an Aura model name."""
 
     def __init__(
         self,
@@ -67,13 +57,6 @@ class DeepgramTTS:
         return resp.content
 
     async def synthesize_stream(self, text: str, sample_rate: int) -> AsyncGenerator[bytes, None]:
-        # Confirmed live: Deepgram's /v1/speak response body
-        # arrives progressively (first byte ~800ms, last byte ~1600ms for a
-        # single sentence) — client.stream()+aiter_bytes() forwards each
-        # chunk the moment it lands instead of blocking on resp.content
-        # until the whole utterance has downloaded. This is the entire
-        # latency win: same API, same request, just not throwing away the
-        # server's own streaming behavior.
         if not text.strip():
             return
 
@@ -89,11 +72,7 @@ class DeepgramTTS:
                 json={"text": text},
             ) as resp:
                 resp.raise_for_status()
-                # aiter_bytes() yields at arbitrary HTTP chunk boundaries, not
-                # 16-bit-sample boundaries — an odd-length chunk here becomes
-                # an invalid Int16Array downstream (browser/Gateway both treat
-                # this as PCM16). Carry any trailing odd byte over to the next
-                # chunk instead of yielding misaligned bytes.
+                # HTTP chunks can split a 16-bit sample; carry the odd byte over.
                 pending = b""
                 async for chunk in resp.aiter_bytes():
                     if not chunk:

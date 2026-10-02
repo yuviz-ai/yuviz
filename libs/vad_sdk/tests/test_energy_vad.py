@@ -1,8 +1,4 @@
-"""
-EnergyVAD tests — pure math, no model/network dependency. See vad.py's own
-docstring for why this exists alongside SileroVAD (a fallback, not the
-primary detector for real telephony).
-"""
+"""EnergyVAD state-machine tests (pure math)."""
 
 from __future__ import annotations
 
@@ -15,8 +11,7 @@ _FRAME_SAMPLES = 320  # 20ms @ 16kHz, this module's default frame_ms
 
 
 def _pcm16_frame(amplitude: float, sample_count: int = _FRAME_SAMPLES) -> bytes:
-    """amplitude in [0, 1] — a full-scale (1.0) tone is ~0dB, silence (0.0)
-    is the floor EnergyVAD itself reports (-96dB)."""
+    """amplitude in [0, 1]: 1.0 is ~0dB, 0.0 is the -96dB floor."""
     value = int(amplitude * 32767)
     return struct.pack(f"<{sample_count}h", *([value] * sample_count))
 
@@ -40,13 +35,10 @@ def test_sustained_loud_audio_triggers_speech_start_after_onset_window():
 
 
 def test_a_single_loud_blip_is_not_enough_to_trigger_onset():
-    # Real speech is sustained; a lone loud frame (echo/line-noise blip)
-    # must not count — this is the whole reason onset_ms exists.
     vad = EnergyVAD()
     assert vad.process(_pcm16_frame(1.0)) == VADEvent.NONE
     assert vad.process(_pcm16_frame(0.0)) == VADEvent.NONE
-    # Onset streak reset by the quiet frame — needs the full onset window
-    # again, not just one more loud frame.
+    # The quiet frame resets the onset streak.
     for _ in range(4):
         assert vad.process(_pcm16_frame(1.0)) == VADEvent.NONE
 

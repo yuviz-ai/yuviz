@@ -20,10 +20,7 @@ public:
     Logger(Logger&&)                 = default;
     Logger& operator=(Logger&&)      = default;
 
-    // Returns a logger backed by a null sink at level Off — discards every
-    // message with zero I/O and minimal overhead (one atomic level check).
-    // Use this instead of configuring a process-wide spdlog level in tests
-    // or benchmarks that want a silent component.
+    // Silent logger (null sink, level Off) for tests and benchmarks.
     [[nodiscard]] static Logger make_null();
 
     void set_level(Level level);

@@ -1,16 +1,7 @@
-"""
-Telephony config CRUD — same cache-aside + audited-mutation pattern as
-provider_configs.py. `credentials` is validated against the registered
-provider (libs.telephony_sdk.registry.TelephonyProviderRegistry) before
-insert, so a malformed/incomplete credential set never reaches Postgres.
+"""Telephony config CRUD with cache-aside reads and audited mutations.
 
-Returning `credentials` to a caller is intentionally NOT redacted here —
-unlike provider_configs.api_key_ref (a reference path, never a secret
-itself), telephony credentials ARE the actual secret (auth_id/auth_token).
-Callers of get/list must be trusted admin/superadmin routes only (see
-routers/telephony_configs.py's require_role guards) — this mirrors how
-phone_numbers/provider_configs already assume router-level auth is the
-only gate, not a second field-level redaction layer.
+`credentials` is validated against the provider registry and returned unredacted
+(sensitive fields sealed); router-level auth is the only gate.
 """
 
 from __future__ import annotations
@@ -31,10 +22,7 @@ from . import audit, cache, db
 _UPDATABLE_FIELDS = {"name", "credentials", "is_default_outbound"}
 _PLATFORM_MANAGED_CREDENTIAL_FIELDS = ("inbound_application_id",)
 
-# 'native' is the 5000-5009 Kamailio/FreeSWITCH rows after the relabel
-# migration (T23) — the REST plane never serves them, so there is no
-# ITelephonyProvider to validate/normalize credentials against and no
-# health to probe. Every other registered provider name is REST-capable.
+# 'native' is the shared Kamailio/FreeSWITCH: no ITelephonyProvider, no credentials, no health.
 NATIVE_PROVIDER = "native"
 _NON_REST_PROVIDERS = frozenset({NATIVE_PROVIDER})
 
@@ -58,13 +46,8 @@ def _cache_key(config_id: Any) -> str:
 
 
 def _normalize_scalar_or_list(field_name: str, value: Any) -> Any:
-    """Seals a scalar sensitive field (Vobiz's auth_token) or every entry
-    of a list-valued one (Cloudonix's api_keys): a plaintext value is
-    encrypted, an existing `enc:` token is kept verbatim, and anything
-    else — including `env:`/`k8s:` — is rejected. `telephony_configs.
-    credentials` is tenant-writable JSONB, and `CompositeSecretResolver`'s
-    `env:`/`k8s:` schemes were built for admin-entered infra config, not
-    tenant input (lesson 37)."""
+    """Encrypts plaintext, keeps `enc:` tokens, rejects `env:`/`k8s:` refs (tenant input
+    must not read platform secrets). Handles scalar and list-valued fields."""
     if isinstance(value, list):
         return [_normalize_one(field_name, entry) for entry in value]
     return _normalize_one(field_name, value)
@@ -81,10 +64,7 @@ def _normalize_one(field_name: str, entry: Any) -> str:
 
 
 def _normalize_credentials(provider: str, credentials: dict[str, Any]) -> dict[str, Any]:
-    """Provider-agnostic over `sensitive_credential_fields()` — scalar and
-    list-valued fields both seal the same way. `provider in
-    _NON_REST_PROVIDERS` (native's 5000-5009 rows) is returned verbatim:
-    there is no ITelephonyProvider to consult, and no credential to seal."""
+    """Seals the provider's sensitive fields; non-REST providers are returned verbatim."""
     if provider in _NON_REST_PROVIDERS:
         return credentials
     provider_cls = TelephonyProviderRegistry.get(provider)
@@ -96,13 +76,7 @@ def _normalize_credentials(provider: str, credentials: dict[str, Any]) -> dict[s
 
 
 def validate_credentials(provider: str, credentials: dict[str, Any]) -> None:
-    """Raises ValueError (not TelephonyProviderError) so this flows through
-    Config Service's existing ValueError -> 400 handler (app.py) without a
-    new exception-handler registration — libs/telephony_sdk stays
-    HTTP-agnostic, this is where it's adapted to REST semantics. The
-    relabelled 5000-5009 rows (provider='native') skip validation
-    entirely — there is no ITelephonyProvider for them, and they must stay
-    editable from the Telephony page after the migration."""
+    """Raises ValueError (mapped to 400 by app.py). Native configs skip validation."""
     if provider in _NON_REST_PROVIDERS:
         return
     try:
@@ -113,12 +87,8 @@ def validate_credentials(provider: str, credentials: dict[str, Any]) -> None:
 
 
 def list_supported_providers() -> dict[str, dict[str, list[str]]]:
-    """Backs the discovery endpoint ("List Supported Providers") — name ->
-    {required, sensitive} credential fields, so an admin UI can render the
-    right form without hardcoding per-provider fields. Built from
-    TelephonyProviderRegistry.visible() so "fake" never appears (AC4).
-    Native has no ITelephonyProvider (and must not get one: Campaigns treats
-    any registered provider as REST-dialable), so it is listed explicitly."""
+    """Provider name -> {required, sensitive} credential fields. Native is added explicitly:
+    it must not be registered, since Campaigns treats registered providers as REST-dialable."""
     supported = {
         name: {
             "required": provider_cls.required_credential_fields(),
@@ -182,20 +152,14 @@ async def list_telephony_configs(tenant_id: Any) -> list[dict[str, Any]]:
     results = [dict(row) for row in rows]
     for result in results:
         result["credentials"] = db.json_col(result["credentials"])
-        # One cache.get_json per row, deliberately NOT folded into the
-        # telephony_config:{id} cached row (a 60s TTL there would freeze a
-        # stale badge). A Redis outage degrades every badge to Standby,
-        # matching cache.py's never-fail contract — never None here.
+        # Kept out of the cached row so the 60s TTL can't freeze a stale badge.
         health = await cache.get_json(f"telephony:health:{result['id']}")
         result["health"] = health or {"status": "standby", "checked_at": None}
     return results
 
 
 async def list_configs_by_provider(provider: str) -> list[dict[str, Any]]:
-    """Cross-tenant by construction — the Telephony service's cold-path
-    account preload needs every tenant's rows for a given provider, not
-    one tenant's. `platform_conn` is the greppable, named bypass
-    (CURSOR.md) for exactly this shape of read."""
+    """Cross-tenant by design: the telephony service's account preload needs every tenant's rows."""
     pool = await db.get_pool()
     async with platform_conn(pool, reason="telephony-account-preload") as conn:
         rows = await conn.fetch(
@@ -316,12 +280,7 @@ async def update_telephony_config(
         )
         new = dict(new_row)
 
-        # Scoped to the written columns, not the full row (same reason
-        # as provider_configs.py/users.py). credentials additionally
-        # gets the shared "[redacted]" marker rather than a constant
-        # "<redacted in audit trail>" string — a constant compares equal
-        # to itself on both sides of a genuine credentials change and
-        # the UI would read that as "nothing changed," hiding it.
+        # Only written columns; "[redacted]" is the marker the UI shows as a changed secret.
         old_value = {col: old[col] for col in columns}
         new_value = {col: new[col] for col in columns}
         if "credentials" in columns:
@@ -347,10 +306,7 @@ async def update_telephony_config(
 async def set_default_outbound(
     config_id: Any, *, user_id: Any | None = None, user_email: str | None = None,
 ) -> dict[str, Any]:
-    """Atomically makes config_id the tenant's default-outbound config,
-    clearing any existing default in the same transaction — safe under the
-    partial unique index on telephony_configs(tenant_id) WHERE
-    is_default_outbound."""
+    """Atomically makes config_id the tenant's only default-outbound config."""
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         row = await conn.fetchrow(
@@ -367,9 +323,7 @@ async def set_default_outbound(
             config_id,
         )
         new = dict(new_row)
-        # audit_log.action is CHECK-constrained to created/updated/deleted
-        # (see database/schema.sql) — "updated" is the correct bucket for
-        # this action, not a custom value.
+        # audit_log.action is CHECK-constrained to created/updated/deleted.
         await audit.write_audit(
             conn,
             entity_type="telephony_config",

@@ -1,18 +1,8 @@
 #!/usr/bin/env python3
-"""
-Creates a superadmin user from the command line. The normal path is the
-seeded one (scripts/seed_superadmin.py, run by init.sh); this script is the
-recovery path when every superadmin is locked out. Not idempotent in the sense of "safe to re-run for the same
-email": users.email is UNIQUE, so a second run for the same address fails
-loudly (asyncpg.UniqueViolationError) rather than silently doing nothing —
-correct here, unlike seed_default_config.py's config rows, because a second
-"same email" call is far more likely to be a mistake than an intentional
-re-seed.
+"""Recovery path to create a superadmin; fails loudly if the email already exists.
 
 Usage: python3 scripts/create_superadmin.py <email> <password>
-Requires: POSTGRES_ADMIN_DSN, falling back to POSTGRES_DSN (see services/config/db.py) —
-this writes a tenant_id IS NULL row and must keep bypassing RLS, so it connects
-as the superuser, never as yuviz_app.
+Requires POSTGRES_ADMIN_DSN (or POSTGRES_DSN): writes a tenant_id IS NULL row, so it bypasses RLS.
 """
 
 from __future__ import annotations

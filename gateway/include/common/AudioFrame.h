@@ -17,15 +17,8 @@ enum class AudioDirection : uint8_t {
     Outbound = 1,   // ConversationService → Gateway → FreeSWITCH
 };
 
-// Owned audio packet.  Payload is always a copy — no dangling pointers.
-// Raw PCM never goes on the EventBus; this struct travels on the PlaybackQueue
-// hot path and across the gRPC boundary.
-//
-// session_id and trace_id use fixed-size char arrays (null-terminated UUID,
-// max 36 chars) rather than std::string to eliminate heap allocation on every
-// TTS chunk.  Use set_session_id()/get_session_id() to convert to/from
-// std::string_view; the gRPC path uses .data() to pass to protobuf setters
-// which accept const char*.
+// Owned audio packet (payload is always a copy).
+// IDs are fixed char arrays to avoid a heap allocation per TTS chunk.
 struct AudioFrame {
     std::array<char, 37> session_id{};  // null-terminated; 36 chars for UUID
     std::array<char, 37> trace_id{};

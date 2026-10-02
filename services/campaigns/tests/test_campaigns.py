@@ -53,8 +53,7 @@ async def test_update_unknown_campaign_raises_lookup_error(scoped):
         await campaigns.update_campaign("00000000-0000-0000-0000-000000000000", {"name": "x"})
 
 
-# ── caller_id tenant ownership (security finding: unowned caller_id must
-# never reach a dial) ─────────────────────────────────────────────────────
+# ── caller_id tenant ownership ───────────────────────────────────────────
 
 async def test_caller_id_owned_by_tenant_true_for_provisioned_did(test_tenant, pool, scoped):
     await pool.execute(
@@ -88,9 +87,6 @@ async def test_caller_id_owned_by_tenant_false_for_unprovisioned_number(test_ten
 
 
 async def test_caller_id_owned_by_tenant_true_when_none(test_tenant):
-    # A campaign with no caller_id configured yet is valid at create/update
-    # time — worker.py's own "no caller_id configured" guard is what stops
-    # it from dialing, not this check.
     assert await campaigns.caller_id_owned_by_tenant(test_tenant["id"], None) is True
 
 

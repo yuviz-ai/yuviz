@@ -1,7 +1,4 @@
-"""The findings' own regression suite (finding #1-3), each case written so
-it goes red if the control is deleted. Walks app.routes for the outbound
-routes and asserts the walk's own size, not just its members (lessons 12,
-29)."""
+"""Outbound auth regressions; each case fails if its control is removed. Route walk asserts its own size."""
 
 from __future__ import annotations
 

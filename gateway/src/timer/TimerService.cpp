@@ -46,9 +46,7 @@ void TimerService::cancel(TimerId id) {
     if (id == kInvalidTimer) return;
     std::lock_guard lock{mutex_};
     cancelled_.insert(id);
-    // cancelled_ is bounded: timer_loop() calls cancelled_.erase(id) when the
-    // timer fires, so each entry lives at most max_timer_duration (≤30 s).
-    // At 1000 sessions × 1 active timer each, peak size is ~1000 entries.
+    // Bounded: timer_loop() erases each id when its timer fires (≤30 s).
     if (cancelled_.size() > 10'000) [[unlikely]]
         logger_.warn("TimerService: cancelled_ has {} entries — check for timer leaks",
                      cancelled_.size());
@@ -67,10 +65,7 @@ void TimerService::timer_loop() {
             if (!running_.load(std::memory_order_relaxed)) return;
         }
 
-        // Copy the deadline before releasing the lock.  wait_until() drops the
-        // mutex while sleeping; a concurrent schedule() call can then push to
-        // heap_ and trigger a vector reallocation, invalidating any const& into
-        // heap_ taken before the lock drop — a classic UAF under ASan/TSAN.
+        // Copy, not reference: wait_until() unlocks and schedule() may reallocate heap_.
         const auto deadline = heap_.top().deadline;
         const auto now      = clock_.now();
 

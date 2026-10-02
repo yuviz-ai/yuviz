@@ -2,43 +2,11 @@
 # Realigns the whole local stack with the machine's current LAN IP after a
 # network change (new Wi-Fi, switching to a phone hotspot, etc).
 #
-# Three independent things go stale when the network changes, and all three
-# have to be fixed together or calls silently break in different ways:
+# Updates Kamailio config, the MySQL subscriber auth domain, FreeSWITCH's
+# local_ip_v4, and .env's SIP_PROXY_HOST. Idempotent.
 #
-#   1. Kamailio's kamailio.cfg/dispatcher.list — the listen address and the
-#      FreeSWITCH routing target are hardcoded (7 occurrences across the two
-#      files), regenerated here from scripts/kamailio/*.tpl.
-#   2. The kamailio MySQL `subscriber` table — auth_db matches REGISTER/INVITE
-#      requests by (username, domain), and ha1/ha1b are MD5 digests that bake
-#      the domain in. A stale domain here causes 403s that look like generic
-#      "call rejected" failures even after (1) is fixed.
-#   3. FreeSWITCH's local_ip_v4 — this is a core-level variable resolved once
-#      at process startup (not on every "reloadxml"), so a FreeSWITCH process
-#      that's been running since before the network change stays bound to the
-#      old IP until it's restarted.
-#
-# Most of the rest of the stack (Envoy, Postgres/Redis DSNs, admin-ui, the
-# FreeSWITCH Lua dialplan script) is 127.0.0.1/localhost/0.0.0.0. The one
-# exception rewritten here: SIP_PROXY_HOST in the repo's .env (added if
-# missing, replaced if present). The Gateway dials every transfer to a number
-# through it (cold transfer and warm transfer's agent leg) and Campaigns
-# dials outbound calls through it, so it must be Kamailio's IP. Restart the
-# Gateway and Campaigns afterwards from a NEW tab (or `unset SIP_PROXY_HOST`
-# and re-source start_local.sh first): a shell that already sourced
-# start_local.sh keeps its old exported value, and the script warns if the
-# shell it was run from has one. config/gateway.yaml's esl.sip_proxy_host is
-# only a fallback and is not touched.
-#
-# Idempotent: safe to run any time, even if the IP hasn't changed. Each of the
-# three steps independently detects "already correct" and skips.
-#
-# Privilege model: run this as your normal user, NOT via sudo. The two
-# operations that need root (writing into /usr/local/etc/kamailio, and
-# restarting the kamailio process, which binds a privileged port) escalate
-# individually via `sudo` — you'll get one password prompt, cached for the
-# rest of the run. Everything else (MySQL, FreeSWITCH) runs as you, which
-# matters: FreeSWITCH must keep running as your user, not root, or its
-# runtime files end up with the wrong ownership.
+# Run as your normal user, NOT via sudo: only the Kamailio steps escalate, and
+# FreeSWITCH must keep running as you or its runtime files get root-owned.
 #
 # Usage: scripts/update_kamailio_ip.sh
 
@@ -48,15 +16,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TPL_DIR="$REPO_ROOT/scripts/kamailio"
 KAMAILIO_ETC="/usr/local/etc/kamailio"
 KAMAILIO_CFG="$KAMAILIO_ETC/kamailio.cfg"
-# Homebrew FreeSWITCH (scripts/freeswitch/setup_macos.sh) when present, else
-# the old source-install prefix. Both overridable via env.
+# Homebrew FreeSWITCH when present, else the source-install prefix.
 FS_PREFIX="$(brew --prefix freeswitch 2>/dev/null || echo /usr/local/freeswitch)"
 FS_CLI="${FS_CLI:-$FS_PREFIX/bin/fs_cli}"
 FS_BIN="${FS_BIN:-$FS_PREFIX/bin/freeswitch}"
 FS_HOME="${FS_HOME:-$HOME/.yuviz/freeswitch}"
-# Credentials come from the repo's .env (see .env.example), never this file.
-# Read as literal KEY=value (like start_local.sh), never sourced: a value with
-# spaces must not run as a command. A value already in the shell wins.
+# Read .env as literal KEY=value, never sourced. A value already in the shell wins.
 _dotenv() { [[ -f "$REPO_ROOT/.env" ]] && grep "^$1=" "$REPO_ROOT/.env" | cut -d= -f2- || true; }
 FREESWITCH_ESL_PORT="${FREESWITCH_ESL_PORT:-$(_dotenv FREESWITCH_ESL_PORT)}"
 FREESWITCH_ESL_PASSWORD="${FREESWITCH_ESL_PASSWORD:-$(_dotenv FREESWITCH_ESL_PASSWORD)}"
@@ -68,12 +33,7 @@ KAMAILIO_DB_URL="${KAMAILIO_DB_URL:?set KAMAILIO_DB_URL in .env}"
 # Escapes a value for the replacement side of sed "s|...|...|".
 sed_escape() { printf '%s' "$1" | sed -e 's/[\\|&]/\\&/g'; }
 
-# UDP "connect" doesn't send a packet (no handshake) — the OS just resolves
-# which local interface/IP would be used to reach that destination, which is
-# exactly the current LAN IP regardless of interface name (en0/en1/etc, which
-# changes across machines and Wi-Fi vs Ethernet). Works even without real
-# connectivity to 8.8.8.8, since nothing is actually transmitted for a UDP
-# socket's connect().
+# UDP connect() sends nothing; it just picks the outbound interface's IP.
 detect_lan_ip() {
   python3 -c "
 import socket
@@ -90,10 +50,8 @@ fs_cli() {
   "$FS_CLI" -H 127.0.0.1 -P "$FS_ESL_PORT" -p "$FS_ESL_PASSWORD" -x "$1" 2>/dev/null
 }
 
-# SIP_IP overrides detection. Use SIP_IP=127.0.0.1 when the softphone runs on
-# this Mac: it never changes, and detection picks the default-route
-# interface, which on a VPN (utun) can silently drop traffic to its own
-# address — the softphone then just times out.
+# SIP_IP overrides detection; use 127.0.0.1 for a local softphone (VPN
+# interfaces can drop traffic to their own address).
 if [[ -n "${SIP_IP:-}" ]]; then
   LAN_IP="$SIP_IP"
   echo "Using SIP_IP: $LAN_IP"
@@ -107,10 +65,7 @@ else
 fi
 echo ""
 
-# The Gateway (cold and warm transfer) and Campaigns (outbound) dial Kamailio
-# at SIP_PROXY_HOST. A stale value (e.g. the old .env.example's 127.0.0.1)
-# sends the INVITE to the wrong host and the caller hears ~32 s of silence,
-# so it moves with the Kamailio IP. _env_put adds the line when it is missing.
+# Gateway transfers and Campaigns outbound dial Kamailio at SIP_PROXY_HOST.
 REPO="$REPO_ROOT"
 # shellcheck source=lib/env.sh
 source "$REPO_ROOT/scripts/lib/env.sh"
@@ -125,9 +80,6 @@ else
   echo "ERROR: could not write SIP_PROXY_HOST=$LAN_IP to $REPO_ROOT/.env" >&2
   exit 1
 fi
-# This script runs as a child of the operator's shell, so this is the value
-# that shell exports. If it sourced start_local.sh before, it keeps the old
-# value (_load_env never overrides) and a restart from it would still dial it.
 if [[ -f "$REPO_ROOT/.env" ]]; then
   _warn_env_drift SIP_PROXY_HOST
 fi
@@ -146,9 +98,7 @@ for name in kamailio.cfg dispatcher.list; do
     exit 1
   fi
 
-  # Generate into a real temp file, not a shell variable — command
-  # substitution silently strips trailing newlines, which would make an
-  # unchanged file look "different" from the on-disk original on every run.
+  # Temp file, not $(...): command substitution strips trailing newlines.
   tmp="$(mktemp)"
   trap 'rm -f "$tmp"' EXIT
   sed -e "s/__LAN_IP__/$LAN_IP/g" -e "s|__KAMAILIO_DB_URL__|$(sed_escape "$KAMAILIO_DB_URL")|g" "$tpl" > "$tmp"
@@ -160,10 +110,7 @@ for name in kamailio.cfg dispatcher.list; do
     continue
   fi
 
-  # Back up whatever's currently deployed before overwriting — timestamped,
-  # so this never collides with or clobbers any backup you've made by hand
-  # (kamailio.cfg_orig, kamailio.cfg_working_push_notification, etc. are
-  # left untouched).
+  # Timestamped backup so hand-made backups are never clobbered.
   if sudo test -f "$target"; then
     backup="$target.bak.$(date +%Y%m%d%H%M%S)"
     sudo cp "$target" "$backup"
@@ -212,11 +159,8 @@ else
   else
     sql_file="$(mktemp)"
     trap 'rm -f "$sql_file"' EXIT
-    # ha1/ha1b bake the domain into an MD5 digest, so the domain column and
-    # the hashes have to be updated together or auth_db's digest check fails
-    # even though the row now "looks" right. Recomputed here in Python rather
-    # than MySQL's MD5() because MySQL 9.x removed the builtin in favor of an
-    # optional component that isn't installed on this box.
+    # ha1/ha1b digests embed the domain, so update them together. Python, not
+    # MySQL MD5(), which MySQL 9.x removed.
     python3 -c "
 import sys
 
@@ -249,9 +193,7 @@ elif [[ "$fs_running_ip" == "$LAN_IP" ]]; then
   echo "  FreeSWITCH already bound to $LAN_IP"
 else
   echo "  FreeSWITCH is still bound to stale IP $fs_running_ip — restarting"
-  # local_ip_v4 is resolved once at process startup, not on "reloadxml" or a
-  # sofia profile restart — a full process restart is the only way to pick
-  # up a network change that happened while FreeSWITCH kept running.
+  # local_ip_v4 is resolved only at process startup; reloadxml won't update it.
   fs_cli shutdown || true
   for _ in $(seq 1 20); do
     pgrep -x freeswitch > /dev/null 2>&1 || break

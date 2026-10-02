@@ -1,8 +1,6 @@
 """
-CallFlowConversationHandler — audio, timers, the out-of-band egress queue,
-and delegation. Fake ITTS with a fixed-size PCM output keeps prompt
-"duration" negligible and predictable, so short real `timeout_ms` values
-drive these tests without a separate fake-clock abstraction.
+CallFlowConversationHandler: timers, out-of-band queue, delegation. A fixed tiny TTS
+output keeps prompt duration ~0, so short real timeout_ms values suffice.
 """
 
 from __future__ import annotations
@@ -26,9 +24,7 @@ from .test_pipeline import _make_llm, _make_stt, _make_tts
 
 
 class FakeTTS:
-    """One fixed 2-byte PCM sample per synthesize() call regardless of
-    text — makes every prompt's "duration" ~0s, so a `timeout_ms` of a few
-    tens of ms is all a Listen timer needs to fire promptly in real time."""
+    """Returns one 2-byte sample per call so prompt duration is ~0s."""
 
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -87,12 +83,7 @@ def _dial_graph() -> dict:
 
 
 def _race_graph() -> dict:
-    """menu1 --digit '1'--> menu2 --timeout--> boom. menu2 is also a `menu`
-    (not a terminal type), so a *stale* timeout armed for menu1 — delivered
-    after a digit has already moved the runner to menu2 — would, if not
-    dropped by node id, still find a menu node willing to act on it and take
-    menu2's own timeout edge: a real double transition, not one masked by a
-    terminal node's on_timeout()/on_digit() no-op."""
+    """menu1 --'1'--> menu2 --timeout--> boom; menu2 is non-terminal so a stale timeout would act."""
     return {
         "version": 1,
         "nodes": [
@@ -143,9 +134,7 @@ def _handler(graph_raw: dict, *, handoff=None, variables=None):
 
 
 def _delegate_factory(captured_variables: dict):
-    """Real PipelineConversationHandler as the handoff target — captures
-    the seeded variables it was actually constructed with, so the redaction
-    assertions are against the delegate's own WorkflowRunner, not a stub."""
+    """Handoff to a real PipelineConversationHandler, capturing its seeded variables."""
     now = datetime.now(timezone.utc)
     tenant = Tenant(
         id="t1", slug="test", name="Test", region="us",
@@ -272,20 +261,12 @@ async def test_digit_and_stale_timeout_same_tick_yield_exactly_one_transition():
 
     assert runner.node.id == "menu1"
     stale_generation = handler._listen_generation  # the arm behind menu1's prompt
-    # Both enqueued before the driver task gets to run either (neither
-    # on_dtmf() nor this put_nowait() suspends) — a real timer armed for
-    # menu1 firing at the same instant a keypress moves the runner off
-    # menu1, not a call into on_timeout()/on_digit() directly (which
-    # "cannot fail" per the plan). The digit is queued first so it is
-    # processed first, moving the runner to menu2 — a *different* menu
-    # node that would happily act on an unqualified on_timeout() call — by
-    # the time the stale menu1 timeout is dequeued behind it.
+    # Both enqueued in the same tick; the digit runs first and moves to menu2.
     await handler.on_dtmf("s1", "1")
     handler._events.put_nowait(("timeout", stale_generation))
     await asyncio.sleep(0.05)
 
-    # Exactly one transition (menu1 -> menu2, via the digit) — the stale
-    # timeout for menu1 must not also fire menu2's own timeout edge to boom.
+    # The stale menu1 timeout must not fire menu2's timeout edge.
     assert runner.node.id == "menu2"
     assert runner.visited == ["start", "menu1", "menu2"]
     responses = await _drain(handler)
@@ -295,18 +276,9 @@ async def test_digit_and_stale_timeout_same_tick_yield_exactly_one_transition():
 
 @pytest.mark.asyncio
 async def test_digit_and_stale_timeout_for_a_replayed_same_node_yield_one_retry():
-    """A node-id comparison alone cannot tell a replay of the *same* node
-    apart from the arm it replaced — `_invalid_attempt()` re-enters the
-    identical `menu` node id. Only a per-arm generation counter catches
-    this: a digit and an already-expired timeout for the node's *first*
-    arm, enqueued in the same tick, must produce exactly one retry
-    increment and no Hangup — not two retries and a wrongful
-    Hangup("retries_exhausted") after a single mistaken keypress.
+    """A stale timeout from the first arm of a replayed node yields one retry, not exhaustion.
 
-    Uses a long real timeout_ms (unlike _menu_timeout_graph()'s 20ms) so
-    the replay's own *real* timer cannot mature and confound the assertion
-    within this test's short sleep — the only timeout event in play must be
-    the manually-injected stale one."""
+    Long timeout_ms so the replay's real timer can't fire during the test."""
     graph = _menu_timeout_graph()
     graph["nodes"][1]["data"]["timeout_ms"] = 5000  # "menu" node
     handler, runner, tts = _handler(graph)
@@ -315,10 +287,7 @@ async def test_digit_and_stale_timeout_for_a_replayed_same_node_yield_one_retry(
     assert runner.node.id == "menu"
     first_arm_generation = handler._listen_generation
 
-    # The digit is unmatched (only "1" branches; "9" does not), so it
-    # replays the same "menu" node via _invalid_attempt() — a fresh Listen,
-    # same node id. The timeout event was armed for the *first* Listen and
-    # must be dropped once the replay's new Listen has been armed.
+    # Unmatched digit replays the same node with a fresh Listen.
     await handler.on_dtmf("s1", "9")
     handler._events.put_nowait(("timeout", first_arm_generation))
     await asyncio.sleep(0.05)

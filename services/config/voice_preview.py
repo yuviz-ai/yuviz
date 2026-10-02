@@ -1,20 +1,5 @@
-"""
-Speak a line of text in one provider_config's voice, so an operator can hear
-what a prompt will actually sound like before a real call does.
-
-Only the engines whose synthesis is a plain HTTP call with an API key are
-reachable from here — elevenlabs and deepgram. macos needs `/usr/bin/say` on
-a macOS host and kokoro needs its model weights loaded in-process (see
-services/conversation/providers/tts/), neither of which this service has or
-should acquire; those keep the pre-rendered static clips under
-admin-ui/public/voice-samples/ (scripts/generate_voice_samples.py), which are
-a fixed sentence rather than the operator's own text. UNSUPPORTED_ENGINES
-names them explicitly so the UI can say why instead of failing vaguely.
-
-Returns WAV, not the raw PCM16 the call pipeline passes around: the admin UI
-plays previews through a plain <audio> element (the same one both voice
-pickers already use), and that cannot decode headerless PCM.
-"""
+"""Speak operator text in a provider_config's voice. Only HTTP engines (elevenlabs,
+deepgram) are supported here. Returns WAV because <audio> can't play raw PCM."""
 
 from __future__ import annotations
 
@@ -29,9 +14,7 @@ from .secret_resolver import SecretResolver
 
 log = logging.getLogger(__name__)
 
-# What the preview is rendered at. 24 kHz is one of ElevenLabs' natively
-# supported pcm_* rates, so nothing has to be resampled here — resampling
-# would pull scipy into this service purely for a preview.
+# Native ElevenLabs pcm_* rate, so no resampling is needed.
 PREVIEW_RATE = 24_000
 MAX_CHARS = 600
 _TIMEOUT_S = 20.0
@@ -70,8 +53,7 @@ async def _elevenlabs(cfg: dict[str, Any], api_key: str, text: str) -> bytes:
         "text": text,
         "model_id": extra.get("model_id") or "eleven_turbo_v2_5",
     }
-    # Matches ai_provider_manager._make_elevenlabs_tts: only send the knobs
-    # that are actually set, so a preview is the same request a call makes.
+    # Same request shape as ai_provider_manager._make_elevenlabs_tts.
     if speed != 1.0:
         payload["voice_settings"] = {"speed": speed}
     if cfg.get("language"):
@@ -110,8 +92,7 @@ async def _deepgram(cfg: dict[str, Any], api_key: str, text: str) -> bytes:
 
 
 async def synthesize_preview(cfg: dict[str, Any], text: str, *, secret_resolver: SecretResolver) -> bytes:
-    """`cfg` is an already-authorized provider_configs row (Tier 3 — the
-    router checks tenant access before calling here). Returns WAV bytes."""
+    """`cfg` is an already-authorized provider_configs row. Returns WAV bytes."""
     text = (text or "").strip()
     if not text:
         raise PreviewUnavailable("nothing to say — write a line first")
@@ -134,9 +115,7 @@ async def synthesize_preview(cfg: dict[str, Any], text: str, *, secret_resolver:
     try:
         api_key = await secret_resolver.resolve(cfg["api_key_ref"])
     except Exception as exc:
-        # An unresolvable ref is a misconfigured provider, not a missing
-        # resource — without this it reaches the app's LookupError handler as
-        # a 404 whose detail is the raw ref string.
+        # Otherwise a LookupError becomes a 404 that echoes the raw ref.
         log.warning("voice preview: could not resolve api_key_ref for %s: %s", cfg["id"], exc)
         raise PreviewUnavailable(
             "this voice's API key could not be read — check the provider's credential in AI & Voice"

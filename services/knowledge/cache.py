@@ -1,17 +1,5 @@
-"""
-Redis client for Knowledge Service — its own process-wide client, same
-"own instance per service" boundary as db.py. Two cache uses in this
-service, both write-through (no TTL, one writer per key — same principle
-Config Service's phone_numbers.py DID cache and this project's
-architecture decisions already establish):
-
-  agent_kb:{tenant_slug}:{agent_slug} -> "1"/"0"   (has_enabled_kb flag,
-      written by agent_kb.py whenever an assignment is created/enabled/
-      disabled/detached — read by libs.knowledge_sdk.RedisKnowledgeRepository)
-
-A Redis outage degrades to "treat as a miss, ask Postgres" — same contract
-as services/config/cache.py.
-"""
+"""Redis client for Knowledge Service. Write-through, no TTL: agent_kb:{tenant}:{agent} -> "1"/"0".
+A Redis outage degrades to a cache miss (fall back to Postgres)."""
 
 from __future__ import annotations
 

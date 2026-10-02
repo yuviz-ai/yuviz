@@ -1,10 +1,5 @@
-"""
-CallFlowRunner — which node of a published call flow is active. No audio,
-no timers, no providers, no gRPC (same posture as workflow/runner.py's
-WorkflowRunner: "dry-run friendly"). Takes digits and timeouts in, returns
-the Action list to perform out; callflow/handler.py turns those into audio,
-timers and gRPC egress.
-"""
+"""CallFlowRunner: pure call-flow state machine. Digits/timeouts in, Actions out;
+no audio, timers or I/O."""
 
 from __future__ import annotations
 
@@ -21,20 +16,13 @@ from libs.config_sdk.workflow import render
 
 log = logging.getLogger(__name__)
 
-# One entry per (tenant, flow); replaced when config_version changes. Cap
-# bounds fleet size — mirrors workflow/runner.py's _GRAPH_CACHE_MAX/
-# _GRAPH_CACHE exactly.
+# One entry per (tenant, flow); replaced when config_version changes.
 _FLOW_CACHE_MAX = 256
 _FLOW_CACHE: dict[tuple[str, str], tuple[int, CallFlowGraph]] = {}
 
 
 def graph_for_flow(flow: CallFlow) -> CallFlowGraph:
-    """Cache-aside parse, keyed by (tenant_slug, flow.id) and versioned by
-    config_version. Raises CallFlowValidationError on a graph that fails to
-    parse; resolver.py's resolve_call_flow() is the only caller and catches
-    it. An already-open CallFlowRunner keeps walking its own CallFlowGraph
-    object even after this cache entry is replaced by a republish (AC 4) —
-    the cache only affects *new* opens."""
+    """Cache-aside parse versioned by config_version. Raises CallFlowValidationError."""
     key = (flow.tenant_slug, flow.id)
     cached = _FLOW_CACHE.get(key)
     if cached is not None and cached[0] == flow.config_version:
@@ -89,16 +77,10 @@ Action = Speak | SetVoice | Listen | Store | Handoff | Dial | Hangup
 
 
 class CallFlowRunner:
-    """One caller's walk through one pinned CallFlowGraph. Two runners over
-    the same cached graph object advance independently — no node/edge is
-    ever mutated in place, only this instance's own _node/_vars/_buffer.
+    """One caller's walk through a shared, never-mutated CallFlowGraph.
 
-    tts_config_id is a REQUIRED keyword sourced only from
-    CallFlow.resolved_tts_config_id (see libs/config_sdk/models.py's
-    docstring on that field) — this class MUST NOT read `.tts_config_id`
-    off `graph.start` or any node; that value is the author-supplied,
-    unvalidated one, and a cross-tenant id there would drive the call
-    through another tenant's TTS engine, voice and secret.
+    tts_config_id must come from CallFlow.resolved_tts_config_id, never from graph
+    nodes: those are unvalidated and could name another tenant's TTS config.
     """
 
     def __init__(
@@ -111,9 +93,7 @@ class CallFlowRunner:
         self._graph = graph
         self._tts_config_id = tts_config_id
         self._vars: dict[str, Any] = dict(variables or {})
-        # Names in _vars whose value is a sensitive collect — see
-        # `variables`/`flow_variables` below. Never rendered to a log line,
-        # a metric label, or `variables`.
+        # Sensitive collects: never logged or exposed via `variables`.
         self._sensitive_keys: set[str] = set()
         self._node: CallFlowNode = graph.start
         self._retries = 0
@@ -127,10 +107,7 @@ class CallFlowRunner:
 
     @property
     def variables(self) -> dict[str, Any]:
-        """Copy, like WorkflowRunner.variables — OMITS sensitive keys. This
-        is what the handler reads to build a handoff's initial_variables,
-        so the redaction lives here, at the property boundary, rather than
-        as a filter some call site has to remember."""
+        """Copy without sensitive keys; used for handoff initial_variables."""
         return {k: v for k, v in self._vars.items() if k not in self._sensitive_keys}
 
     @property
@@ -163,10 +140,7 @@ class CallFlowRunner:
     # ── Internal ─────────────────────────────────────────────────────────
 
     def _render(self, text: str) -> str:
-        # flow_variables, not variables: a sensitive value renders inside
-        # this flow (a confirmation prompt echoing a PIN back, say) but
-        # never leaves it — see the class docstring and the property split
-        # above.
+        # Sensitive values may render inside the flow but never leave it.
         return render(text, self.flow_variables)
 
     def _store(self, name: str, value: str, sensitive: bool) -> None:
@@ -177,9 +151,7 @@ class CallFlowRunner:
             self._sensitive_keys.discard(name)
 
     def _enter(self, node: CallFlowNode) -> list[Action]:
-        """Node-visit actions. Resets per-visit state (retries, digit
-        buffer) — AC's "node-visit" wording for when the retry counter
-        resets."""
+        """Node-visit actions; resets retries and the digit buffer."""
         self._node = node
         self._retries = 0
         self._buffer = []
@@ -238,27 +210,16 @@ class CallFlowRunner:
         return self._menu_fallback(MENU_INVALID)
 
     def _menu_fallback(self, key: str) -> list[Action]:
-        """Shared by an unmatched keypress and a menu timeout. An explicit
-        timeout/invalid edge is taken immediately, retry counter untouched
-        (ACs 15, 17, 20); with no such edge it is an invalid attempt, using
-        the same replay-and-increment accounting `collect` uses (ACs 16,
-        18, 19)."""
+        """Take an explicit timeout/invalid edge if present, else count an invalid attempt."""
         edge = self._edge_for_key(self._node, key)
         if edge is not None:
             return self._advance(self._graph.nodes[edge.target])
         return self._invalid_attempt()
 
     def _invalid_attempt(self) -> list[Action]:
-        """Replay-then-give-up accounting shared by an un-branched menu
-        fallback and a `collect` attempt that didn't produce a submittable
-        value. OQ2 seam: the PRD-assumed default (exhaust retries, then
-        hang up) lives entirely in this function — a reversal ("submit a
-        short value and advance anyway") only changes this and
-        _submit_collect()."""
+        """Replay the node, or hang up once retries are exhausted."""
         self._retries += 1
-        # A replayed collect starts its digit buffer over — otherwise a
-        # short first attempt's digits would silently prefix the caller's
-        # second attempt.
+        # Otherwise a short first attempt's digits would prefix the retry.
         self._buffer = []
         if self._retries > self._node.max_retries:
             return [Hangup("retries_exhausted")]
@@ -281,10 +242,7 @@ class CallFlowRunner:
             log.info("callflow: non-DTMF input ignored node=%s", self._node.id)
             return []
         node = self._node
-        # OQ3 seam: a blank terminator (unreachable through parse_graph()
-        # today, which coerces it to "#" — a guard for a graph that bypassed
-        # it) means "no terminator": submission is on max_digits or, at
-        # timeout, len >= min_digits. This one comparison is the whole seam.
+        # Blank terminator means none: submit on max_digits or at timeout.
         if node.terminator and digit == node.terminator:
             if len(self._buffer) >= node.min_digits:
                 return self._submit_collect()

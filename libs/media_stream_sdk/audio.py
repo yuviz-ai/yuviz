@@ -1,18 +1,6 @@
-"""
-Mulaw 8kHz <-> PCM16 16kHz conversion, shared by every provider's Media
-Stream bridge (Vobiz's Media Streams protocol, Plivo/Twilio-compatible,
-confirmed live against the real Vobiz API; Cloudonix speaks the same
-Twilio Media Streams wire shape). Both speak base64-encoded mu-law audio
-at 8kHz; Conversation Service's gRPC contract requires 16-bit signed PCM
-at 16000 Hz (AUDIO_CODEC_PCM_S16LE — see conversation.proto and
-services/webcall/__main__.py's own audio contract note).
+"""Mu-law 8kHz <-> PCM16 16kHz conversion for Media Stream providers.
 
-Uses stdlib audioop rather than a new numpy/scipy dependency — deprecated
-since 3.13 but still fully functional under this project's venv (Python
-3.11, same interpreter every telephony-adjacent process already runs
-under). ratecv's returned state is threaded through per direction per
-call so resampling stays continuous across chunks instead of clicking at
-every boundary.
+Uses stdlib audioop (deprecated in 3.13; this project runs 3.11).
 """
 
 from __future__ import annotations
@@ -26,17 +14,14 @@ _SAMPLE_WIDTH = 2  # 16-bit
 
 
 class AudioBridge:
-    """One instance per call — holds the ratecv state for each direction
-    so up/down-sampling doesn't introduce a discontinuity at every chunk
-    boundary."""
+    """One per call: keeps ratecv state per direction so chunk boundaries don't click."""
 
     def __init__(self) -> None:
         self._in_state = None   # provider (8k) -> pipeline (16k)
         self._out_state = None  # pipeline (16k) -> provider (8k)
 
     def to_pcm16(self, payload_b64: str) -> bytes:
-        """Base64 mu-law @ 8kHz (from the provider) -> raw PCM16 @ 16kHz
-        (to Conversation Service)."""
+        """Base64 mu-law @ 8kHz -> raw PCM16 @ 16kHz."""
         ulaw = base64.b64decode(payload_b64)
         pcm_8k = audioop.ulaw2lin(ulaw, _SAMPLE_WIDTH)
         pcm_16k, self._in_state = audioop.ratecv(
@@ -45,10 +30,7 @@ class AudioBridge:
         return pcm_16k
 
     def from_pcm16(self, pcm_16k: bytes) -> bytes:
-        """Raw PCM16 @ 16kHz (from Conversation Service TTS) -> raw
-        mu-law @ 8kHz bytes (not base64) — the pacer (bridge.py) frames
-        and encodes these itself so it can pace delivery to real time
-        instead of handing the provider the whole utterance at once."""
+        """Raw PCM16 @ 16kHz -> raw mu-law @ 8kHz (not base64; the pacer frames it)."""
         pcm_8k, self._out_state = audioop.ratecv(
             pcm_16k, _SAMPLE_WIDTH, 1, PIPELINE_SAMPLE_RATE, VOBIZ_SAMPLE_RATE, self._out_state,
         )

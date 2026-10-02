@@ -1,15 +1,5 @@
-"""tests/test_rls_isolation.py — direct-yuviz_app negative suite (T7).
-
-Connects straight to Postgres as yuviz_app, with NO app layer in between:
-no tenant_conn(), no deps.py, no FastAPI. This is what proves the database
-itself enforces isolation, independent of any Python bug above it (AC 3/4/
-5/6/10). Requires database/rls.sql to already be applied against
-$POSTGRES_DSN (a local `voiceai` database, same convention as
-services/*/tests/conftest.py).
-
-Every "cross-tenant read is empty" case carries a same-tenant counter-check
-that reads the row it just inserted: an empty result on a broken fixture
-would otherwise pass for the wrong reason (lesson 12).
+"""RLS isolation enforced by Postgres itself: connects as yuviz_app with no app layer.
+Requires database/rls.sql applied against $POSTGRES_DSN.
 """
 from __future__ import annotations
 
@@ -95,9 +85,7 @@ async def app_conn():
 async def test_cross_tenant_read_is_empty_with_same_tenant_counter_check(two_tenants, app_conn):
     async with app_conn.transaction():
         await app_conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(two_tenants["a_id"]))
-        # Same-tenant counter-check: proves the fixture and the GUC both
-        # work, so the cross-tenant empty result below cannot pass by
-        # accident (lesson 12).
+        # Counter-check so the empty foreign read below can't pass by accident.
         own = await app_conn.fetchrow("SELECT id FROM agents WHERE id = $1", two_tenants["agent_a"])
         assert own is not None
 
@@ -107,9 +95,7 @@ async def test_cross_tenant_read_is_empty_with_same_tenant_counter_check(two_ten
 
 async def test_no_guc_read_is_empty_not_an_error(two_tenants, app_conn):
     async with app_conn.transaction():
-        # No SET LOCAL app.tenant_id at all: NULLIF(current_setting(...), '')
-        # is NULL, `NULL = tenant_id` is NULL, so this is zero rows, not a
-        # raised `invalid input syntax for type uuid`.
+        # Unset GUC -> NULLIF(...) is NULL -> zero rows, not a uuid cast error.
         rows = await app_conn.fetch("SELECT id FROM agents WHERE id = ANY($1)",
                                      [two_tenants["agent_a"], two_tenants["agent_b"]])
         assert rows == []
@@ -118,10 +104,8 @@ async def test_no_guc_read_is_empty_not_an_error(two_tenants, app_conn):
 async def test_cross_tenant_write_rejected(two_tenants, app_conn):
     async with app_conn.transaction():
         await app_conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(two_tenants["a_id"]))
-        # A row USING already hides (agent_b, foreign) matches zero rows on
-        # UPDATE — silent, not an error, and not what WITH CHECK guards.
-        # WITH CHECK fires when a VISIBLE row's write would move it out of
-        # scope: moving tenant A's own agent into tenant B.
+        # Updating a hidden row is a silent no-op; WITH CHECK fires when a
+        # visible row is moved out of scope.
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
             await app_conn.execute(
                 "UPDATE agents SET tenant_id = $2 WHERE id = $1",
@@ -156,8 +140,7 @@ async def test_platform_bypass_restores_full_row_set_and_reverts(two_tenants, ap
         )
         assert {r["id"] for r in bypassed} == {two_tenants["agent_a"], two_tenants["agent_b"]}
 
-    # SET LOCAL ROLE reverts at transaction end, same as SET LOCAL GUCs — the
-    # next transaction on this connection is back under yuviz_app, no bypass.
+    # SET LOCAL ROLE reverts at transaction end.
     async with app_conn.transaction():
         reverted = await app_conn.fetch(
             "SELECT id FROM agents WHERE id = ANY($1)", [two_tenants["agent_a"], two_tenants["agent_b"]],

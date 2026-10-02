@@ -1,9 +1,4 @@
-"""
-originate.py tests — a fake local ESL server (plain asyncio TCP), no real
-FreeSWITCH. These test that this module speaks the ASSUMED protocol
-correctly (see originate.py's own module docstring on what's unverified);
-they do not and cannot prove a real originate against a real trunk works.
-"""
+"""originate.py tests against a fake local ESL server; no real FreeSWITCH."""
 
 from __future__ import annotations
 
@@ -15,9 +10,7 @@ from services.campaigns import originate
 
 
 class _FakeEslServer:
-    """Emulates just enough of ESL's inline-mode handshake + bgapi
-    originate exchange to test our client against, with a configurable
-    reply string for the originate command itself."""
+    """Minimal ESL auth + bgapi originate exchange with a configurable reply."""
 
     def __init__(self, originate_reply: str, auth_ok: bool = True) -> None:
         self.originate_reply = originate_reply
@@ -59,10 +52,7 @@ class _FakeEslServer:
 
 @pytest.fixture(autouse=True)
 def _point_at_fake_server(monkeypatch):
-    """Each test starts its own fake server and monkeypatches the module
-    globals originate_call() reads its target from — done per-test inside
-    the test body (needs the dynamically-assigned port), this fixture just
-    ensures no test accidentally reaches a real ESL endpoint."""
+    """Ensure no test reaches a real ESL endpoint; tests set _ESL_PORT themselves."""
     monkeypatch.setattr(originate, "_ESL_HOST", "127.0.0.1")
     monkeypatch.setattr(originate, "_ESL_PASSWORD", "test-esl-password")
     monkeypatch.setattr(originate, "_SIP_PROXY_HOST", "192.168.0.116")
@@ -159,10 +149,7 @@ async def test_originate_call_never_sends_a_command_containing_a_line_break(monk
 
 
 def test_parse_job_event_success():
-    # Real shape confirmed live against FreeSWITCH (see
-    # originate.py's EslJobEventListener docstring): the outer envelope
-    # (first arg here) never carries Job-UUID — it lives inside the body,
-    # itself a header block + blank line + the bgapi command's reply text.
+    # Job-UUID lives in the body's inner header block, not the outer envelope.
     body = "Event-Name: BACKGROUND_JOB\nJob-UUID: abc-123\nContent-Length: 20\n\n+OK channel-uuid-xyz"
     job_uuid, succeeded, detail = originate._parse_job_event(
         {"Content-Type": "text/event-plain", "Content-Length": "80"}, body,

@@ -16,9 +16,7 @@
 
 namespace voiceai {
 
-// Owns the set of live CallSession objects.
-// CallSessionFactory (injected) handles construction; SessionManager handles
-// lifetime: create() registers, remove() destroys, shutdown() drains all.
+// Owns the lifetime of live CallSession objects.
 class SessionManager : public IComponent, private NonCopyable, private NonMovable {
 public:
     explicit SessionManager(std::unique_ptr<CallSessionFactory> factory, Logger& logger);
@@ -29,33 +27,15 @@ public:
     void stop()       override;
     void shutdown()   override;
 
-    // Create, register, and start a new session, keyed by conn_id — the
-    // WebSocketServer connection handle (WebSocketServer's own monotonic
-    // counter, see next_session_id() in WebSocketServer.cpp), NOT
-    // ctx.obs.session_id. Those are deliberately different identifiers:
-    // ctx.obs.session_id is the FreeSWITCH channel UUID, the DB/
-    // observability-facing identity; conn_id is a purely internal,
-    // ephemeral bookkeeping key that must match what
-    // WebSocketServer::set_on_disconnect's callback hands back on close,
-    // so remove() can actually find the session it was called for.
+    // Keyed by the WebSocketServer connection id (what set_on_disconnect hands
+    // back), not ctx.obs.session_id (the FreeSWITCH channel UUID).
     void create(const std::string& conn_id, SessionContext ctx, std::shared_ptr<IWebSocketConnection> connection);
 
-    // Remove and destroy the session with the given conn_id.  No-op if not
-    // found. ~CallSession() runs outside the sessions lock to avoid
-    // priority inversion.
+    // No-op if not found. ~CallSession() runs outside the sessions lock.
     void remove(const std::string& conn_id);
 
-    // Finds the live session whose session_id() (the FreeSWITCH channel
-    // UUID — see the create() comment above) matches call_id, and posts a
-    // clean shutdown request to it — the same terminate() a caller-hangup
-    // WebSocket close would trigger, just reached via EslEventListener's
-    // CHANNEL_HANGUP notification instead of (or ahead of) that close
-    // event or the no_speech_timeout fallback. A linear scan over
-    // sessions_ is deliberate, not an oversight: concurrent call volume on
-    // one Gateway process is small (tens, not thousands), and this fires
-    // once per hangup, never on a hot path — not worth a second index to
-    // maintain in create()/remove(). No-op (logged) if no session matches,
-    // e.g. the session already tore itself down for an unrelated reason.
+    // Terminates the session whose channel UUID matches call_id. Linear scan is
+    // fine: low call volume and once per hangup. No-op if none matches.
     void terminate_by_call_id(const std::string& call_id, const std::string& reason);
 
     void push_dtmf_to_call(const std::string& call_id, const std::string& digit);

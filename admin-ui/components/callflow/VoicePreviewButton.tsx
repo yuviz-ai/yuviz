@@ -1,13 +1,7 @@
 "use client";
 
-// "Hear this line in this voice" — the actual text you typed, not a canned
-// sample sentence.
-//
-// The audio is synthesized by Config Service (POST /providers/{id}/preview)
-// and comes back as a WAV blob, so the credential never reaches the browser.
-// Only elevenlabs/deepgram can be synthesized server-side; for macOS/Kokoro
-// the endpoint returns a 400 explaining why, which is shown as-is rather
-// than being swallowed into a generic failure.
+// Preview the typed line in a voice. Synthesized server-side so credentials never reach the browser;
+// unsupported engines return a 400 whose message is shown as-is.
 
 import { useEffect, useRef, useState } from "react";
 import { ApiError, previewVoice } from "@/lib/api";

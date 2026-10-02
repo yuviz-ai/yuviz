@@ -6,27 +6,15 @@ import { useCallback, useEffect, useState } from "react";
 import { getCurrentUser, isConsoleRole, listTenants, Tenant, User } from "@/lib/api";
 import { clearToken, getToken } from "@/lib/auth";
 
-// Exported for admin-ui/app/live-calls/page.tsx's superadmin tenant picker
-// (T22b) — the same key this header switcher already writes, so a
-// superadmin's selection here is the one Live Calls reads too (T23).
+// Shared with other pages' tenant pickers (e.g. Live Calls) so they stay in sync with the header.
 export const ACTIVE_TENANT_STORAGE_KEY = "yuviz.activeTenantId";
-/** Stored in place of a tenant slug when a superadmin explicitly picks
- *  "All tenants" — distinct from "nothing stored yet" so a page reload
- *  doesn't silently fall back to a single tenant. */
+/** Stored when a superadmin explicitly picks "All tenants" (distinct from nothing stored). */
 export const ALL_TENANTS_SENTINEL = "__all__";
 
 function tenantInitial(name: string): string {
   return (name.trim()[0] || "?").toUpperCase();
 }
 
-// Icons match the original "Yuviz.ai — Admin Console" artifact's nav icon
-// set exactly where that nav item existed there (Accounts/Agents/Phone
-// Numbers/Settings). Profile/Sessions/Security stay panels inside the
-// single Settings page (its own internal "Your Account" secondary nav —
-// see app/settings/page.tsx). Speech Services/Language Model/Embeddings
-// were promoted OUT of Settings into their own top-level "AI & Voice" page
-// — same standing as Agents/Phone Numbers, not buried in a secondary
-// settings nav.
 const ICONS: Record<string, React.ReactNode> = {
   dashboard: (
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -131,9 +119,6 @@ const OVERVIEW_ITEMS = [{ href: "/dashboard", label: "Dashboard", icon: "dashboa
 
 const MANAGEMENT_ITEMS = [
   { href: "/tenants", label: "Accounts", icon: "accounts" },
-  // Agent Studio owns the agent's own configuration; IVR Flows owns the
-  // step-by-step conversation graph. One route each — /workflows used to be
-  // both, plus the settings page.
   { href: "/agents", label: "Agent Studio", icon: "agents" },
   { href: "/workflows", label: "IVR Flows", icon: "workflows" },
   { href: "/knowledge-bases", label: "Knowledge Base", icon: "knowledge-bases" },
@@ -152,20 +137,12 @@ const CALLING_ITEMS = [
   { href: "/live-calls", label: "Live Calls", icon: "live-calls" },
 ];
 
-// Guide sits beside Settings rather than in Management: it is read while
-// something is being configured or has gone wrong, and it is the one page
-// that must stay useful when every other page is failing (it fetches
-// nothing).
 const PLATFORM_ITEMS = [
   { href: "/docs", label: "Guide", icon: "docs" },
   { href: "/settings", label: "Settings", icon: "settings" },
 ];
 
-// Spend is an owner's view, not an operator's: gated to the same roles that
-// may manage users (superadmin/admin) rather than every console role. The
-// call-record endpoints it reads are open to any console role, so this is a
-// UI-level narrowing of a surface, not a security boundary — hence the
-// direct-URL redirect below as well, mirroring how /tenants is handled.
+// superadmin/admin only. UI narrowing, not a security boundary (its endpoints allow any console role).
 const BILLING_ITEM = { href: "/billing", label: "Billing & usage", icon: "billing" };
 
 const ALL_ITEMS = [...OVERVIEW_ITEMS, ...MANAGEMENT_ITEMS, USERS_ITEM, ...CALLING_ITEMS, BILLING_ITEM, ...PLATFORM_ITEMS];
@@ -179,9 +156,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [theme, setTheme] = useState<"dark" | "light">("light");
   const [search, setSearch] = useState("");
   const [collapsed, setCollapsed] = useState(false);
-  // Off-canvas nav on phones/tablets. Separate from `collapsed` (the
-  // desktop icon-rail toggle) — the two mean different things and a
-  // narrow screen should not inherit whichever the user last chose.
+  // Off-canvas nav on narrow screens; independent of the desktop `collapsed` rail.
   const [navOpen, setNavOpen] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -198,31 +173,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setNavOpen(false);
   }, [pathname]);
 
-  // Auth guard: /login and /invite render standalone (no sidebar, nothing
-  // to guard — see the early return below). /invite hosts invite acceptance
-  // for someone who, by definition, has no account yet — it must not bounce
-  // to /login the way every other route does. /no-access also renders
-  // standalone (below) but still needs a token to know who's asking, so it
-  // does NOT skip the guard here the way login/invite do.
-  // Every other route requires a token; a missing one redirects immediately,
-  // a present-but-invalid/expired one is caught by getCurrentUser() itself
-  // (api.ts's request() already redirects to /login on any 401, so this only
-  // needs to handle "no token at all").
-  //
-  // A token alone isn't enough: login/page.tsx sends non-console roles
-  // (agent — see isConsoleRole) to /no-access, but that's only enforced at
-  // login time. Without re-checking here, a bookmark or a refresh on any
-  // admin URL renders the full sidebar for a role with zero Config API
-  // surface, so the page's own fetches 403 into an error banner instead
-  // (lesson 22). authChecked stays false while a redirect is in flight so
-  // the page underneath never gets to render its own fetches.
-  //
-  // supervisor is a deliberate exception, not an omission: it's outside
-  // CONSOLE_ROLES (deps.py) but IS admitted by require_live_calls_operator
-  // on exactly /live-calls (services/config/deps.py). Landing it anywhere
-  // else in the console still 403s server-side (that gate is untouched),
-  // so it's redirected to /no-access the same as agent — the only route
-  // this guard must let it past is /live-calls itself.
+  // Auth guard. /login and /invite skip it (invitees have no account); /no-access still needs a token.
+  // Non-console roles go to /no-access, except supervisor which may reach /live-calls only.
+  // authChecked stays false during a redirect so the page underneath never fetches.
   useEffect(() => {
     if (pathname === "/login" || pathname === "/invite") return;
     if (!getToken()) {
@@ -236,16 +189,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           router.push("/no-access");
           return;
         }
-        // /tenants is hidden from the nav for anyone but superadmin (see
-        // visibleManagement below) — a direct URL/bookmark must be turned
-        // back the same way, not just left unlinked.
+        // Direct-URL guard matching the hidden nav item.
         if (u.role !== "superadmin" && pathname.startsWith("/tenants")) {
           router.push("/no-access");
           return;
         }
-        // Billing is hidden from the nav for anyone but superadmin/admin
-        // (see visibleBilling below) — a bookmark must be turned back the
-        // same way, not just left unlinked.
+        // Direct-URL guard matching the hidden nav item.
         if (u.role !== "superadmin" && u.role !== "admin" && pathname.startsWith("/billing")) {
           router.push("/no-access");
           return;
@@ -260,22 +209,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       });
   }, [pathname, router]);
 
-  // The header tenant switcher only makes sense for a platform-scoped
-  // superadmin (tenant_id === null) — every other role's own account is
-  // already bound to exactly one tenant server-side (lesson 24), so listing
-  // others here would be misleading UI, not a real capability. Every
-  // tenant-scoped page reads this same selection via useActiveTenant() and
-  // re-queries when it changes — see that hook's module comment.
-  // Resolves the switcher's selection from whatever's in localStorage right
-  // now, against a given tenant list — shared by the initial fetch below
-  // and the event listener that follows, so a selection made from anywhere
-  // else (e.g. Live Calls' own picker) resolves exactly the same way.
+  // Tenant switcher is only for platform-scoped superadmins; other roles are bound to one tenant.
+  // Resolves the stored selection against a tenant list (used on load and on change events).
   const resolveActiveTenantId = useCallback((ts: Tenant[]): string | null => {
     const stored = typeof window !== "undefined" ? window.localStorage.getItem(ACTIVE_TENANT_STORAGE_KEY) : null;
-    // No stored preference, or a stale one pointing at a deleted tenant,
-    // both default to "All tenants" — never a silently-picked ts[0], which
-    // read as "the switcher works" for whichever tenant happened to sort
-    // first and nothing for everyone else.
+    // Missing or stale selection defaults to "All tenants", never ts[0].
     const found = stored && stored !== ALL_TENANTS_SENTINEL ? ts.find((t) => t.slug === stored) ?? null : null;
     return found?.id ?? null;
   }, []);
@@ -285,27 +223,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     listTenants()
       .then((ts) => {
         setTenants(ts);
-        // Stores the tenant SLUG, not t.id (security finding #3 — a UUID
-        // here made the superadmin tenant-selection path dead code for any
-        // reader, since every tenant-scoped route/query takes a slug, not
-        // an id; see admin-ui/app/live-calls/page.tsx, the first real
-        // reader of this key besides this switcher itself).
+        // Stores the tenant slug, not id: tenant-scoped routes take slugs.
         setActiveTenantId(resolveActiveTenantId(ts));
       })
       .catch(() => {
-        // Non-fatal: the switcher simply doesn't render (lesson 21 — a
-        // failed convenience fetch must not block the rest of the shell).
+        // Non-fatal: the switcher simply doesn't render.
       });
   }, [user, resolveActiveTenantId]);
 
-  // Another page's own picker (Live Calls has one — see its own module
-  // comment) can change the selection without ever calling selectTenant()
-  // below, so this header must also listen for the same event it dispatches
-  // — without this, its own state stayed stale until the next navigation
-  // even though localStorage (and every OTHER page reading it live via
-  // useActiveTenant) had already moved on. Confirmed live: switching
-  // tenants from Live Calls left this switcher showing "All tenants" for
-  // the rest of the session.
+  // Other pages' pickers (e.g. Live Calls) change the selection without selectTenant(), so listen too.
   useEffect(() => {
     if (user?.role !== "superadmin") return;
     const onSwitch = () => setActiveTenantId(resolveActiveTenantId(tenants));
@@ -348,19 +274,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   if (pathname === "/login" || pathname === "/invite" || pathname === "/no-access") return <>{children}</>;
   if (!authChecked) return null;
 
-  // supervisor sees exactly one nav item (Live Calls) and nothing else —
-  // not a search-filtered coincidence, an unconditional restriction: it has
-  // no Config API surface anywhere else in this console (LIVE_CALLS_ROLES
-  // is the only grant it holds — services/config/deps.py).
+  // supervisor's only grant is LIVE_CALLS_ROLES, so it sees just Live Calls.
   const isSupervisor = user?.role === "supervisor";
   const canManageUsers = user?.role === "superadmin" || user?.role === "admin";
   const matches = (label: string) => label.toLowerCase().includes(search.trim().toLowerCase());
   const visibleOverview = isSupervisor ? [] : OVERVIEW_ITEMS.filter((item) => matches(item.label));
-  // Accounts (tenant list/create/edit/delete) is a platform-level surface —
-  // services/config/routers/tenants.py gates create/update/delete on
-  // require_role("superadmin") already; a tenant-scoped admin's GET /tenants
-  // narrows to their own single row, so the page is nothing but misleading
-  // Edit/Delete buttons for them. Hide the nav item to match.
+  // Accounts is superadmin-only (tenants.py enforces it server-side).
   const visibleManagement = isSupervisor
     ? []
     : MANAGEMENT_ITEMS.filter((item) => matches(item.label) && (item.href !== "/tenants" || user?.role === "superadmin"));

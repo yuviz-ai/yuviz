@@ -11,10 +11,7 @@
 
 namespace voiceai {
 
-// Drains PlaybackQueue on a dedicated thread and sends PCM frames to the
-// WebSocket client (FreeSWITCH mod_audio_fork).
-// One PlaybackDrain per CallSession; start() is called before the transport
-// opens, stop() is called in the session destructor before FSM teardown.
+// Drains PlaybackQueue on a dedicated thread and sends PCM to mod_audio_fork.
 class PlaybackDrain : private NonCopyable, private NonMovable {
 public:
     PlaybackDrain(PlaybackQueue&        queue,

@@ -14,13 +14,8 @@ def test_select_tool_filler_shorter_for_faster_average():
 
 
 def test_select_tool_filler_never_repeats_back_to_back():
-    # average_ms=2000.0 -> target=2.0s -> exactly one phrase fits
-    # ("Sure, let me look into that.", 2.0s) -> without the last_phrase
-    # exclusion filter, every call would return that same one phrase and
-    # this assertion would trip. (600.0 -> target=0.6s previously produced
-    # a 2-phrase tier via the "shortest" fallback branch, so rotation alone
-    # already prevented repeats and this test could never actually fail —
-    # deleting the last_phrase filter from fillers.py left it green.)
+    # average_ms=2000.0 -> exactly one phrase fits, so only the last_phrase
+    # exclusion filter prevents an immediate repeat.
     selector = FillerSelector()
     last_phrase = None
     for _ in range(20):

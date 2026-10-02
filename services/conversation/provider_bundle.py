@@ -1,12 +1,6 @@
 """
-ProviderBundle / ProviderRegistry — the boundary between "resolved config"
-(libs.config_sdk.ProviderConfigs, raw rows) and "live provider instances"
-(ISTT/ILLM/ITTS). Deliberately NOT part of the Config SDK: the SDK must
-never import provider interface types (that would make libs/config_sdk
-depend on services/conversation, inverting the dependency direction this
-whole design exists to enforce). ProviderRegistry composes the existing
-AIProviderManager (secret resolution, per-config-id caching, concurrency
-locks — all unchanged) rather than reimplementing any of that.
+Turns resolved provider config rows into live ISTT/ILLM/ITTS instances.
+Lives here, not in libs/config_sdk, so the SDK never depends on services/conversation.
 """
 
 from __future__ import annotations
@@ -22,21 +16,14 @@ from .ai_provider_manager import AIProviderManager, ProviderConfig
 
 @dataclass(frozen=True)
 class ProviderBundle:
-    """Live, ready-to-use provider instances for one call — what
-    PipelineConversationHandler actually holds and calls .transcribe()/
-    .generate()/.synthesize() on."""
+    """Live provider instances for one call."""
     stt: Any
     llm: Any
     tts: Any
 
 
 def _to_ai_provider_config(cfg: SDKProviderConfig) -> ProviderConfig:
-    """SDK's own ProviderConfig -> AIProviderManager's ProviderConfig. Two
-    distinct types on purpose: the SDK's model is a public, stable contract
-    for any consumer, AIProviderManager's is a narrower internal shape (see
-    ai_provider_manager.py's own docstring on that dataclass) — a
-    conversion function here is cheaper than making one type serve both
-    roles and coupling their evolution together."""
+    """Convert the SDK's public ProviderConfig to AIProviderManager's internal one."""
     return ProviderConfig(
         id=cfg.id,
         role=cfg.role,
@@ -50,11 +37,7 @@ def _to_ai_provider_config(cfg: SDKProviderConfig) -> ProviderConfig:
 
 
 class ProviderRegistry:
-    """Thin composition wrapper around AIProviderManager, giving
-    resolve(providers) the one-call shape agent_resolver.py needs — turns
-    RuntimeConfig.providers (raw ProviderConfig rows) into a ProviderBundle
-    of live instances, reusing AIProviderManager's existing caching/secret-
-    resolution/concurrency behavior unchanged."""
+    """Resolves ProviderConfigs into a ProviderBundle via AIProviderManager's cache."""
 
     def __init__(self, manager: AIProviderManager) -> None:
         self._manager = manager

@@ -1,17 +1,7 @@
 "use client";
 
-// Which account a page should be showing.
-//
-// Pages used to answer this by querying EVERY tenant and merging the
-// results — one HTTP request per tenant, per resource. That is fine at five
-// accounts and fatal at eight hundred: the browser's connection cap starts
-// aborting requests and the page fills with "TypeError: Failed to fetch".
-//
-// The header already has a tenant switcher; this makes it mean something.
-// A tenant-scoped user gets their own account and nothing else. A
-// platform-scoped one (superadmin, tenant_id IS NULL) gets whichever account
-// the switcher has selected — one account at a time, which is also how
-// someone actually reads this data.
+// Which account a page should show: a tenant-scoped user's own, or the header switcher's
+// selection for a platform-scoped (superadmin) user.
 
 import { useCallback, useEffect, useState } from "react";
 import { Tenant, getCurrentUser, listTenants } from "@/lib/api";
@@ -26,13 +16,8 @@ export interface ActiveTenant {
   /** Every account the viewer may see — for switchers and "all accounts" copy. */
   allTenants: Tenant[];
   isPlatformScoped: boolean;
-  /** True only when a platform-scoped viewer explicitly chose "All tenants"
-   *  (or has no stored preference yet, which defaults to it) — a page
-   *  should fan its fetch out over `allTenants` instead of `tenant`.
-   *  Distinct from `tenant === null`, which is also briefly true before
-   *  the first load resolves and permanently true for a tenant-scoped
-   *  viewer with somehow zero tenants — neither of those means "show
-   *  everything". */
+  /** Platform-scoped viewer selected "All tenants": fetch over `allTenants`.
+   *  Not equivalent to `tenant === null`, which is also true while loading. */
   isAllTenants: boolean;
   loading: boolean;
   error: string | null;
@@ -53,18 +38,13 @@ export function useActiveTenant(): ActiveTenant {
 
   const pick = useCallback((tenants: Tenant[], platformScoped: boolean): Picked => {
     if (!platformScoped) return { tenant: tenants[0] ?? null, isAllTenants: false };
-    // listTenants() already narrows a tenant-scoped user to their own row;
-    // only a platform-scoped viewer (superadmin) ever sees "All tenants".
     const stored =
       typeof window !== "undefined" ? window.localStorage.getItem(ACTIVE_TENANT_STORAGE_KEY) : null;
     if (stored && stored !== ALL_TENANTS_SENTINEL) {
       const found = tenants.find((t) => t.slug === stored);
       if (found) return { tenant: found, isAllTenants: false };
     }
-    // No stored preference, an explicit "All tenants", or a stale slug
-    // pointing at a deleted tenant — all default to "All tenants" rather
-    // than a silently-picked tenants[0], which read as the switcher
-    // working for whichever tenant happened to sort first.
+    // Missing, "All tenants", or stale slug: default to all rather than silently picking tenants[0].
     return { tenant: null, isAllTenants: true };
   }, []);
 

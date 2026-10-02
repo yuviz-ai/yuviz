@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
 # start_web_test.sh — Starts just enough of the stack to test an agent
-# through the browser (webcall bridge + admin-ui's Test Agent panel), with
-# no telephony at all: no Kamailio, no FreeSWITCH, no MySQL, no C++
-# Gateway. See start_local.sh for the full native-telephony stack this
-# deliberately leaves out — that one requires SIP infra with real routing
-# config that lives outside this repo (see docs/setup.md); this one is
-# meant to work for anyone who forks the repo and just wants to run and
-# talk to an agent.
+# in the browser (webcall + admin-ui Test Agent), with no telephony.
 #
 # Prerequisites (see docs/setup.md for install steps):
 #   PostgreSQL, Redis, Node.js, and (only if using local models instead of
@@ -60,9 +54,7 @@ start_knowledge_service() {
   ./venv/bin/python3 -m uvicorn services.knowledge.app:app --host 0.0.0.0 --port 8100
 }
 
-# ── Block 5: ConversationService (gRPC, port 50051) — the actual STT/LLM/
-#    TTS pipeline. One instance is enough for testing; run start_conv2 too
-#    only if you also want to exercise the Envoy load-balancing path. ─────
+# ── Block 5: ConversationService (gRPC, port 50051); conv2 is optional ─────
 _conv_env() {
   _require CONFIG_SERVICE_EMAIL CONFIG_SERVICE_PASSWORD SECRET_ENCRYPTION_KEY
 }
@@ -79,18 +71,13 @@ start_conv2() {
 
 # ── Block 6: webcall bridge (browser WebSocket <-> gRPC, port 8300) ───────
 start_webcall() {
-  # This script only starts one ConvSvc instance (start_conv1, :50051) and
-  # doesn't bring up Envoy, so point directly at it — webcall's own default
-  # is Envoy's :10000, which nothing is listening on in this simplified
-  # web-test path.
+  # No Envoy here, so bypass webcall's default :10000 target.
   export CONVERSATION_SVC_TARGET="localhost:50051"
   cd "$REPO"
   ./venv/bin/python3 -m services.webcall --port 8300
 }
 
-# ── Block 7: Admin UI (Next.js, port 3000) — has its own "Test Agent"
-#    panel (admin-ui/components/TestAgentPanel.tsx) that talks to webcall
-#    directly; this is the actual thing you click to test an agent. ──────
+# ── Block 7: Admin UI (Next.js, port 3000) — "Test Agent" panel ───────────
 start_admin_ui() {
   cd "$REPO/admin-ui"
   npm install

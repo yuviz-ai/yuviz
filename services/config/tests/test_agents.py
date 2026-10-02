@@ -10,8 +10,7 @@ from services.config import agents, cache
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def other_tenant(pool):
-    """A second, independent tenant for cross-tenant isolation tests —
-    test_tenant only gives us one."""
+    """A second tenant for cross-tenant isolation tests."""
     slug = f"test-{uuid.uuid4().hex[:8]}"
     row = await pool.fetchrow(
         "INSERT INTO tenants (name, slug) VALUES ($1, $2) RETURNING *",
@@ -99,9 +98,7 @@ async def test_soft_delete_agent_excluded_from_get(test_tenant, scoped):
 
 
 async def test_update_agent_rejects_cross_tenant_hijack(test_tenant, scoped, other_tenant):
-    """Regression test for a confirmed live hijack: PATCHing an agent through
-    a *different* tenant's slug must not touch it — an agent_id that exists
-    but belongs to another tenant must be indistinguishable from not found."""
+    """Updating an agent via another tenant's slug is indistinguishable from not found."""
     created = await agents.create_agent(
         tenant_id=test_tenant["id"], slug="support-agent", name="Original",
     )
@@ -129,9 +126,7 @@ async def test_soft_delete_agent_rejects_cross_tenant_deletion(test_tenant, scop
 
 
 async def test_soft_delete_agent_rejects_a_live_call(test_tenant, scoped, pool):
-    # Deliberately no force override for this one (unlike the tenant/
-    # provider-config guards) — this is a call happening to a real person
-    # right now, not administrative housekeeping.
+    # No force override here, unlike the tenant/provider guards.
     created = await agents.create_agent(
         tenant_id=test_tenant["id"], slug="support-agent", name="Support",
     )

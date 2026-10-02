@@ -1,8 +1,4 @@
-"""
-Tests the real cross-process contract against a real local Redis (the same
-one Config Service's cache.py publishes to) — not a mocked pub/sub client.
-See provider_config_subscriber.py's module docstring for why this exists.
-"""
+"""Cross-process provider-config invalidation against a real local Redis, not a mocked pub/sub."""
 
 from __future__ import annotations
 
@@ -43,9 +39,7 @@ async def test_subscriber_invalidates_manager_on_published_message():
     subscriber = ProviderConfigSubscriber(REDIS_URL, manager)
     subscriber.start()
     try:
-        # Give the subscriber's background task time to actually connect
-        # and subscribe before publishing — otherwise the message could be
-        # published before anyone is listening for it.
+        # Let the subscriber connect before publishing, or the message is lost.
         await asyncio.sleep(0.3)
 
         publisher = redis.from_url(REDIS_URL, decode_responses=True)

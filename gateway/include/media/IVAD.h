@@ -11,16 +11,13 @@ enum class VADEvent : uint8_t {
     SpeechEnd,   // energy dropped below threshold for hold_ms
 };
 
-// Voice Activity Detector interface.
-// Called on every 20 ms audio frame from AudioWorkerPool — must be non-blocking,
-// non-allocating, and never throw.
+// Voice Activity Detector. Called per audio frame on the worker thread:
+// must be non-blocking, non-allocating, and never throw.
 class IVAD {
 public:
     virtual ~IVAD() = default;
 
-    // Feed one frame of L16 PCM samples.  Returns a VADEvent.
-    // samples: pointer to int16_t samples (not bytes)
-    // count:   number of samples (= frame_ms * sample_rate / 1000)
+    // count is in samples, not bytes.
     [[nodiscard]] virtual VADEvent process(const int16_t* samples,
                                            size_t          count) noexcept = 0;
 

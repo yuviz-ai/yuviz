@@ -20,20 +20,13 @@ import {
   setAgentCustomApiEnabled,
 } from "@/lib/toolexecApi";
 
-// A per-step budget floor consistent with services/toolexec's own default
-// (api.timeout_ms IS NULL -> 6000, see database/schema.sql's custom_apis
-// comment) — used here only to size the worst-case-chain-total warning per
-// row, never sent to the server as a real value.
+// toolexec's default when timeout_ms is NULL; only used for the chain-budget warning.
 const DEFAULT_STEP_TIMEOUT_MS = 6000;
 const DEFAULT_CHAIN_BUDGET_MS = 20000;
 const EXECUTE_API_TOOL_NAME = "execute_api";
 
-// Attach-only picker for a single agent: enable/disable the tenant&apos;s
-// registered custom APIs for this agent and detach them, plus the
-// execute_api master switch and whole-chain budget (both per-agent
-// agent_tool_policies data, so they live here rather than on the
-// tenant-wide registry). No create, edit or delete — those are
-// CustomApisPanel's job on the Knowledge Base page.
+// Attach-only picker of the tenant's custom APIs for one agent, plus the execute_api switch and
+// chain budget. Create/edit/delete live in CustomApisPanel.
 export function AgentCustomApisPanel({ tenantId, agentId }: { tenantId: string; agentId: string }) {
   const [customApis, setCustomApis] = useState<CustomApi[]>([]);
   const [customApisError, setCustomApisError] = useState<string | null>(null);
@@ -48,10 +41,7 @@ export function AgentCustomApisPanel({ tenantId, agentId }: { tenantId: string; 
   const [switchError, setSwitchError] = useState<string | null>(null);
   const [budgetDraft, setBudgetDraft] = useState(String(DEFAULT_CHAIN_BUDGET_MS));
 
-  // Each source fetched and caught independently (lesson 21): a viewer's
-  // page must still show the APIs list even if a write-scoped sibling
-  // fetch failed, and one 403 must never blank data the API already
-  // returned for the others.
+  // Each source is caught independently so one 403 doesn't blank the others.
   const refresh = async () => {
     setLoading(true);
     await Promise.allSettled([
@@ -105,11 +95,8 @@ export function AgentCustomApisPanel({ tenantId, agentId }: { tenantId: string; 
     }
   };
 
-  // The execute_api master switch: an agent_tool_policies row for
-  // tool_name='execute_api', pointed at a per-tenant engine='toolexec'
-  // tool_provider_config (internal infrastructure — no api_key_ref, see
-  // services/config/routers/tool_provider_configs.py). Created lazily on
-  // first enable, same shape as ToolsPanel's own configure-then-attach flow.
+  // execute_api = an agent_tool_policies row pointing at a per-tenant engine='toolexec'
+  // tool_provider_config, created lazily on first enable.
   const handleToggleMasterSwitch = async (enabled: boolean) => {
     setSwitchSaving(true);
     setSwitchError(null);

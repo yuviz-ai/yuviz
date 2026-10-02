@@ -14,11 +14,7 @@ _DEFAULT_CALLER_ID = "+14155550100"
 
 @pytest_asyncio.fixture(autouse=True)
 async def _provision_default_caller_id(test_tenant, pool):
-    """worker.py now refuses to dial a caller_id that isn't an owned
-    phone_numbers row for the campaign's own tenant (security finding:
-    an unowned caller_id used to fall through to the unchecked ESL path).
-    Every test in this module that reaches resolve_outbound_route dials
-    from the same default number, so it must actually be provisioned."""
+    """Provision the default caller_id; the worker refuses unowned caller_ids."""
     await pool.execute(
         "INSERT INTO phone_numbers (did, tenant_id) VALUES ($1, $2) ON CONFLICT (did) WHERE deleted_at IS NULL DO NOTHING",
         _DEFAULT_CALLER_ID, test_tenant["id"],
@@ -209,9 +205,7 @@ async def test_on_job_complete_resolves_contact_and_decrements_in_flight(test_te
     assert worker._in_flight[str(campaign["id"])] == 0
     contacts = await campaign_contacts.list_contacts(campaign["id"])
     assert contacts[0]["status"] == "completed"
-    # The channel UUID in a successful job's reply is exactly what the
-    # Gateway uses as calls.session_id for that leg — must be captured so
-    # the Admin UI can later join a contact to its call/transcript.
+    # The channel UUID is the Gateway's calls.session_id for that leg.
     assert contacts[0]["call_session_id"] == "channel-uuid-xyz"
 
 
@@ -262,9 +256,6 @@ def test_within_calling_hours_same_day_window():
 
 
 def test_within_calling_hours_overnight_window_wraps_midnight():
-    # A window like 22:00-06:00 is "outside" only in the narrow band
-    # between 06:00 and 22:00 — this pins that wrap-around branch, not the
-    # live clock (avoids a test that only fails at certain times of day).
     window = {"calling_hours_start": "22:00", "calling_hours_end": "06:00", "calling_hours_timezone": "UTC"}
     assert _within_calling_hours({**window}) in (True, False)  # always defined, never raises
 
@@ -350,7 +341,7 @@ async def test_failed_contact_retried_until_max_attempts_then_exhausted(test_ten
     assert contacts[0]["attempt_count"] == 2
 
 
-# ── REST provider dispatch + idempotency-key minting (T22) ───────────────
+# ── REST provider dispatch + idempotency-key minting ─────────────────────
 
 async def _make_and_wire_rest_route(monkeypatch, test_tenant, test_agent, provider="vobiz", **overrides):
     campaign = await _make_running_campaign(test_tenant, test_agent, pacing_seconds=0, **overrides)
@@ -364,10 +355,6 @@ async def _make_and_wire_rest_route(monkeypatch, test_tenant, test_agent, provid
 
 
 async def test_same_attempt_retried_through_http_hop_reuses_one_key(monkeypatch):
-    # Exercises originate_call()'s own internal HTTP-retry loop (AC20) — the
-    # worker only claims once per attempt_count; retrying the SAME attempt
-    # across a transient network blip happens inside originate_call itself,
-    # not by the worker re-claiming the contact.
     keys_used = []
 
     class FakeResponse:
@@ -437,9 +424,7 @@ async def test_202_leaves_contact_calling_and_resolves_via_poll_on_next_tick(tes
 
 
 async def test_unowned_caller_id_refuses_to_dial_never_falls_back_to_esl(test_tenant, test_agent, monkeypatch, scoped):
-    """Security finding: a caller_id with no phone_numbers row for this
-    tenant must be refused outright, never silently dialled over the
-    unchecked ESL path (which performs no caller-id ownership check)."""
+    """An unprovisioned caller_id is refused on both the REST and ESL paths."""
     campaign = await _make_running_campaign(
         test_tenant, test_agent, pacing_seconds=0, caller_id="+19995551234",  # never provisioned
     )
@@ -469,9 +454,7 @@ async def test_unowned_caller_id_refuses_to_dial_never_falls_back_to_esl(test_te
 
 
 async def test_owned_did_with_no_rest_binding_still_takes_esl_path(test_tenant, test_agent, monkeypatch, scoped):
-    """An owned DID with no REST telephony_config binding (route["provider"]
-    is None) is a legitimate native/ESL number, distinct from an unowned
-    caller_id — must still dial, not be refused."""
+    """An owned DID with no REST binding (provider None) still dials over ESL."""
     campaign = await _make_running_campaign(test_tenant, test_agent, pacing_seconds=0)  # default caller_id, provisioned, no telephony_config
     await campaign_contacts.bulk_insert_contacts(campaign["id"], [{"phone_number": "+14155551111", "name": ""}])
 
@@ -509,7 +492,7 @@ async def test_native_or_none_provider_still_takes_esl_path(test_tenant, test_ag
     assert esl_called is True
 
 
-# ── due-campaign scan holds no transaction between ticks (T47) ───────────
+# ── due-campaign scan holds no transaction between ticks ─────────────────
 
 async def test_tick_holds_no_transaction_between_scan_iterations(pool):
     worker = CampaignWorker()

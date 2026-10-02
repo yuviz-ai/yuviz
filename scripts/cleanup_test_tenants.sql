@@ -1,20 +1,4 @@
--- Soft-delete the test-fixture tenants left behind by the RLS test runs.
---
--- Background: services/*/tests fixtures create a tenant per test and their
--- teardown could not delete them (see .sdlc/rls-tenant-isolation/
--- 04-t59-test-suite-finding.md — fixture teardown hit ForeignKeyViolationError
--- once RLS was enforcing, so tenants accumulated). The local dev database
--- reached 872 live tenants, 868 of them fixtures.
---
--- Why it matters beyond tidiness: every admin-ui list page used to issue one
--- request PER TENANT, so 872 accounts meant thousands of HTTP requests and a
--- page full of "TypeError: Failed to fetch". The pages are now scoped to the
--- selected account, but the account switcher is still unusable with 872
--- entries.
---
--- This is a SOFT delete (sets deleted_at). Every API already filters on
--- `deleted_at IS NULL`, so the rows vanish from the product but nothing is
--- destroyed and the undo at the bottom restores them.
+-- Soft-delete the test-fixture tenants left behind by test runs (undo at the bottom).
 --
 --   psql "$POSTGRES_DSN" -f scripts/cleanup_test_tenants.sql
 --
@@ -29,9 +13,7 @@
 
 BEGIN;
 
--- 1. Review: what is about to be soft-deleted, and does any of it hold
---    content? Anything with a non-zero count here is worth a second look
---    before you commit.
+-- 1. Review: non-zero content counts are worth a second look before committing.
 SELECT
     count(*)                                    AS tenants_to_delete,
     count(*) FILTER (WHERE agents  > 0)         AS with_agents,
@@ -59,9 +41,7 @@ SELECT slug, name FROM tenants WHERE deleted_at IS NULL ORDER BY name;
 COMMIT;
 
 -- ── Undo ────────────────────────────────────────────────────────────────
--- Restores every tenant this script soft-deleted in the last hour. Run it
--- straight away if the counts above were not what you expected; the window
--- keeps it from also resurrecting tenants deleted earlier on purpose.
+-- Restores tenants soft-deleted in the last hour (the window spares older deletions).
 --
 --   UPDATE tenants SET deleted_at = NULL
 --    WHERE deleted_at > now() - interval '1 hour';

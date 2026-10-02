@@ -1,15 +1,6 @@
-"""
-ToolLatencyStore — process-lifetime, read-capable rolling window of tool-call
-durations keyed by (tenant_id, agent_id, tool_name), partitioned by tenant so
-no tenant's activity can evict another's. Fed by LatencyRecorderMiddleware,
-read by FillerSelector via pipeline.py to size the filler spoken while a tool
-call is in flight.
+"""Per-tenant rolling window of tool-call durations, read back by FillerSelector to size fillers.
 
-Deliberately not IMetrics: that protocol is write-only (increment/observe)
-and this store must be read back — see design's rejected alternative.
-
-Not thread-safe by design: single asyncio event loop, record()/average_ms()
-are both synchronous and non-awaiting, so no interleaving is possible.
+Not thread-safe by design: single asyncio loop, and record()/average_ms() never await.
 """
 
 from __future__ import annotations
@@ -25,12 +16,7 @@ _MAX_AGE_S = 900.0       # samples older than 15 min are dropped on read
 _MAX_KEYS_PER_TENANT = 200   # distinct (agent, tool) keys per tenant; LRU beyond that
 _SWEEP_EVERY = 64        # run the reclaim sweep on every Nth accepted record()
 _SWEEP_SCAN = 32         # tenant entries examined per sweep, from the front of the outer map
-# _sweep() only reclaims up to _SWEEP_SCAN tenants per _SWEEP_EVERY accepted
-# records — sustained traffic from a stream of unique tenant ids (or tenant
-# aliases) could otherwise grow the outer map faster than the sweep reclaims
-# it, unbounded, for the life of the process. This is the same LRU-eviction
-# pattern as _MAX_KEYS_PER_TENANT, just applied one level up: an O(1) check
-# on the hot record() path, no scan of the whole map.
+# Caps the outer map: _sweep() alone can't keep up with a stream of unique tenant ids.
 _MAX_TENANTS = 2000
 
 TenantKey = str                    # tenant_id, outer partition

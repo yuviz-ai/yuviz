@@ -1,9 +1,4 @@
-"""
-MockConfigProvider — in-memory IConfigProvider, zero I/O. Lets a consumer
-like agent_resolver.py be tested by constructing RuntimeConfig objects
-directly rather than standing up real Postgres/Redis fixtures — the
-concrete testability win called out in the SDK's design doc.
-"""
+"""In-memory IConfigProvider for tests; zero I/O."""
 
 from __future__ import annotations
 

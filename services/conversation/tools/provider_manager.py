@@ -1,11 +1,5 @@
-"""
-ToolProviderManager — creates, caches, and pre-warms tool provider instances
-(e.g. ICalendarProvider) per distinct tool_provider_config, keyed by
-tool_provider_config.id. Mirrors AIProviderManager exactly — same registry
-shape, same per-config-id caching, same secret-resolved-once-at-
-construction discipline (see ai_provider_manager.py's own docstring for the
-reasoning, all of which applies unchanged here).
-"""
+"""ToolProviderManager — creates and caches tool provider instances per tool_provider_config.id.
+Mirrors AIProviderManager; secrets are resolved once at construction."""
 
 from __future__ import annotations
 
@@ -26,11 +20,7 @@ ProviderFactory = Callable[[ResolvedToolPolicy, str | None], Awaitable[Any]]
 async def _make_toolexec(policy: ResolvedToolPolicy, api_key: str | None) -> Any:
     from .providers.toolexec.client import ToolExecClient
 
-    # engine='toolexec' is internal infrastructure, not a tenant credential
-    # — no api_key_ref is required (services/config/routers/tool_provider_
-    # configs.py exempts this engine from the usual "api_key_ref or api_key
-    # is required" check). Auth against the service is the conversation
-    # service's own service account, not anything tenant-supplied.
+    # Internal engine: authenticates with the service account, never a tenant api_key_ref.
     return ToolExecClient(
         base_url=os.environ.get("TOOLEXEC_SERVICE_URL", "http://localhost:8600"),
         auth_base_url=os.environ.get("CONFIG_SERVICE_URL", "http://localhost:8000"),

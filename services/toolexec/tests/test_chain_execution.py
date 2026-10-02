@@ -1,10 +1,4 @@
-"""
-Integration tests for services/toolexec/executor.py (T11-T15) — real
-Postgres (the tenant_agent/pool fixtures), httpx.MockTransport for every
-outbound call (executor._step_transport is monkeypatched per test), and
-custom_apis._resolve_addresses monkeypatched module-wide in this file so
-no test performs a real DNS lookup.
-"""
+"""Executor integration tests: real Postgres, mocked HTTP transport and DNS."""
 
 from __future__ import annotations
 
@@ -32,9 +26,7 @@ def _admin(tenant_id: str) -> CurrentUser:
 
 
 async def _register_and_enable(pool, tenant, agent, name: str, **overrides) -> dict:
-    # str(tenant["id"]), not the raw asyncpg UUID object — this is what
-    # every real caller has (a JSON body field), and it's what
-    # auth_schemes.validate_tenant_ref's uuid.UUID(tenant_id) call needs.
+    # str, as real callers pass it from a JSON body.
     kwargs = dict(
         tenant_id=str(tenant["id"]), name=name, description="d",
         endpoint_url=f"https://{name}.example.com/api", method="GET",
@@ -58,9 +50,7 @@ def _request(tenant, agent, api_name: str, **overrides) -> ChainExecuteRequest:
 
 
 def _mock(handler) -> None:
-    """Returns a monkeypatch-ready replacement for executor._step_transport
-    that always hands back the given handler's MockTransport, regardless
-    of the (real) allowed_ips it's called with."""
+    """Replacement for executor._step_transport returning a MockTransport for handler."""
     def _factory(allowed_ips):
         return httpx.MockTransport(handler)
     return _factory
@@ -154,9 +144,6 @@ async def test_concurrent_cap_plus_one_rate_limited_no_run_row_zero_calls(pool, 
     api = await _register_and_enable(pool, tenant, agent, f"admission_{uuid.uuid4().hex[:8]}", side_effecting=False)
     limit = admission._max_concurrent()
 
-    # Occupy `limit` concurrency slots directly via admission.acquire() —
-    # simpler and more direct than gathering `limit` real in-flight chain
-    # executions, and exercises the exact same guard execute_chain calls.
     for _ in range(limit):
         assert admission.acquire(str(tenant["id"]), str(agent["id"])) is True
 
@@ -181,14 +168,7 @@ async def test_concurrent_cap_plus_one_rate_limited_no_run_row_zero_calls(pool, 
 
 @pytest.mark.asyncio
 async def test_claim_run_raising_surfaces_the_real_error_and_releases_the_slot(pool, tenant_agent, monkeypatch):
-    """MINOR 5: run_id was first bound at line 647 inside the try; the
-    finally evaluated `if run_id is not None`. If _claim_run itself raised
-    (pool timeout, or the api_chain_runs FK on agent_id/target_api_id),
-    the finally raised UnboundLocalError and masked the original
-    exception — the FK case lost app.py's fk_violation_handler 400 and
-    became an opaque 500. Worse, the admission slot acquired earlier was
-    then never released, permanently wedging that (tenant, agent) at
-    rate_limited after enough such errors."""
+    """If _claim_run raises, the original error propagates and the admission slot is released."""
     tenant, agent = tenant_agent
     api = await _register_and_enable(pool, tenant, agent, f"claimraise_{uuid.uuid4().hex[:8]}", side_effecting=False)
 
@@ -201,9 +181,6 @@ async def test_claim_run_raising_surfaces_the_real_error_and_releases_the_slot(p
     with pytest.raises(RuntimeError, match="pool timeout"):
         await executor.execute_chain(_request(tenant, agent, api["name"]))
 
-    # The real exception reached the caller (never UnboundLocalError), and
-    # the admission slot acquired before _claim_run was released rather
-    # than leaked.
     assert admission._concurrent[key] == 0
 
 
@@ -277,9 +254,7 @@ class _CountingStream(httpx.AsyncByteStream):
 
 @pytest.mark.asyncio
 async def test_response_body_cap_enforced_at_deployed_default(pool, tenant_agent, monkeypatch):
-    """Lesson 25: TOOLEXEC_MAX_RESPONSE_BYTES is left at its deployed
-    default (1 MiB) — the oversized body is what's driven up, not the cap
-    driven down."""
+    """Oversized body is abandoned at the deployed default cap (cap not lowered for the test)."""
     tenant, agent = tenant_agent
     api = await _register_and_enable(pool, tenant, agent, f"bigresp_{uuid.uuid4().hex[:8]}", side_effecting=False)
     chunk_size = 100_000
@@ -363,8 +338,7 @@ async def test_path_traversal_and_query_injection_produce_single_segment(pool, t
     assert calls == []
     assert response_a.chain_status == "invalid_argument"
 
-    # (b) a value containing '?' produces ONE percent-encoded path segment
-    # under the registered path — never a literal query string bolted on.
+    # (b) '?' stays inside one percent-encoded path segment.
     response_b = await executor.execute_chain(
         _request(tenant, agent, api["name"], caller_arguments={"ref": "x?admin=1"}),
     )
@@ -376,12 +350,7 @@ async def test_path_traversal_and_query_injection_produce_single_segment(pool, t
 
 @pytest.mark.asyncio
 async def test_one_malformed_custom_api_row_does_not_break_other_apis_chain(pool, tenant_agent, monkeypatch):
-    """Defect 2's second half / lesson 34: _build_api_tree decodes every
-    non-deleted custom_apis/custom_api_params row in the tenant in one
-    pass. One row whose auth_config is genuinely double-encoded (the shape
-    db.json_col's guard exists to catch — simulated here via a raw SQL
-    write, since the registration/write path cannot produce one) must not
-    take down execute_api for every OTHER api in the tenant."""
+    """A double-encoded row (written via raw SQL) doesn't break chains for other apis."""
     tenant, agent = tenant_agent
     broken = await _register_and_enable(pool, tenant, agent, f"broken_{uuid.uuid4().hex[:8]}", side_effecting=False)
     await pool.execute(
@@ -406,17 +375,7 @@ async def test_one_malformed_custom_api_row_does_not_break_other_apis_chain(pool
 
 @pytest.mark.asyncio
 async def test_malformed_upstream_row_in_chain_is_reported_not_a_raw_exception(pool, tenant_agent, monkeypatch):
-    """Review finding 2 / security finding 4: the prior test only proves an
-    UNINVOLVED malformed custom_apis row is harmless. This one corrupts the
-    row that IS an upstream of the target: _build_api_tree still decodes
-    the whole tenant and skips the broken row from api_rows, but _build()
-    then does api_rows[api_id]["name"] for that same id while walking the
-    upstream edge and — per the review — raises KeyError instead of
-    producing a clean chain failure. This test states the intended
-    behaviour (execute_chain returns a failure response, it does not raise)
-    so it fails for the right reason if that intent is not met; per the
-    task, if it reproduces the KeyError that is a real defect to report,
-    not to fix here."""
+    """A malformed upstream of the target yields a failure response, not a raised exception."""
     tenant, agent = tenant_agent
     leaf = await _register_and_enable(pool, tenant, agent, f"badupstream_{uuid.uuid4().hex[:8]}", side_effecting=False)
     root = await _register_and_enable(
@@ -426,8 +385,7 @@ async def test_malformed_upstream_row_in_chain_is_reported_not_a_raw_exception(p
             "source": "upstream", "upstream_api_id": leaf["id"], "upstream_json_path": "$.id",
         }],
     )
-    # Same simulated-corruption technique as the uninvolved-row test above,
-    # but on the LEAF that the target actually depends on.
+    # Corrupt the leaf the target depends on.
     await pool.execute(
         "UPDATE custom_apis SET auth_config = to_jsonb('{\"token_ref\": \"x\"}'::text) WHERE id = $1",
         leaf["id"],
@@ -466,10 +424,7 @@ async def test_concurrent_double_fire_collapses_to_one_outbound_call(pool, tenan
 
     monkeypatch.setattr(executor, "_step_transport", _mock(handler))
 
-    # Two DIFFERENT run identities (distinct idempotency_key/tool_call_id,
-    # same session) resolving to the IDENTICAL arguments — the same
-    # mutation double-fired, e.g. by a UI double-click or a client retry
-    # that didn't reuse the run's own idempotency_key.
+    # Two distinct runs with identical arguments (a double-fired mutation).
     session_id = f"sess-{uuid.uuid4().hex[:8]}"
     req1 = _request(tenant, agent, api["name"], session_id=session_id)
     req2 = _request(tenant, agent, api["name"], session_id=session_id)
@@ -489,16 +444,7 @@ async def test_concurrent_double_fire_collapses_to_one_outbound_call(pool, tenan
 
 @pytest.mark.asyncio
 async def test_claim_side_effect_is_atomic_under_direct_concurrency(pool, tenant_agent):
-    """A more direct proof than the full-pipeline test above: real DB
-    atomicity does not depend on genuine Python-level interleaving to be
-    correct, but proving OUR TEST can catch a regression to a
-    check-then-act pattern does — asyncio.gather over the full pipeline
-    can finish one coroutine's claim before the other's even starts,
-    letting a check-then-act bug slip through undetected. Calling
-    executor._claim_side_effect directly, many times, for the identical
-    (tenant, api, hash), removes everything between the two calls except
-    the claim itself, so the tasks are scheduled back-to-back with no
-    intervening awaits to let one finish before the other starts."""
+    """20 racing _claim_side_effect calls on the same key yield exactly one winner."""
     tenant, agent = tenant_agent
     api = await _register_side_effecting(pool, tenant, agent, f"atomic_{uuid.uuid4().hex[:8]}")
     run = dict(await pool.fetchrow(
@@ -536,9 +482,7 @@ async def test_cross_session_redial_still_refused(pool, tenant_agent, monkeypatc
     assert first.chain_status == "success"
     assert call_count["n"] == 1
 
-    # A brand new session (the hang-up-and-redial case) with a DIFFERENT
-    # idempotency_key/tool_call_id but the same resolved arguments — the
-    # claim is deliberately not session-scoped.
+    # Redial: new session, same arguments; claims are not session-scoped.
     second = await executor.execute_chain(_request(tenant, agent, api["name"], session_id="session-B"))
     assert second.chain_status == "failed"
     assert call_count["n"] == 1  # no new outbound call
@@ -546,8 +490,7 @@ async def test_cross_session_redial_still_refused(pool, tenant_agent, monkeypatc
 
 @pytest.mark.asyncio
 async def test_post_ttl_claim_taken_over_history_preserved(pool, tenant_agent, monkeypatch):
-    """Lesson 25: TOOLEXEC_SIDE_EFFECT_CLAIM_TTL is left at its deployed
-    default — the claim row's claimed_at is moved into the past instead."""
+    """An expired claim (claimed_at backdated, TTL untouched) is taken over; history kept."""
     tenant, agent = tenant_agent
     api = await _register_side_effecting(pool, tenant, agent, f"refund3_{uuid.uuid4().hex[:8]}")
     call_count = {"n": 0}
@@ -717,11 +660,7 @@ async def test_null_arguments_hash_on_side_effecting_step_violates_check(pool, t
 
 @pytest.mark.asyncio
 async def test_side_effecting_step_missing_required_arg_finalizes_no_500(pool, tenant_agent, monkeypatch):
-    """Defect 1 / lesson 32: a side-effecting API's failure paths persist
-    the step before `arguments_hash` is ever derived (missing required
-    caller argument, here) — that write must not retrip
-    api_chain_steps_side_effect_keyed, and the run must reach a terminal
-    status rather than being stranded 'running'."""
+    """Failure before the hash is derived persists without tripping the constraint and finalizes the run."""
     tenant, agent = tenant_agent
     api = await _register_side_effecting(
         pool, tenant, agent, f"refundmissing_{uuid.uuid4().hex[:8]}",
@@ -752,11 +691,7 @@ async def test_side_effecting_step_missing_required_arg_finalizes_no_500(pool, t
 
 @pytest.mark.asyncio
 async def test_missing_fields_reaches_the_response_not_dropped_to_empty(pool, tenant_agent, monkeypatch):
-    """QA defect 9: _resolve_arguments builds _StepFailure.missing_fields
-    precisely so the turn can name the gap, but the except handler used to
-    never carry it out of _run_steps — the response always sent []. A
-    caller who asks for a refund without an order id must get back the
-    name of the field that's missing, not an empty list."""
+    """missing_fields names the missing argument in the response."""
     tenant, agent = tenant_agent
     api = await _register_side_effecting(
         pool, tenant, agent, f"missingnamed_{uuid.uuid4().hex[:8]}",
@@ -772,13 +707,7 @@ async def test_missing_fields_reaches_the_response_not_dropped_to_empty(pool, te
 
 @pytest.mark.asyncio
 async def test_coerce_failure_finalizes_as_invalid_argument_not_a_raw_exception(pool, tenant_agent, monkeypatch):
-    """QA defect 6: an LLM-supplied {"qty": "three"} against an `integer`
-    param used to raise a bare ValueError out of _coerce, past the step
-    loop's only handler (except _StepFailure), past _finalize_run —
-    leaving api_chain_runs.status stuck 'running' forever. Because that
-    run row already won the (tenant_id, idempotency_key) claim, the
-    corrected retry under the same key would then be permanently answered
-    chain_already_running."""
+    """A type-coercion failure becomes invalid_argument and the run is finalized."""
     tenant, agent = tenant_agent
     api = await _register_and_enable(
         pool, tenant, agent, f"badcoerce_{uuid.uuid4().hex[:8]}", side_effecting=False,
@@ -802,13 +731,7 @@ async def test_coerce_failure_finalizes_as_invalid_argument_not_a_raw_exception(
     assert response.error == "invalid_argument_type"
     assert response.missing_fields == [{"name": "qty", "description": ""}]
 
-    # The row must reach a terminal status — under the bug, _coerce's bare
-    # ValueError escapes _run_steps/execute_chain entirely, past
-    # _finalize_run, leaving this row stuck 'running' forever. Because
-    # this row already won the (tenant_id, idempotency_key) claim, that
-    # would permanently answer any retry under the same key
-    # chain_already_running (_response_from_existing_run's "running"
-    # branch) instead of the row's real, finalized outcome.
+    # A run stuck 'running' would wedge retries under the same key.
     run_row = await pool.fetchrow("SELECT * FROM api_chain_runs WHERE id = $1", uuid.UUID(response.run_id))
     assert run_row["status"] != "running"
     assert run_row["finished_at"] is not None
@@ -816,22 +739,7 @@ async def test_coerce_failure_finalizes_as_invalid_argument_not_a_raw_exception(
 
 @pytest.mark.asyncio
 async def test_undecodable_param_row_refuses_the_call_instead_of_dropping_the_field(pool, tenant_agent, monkeypatch):
-    """Review finding 1 / security finding 1 (medium): _build_api_tree
-    silently SKIPS a custom_api_params row it cannot decode, deleting a
-    declared argument (and, for source='upstream', a dependency edge) from
-    the chain instead of failing it. The security audit found no reachable
-    trigger through the real write path (literal_value is JSONB, so
-    Postgres has already validated it, and _decode_param_row accepts every
-    valid JSON value) — so this test injects the decode failure directly
-    by monkeypatching custom_apis._decode_param_row for exactly the
-    'amount' row, simulating a future stricter decoder or a second writer
-    bypassing _replace_params. This pins the SAFE, intended behaviour: a
-    required argument that cannot be resolved must refuse the call
-    (missing_fields / invalid_argument), never dispatch the side-effecting
-    request with the field silently absent. If the current code fails
-    open (dispatches anyway with chain_status='success' and zero mention
-    of the dropped field), that is the defect described in finding 1 —
-    report it and leave this failing, do not weaken the assertion."""
+    """An undecodable param row (decoder monkeypatched) refuses the call instead of dropping the field."""
     tenant, agent = tenant_agent
     api = await _register_side_effecting(
         pool, tenant, agent, f"refundskip_{uuid.uuid4().hex[:8]}",
@@ -859,9 +767,6 @@ async def test_undecodable_param_row_refuses_the_call_instead_of_dropping_the_fi
         _request(tenant, agent, api["name"], caller_arguments={"amount": 50}),
     )
 
-    # The intended, safe outcome: the call is refused, the dropped
-    # required field is named, and — crucially — the outbound mutation
-    # never fires with the field missing.
     assert calls == []
     assert response.chain_status in ("invalid_argument", "failed", "unavailable")
 
@@ -871,9 +776,7 @@ async def test_undecodable_param_row_refuses_the_call_instead_of_dropping_the_fi
 @pytest.mark.asyncio
 async def test_credential_unavailable_no_request_ref_not_leaked(pool, tenant_agent, monkeypatch, caplog):
     tenant, agent = tenant_agent
-    # Namespace-VALID (would pass registration) but never actually
-    # provisioned — the realistic way a ref becomes unresolvable at call
-    # time without ever failing registration's own validation.
+    # Namespace-valid but never provisioned.
     tenant_hex = uuid.UUID(str(tenant["id"])).hex.upper()
     missing_ref = f"env:TENANT_{tenant_hex}_NEVER_SET_TOKEN"
     api = await _register_and_enable(
@@ -905,13 +808,7 @@ async def test_credential_unavailable_no_request_ref_not_leaked(pool, tenant_age
 
 @pytest.mark.asyncio
 async def test_auth_injected_credential_absent_from_redacted_step_and_chain_runs(pool, tenant_agent, monkeypatch):
-    """BLOCKING 1: the resolved bearer credential auth_schemes.apply()
-    injects into `headers` at call time must never reach
-    api_chain_steps.arguments_redacted — that column is returned by
-    GET /calls/{session_id}/chain-runs behind bare get_current_user, so a
-    leftover credential there would let any viewer/supervisor/agent in
-    the tenant read the tenant's live bearer token straight out of
-    Postgres."""
+    """The injected bearer token is sent but never persisted (chain-runs is readable by any role)."""
     tenant, agent = tenant_agent
     tenant_hex = uuid.UUID(str(tenant["id"])).hex.upper()
     ref = f"env:TENANT_{tenant_hex}_LIVE_BEARER_TOKEN"
@@ -954,14 +851,7 @@ async def test_auth_injected_credential_absent_from_redacted_step_and_chain_runs
 
 @pytest.mark.asyncio
 async def test_arguments_hash_stable_across_credential_rotation(pool, tenant_agent, monkeypatch):
-    """BLOCKING 2 (AC 15 regression, the more important half): a credential
-    rotation must not move arguments_hash when the declared arguments are
-    unchanged. auth_scheme='oauth2_client_credentials' caches its token
-    per process and refreshes it 60s before expiry, so if the hash were a
-    function of the resolved credential the SAME logical mutation would
-    derive a DIFFERENT hash on the next token refresh — the ON CONFLICT
-    (tenant_id, custom_api_id, arguments_hash) insert would then find no
-    conflict, and a genuinely identical refund would fire twice."""
+    """Credential rotation doesn't change arguments_hash, so the repeat call is still deduped."""
     tenant, agent = tenant_agent
     tenant_hex = uuid.UUID(str(tenant["id"])).hex.upper()
     ref = f"env:TENANT_{tenant_hex}_ROTATING_TOKEN"
@@ -982,8 +872,7 @@ async def test_arguments_hash_stable_across_credential_rotation(pool, tenant_age
         "SELECT * FROM api_chain_steps WHERE run_id = $1", uuid.UUID(response1.run_id),
     )
 
-    # Rotate the credential — same declared arguments (none), only the
-    # resolved value behind the same ref changes.
+    # Rotate the value behind the same ref.
     monkeypatch.setenv(f"TENANT_{tenant_hex}_ROTATING_TOKEN", "token-after-rotation")
     response2 = await executor.execute_chain(_request(tenant, agent, api["name"]))
     step2 = await pool.fetchrow(
@@ -991,21 +880,13 @@ async def test_arguments_hash_stable_across_credential_rotation(pool, tenant_age
     )
 
     assert step1["arguments_hash"] == step2["arguments_hash"]
-    # And because the hash is unchanged, the second logically-identical
-    # call correctly collapses to the loser's path instead of firing the
-    # mutation again.
     assert response2.chain_status == "failed"
     assert response2.error == "side_effecting_step_already_completed"
 
 
 @pytest.mark.asyncio
 async def test_sensitive_literal_registry_redaction_never_reaches_outbound_call(pool, tenant_agent, monkeypatch):
-    """The registry-read redaction added for the sensitive-literal-exposure
-    fix (_redact_sensitive_literals) must be a REGISTRY-view-only concern:
-    the executor never goes through list_custom_apis/get_custom_api — it
-    decodes custom_api_params rows directly in _build_api_tree — so a
-    sensitive literal must still place its REAL value on the outbound
-    call, never the registry's None."""
+    """Registry redaction doesn't affect the executor: the real sensitive literal is sent."""
     tenant, agent = tenant_agent
     secret_value = "sk-live-outbound-real-value"
     api = await _register_and_enable(
@@ -1071,14 +952,7 @@ async def test_sensitive_param_and_response_path_redacted_metadata_visible(pool,
 
 @pytest.mark.asyncio
 async def test_success_template_redacted_placeholder_suppresses_the_whole_template(pool, tenant_agent, monkeypatch):
-    """FIX 3: a path made sensitive since the template was registered —
-    simulated here via a direct SQL update bypassing custom_apis.py's own
-    write-time guard — must suppress the WHOLE template (deterministic_response
-    is None), exactly like a genuinely absent path. Speaking "[redacted]"
-    back as if it were a real value both confirms to the caller that a
-    sensitive field exists and reads as a malfunction; the LLM narrates
-    from `data` instead, where "[redacted]" is an ordinary field value,
-    not a spoken confirmation of anything."""
+    """A placeholder on a later-sensitive path (set via raw SQL) suppresses the whole template."""
     tenant, agent = tenant_agent
     api = await _register_and_enable(
         pool, tenant, agent, f"tmpl_ok_{uuid.uuid4().hex[:8]}", side_effecting=False,
@@ -1098,8 +972,6 @@ async def test_success_template_redacted_placeholder_suppresses_the_whole_templa
     assert response.chain_status == "success"
     assert response.deterministic_response is None
     assert "{{" not in (response.deterministic_response or "")
-    # The LLM still narrates from `data`, which itself is redacted (T15) —
-    # "[redacted]" appears there as an ordinary field value, never spoken.
     assert response.data["balance"] == "[redacted]"
 
 
@@ -1123,12 +995,10 @@ async def test_success_template_unresolved_placeholder_yields_none_not_literal(p
     assert "{{" not in (response.deterministic_response or "")
 
 
-# ── FIX 1 — the per-agent max_chain_depth override must actually govern
-# the runtime ceiling, not just the enable-time gate ───────────────────────
+# ── per-agent max_chain_depth override governs the runtime ceiling ───────
 
 async def _build_three_level_chain(pool, tenant, agent, unique: str) -> dict:
-    """leaf <- mid <- root (3 levels), all non-side-effecting so the test
-    can tell 'admitted' from 'rejected' purely by transport call count."""
+    """leaf <- mid <- root, all non-side-effecting."""
     leaf = await _register_and_enable(pool, tenant, agent, f"depthleaf_{unique}", side_effecting=False)
     mid = await _register_and_enable(
         pool, tenant, agent, f"depthmid_{unique}", side_effecting=False,
@@ -1175,8 +1045,7 @@ async def test_agent_override_rejects_a_legitimate_chain_the_platform_ceiling_wo
     monkeypatch.setattr(executor, "_step_transport", _mock(handler))
 
     try:
-        # The client itself asks for the full platform ceiling (4) — only
-        # the agent's own override may lower it further.
+        # Client asks for the platform ceiling; only the agent override lowers it.
         response = await executor.execute_chain(_request(tenant, agent, root["name"], max_chain_depth=4))
 
         assert response.chain_status == "failed"
@@ -1189,10 +1058,7 @@ async def test_agent_override_rejects_a_legitimate_chain_the_platform_ceiling_wo
 
 @pytest.mark.asyncio
 async def test_no_override_admits_the_same_chain_the_override_would_reject(pool, tenant_agent, monkeypatch):
-    """Same 3-level chain, same agent shape, but with NO agent_tool_policies
-    row at all (NULL override) — must be ADMITTED. Both directions, or a
-    bug that always rejects (or always admits) regardless of the override
-    would still pass only the other half of this pair."""
+    """Control: with no override row, the same 3-level chain is admitted."""
     tenant, agent = tenant_agent
     root = await _build_three_level_chain(pool, tenant, agent, uuid.uuid4().hex[:8])
 

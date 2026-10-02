@@ -1,12 +1,6 @@
 "use client";
 
-// Call-flow step cards.
-//
-// Own styles (cf-*), not the agent canvas's wf-node: that card is 300px with
-// a large prompt block because a conversation stage IS its prompt. An IVR
-// step is mostly structure — what kind of step, what it says in one line,
-// where it goes — so these are compact and scannable, and a flow of a dozen
-// steps fits on screen instead of three.
+// Compact call-flow step cards (cf-* styles, not the agent canvas's wf-node).
 
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { CallFlowNodeData, CallFlowNodeType } from "@/lib/callFlowApi";

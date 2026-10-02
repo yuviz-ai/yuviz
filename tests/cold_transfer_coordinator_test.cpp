@@ -1,19 +1,5 @@
-// ColdTransferCoordinator — the ITransferCoordinator contract, extracted
-// verbatim from CallSession's former h.on_transfer_requested body (see
-// docs/warm_transfer_architecture.md §1/§10). This file covers the new
-// class's own contract (start/cancel/shutdown/state semantics,
-// idempotency, callback wiring); the underlying uuid_transfer wire
-// behavior it delegates to is already exhaustively covered by
-// esl_client_test.cpp, and the correlator resolution mechanics by
-// transfer_correlator_test.cpp — deliberately not duplicated here.
-//
-// The command-accepted path needs a real ESL socket round-trip (see
-// esl_client_test.cpp's FakeEslServer) and is exercised by that live
-// integration instead of a second harness here; this file uses
-// cfg.enabled=false, which makes EslClient::transfer() resolve
-// synchronously with no socket involved at all — the cleanest way to
-// exercise ColdTransferCoordinator's own immediate-rejection path and
-// state machine in isolation.
+// ColdTransferCoordinator contract tests (start/cancel/shutdown/state, callbacks).
+// Most use cfg.enabled=false so EslClient::transfer() rejects synchronously without a socket.
 
 #include <gtest/gtest.h>
 
@@ -33,11 +19,7 @@ using namespace voiceai;
 
 namespace {
 
-// Minimal single-exchange fake ESL server — just enough to exercise
-// ColdTransferCoordinator's command-ACCEPTED path (on_media_handoff must
-// fire only here, never on the disabled-ESL rejection path the rest of
-// this file uses). Same shape as esl_client_test.cpp's own FakeEslServer,
-// not shared across files to keep each test file self-contained.
+// Minimal single-exchange fake ESL server for the command-accepted path.
 std::string recv_until_blank_line(int fd) {
     std::string buf;
     char chunk[4096];
@@ -173,8 +155,7 @@ TEST_F(ColdTransferCoordinatorTest, ShutdownBeforeStartIsANoOp) {
 }
 
 TEST_F(ColdTransferCoordinatorTest, CancelIsANoOpAtAnyState) {
-    // Cold has no pre-dispatch phase to abort — see ITransferCoordinator.h's
-    // cancel() contract and ColdTransferCoordinator::cancel()'s own comment.
+    // Cold has no pre-dispatch phase to abort.
     coordinator.cancel();  // before start() — no-op
     EXPECT_EQ(coordinator.state(), CoordinatorState::Idle);
 
@@ -188,19 +169,14 @@ TEST_F(ColdTransferCoordinatorTest, CancelIsANoOpAtAnyState) {
 }
 
 TEST_F(ColdTransferCoordinatorTest, MissingCallbackDoesNotCrash) {
-    // TransferCoordinatorCallbacks with no on_transfer_completed set at all —
-    // the coordinator must guard the std::function before invoking it,
-    // exactly like CallFsmHandlers' own callbacks do throughout this
-    // codebase.
+    // No on_transfer_completed set: the coordinator must guard the empty std::function.
     TransferCoordinatorCallbacks cbs;  // on_transfer_completed left unset
     coordinator.start(
         TransferCoordinatorContext{"call-uuid-1", "1001", "x", "tid-5"}, std::move(cbs));
     SUCCEED();
 }
 
-// ── on_media_handoff — must fire exactly when uuid_transfer is accepted,
-// never on immediate rejection (see TransferCoordinatorCallbacks' own
-// comment and CallSession's sip_leg_handed_off_ guard).
+// ── on_media_handoff: fires only when uuid_transfer is accepted ──
 
 TEST(ColdTransferCoordinatorAcceptedPathTest, OnMediaHandoffFiresWhenCommandAccepted) {
     FakeEslServer server;
@@ -230,8 +206,7 @@ TEST(ColdTransferCoordinatorAcceptedPathTest, OnMediaHandoffFiresWhenCommandAcce
         TransferCoordinatorContext{"call-uuid-1", "1001", "x", "tid-6"}, std::move(cbs));
 
     EXPECT_TRUE(handoff_fired);
-    // Cold's own confirmation (CHANNEL_BRIDGE) hasn't arrived yet — only
-    // the handoff signal fires synchronously with command acceptance.
+    // CHANNEL_BRIDGE hasn't arrived; only the handoff fires on command acceptance.
     EXPECT_FALSE(completed_fired);
     EXPECT_EQ(coordinator.state(), CoordinatorState::Active);
 

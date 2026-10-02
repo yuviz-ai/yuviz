@@ -1,12 +1,6 @@
 """
-Phase 4 integration tests: Python ConversationServicer + EchoConversationHandler.
-
-Covers the full Phase 4 message sequence:
-  audio_chunk → stt_result → tts_started → tts_chunk(s)
-  playback_finished → (servicer logs + resets state for next turn)
-
-Spins up an in-process gRPC server on a random port.
-No C++ gateway involved — pure Python-to-Python gRPC over loopback.
+Integration tests: ConversationServicer + EchoConversationHandler over an
+in-process loopback gRPC server (no C++ gateway).
 """
 
 from __future__ import annotations
@@ -131,11 +125,7 @@ async def test_rejects_unknown_protocol_version():
 
 @pytest.mark.asyncio
 async def test_audio_chunk_yields_full_phase4_sequence():
-    """
-    Sending an audio_chunk must produce stt_result → tts_started → tts_chunk
-    in that exact order — the sequence that drives the C++ Gateway FSM through
-    Recognizing → Thinking → Synthesizing → Speaking.
-    """
+    """audio_chunk yields stt_result, tts_started, tts_chunk in order (drives the gateway FSM)."""
     addr, server = await _open_echo_server()
     try:
         async with grpc.aio.insecure_channel(addr) as channel:
@@ -241,10 +231,7 @@ async def test_cancel_generation_sends_ack():
 
 @pytest.mark.asyncio
 async def test_playback_finished_accepted_without_error():
-    """
-    Gateway sends PlaybackFinished after the TTS chunk is played.
-    The servicer must accept it silently (no crash, no stream error).
-    """
+    """PlaybackFinished is accepted and the stream stays usable."""
     addr, server = await _open_echo_server()
     try:
         async with grpc.aio.insecure_channel(addr) as channel:
@@ -284,11 +271,7 @@ async def test_playback_finished_accepted_without_error():
 
 @pytest.mark.asyncio
 async def test_multi_turn_conversation():
-    """
-    Two complete turns (audio → TTS → playback_finished) separated by
-    a PlaybackFinished message.  Verifies the servicer resets correctly
-    for the second turn.
-    """
+    """Two full turns separated by PlaybackFinished both complete."""
     addr, server = await _open_echo_server()
     try:
         async with grpc.aio.insecure_channel(addr) as channel:
@@ -333,11 +316,7 @@ async def test_multi_turn_conversation():
 
 @pytest.mark.asyncio
 async def test_bus_drain_loop_fires_subscribers():
-    """
-    Regression test: EventBus.start() must be called before the read loop so
-    subscribers actually receive events.  Before the fix, bus._task was None
-    and the drain loop never ran — any published event silently accumulated.
-    """
+    """Subscribers receive events only after EventBus.start(), including ones queued before."""
     from ..event_bus import EventBus, SessionEnded
 
     received: list = []
@@ -365,22 +344,12 @@ async def test_bus_drain_loop_fires_subscribers():
 
 
 # ---------------------------------------------------------------------------
-# Phase 5B: transfer notifications over the real wire
+# Transfer notifications over the real wire
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_transfer_initiated_and_completed_round_trip_without_breaking_stream():
-    """
-    Sends transfer_initiated then transfer_completed as real GatewayMessages
-    over a live gRPC stream (exercising servicer.py's actual WhichOneof
-    dispatch, not just ConversationSession's Python-level methods — those
-    are covered directly in test_pipeline.py). Neither message produces a
-    ServiceMessage reply (purely reactive, see session.py) — proves the
-    servicer doesn't crash/error by completing the stream cleanly afterward.
-    completed drives the session's FSM to CLOSING (see session.py), so no
-    further audio is expected to be accepted — that's correct, not a
-    reason to keep the stream open for more traffic.
-    """
+    """transfer_initiated + transfer_completed over the wire leave the stream closing cleanly."""
     addr, server = await _open_echo_server()
     try:
         async with grpc.aio.insecure_channel(addr) as channel:
@@ -403,11 +372,7 @@ async def test_transfer_initiated_and_completed_round_trip_without_breaking_stre
             ))
 
             await stream.done_writing()
-            # Stream must complete without raising — proves the servicer
-            # processed both messages (including the WhichOneof dispatch
-            # added for them) without an unhandled exception. read() drains
-            # any trailing messages until EOF (mixing the write API above
-            # with the async-iterator API on the same stream isn't allowed).
+            # Drain via read(): mixing write() with async iteration on one stream isn't allowed.
             while await stream.read() is not grpc.aio.EOF:
                 pass
     finally:
@@ -447,9 +412,7 @@ async def test_transfer_failed_round_trip_without_breaking_stream():
 
 @pytest.mark.asyncio
 async def test_transfer_completed_sends_conversation_finalized_over_the_wire():
-    """Phase 5D: the gateway is actually waiting on this message (see
-    CallFSM's Finalizing state) — it must arrive as a real ServiceMessage,
-    not just an internal Python-side event."""
+    """transfer_completed yields a ConversationFinalized ServiceMessage (the gateway waits on it)."""
     addr, server = await _open_echo_server()
     try:
         async with grpc.aio.insecure_channel(addr) as channel:
@@ -475,11 +438,8 @@ async def test_transfer_completed_sends_conversation_finalized_over_the_wire():
             assert finalized.HasField("conversation_finalized")
             cf = finalized.conversation_finalized
             assert cf.session_id == "test-finalize-notify"
-            # Review Comment 2: reason/summary_generated/transcript_written
-            # carried on the wire, not just session_id.
             assert cf.reason == pb.TRANSFER_SUCCESS
-            # EchoConversationHandler has no LLM/transcripts (see echo.py) —
-            # both false is the honest, expected result for it.
+            # Echo handler has no LLM/transcripts.
             assert cf.summary_generated is False
             assert cf.transcript_written is False
 
@@ -489,9 +449,7 @@ async def test_transfer_completed_sends_conversation_finalized_over_the_wire():
 
 
 # ---------------------------------------------------------------------------
-# TransferRequest over the wire (the gap live-testing found: the servicer
-# detected/logged/published transfers but never sent the gRPC
-# message, so the gateway never executed uuid_transfer)
+# TransferRequest over the wire
 # ---------------------------------------------------------------------------
 
 from ..directives import TransferRequest, TransferType
@@ -499,9 +457,7 @@ from ..session import HandlerResponse
 
 
 class _TransferringEchoHandler(EchoConversationHandler):
-    """Echo handler whose speech_ended turn requests a cold transfer, with a
-    spoken acknowledgment (tts_payloads) — the shape a real [[TRANSFER]]
-    directive turn produces (see pipeline.py)."""
+    """speech_ended turn requests a cold transfer with a spoken acknowledgment."""
 
     async def on_speech_ended(self, session_id, audio, duration_ms, energy_db):
         yield HandlerResponse(
@@ -573,8 +529,6 @@ async def test_transfer_request_sent_after_uninterrupted_playback():
             assert msg.transfer_request.destination == "1001"
             assert msg.transfer_request.reason == "caller_requested_human"
             assert msg.transfer_request.session_id == "test-transfer-send"
-            # Phase 5F: every attempt carries a fresh observability
-            # correlation id, generated by the TransferRequest dataclass.
             assert msg.transfer_request.transfer_id
 
             await stream.done_writing()
@@ -608,14 +562,11 @@ async def test_transfer_request_dropped_on_interrupted_playback():
 
 
 # ---------------------------------------------------------------------------
-# assistant_response — the browser test-call panel's only way to see what
-# the agent said (it otherwise only receives tts_chunk audio, never text).
+# assistant_response (turn text for the browser test-call panel)
 # ---------------------------------------------------------------------------
 
 class _SpeakingEchoHandler(EchoConversationHandler):
-    """Echo handler whose speech_ended turn carries both audio and the
-    turn's full text — the shape a real completed pipeline.py turn
-    produces (see HandlerResponse.response_text)."""
+    """speech_ended turn carries both audio and the turn's full text."""
 
     async def on_speech_ended(self, session_id, audio, duration_ms, energy_db):
         yield HandlerResponse(
@@ -640,9 +591,7 @@ async def _open_speaking_server() -> tuple[str, grpc.aio.Server]:
 
 @pytest.mark.asyncio
 async def test_assistant_response_sent_after_turn_audio():
-    """response_text must reach the gateway as its own assistant_response
-    message, after the turn's stt_result/tts_started/tts_chunk sequence —
-    sent alongside, never instead of, the audio already streamed."""
+    """response_text arrives as assistant_response after the turn's audio."""
     addr, server = await _open_speaking_server()
     try:
         async with grpc.aio.insecure_channel(addr) as channel:

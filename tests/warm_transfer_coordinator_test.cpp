@@ -1,19 +1,5 @@
-// WarmTransferCoordinator — the ITransferCoordinator contract for attended
-// (bridge-based) transfer (see docs/warm_transfer_architecture.md).
-//
-// Two kinds of coverage here, deliberately split the same way
-// cold_transfer_coordinator_test.cpp is:
-//   1. cfg.enabled=false — exercises start()'s immediate-rejection path and
-//      the coordinator's own state machine (idempotent shutdown, cancel
-//      before/after, missing-callback safety) with no socket involved.
-//   2. A minimal multi-command fake ESL server — exercises the coordinator's
-//      OWN sequencing logic (hold -> originate -> [external BACKGROUND_JOB
-//      resolution, simulated by calling job_correlator_.resolve() directly,
-//      exactly as EslEventListener would] -> unhold -> stop_audio_fork ->
-//      bridge -> finish) end to end. Each individual ESL command's own wire
-//      format is already covered by esl_client_test.cpp and is NOT
-//      re-verified here — only that WarmTransferCoordinator issues them in
-//      the right order and interprets their success/failure correctly.
+// WarmTransferCoordinator: state machine with ESL disabled, and command
+// sequencing against a scripted fake ESL server (wire format is in esl_client_test.cpp).
 
 #include <gtest/gtest.h>
 
@@ -60,9 +46,7 @@ std::string bgapi_reply_frame(const std::string& job_uuid) {
         + job_uuid + "\nJob-UUID: " + job_uuid + "\n\n";
 }
 
-// Single persistent connection, one scripted reply per expected command, in
-// order — matches EslClient's real behavior of reusing its fd across calls
-// within the same coordinator run.
+// One persistent connection (EslClient reuses its fd), one scripted reply per command.
 struct MultiCommandFakeEslServer {
     int              listen_fd{-1};
     uint16_t         port{0};
@@ -246,9 +230,7 @@ TEST(WarmTransferCoordinatorLiveTest, AnnouncementSilenceSkipsHold) {
 }
 
 TEST(WarmTransferCoordinatorLiveTest, UnrecognizedWaitingExperienceDefaultsToHold) {
-    // Empty string (an older Conversation Service peer, or misconfiguration)
-    // must behave exactly like the explicit "announcement_moh" default —
-    // hold() still gets called.
+    // Empty/unknown value must behave like the "announcement_moh" default.
     MultiCommandFakeEslServer server;
     server.scripted_replies = {api_response_frame("+OK")};  // uuid_hold only
     server.start();
@@ -276,9 +258,6 @@ TEST(WarmTransferCoordinatorLiveTest, UnrecognizedWaitingExperienceDefaultsToHol
 
 TEST(WarmTransferCoordinatorLiveTest, SuccessfulAnswerBridgesAndReportsSuccess) {
     MultiCommandFakeEslServer server;
-    // Order issued by start()/on_job_resolved(): hold, bgapi originate,
-    // [external BACKGROUND_JOB resolution — no ESL command], unhold,
-    // stop_audio_fork, bridge.
     server.scripted_replies = {
         api_response_frame("+OK"),               // uuid_hold
         bgapi_reply_frame("job-uuid-1"),          // bgapi originate
@@ -318,17 +297,14 @@ TEST(WarmTransferCoordinatorLiveTest, SuccessfulAnswerBridgesAndReportsSuccess) 
     EXPECT_FALSE(fired);  // still waiting on BACKGROUND_JOB
     EXPECT_FALSE(handoff_fired);  // not yet — agent hasn't answered
 
-    // Simulate EslEventListener observing BACKGROUND_JOB for job-uuid-1,
-    // whose result text is the agent leg's own channel uuid.
+    // BACKGROUND_JOB result text is the agent leg's channel uuid.
     ASSERT_TRUE(job_correlator.resolve("job-uuid-1", true, "agent-uuid-1"));
 
     EXPECT_TRUE(fired);
     EXPECT_TRUE(success);
     EXPECT_EQ(detail, "bridged");
     EXPECT_EQ(coordinator.state(), CoordinatorState::Completed);
-    // CallSession's disconnect-vs-hangup guard depends on this firing
-    // before stop_audio_fork()'s own WebSocket-disconnect side effect can
-    // possibly arrive — see TransferCoordinatorCallbacks::on_media_handoff.
+    // Must fire before stop_audio_fork's WebSocket disconnect can arrive.
     EXPECT_TRUE(handoff_fired);
     EXPECT_TRUE(handoff_fired_before_completion);
 
@@ -377,15 +353,10 @@ TEST(WarmTransferCoordinatorLiveTest, AgentNoAnswerReportsFailureWithoutBridging
     EXPECT_TRUE(fired);
     EXPECT_FALSE(success);
     EXPECT_EQ(detail, "NO_ANSWER");
-    // No answer means the customer's leg was never handed off — must not
-    // suppress CallSession's own hangup for an attempt that never bridged.
+    // Never handed off, so CallSession's own hangup must not be suppressed.
     EXPECT_FALSE(handoff_fired);
     EXPECT_EQ(coordinator.state(), CoordinatorState::Completed);
-    // No agent uuid was ever known — nothing to hang up, no bridge attempted
-    // — but the caller must still be taken off hold (confirmed live
-    // 2026-07-21: this used to be skipped on the failure path entirely,
-    // leaving the caller on MOH indefinitely after a busy/rejected/no-
-    // answer outcome).
+    // No bridge, but the caller must still be taken off hold.
     ASSERT_EQ(server.received_commands.size(), 3u);
     EXPECT_EQ(server.received_commands[2], "api uuid_hold off customer-uuid");
 }
@@ -468,8 +439,7 @@ TEST(WarmTransferCoordinatorLiveTest, CancelBeforeAgentAnswersUnholdsAndReportsF
     EXPECT_EQ(detail, "cancelled");
     EXPECT_EQ(coordinator.state(), CoordinatorState::Completed);
 
-    // A late BACKGROUND_JOB for the (now-cancelled) job resolves into
-    // nothing — the watch was removed by finish() inside cancel().
+    // cancel() removed the watch, so a late BACKGROUND_JOB resolves nothing.
     EXPECT_FALSE(job_correlator.resolve("job-uuid-4", true, "agent-uuid-4"));
 }
 

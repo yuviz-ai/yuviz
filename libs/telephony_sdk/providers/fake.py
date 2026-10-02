@@ -1,10 +1,4 @@
-"""
-FakeProvider — a deterministic, scriptable ITelephonyProvider + ISmsProvider
-used only by tests. Registered hidden=True under "fake" in both registries
-so it resolves by name for a test fixture but never appears in the Admin
-UI's provider list (AC4). Also the only way to exercise the timeout/
-ambiguity branches in AC13-17 without a real vendor.
-"""
+"""Scriptable test-only telephony/SMS provider, registered hidden as "fake"."""
 
 from __future__ import annotations
 
@@ -33,8 +27,7 @@ class FakeProvider(ITelephonyProvider, ISmsProvider):
         super().__init__(credentials)
         self.dial_count = 0
         self.send_count = 0
-        # Scriptable via the credentials dict a test constructs this with —
-        # not class-level, so two instances in the same test never share state.
+        # Scripted per instance via credentials, so instances never share state.
         self._initiate_should_timeout: bool = bool(credentials.get("initiate_should_timeout", False))
         self._initiate_should_fail: bool = bool(credentials.get("initiate_should_fail", False))
         self._reconcile_outcome: str = credentials.get("reconcile_outcome", "indeterminate")

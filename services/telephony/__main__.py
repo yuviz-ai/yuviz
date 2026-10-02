@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-# Same generated-stubs import shim services/cloudonix/__main__.py uses —
-# conversation_pb2_grpc.py imports "from voiceai.v1 import
-# conversation_pb2" as an absolute package path, so this must happen
-# before anything that transitively imports it.
+# Generated stubs import "voiceai.v1" absolutely; must run before anything imports them.
 import os as _os
 import sys as _sys
 _sys.path.insert(0, _os.path.join(

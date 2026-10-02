@@ -1,16 +1,5 @@
-"""
-AIProviderManager — creates, caches, and pre-warms STT/LLM/TTS provider
-instances per distinct provider_configs row.
-
-Naming: "AI Provider Manager", not "Provider Registry" — it owns lifecycle,
-caching, secret resolution, and (Phase 7) health/fallback, not just lookup.
-Internally the implementation is still a registry (see _DEFAULT_REGISTRY).
-
-Non-negotiable latency rules this module exists to satisfy:
-  - Secrets are resolved once, here, at instantiation time — never per-call.
-  - prewarm() instantiates+loads every configured provider at process
-    startup, so the first real call never pays instantiation cost.
-"""
+"""Creates, caches and prewarms STT/LLM/TTS instances per provider_configs row.
+Secrets are resolved once at instantiation, never per call."""
 
 from __future__ import annotations
 
@@ -24,12 +13,7 @@ from .secret_resolver import SecretResolver
 
 log = logging.getLogger(__name__)
 
-# Uniform TTS speech-rate multiplier, read from provider_configs.extra
-# ["speed"] and honored by every TTS engine (kokoro natively; macos as
-# wpm = round(180 * speed) unless a legacy extra["wpm"] overrides; elevenlabs
-# as voice_settings.speed — the same 0.7–1.2 range ElevenLabs itself
-# supports). Out-of-bounds/non-numeric falls back to the default with a
-# warning — same degrade-don't-reject posture as transfer_timeout_ms.
+# TTS speed multiplier from extra["speed"]; range matches ElevenLabs. Invalid -> default.
 VOICE_SPEED_MIN     = 0.7
 VOICE_SPEED_DEFAULT = 1.0
 VOICE_SPEED_MAX     = 1.2
@@ -53,14 +37,8 @@ def voice_speed(cfg: "ProviderConfig") -> float:
 
 _THINK_ABSENT = object()
 
-# Models whose Ollama default is thinking ON (5-8s/turn, confirmed live for
-# gemma4). Selecting one of these from the admin-ui catalog must not ship a
-# silent 5-8x latency regression just because no one has set extra.think —
-# there is no UI path to set it at all (ProvidersPanel.tsx has zero extra.*
-# fields today). So absent/malformed think on one of these models degrades
-# to the safe value (False), not to omitting the key. Every other engine's
-# absent/malformed case still omits, matching the byte-identical payload
-# the existing fleet already sends.
+# Models whose Ollama default is thinking ON (5-8s/turn); absent extra.think means False
+# for these. Other models omit the key.
 _THINKING_CAPABLE_MODEL_PREFIXES = ("gemma4",)
 
 
@@ -156,11 +134,7 @@ async def _make_kokoro_tts(cfg: ProviderConfig, _api_key: str | None) -> Any:
 
 
 def _model_or_default(cfg: ProviderConfig, default: str) -> str:
-    """provider_configs.model is nullable and the admin UI's model select
-    starts blank, so plenty of live rows run on whatever an engine's
-    fallback happens to be — changing one silently re-points all of them
-    (gpt-4o -> gpt-4o-mini here did exactly that). Log which model a row
-    actually ended up on so that is visible rather than inferred."""
+    """Model or engine default; logs the fallback since many rows have no model set."""
     if cfg.model:
         return cfg.model
     log.info(
@@ -171,10 +145,7 @@ def _model_or_default(cfg: ProviderConfig, default: str) -> str:
 
 
 def _require_api_key(cfg: ProviderConfig, api_key: str | None) -> str:
-    # A cloud engine with no api_key_ref configured is a misconfiguration —
-    # fail loudly and clearly here, at instantiation time, rather than let
-    # httpx raise an opaque error deep in a header-construction call once a
-    # None gets passed where a str is expected.
+    # Fail clearly at instantiation instead of an opaque httpx header error later.
     if not api_key:
         raise ValueError(
             f"provider_config id={cfg.id!r} role={cfg.role!r} engine={cfg.engine!r} "
@@ -207,9 +178,7 @@ async def _make_openai_llm(cfg: ProviderConfig, api_key: str | None) -> Any:
 async def _make_groq_llm(cfg: ProviderConfig, api_key: str | None) -> Any:
     from .providers.llm.openai import OpenAILLM
 
-    # Groq's API is OpenAI-compatible — same class as _make_openai_llm,
-    # just pointed at Groq's endpoint with a
-    # Groq-hosted model default. See openai.py's module docstring.
+    # Groq's API is OpenAI-compatible.
     return OpenAILLM(
         api_key=_require_api_key(cfg, api_key),
         model=_model_or_default(cfg, "llama-3.3-70b-versatile"),
@@ -247,8 +216,7 @@ async def _make_anthropic_llm(cfg: ProviderConfig, api_key: str | None) -> Any:
 async def _make_nvidia_llm(cfg: ProviderConfig, api_key: str | None) -> Any:
     from .providers.llm.openai import OpenAILLM
 
-    # NVIDIA's hosted NIM catalog is OpenAI-compatible — a base_url swap,
-    # same as _make_groq_llm, not a new client.
+    # NVIDIA NIM is OpenAI-compatible.
     return OpenAILLM(
         api_key=_require_api_key(cfg, api_key),
         model=_model_or_default(cfg, "meta/llama-3.1-8b-instruct"),
@@ -261,8 +229,7 @@ async def _make_nvidia_llm(cfg: ProviderConfig, api_key: str | None) -> Any:
 async def _make_cohere_llm(cfg: ProviderConfig, api_key: str | None) -> Any:
     from .providers.llm.openai import OpenAILLM
 
-    # Cohere's Compatibility API is an OpenAI-shaped front door onto the
-    # same models (streaming + tools documented) — again a base_url swap.
+    # Cohere's Compatibility API is OpenAI-compatible.
     return OpenAILLM(
         api_key=_require_api_key(cfg, api_key),
         model=_model_or_default(cfg, "command-r7b-12-2024"),
@@ -293,11 +260,6 @@ async def _make_deepgram_tts(cfg: ProviderConfig, api_key: str | None) -> Any:
     )
 
 
-# Every engine referenced in the schema/UI now has a real implementation
-# registered here — local (faster_whisper/ollama/macos/kokoro) and cloud
-# (deepgram/openai/elevenlabs) both go through the exact same registry
-# mechanism; adding one is a new dict entry, never a change to
-# AIProviderManager itself.
 _DEFAULT_REGISTRY: dict[tuple[str, str], ProviderFactory] = {
     ("stt", "faster_whisper"): _make_faster_whisper,
     ("stt", "deepgram"):       _make_deepgram,
@@ -362,9 +324,7 @@ class AIProviderManager:
         return await self.get(cfg)
 
     async def prewarm(self, configs: Iterable[ProviderConfig]) -> None:
-        """Call once at process startup with every provider config the
-        process expects to serve, so the first real call never pays
-        instantiation/model-load cost."""
+        """Instantiate every given provider up front so calls never pay load cost."""
         for cfg in configs:
             await self.get(cfg)
 
@@ -373,16 +333,6 @@ class AIProviderManager:
         return frozenset(self._instances.keys())
 
     def invalidate(self, config_id: str) -> bool:
-        """Evicts one cached instance so the next get() reconstructs it
-        from the (presumably just-changed) provider_configs row — called
-        by provider_config_subscriber.py on a Redis Pub/Sub notification,
-        not on any call path itself. Deliberately does NOT close/cleanup
-        the evicted instance: a call already in progress may be holding a
-        direct reference to it (handler_factory() resolves once per call
-        and keeps that reference for the call's whole lifetime — see
-        __main__.py), so forcibly closing it here could break a live
-        call. It's simply left for garbage collection once nothing still
-        references it. Returns whether anything was actually cached for
-        this id (false is a normal, harmless outcome — e.g. a config that
-        was never prewarmed/used yet)."""
+        """Evict one cached instance; returns whether it was cached. Not closed,
+        since a live call may still hold a reference to it."""
         return self._instances.pop(config_id, None) is not None

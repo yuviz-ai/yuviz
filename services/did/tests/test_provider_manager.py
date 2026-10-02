@@ -1,7 +1,4 @@
-"""
-DidProviderManager tests — pure unit tests, no DB, no network. A fake
-factory stands in for a real IDidProvider (none exists yet — see
-provider_manager.py's docstring)."""
+"""DidProviderManager unit tests with fake factories; no DB, no network."""
 
 from __future__ import annotations
 

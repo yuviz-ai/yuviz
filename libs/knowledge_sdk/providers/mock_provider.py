@@ -1,9 +1,4 @@
-"""
-MockKnowledgeProvider — in-memory IKnowledgeProvider, zero I/O. Lets
-Conversation Service tests exercise the "context injected" / "no context"
-branches without standing up Knowledge Service or Postgres, matching
-MockConfigProvider's role for Config SDK consumers.
-"""
+"""In-memory IKnowledgeProvider for tests; zero I/O."""
 
 from __future__ import annotations
 
@@ -12,8 +7,7 @@ from ..models import ChunkSource, RetrievalPolicy, RetrievedChunk, RetrievedCont
 
 class MockKnowledgeProvider:
     def __init__(self) -> None:
-        # (tenant_slug, agent_slug) -> list[RetrievedChunk], set via
-        # add_chunk(). An agent with no entry here has no eligible KB.
+        # An agent with no entry here has no eligible KB.
         self._chunks: dict[tuple[str, str], list[RetrievedChunk]] = {}
 
     def add_chunk(
@@ -44,10 +38,7 @@ class MockKnowledgeProvider:
         if not chunks:
             return None
         policy = policy or RetrievalPolicy()
-        # A test double has no agent_retrieval_policies row to fall back to
-        # — these are the same system-default numbers services/knowledge/
-        # retrieval.py's _resolve_policy() bottoms out at, applied only when
-        # this test didn't set an explicit override on the policy it passed.
+        # Same system defaults Knowledge Service falls back to.
         top_k = policy.top_k if policy.top_k is not None else 5
         minimum_score = policy.minimum_score if policy.minimum_score is not None else 0.0
         include_citations = policy.include_citations if policy.include_citations is not None else True

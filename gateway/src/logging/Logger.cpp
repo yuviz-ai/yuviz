@@ -53,10 +53,7 @@ void Logger::set_level(Level level) {
 }
 
 Logger Logger::make_null() {
-    // Use a null sink + level::off so every log call returns after a single
-    // atomic level check — no I/O, no formatting, no heap allocation.
-    // A monotonic counter makes each logger name unique so spdlog's internal
-    // registry (which requires unique names) doesn't complain.
+    // Counter keeps names unique for spdlog's registry.
     static std::atomic<uint64_t> seq{0};
     auto sink = std::make_shared<spdlog::sinks::null_sink_mt>();
     Logger l;

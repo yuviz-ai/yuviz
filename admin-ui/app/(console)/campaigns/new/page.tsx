@@ -28,10 +28,7 @@ const EMPTY_FORM: CampaignCreate = {
   calling_hours_timezone: "UTC",
 };
 
-// Country the calling list is expected to belong to — a client-side guard
-// only (no backend field for it): the campaigns worker dials whatever
-// number is in the CSV, so this just warns before upload rather than
-// silently mis-dialing a batch of the wrong country's numbers.
+// Client-side warning only; the campaigns worker dials whatever is in the CSV.
 const COUNTRY_OPTIONS = [
   { code: "IN", label: "India (+91)", prefix: "+91" },
   { code: "US", label: "United States (+1)", prefix: "+1" },
@@ -87,10 +84,7 @@ interface CsvPreview {
   totalCount: number;
 }
 
-// Preview only — a lightweight split, not a real CSV parser (no quoted-comma
-// handling). The authoritative parse happens server-side on actual upload
-// (services/campaigns's own contacts/upload endpoint); this just gives the
-// operator a glance at what they're about to send.
+// Preview only: naive split, no quoted-comma handling. The real parse is server-side.
 function parseCsvPreview(text: string): CsvPreview {
   const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
   const headers = (lines[0] || "").split(",").map((h) => h.trim());
@@ -136,10 +130,7 @@ export default function NewCampaignPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenantId, agents]);
 
-  // Workflow (agent_id) is marked optional in this wizard for now, even
-  // though campaigns.agent_id is NOT NULL server-side (database/schema.sql)
-  // — submitting without one surfaces the backend's own real rejection at
-  // Create time (the error banner) rather than a client-side block here.
+  // agent_id is NOT NULL server-side; omitting it surfaces the backend error on Create.
   const audienceValid = !!form.name.trim();
 
   const handleFile = (file: File) => {
@@ -163,10 +154,7 @@ export default function NewCampaignPage() {
     try {
       const created = await createCampaign(tenantId, form);
       if (contactsFile) {
-        // Contacts can only be uploaded against a campaign that already
-        // exists (services/campaigns/campaigns.py), so the file staged in
-        // step 1 is held in memory and only sent now — a failure here
-        // still lands the operator on a real campaign, not a lost draft.
+        // Contacts need an existing campaign, so the staged file is uploaded only after create.
         await uploadCampaignContacts(created.id, contactsFile).catch(() => {
           // Non-fatal: the campaign page's own Upload CSV control covers
           // retrying this — the campaign itself must not be blocked on it.

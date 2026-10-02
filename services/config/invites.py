@@ -1,21 +1,9 @@
 """
-Invite lifecycle — the pending/accepted/revoked state machine plus the one
-permission gate (`may_invite`) every mutating path calls. Logic sits here,
-not in routers/invites.py (Phase 3), same split as tenants.py/users.py.
+Invite lifecycle (pending/accepted/revoked). `may_invite` is the single
+privilege check; resend/revoke apply it to the *stored* role/tenant (no IDOR).
 
-Permission contract: `may_invite` is the single privilege-escalation check.
-Create passes the *request's* target role/tenant; resend/revoke load the
-row first and pass its *stored* role/tenant, so an enumerated invite id from
-another tenant — or a superadmin's invite — is refused by the same rule
-that blocks creating one (no IDOR, no inline if-chains).
-
-Accept (`accept_invite`) is the one function with a real race: the
-conditional `UPDATE ... WHERE status='pending' AND expires_at > now()
-RETURNING *` is the serialisation point and runs *before* the users INSERT.
-`accepted_user_id` is deliberately left unset by that UPDATE and backfilled
-afterwards in the same transaction — setting it there would force the
-INSERT to happen first, and the race loser would then serialize on
-users_email_lower_idx and get a 500 instead of the promised 410.
+accept_invite's conditional UPDATE runs before the users INSERT so the race
+loser gets 410, not a unique-index 500; accepted_user_id is backfilled after.
 """
 
 from __future__ import annotations
@@ -46,27 +34,14 @@ class InviteNotPending(Exception):
 
 
 class EmailConflict(Exception):
-    """409 at create — a live account already claims this email. tenant_name
-    is None for the tenant-blind message a tenant_admin actor gets; set only
-    when the actor is a super_admin."""
+    """409 at create: an account has this email. tenant_name set only for superadmin actors."""
 
     def __init__(self, tenant_name: str | None = None):
         self.tenant_name = tenant_name
 
 
 class PendingInviteConflict(Exception):
-    """409 at create — a still-live (non-expired) pending invite already
-    holds this (tenant, lower(email)) slot in user_invites_pending_email_idx.
-    Distinct from EmailConflict (PR #19 finding 1): no account exists, the
-    remedy is "revoke the stale invite first", and that's a different
-    action from "this email cannot be invited". An *expired* pending invite
-    never reaches this — create_invite revokes it in the same transaction
-    before the INSERT, so only a genuinely live one collides. Carries no
-    tenant name (unlike EmailConflict): the collision is always inside the
-    actor's own tenant for a tenant_admin (may_invite requires
-    actor_tenant_id == target_tenant_id), and a superadmin actor can
-    already see every tenant via GET /users, so naming nothing here leaks
-    nothing either way."""
+    """409 at create: a live pending invite holds this (tenant, email) slot; revoke it first."""
 
 
 class InviteExpired(Exception):
@@ -82,33 +57,18 @@ class InviteUsed(Exception):
 
 
 class EmailTaken(Exception):
-    """409 at accept — a squatting invite in another tenant for the same
-    email was accepted first. Tenant-blind by construction: the accepting
-    party is unauthenticated and must learn nothing about the other
-    tenant."""
+    """409 at accept: another invite for this email was accepted first. Tenant-blind."""
 
 
 class ResendCooldown(Exception):
-    """429 — a resend within RESEND_COOLDOWN_SECONDS of the last one. Raised
-    from inside resend_invite's own locked transaction (not a router-level
-    check-then-act) because the row is already loaded FOR UPDATE there —
-    checking last_sent_at anywhere else would race two concurrent resends
-    of the same invite (lesson 8)."""
+    """429: resend within the cooldown. Checked under the row lock to avoid racing resends."""
 
     def __init__(self, remaining_seconds: int):
         self.remaining_seconds = remaining_seconds
 
 
 class InviteContextGone(Exception):
-    """410 at accept — the authorization this invite represents is no
-    longer live: its target tenant was soft-deleted, or the inviter was
-    soft-deleted/demoted such that may_invite would refuse this exact grant
-    today. De-provisioning the inviter (or their tenant) does not
-    de-provision what they already granted unless this is checked at
-    accept time, since an invite can sit pending for up to 7 days.
-    Tenant-blind and distinct from InviteExpired/InviteRevoked/InviteUsed
-    (AC10) — the accepter learns only that the invite is no longer valid,
-    never why."""
+    """410 at accept: target tenant deleted or inviter could no longer grant this. Tenant-blind."""
 
 
 def may_invite(
@@ -128,23 +88,18 @@ def may_invite(
 
 
 def _same_tenant(a: Any, b: Any) -> bool:
-    # actor_tenant_id/target_tenant_id may arrive as a str (JWT/request body)
-    # on one side and a uuid.UUID (a stored row) on the other — compare by
-    # string form so the two never spuriously mismatch on type alone.
+    # str (JWT/body) vs uuid.UUID (row): compare string forms.
     return (str(a) if a is not None else None) == (str(b) if b is not None else None)
 
 
 def _new_token() -> tuple[str, str]:
-    """secrets.token_urlsafe(32): 256 bits from os.urandom, ~43 URL-safe
-    chars. Returns (raw, sha256 hex) — only the hash is ever stored."""
+    """Returns (raw 256-bit token, sha256 hex); only the hash is stored."""
     raw = secrets.token_urlsafe(32)
     return raw, hashlib.sha256(raw.encode()).hexdigest()
 
 
 async def _conflict_tenant_name(tenant_id: Any, actor: CurrentUser) -> str | None:
-    """None keeps the response tenant-blind for a tenant_admin actor. A
-    super_admin actor already sees every tenant via GET /users, so the
-    conflict names it (round-1 AC9, amended for the tenant-blind case)."""
+    """Tenant name for superadmin actors only; None keeps it tenant-blind."""
     if actor.role != "superadmin":
         return None
     if tenant_id is None:
@@ -156,9 +111,7 @@ async def _conflict_tenant_name(tenant_id: Any, actor: CurrentUser) -> str | Non
 async def create_invite(
     *, email: str, role: str, tenant_id: Any | None, team: str | None, actor: CurrentUser,
 ) -> tuple[dict[str, Any], str]:
-    """Returns (row, raw_token). Email delivery is the router's job
-    (Phase 3), not this function's — a failed send must not undo the
-    already-committed pending row."""
+    """Returns (row, raw_token); the router sends email so a failed send can't undo the row."""
     if not may_invite(
         actor_role=actor.role, actor_tenant_id=actor.tenant_id,
         target_role=role, target_tenant_id=tenant_id,
@@ -173,26 +126,11 @@ async def create_invite(
 
     raw_token, token_hash = _new_token()
     pool = await db.get_pool()
-    # tenant_id is None only for a platform superadmin inviting another
-    # platform admin — the row is tenant_id IS NULL by construction and
-    # invisible to every policy, so that's the one legitimate bypass
-    # (design's Tier 4: the router already asserted body.tenant_id against
-    # the caller and set the target GUC to it for every other case).
+    # NULL-tenant rows are invisible to RLS; the router already asserted tenant access.
     conn_cm = platform_conn(pool, reason="invites-create-null-tenant") if tenant_id is None else tenant_conn(pool)
     async with conn_cm as conn:
-        # Self-heal (PR #19 finding 1, amended per round-2 review): an
-        # expired invite is still status='pending' — expiry is derived,
-        # never stored — so it would otherwise squat this (tenant,
-        # lower(email)) slot in user_invites_pending_email_idx forever.
-        # The unique index guarantees at most one pending row per slot,
-        # so lock and inspect that one row rather than blind-UPDATE-ing
-        # by (tenant, email) alone: reusing may_invite against its
-        # *stored* role/tenant — exactly as revoke_invite does — means
-        # this can only reclaim a slot the actor could already revoke
-        # through POST /invites/{id}/revoke. A tenant_admin cannot use
-        # a re-invite to silently clear an expired superadmin-role
-        # invite it could never have revoked directly; that case falls
-        # through untouched and the INSERT below correctly conflicts.
+        # Expired invites stay 'pending' and squat the slot; reclaim it only if
+        # the actor could revoke it (may_invite on the stored role/tenant).
         slot = await conn.fetchrow(
             "SELECT * FROM user_invites WHERE status = 'pending' "
             "AND COALESCE(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid) "
@@ -213,11 +151,7 @@ async def create_invite(
                 "WHERE id = $1 RETURNING *",
                 slot["id"],
             )
-            # Distinct from an operator-initiated revoke (design line
-            # 206 / AC13: every mutating path audits in the same
-            # transaction) — the "reason" marker is what lets a reader
-            # tell "the system reclaimed a dead slot" from "an admin
-            # revoked this", even though both write action="updated".
+            # "reason" distinguishes a system reclaim from an admin revoke.
             await audit.write_audit(
                 conn,
                 entity_type="invite",
@@ -237,11 +171,6 @@ async def create_invite(
                 tenant_id, email, role, team, token_hash, actor.id,
             )
         except asyncpg.UniqueViolationError:
-            # A genuinely live pending invite for this slot — the
-            # expired case was just revoked above, so this can only be
-            # a concurrent double-send or a real, unexpired pending
-            # invite. Distinct from EmailConflict: no account exists,
-            # the remedy is "revoke the existing invite first".
             raise PendingInviteConflict()
         result = dict(row)
         await audit.write_audit(
@@ -257,14 +186,7 @@ async def create_invite(
 
 
 async def resend_invite(invite_id: Any, *, actor: CurrentUser) -> tuple[dict[str, Any], str]:
-    """Rotates token_hash in place and extends expires_at by another
-    INVITE_TTL — a resend is a fresh grant, re-checked against the actor's
-    current role/tenant by may_invite below, so the invitee's new link must
-    not inherit the old grant's stale expiry (PR #19 finding 2). 404s before
-    it 403s (row loaded first), then may_invite runs against the *stored*
-    role/tenant, not anything the caller supplies — an IDOR against another
-    tenant's invite, or a superadmin's, is refused the same way creating one
-    would be."""
+    """Rotate the token and extend expiry (a fresh grant); may_invite checks the stored role/tenant."""
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         row = await conn.fetchrow("SELECT * FROM user_invites WHERE id = $1 FOR UPDATE", invite_id)
@@ -339,10 +261,7 @@ async def revoke_invite(invite_id: Any, *, actor: CurrentUser) -> dict[str, Any]
 
 
 async def get_invite_by_id(invite_id: Any, *, platform_scoped: bool = False) -> dict[str, Any] | None:
-    """Tier 3 by-id resolver for the router's pre-mutation authorization
-    (resend/revoke) — same convention as every other by-id getter:
-    `platform_scoped` (deps.is_platform_scoped(current_user) only, lesson
-    24) selects platform_conn for a platform actor's read."""
+    """By-id read for router authorization; platform_scoped selects platform_conn."""
     pool = await db.get_pool()
     conn_cm = platform_conn(pool, reason="invites-by-id") if platform_scoped else tenant_conn(pool)
     async with conn_cm as conn:
@@ -351,16 +270,8 @@ async def get_invite_by_id(invite_id: Any, *, platform_scoped: bool = False) -> 
 
 
 async def _check_context_live(conn: Any, invite: dict[str, Any]) -> None:
-    """Raises InviteContextGone if the granting context is no longer live:
-    the invite's target tenant was soft-deleted, or the inviter is gone /
-    no longer holds a role that could have issued this exact grant
-    (re-checked with may_invite against their CURRENT role/tenant, not what
-    was true when they sent it). Shared by accept_invite (PR #19 finding
-    3) — under the invite row's FOR UPDATE lock, atomic with the accept
-    itself — and get_invite_for_accept, which is read-only and needs no
-    lock; `conn` may be either a transaction connection or the bare pool,
-    both expose fetchrow. De-provisioning the inviter or their tenant does
-    not de-provision what they already granted unless this is checked."""
+    """Raise InviteContextGone if the tenant is deleted or the inviter's CURRENT
+    role/tenant could no longer issue this grant."""
     if invite["tenant_id"] is not None:
         tenant_row = await conn.fetchrow(
             "SELECT 1 FROM tenants WHERE id = $1 AND deleted_at IS NULL",
@@ -385,14 +296,10 @@ async def _check_context_live(conn: Any, invite: dict[str, Any]) -> None:
 
 
 async def accept_invite(*, raw_token: str, password: str) -> dict[str, Any]:
-    """Public — no actor, no JWT. Raises InviteExpired/InviteRevoked/
-    InviteUsed/InviteContextGone/EmailTaken/LookupError, each distinct
-    (AC6/AC10)."""
+    """Public, unauthenticated accept; raises a distinct exception per failure."""
     token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
     pool = await db.get_pool()
-    # Pre-auth: no actor, no JWT, and the invite/new-user row may itself be
-    # NULL-tenant (a platform admin invite) — platform_conn bypass, same as
-    # every other pre-auth path in this module.
+    # Pre-auth and possibly NULL-tenant, so platform_conn.
     async with platform_conn(pool, reason="pre-auth-invite-accept") as conn:
         row = await conn.fetchrow(
             "SELECT * FROM user_invites WHERE token_hash = $1 FOR UPDATE", token_hash,
@@ -401,8 +308,7 @@ async def accept_invite(*, raw_token: str, password: str) -> dict[str, Any]:
             raise LookupError("invite not found")
         invite = dict(row)
 
-        # Classification only — the conditional UPDATE below is the
-        # actual serialisation point for a concurrent accept.
+        # Classification only; the conditional UPDATE below serializes accepts.
         if invite["status"] == "revoked":
             raise InviteRevoked()
         if invite["status"] == "accepted":
@@ -410,11 +316,7 @@ async def accept_invite(*, raw_token: str, password: str) -> dict[str, Any]:
         if invite["expires_at"] < datetime.now(timezone.utc):
             raise InviteExpired()
 
-        # Re-validate the granting context is still alive — done here,
-        # holding the invite row's lock (acquired by the SELECT ... FOR
-        # UPDATE above) and before the conditional UPDATE below, so it
-        # is atomic with the accept itself and cannot race a concurrent
-        # revoke.
+        # Under the row lock, so it can't race a concurrent revoke.
         await _check_context_live(conn, invite)
 
         updated = await conn.fetchrow(
@@ -424,8 +326,6 @@ async def accept_invite(*, raw_token: str, password: str) -> dict[str, Any]:
             invite["id"],
         )
         if updated is None:
-            # Lost the race between the SELECT above and here — the
-            # winner's transaction already flipped this row.
             raise InviteUsed()
 
         try:
@@ -440,9 +340,7 @@ async def accept_invite(*, raw_token: str, password: str) -> dict[str, Any]:
                 creator_user_email=invite["email"],
             )
         except asyncpg.UniqueViolationError:
-            # Squatting invite in another tenant for this email accepted
-            # first (finding 3). Rolling back leaves this invite
-            # pending — resendable/revocable — instead of burning it.
+            # Rollback leaves this invite pending rather than burning it.
             raise EmailTaken()
 
         await conn.execute(
@@ -462,22 +360,16 @@ async def accept_invite(*, raw_token: str, password: str) -> dict[str, Any]:
 
 
 def to_public_dict(invite: dict[str, Any]) -> dict[str, Any]:
-    """Strips token_hash — never returned to a client, same treatment
-    users.to_public_dict gives password_hash."""
+    """Strip token_hash, which is never returned to a client."""
     return {k: v for k, v in invite.items() if k != "token_hash"}
 
 
 async def list_invites(*, tenant_id: Any | None, is_superadmin: bool) -> list[dict[str, Any]]:
-    """`tenant_id=None` with `is_superadmin=True` means "no filter given" —
-    every tenant. Any other combination filters to that exact tenant_id
-    (including None, a superadmin-scoped invite) — the router is what
-    forces tenant_id to the JWT's own for a non-superadmin actor, this
-    function never trusts a caller-supplied value on its own (CURSOR.md:
-    never trust client tenancy)."""
+    """Superadmin with tenant_id=None lists every tenant; otherwise filter to exactly tenant_id.
+
+    The router forces tenant_id to the caller's own for non-superadmins."""
     pool = await db.get_pool()
-    # tenant_id=None is, by construction, a listing no RLS policy can ever
-    # return (cross-tenant, or a NULL-tenant-scoped filter) — platform_conn
-    # regardless of is_superadmin, same rule as users.list_users.
+    # No RLS policy can return a tenant_id=None listing.
     conn_cm = platform_conn(pool, reason="invites-null-tenant-listing") if tenant_id is None else tenant_conn(pool)
     async with conn_cm as conn:
         if is_superadmin and tenant_id is None:
@@ -491,17 +383,12 @@ async def list_invites(*, tenant_id: Any | None, is_superadmin: bool) -> list[di
 
 
 async def get_invite_for_accept(*, raw_token: str) -> dict[str, Any]:
-    """Read-only classification for GET /invites/accept — the same status
-    checks and granting-context re-validation accept_invite runs, without
-    locking or mutating anything (PR #19 finding 3: this used to skip
-    _check_context_live entirely, so GET kept returning a live-looking
-    invite for the full 7-day TTL after POST would already 410 it). Returns
-    only the invitee's own email/tenant/role/status, nothing about any
-    other account (AC per design's HTTP section)."""
+    """Read-only version of accept_invite's checks for GET /invites/accept.
+
+    Returns only the invitee's own email/tenant/role/status."""
     token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
     pool = await db.get_pool()
-    # Pre-auth, same as accept_invite: no actor, and the invite may itself
-    # be NULL-tenant.
+    # Pre-auth and possibly NULL-tenant, so platform_conn.
     async with platform_conn(pool, reason="pre-auth-invite-accept") as conn:
         row = await conn.fetchrow("SELECT * FROM user_invites WHERE token_hash = $1", token_hash)
         if row is None:

@@ -1,16 +1,4 @@
-"""
-Lazy module-level singletons for this service's own heavier objects —
-same convention as db.get_pool()/cache.get_client(): constructed on first
-use, not via FastAPI's lifespan state. Kept in their own module (not
-app.py) so routers can import these getters without a circular import on
-app.py, which itself imports the routers.
-
-This matters beyond style: httpx.ASGITransport (used by this service's and
-the SDK's own tests) never runs the lifespan context, so anything a route
-depends on must be reachable without it — exactly like every router in
-this codebase already calls db.get_pool()/cache.get_client() directly
-rather than reading app.state.
-"""
+"""Lazy singletons for routers; not on app.state because ASGITransport tests skip lifespan."""
 
 from __future__ import annotations
 

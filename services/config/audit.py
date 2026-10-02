@@ -1,16 +1,6 @@
-"""
-audit_log writer — always called inside the same transaction as the mutation
-it's recording, so a config change and its audit entry commit or roll back
-together (never a write that "succeeded" with no trace, or an orphaned audit
-row for a write that failed).
+"""audit_log writer — call inside the mutation's own transaction.
 
-Redacts known secret-reference fields before the value ever reaches
-Postgres. This is defense in depth: api_key_ref/auth_token_ref are already
-just reference paths, not resolved secrets — but redacting them in the audit
-trail means a leaked audit_log row never reveals which Vault/K8s path to
-target next, on top of never containing a live key. password_hash is
-redacted too — a bcrypt hash isn't the plaintext password, but there's no
-reason for it to sit in a JSONB audit column either.
+Redacts secret refs and hashes so a leaked row never reveals secret paths.
 """
 
 from __future__ import annotations
@@ -71,13 +61,8 @@ async def list_audit_log(
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """`tenant_id` + `platform_scoped` follow the `list_users` convention
-    (users.py): the route derives both from `deps.is_platform_scoped(current_user)`
-    (lesson 24) — a tenant-scoped superadmin gets an explicit
-    `AND tenant_id = $n` predicate on top of tenant_conn()'s own RLS scope
-    (app layer and RLS both, never RLS alone); a platform-scoped caller gets
-    `platform_conn()` with no tenant predicate, reading every tenant's rows
-    exactly as before this fix."""
+    """Tenant-scoped callers get an explicit tenant_id predicate on top of RLS;
+    platform-scoped callers read every tenant via platform_conn()."""
     pool = await db.get_pool()
     where: list[str] = []
     params: list[Any] = []

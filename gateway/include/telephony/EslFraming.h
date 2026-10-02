@@ -1,14 +1,6 @@
 #pragma once
 
-// Shared low-level framing helpers for FreeSWITCH's ESL plain-text
-// protocol, used by both EslClient (fixed-timeout command/response reads)
-// and EslEventListener (indefinite event-wait reads via
-// wait_for_frame_header, which has its own waiting discipline and stays
-// local to EslEventListener.cpp — see that file's own comment). These
-// three are the ones with byte-identical bodies across both call sites;
-// consolidated here rather than duplicated, since none of this is
-// per-audio-frame code (it's one-time ESL command/event I/O), so sharing
-// it costs nothing on the call's hot path.
+// Framing helpers for ESL's plain-text protocol, shared by EslClient and EslEventListener.
 
 #include <chrono>
 #include <cstdlib>
@@ -18,10 +10,7 @@
 
 namespace voiceai::esl_framing {
 
-// Read from `fd` until `carry` contains a blank-line terminator ("\n\n",
-// which also matches inside "\r\n\r\n"), or `timeout` elapses. On success,
-// `out` holds everything up to (not including) the terminator, and any
-// bytes read past it are left in `carry` for the next call.
+// Reads until a blank line ("\n\n") or timeout. Bytes past the terminator stay in `carry`.
 inline bool read_until_blank_line(int fd, std::string& carry, std::string& out,
                                    std::chrono::milliseconds timeout) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;

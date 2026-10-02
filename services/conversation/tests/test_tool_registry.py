@@ -1,12 +1,4 @@
-"""
-ToolRegistry tests.
-
-The agent has exactly two tools: search_knowledge and
-execute_api. Only execute_api is DB-gated and therefore in the registry's
-_DEFAULT_TOOLS; SEARCH_KNOWLEDGE is defined in the same module but
-supplied as an in-process local tool by pipeline.py, so it is
-deliberately NOT resolvable here. See registry.py's module docstring.
-"""
+"""ToolRegistry tests: only execute_api resolves; search_knowledge is a local tool supplied by pipeline.py."""
 
 from __future__ import annotations
 
@@ -40,10 +32,7 @@ def test_calendar_and_sms_builtins_are_gone():
 
 
 def test_search_knowledge_is_not_db_gated():
-    # It exists as a definition, but must never resolve through the
-    # registry — there is no tool_provider_config to back it, and a
-    # resolvable entry here would invite an agent_tool_policies row that
-    # silently does nothing.
+    # Must not resolve: nothing backs it, and an agent_tool_policies row for it would silently do nothing.
     reg = ToolRegistry()
     assert reg.resolve("search_knowledge") is None
     assert SEARCH_KNOWLEDGE.name == "search_knowledge"

@@ -1,27 +1,6 @@
-"""tests/test_cross_tenant_admin.py — AC 6 cross-tenant admin matrix.
-
-The direct answer to the security review's blocking finding: a
-platform-scoped actor (`tenant_id IS NULL`) must reach another tenant's data
-through the real HTTP apps exactly as before RLS, and a tenant-scoped actor
-must never reach it (lesson 24: the predicate is `tenant_id IS NULL`, never
-`role == "superadmin"`). Runs through the real FastAPI apps against the real
-Postgres, not mocked — RLS is a database-layer control and a mock would let
-the one thing under test slide past (same convention as
-services/*/tests/conftest.py).
-
-Scope note (lesson 12: state what is and isn't exercised). Design's test
-plan asks for the full Tier 3 matrix parameterised over all 17 flat
-routers; this file exercises that matrix in full for the ten Tier 3 routers
-that live in Config (the majority, and the ones every other service's
-pattern was copied from — provider_configs, telephony_configs, carriers,
-phone_numbers, tool_provider_configs, calls, agent_tool_policies, users,
-invites) plus campaigns/dnc (Campaigns), knowledge_bases (Knowledge),
-custom_apis (Tool Execution) and purchased_numbers (DID) — one live case
-per remaining service, proving the identical pattern holds across the
-service boundary rather than re-deriving fixture plumbing for
-`documents`/`agent_kb`/`agent_apis`/`live_calls`, whose fixtures are
-materially heavier (a KB document upload, an agent-custom-api attachment, a
-live call row) and did not fit this pass's budget.
+"""Cross-tenant admin matrix: platform-scoped actors (`tenant_id IS NULL`, not role)
+reach other tenants' data; tenant-scoped actors never do. Runs against real
+Postgres, unmocked, since RLS is a database-layer control.
 """
 from __future__ import annotations
 
@@ -81,12 +60,7 @@ def _client(app_, token: str | None = None) -> AsyncClient:
 
 @contextlib.contextmanager
 def _as_tenant(tenant_id):
-    """Fixture setup calls a service module's create_*() directly (no HTTP
-    request, so no bind_path_tenant/get_authenticated_user ever runs) —
-    tenant_conn() still needs an ambient scope to resolve, so this sets the
-    target the same way a real request's router-level dependency would,
-    and clears it afterwards so one fixture's tenant can't leak into the
-    next arrange step."""
+    """Set an ambient tenant scope for direct service calls (no request deps run)."""
     token = _scope.set(TenantScope())
     try:
         set_target_tenant(str(tenant_id))
@@ -145,7 +119,7 @@ async def _make_user(pool, *, role: str, tenant_id, is_service_account: bool = F
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def superadmin(pool):
-    """Platform-scoped: tenant_id IS NULL — the actor AC 6 is about."""
+    """Platform-scoped: tenant_id IS NULL."""
     u = await _make_user(pool, role="superadmin", tenant_id=None)
     yield u
     await pool.execute("UPDATE users SET deleted_at = now() WHERE id = $1", u["user"]["id"])
@@ -167,9 +141,7 @@ async def viewer_a(pool, two_tenants):
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def superadmin_with_tenant_a(pool, two_tenants):
-    """Design Tier 2 "leftover default" case (3c): role='superadmin' but a
-    non-NULL tenant_id — narrowed by this design to lose cross-tenant
-    access, unlike before (lesson 24: is_platform_scoped, not role)."""
+    """role='superadmin' with a non-NULL tenant_id: no cross-tenant access."""
     u = await _make_user(pool, role="superadmin", tenant_id=two_tenants["a"]["id"])
     yield u
     await pool.execute("UPDATE users SET deleted_at = now() WHERE id = $1", u["user"]["id"])
@@ -177,16 +149,11 @@ async def superadmin_with_tenant_a(pool, two_tenants):
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def null_tenant_service_account(pool):
-    """Conversation/vobiz's own shape: role='viewer', tenant_id IS NULL,
-    is_service_account=True."""
+    """Service-account shape: role='viewer', tenant_id IS NULL, is_service_account=True."""
     u = await _make_user(pool, role="viewer", tenant_id=None, is_service_account=True)
     yield u
     await pool.execute("UPDATE users SET deleted_at = now() WHERE id = $1", u["user"]["id"])
 
-
-# =============================================================================
-# T37 — the `users` module cases
-# =============================================================================
 
 async def test_self_promotion_to_platform_scope_is_refused(pool, two_tenants, superadmin_with_tenant_a):
     async with _client(config_app, superadmin_with_tenant_a["token"]) as c:
@@ -203,15 +170,12 @@ async def test_self_promotion_on_another_user_in_own_tenant_is_also_refused(pool
 
 
 async def test_platform_scoped_superadmin_promoting_to_null_tenant_succeeds(pool, superadmin, tenant_admin_a):
-    # Counter-case (lesson 12): without this arm, a blanket rejection of
-    # {"tenant_id": null} would also pass the two refusal cases above for
-    # the wrong reason.
+    # Counter-case: proves the refusals above aren't a blanket rejection of null.
     async with _client(config_app, superadmin["token"]) as c:
         resp = await c.patch(f"/users/{tenant_admin_a['user']['id']}", json={"tenant_id": None})
     assert resp.status_code == 200
     assert resp.json()["tenant_id"] is None
-    # Restore, so tenant_admin_a's own teardown (soft-delete) still runs
-    # under a resolvable scope.
+    # Restore so tenant_admin_a's teardown runs under a resolvable scope.
     await pool.execute(
         "UPDATE users SET tenant_id = $1 WHERE id = $2",
         tenant_admin_a["user"]["tenant_id"], tenant_admin_a["user"]["id"],
@@ -219,15 +183,8 @@ async def test_platform_scoped_superadmin_promoting_to_null_tenant_succeeds(pool
 
 
 async def test_cross_tenant_edit_is_refused_and_row_unmodified(pool, two_tenants, superadmin_with_tenant_a):
-    # 403, not 404: this environment (like every service today, pre-Phase-9
-    # cutover — design "Migration and rollout") still connects on the
-    # superuser DSN, so RLS itself is inert (a superuser bypasses RLS
-    # regardless of policy — design Q3) and the fetch always finds the row.
-    # assert_tenant_access is the layer that is actually enforcing here, and
-    # its own documented shape for a UUID mismatch is 403 (deps.py
-    # assert_tenant_access docstring). Post-cutover the SAME row becomes
-    # invisible to the fetch itself and this turns into a 404 from an empty
-    # policy result instead — either way, never a 200 and never a mutation.
+    # 403 from assert_tenant_access: the superuser DSN bypasses RLS here, so
+    # the fetch finds the row. Behind RLS this becomes a 404; never a 200.
     b_user = await _make_user(pool, role="viewer", tenant_id=two_tenants["b"]["id"])
     try:
         async with _client(config_app, superadmin_with_tenant_a["token"]) as c:
@@ -252,11 +209,7 @@ async def test_cross_tenant_delete_is_refused_and_row_unmodified(pool, two_tenan
 
 
 def _yuviz_app_dsn() -> str:
-    """Swap only the user/password component of POSTGRES_DSN for
-    yuviz_app's — same helper tests/test_rls_isolation.py uses, needed here
-    because the shared pool (`pool` fixture) connects as the superuser and
-    so can never demonstrate a policy rejection (lesson 12: a counter-check
-    must be able to actually fail)."""
+    """POSTGRES_DSN as yuviz_app; the shared pool is superuser and bypasses RLS."""
     import urllib.parse as up
 
     parts = up.urlsplit(os.environ["POSTGRES_DSN"])
@@ -271,10 +224,7 @@ async def test_cross_tenant_move_is_refused_with_db_layer_counter_check(pool, tw
         resp = await c.patch(f"/users/{viewer_a['user']['id']}", json={"tenant_id": str(two_tenants["b"]["id"])})
     assert resp.status_code == 403
 
-    # DB-layer counter-check: the identical UPDATE, issued directly as
-    # yuviz_app under A's GUC, is rejected by WITH CHECK — proving the
-    # app-layer 403 isn't standing in for a control RLS doesn't actually
-    # have (AC 5, same shape as tests/test_rls_isolation.py).
+    # The same UPDATE as yuviz_app under A's GUC must also fail RLS WITH CHECK.
     await pool.execute("ALTER ROLE yuviz_app PASSWORD 'rls-test-only-password'")
     app_conn = await asyncpg.connect(_yuviz_app_dsn())
     try:
@@ -303,17 +253,8 @@ async def test_get_users_for_null_tenant_viewer_service_account_returns_200(pool
     assert isinstance(resp.json(), list)
 
 
-# =============================================================================
-# T38 — Tier 3 flat by-id matrix (see module docstring for scope)
-# =============================================================================
-
 async def _assert_tier3_matrix(app_, path_b, path_a, superadmin_token, tenant_admin_a_token, cross_tenant_status):
-    """Case 4's three-part shape, run over a GET: platform actor sees the
-    row (fails with TenantUnresolved if a resolver never got
-    platform_scoped); tenant_admin of A on B's id is refused (403 or 404,
-    whichever this router's own check produces — never 200); tenant_admin
-    of A on A's own id is 200 (the counter-check that stops the middle case
-    passing because the route is simply broken, lesson 12)."""
+    """GET: platform actor sees B's row, A's admin is refused on B, A's admin sees A's row."""
     async with _client(app_, superadmin_token) as c:
         resp = await c.get(path_b)
     assert resp.status_code == 200, resp.text
@@ -406,11 +347,7 @@ async def test_tier3_calls(pool, two_tenants, superadmin, tenant_admin_a):
         "INSERT INTO calls (session_id, tenant_id, direction) VALUES ($1, $2, 'inbound')",
         session_b, two_tenants["b"]["slug"],
     )
-    # calls.py's cross-tenant refusal is an app-level `WHERE tenant_id =
-    # <caller's own slug>` predicate (get_call's own filter), not
-    # assert_tenant_access — so it's 404, not 403, and this is true
-    # regardless of the RLS cutover state (lesson 24 predicate applied at
-    # the SQL layer already, matching design's `calls.py` note).
+    # get_call filters by the caller's slug in SQL, so a foreign call is 404.
     await _assert_tier3_matrix(
         config_app, f"/calls/{session_b}", f"/calls/{session_a}",
         superadmin["token"], tenant_admin_a["token"], cross_tenant_status=404,
@@ -445,9 +382,7 @@ async def test_tier3_knowledge_bases(two_tenants, superadmin, tenant_admin_a):
         kb_b = await knowledge_bases_service.create_knowledge_base(
             tenant_id=two_tenants["b"]["id"], slug="kb-b", name="KB B",
         )
-    # _authorize_kb raises its OWN 404 (not assert_tenant_access, by design
-    # — a {kb_id} route must not become a 403 existence oracle), so this is
-    # 404 regardless of the RLS cutover state.
+    # _authorize_kb returns 404 so {kb_id} can't be a 403 existence oracle.
     await _assert_tier3_matrix(
         knowledge_app, f"/knowledge-bases/{kb_b['id']}", f"/knowledge-bases/{kb_a['id']}",
         superadmin["token"], tenant_admin_a["token"], cross_tenant_status=404,
@@ -463,8 +398,7 @@ async def test_tier3_custom_apis(two_tenants, superadmin, tenant_admin_a):
         api_b = await custom_apis_service.create_custom_api(
             tenant_id=two_tenants["b"]["id"], name="API B", description="", endpoint_url="https://example.com/b", method="GET",
         )
-    # _authorize_custom_api raises its own LookupError -> 404 (same
-    # "never a 403 existence oracle" shape as knowledge_bases).
+    # 404, not 403: no existence oracle (same as knowledge_bases).
     await _assert_tier3_matrix(
         toolexec_app, f"/custom-apis/{api_b['id']}", f"/custom-apis/{api_a['id']}",
         superadmin["token"], tenant_admin_a["token"], cross_tenant_status=404,
@@ -490,7 +424,6 @@ async def test_tier3_invites_revoke(pool, two_tenants, superadmin, tenant_admin_
             tenant_id=two_tenants["a"]["id"], team=None, actor=actor,
         )
 
-    # Superadmin (platform-scoped) revokes B's invite — parity with today.
     async with _client(config_app, superadmin["token"]) as c:
         resp = await c.post(f"/invites/{invite_b2['id']}/revoke")
     assert resp.status_code == 200
@@ -522,7 +455,6 @@ async def test_tier3_dnc(pool, two_tenants, superadmin, tenant_admin_a):
     row = await pool.fetchrow("SELECT id FROM dnc_numbers WHERE id = $1", entry_b["id"])
     assert row is not None
 
-    # Superadmin (platform-scoped) can delete B's entry — parity with today.
     async with _client(campaigns_app, superadmin["token"]) as c:
         resp = await c.delete(f"/dnc/{entry_b2['id']}")
     assert resp.status_code == 204
@@ -534,10 +466,7 @@ async def test_tier3_dnc(pool, two_tenants, superadmin, tenant_admin_a):
 
 
 async def test_tier3_purchased_numbers_did(pool, two_tenants, superadmin, tenant_admin_a):
-    # assign (not release): release calls out to the real carrier provider,
-    # which this fixture has no credentials for; assign is a pure DB link
-    # to a phone_numbers row Config already owns (module docstring, step 3)
-    # and exercises the identical assert_tenant_access/platform_scoped gate.
+    # assign, not release: release calls the real carrier; both share the same gate.
     carrier_a = dict(await pool.fetchrow(
         "INSERT INTO carriers (tenant_id, name, provider) VALUES ($1, 'A Carrier', 'twilio') RETURNING *",
         two_tenants["a"]["id"],
@@ -566,7 +495,6 @@ async def test_tier3_purchased_numbers_did(pool, two_tenants, superadmin, tenant
     row = await pool.fetchrow("SELECT phone_number_id FROM purchased_numbers WHERE id = $1", pn_b["id"])
     assert row["phone_number_id"] is None
 
-    # Superadmin (platform-scoped) can assign B's purchased number — parity with today.
     async with _client(did_app, superadmin["token"]) as c:
         resp = await c.patch(f"/numbers/{pn_b['id']}/assign", params={"phone_number_id": str(phone_b["id"])})
     assert resp.status_code == 200
@@ -577,14 +505,8 @@ async def test_tier3_purchased_numbers_did(pool, two_tenants, superadmin, tenant
     assert resp.status_code == 200
 
 
-# =============================================================================
-# T41 — Tier 4 cases (body/non-/tenants/ path tenant sites)
-# =============================================================================
-
 async def test_tier4_internal_retrieve_refuses_a_foreign_tenant_slug(two_tenants, viewer_a):
-    # assert_tenant_access's slug branch is 404, not 403 (deps.py
-    # docstring: "slug argument, mismatch or unknown -> 404") — a
-    # {tenant_slug} value must not become a 403 existence oracle.
+    # Slug mismatch is 404, not 403, so tenant_slug isn't an existence oracle.
     async with _client(knowledge_app, viewer_a["token"]) as c:
         resp = await c.post("/internal/retrieve", json={
             "tenant_slug": two_tenants["b"]["slug"], "agent_slug": "some-agent", "query": "hi",
@@ -595,10 +517,7 @@ async def test_tier4_internal_retrieve_refuses_a_foreign_tenant_slug(two_tenants
 async def test_tier4_internal_retrieve_admits_null_tenant_service_account_and_sets_the_guc(
     two_tenants, null_tenant_service_account,
 ):
-    # retrieval_service.retrieve is stubbed (no embedding/vector infra in
-    # this fixture) so this exercises exactly the thing Tier 4 adds: the
-    # GUC is resolved to the BODY's tenant, not the (NULL) caller's, before
-    # retrieval ever runs.
+    # The GUC must resolve to the body's tenant, not the NULL caller's.
     from unittest.mock import AsyncMock, patch
 
     from libs.tenancy import current_tenant
@@ -626,9 +545,7 @@ async def test_tier4_has_knowledge_refuses_a_foreign_tenant_slug(two_tenants, vi
 
 
 async def test_tier4_execute_chain_refuses_a_non_allow_listed_service_account(pool, two_tenants, null_tenant_service_account):
-    # require_execute_subject is unchanged: is_service_account alone isn't
-    # enough, the email must be on TOOLEXEC_EXECUTE_SUBJECTS's allow-list —
-    # this account isn't, so it never reaches the tenant/body check at all.
+    # is_service_account alone isn't enough; the email must be on TOOLEXEC_EXECUTE_SUBJECTS.
     async with _client(toolexec_app, null_tenant_service_account["token"]) as c:
         resp = await c.post("/internal/chains/execute", json={
             "tenant_id": str(two_tenants["b"]["id"]), "agent_id": str(uuid.uuid4()),
@@ -673,22 +590,8 @@ async def test_tier4_execute_chain_admits_conversation_and_sets_the_guc(pool, tw
     assert captured["tenant"] == str(two_tenants["b"]["id"])
 
 
-# =============================================================================
-# T58 — full AC 6 matrix, cases 1-3c and 5 (Tier 2)
-# =============================================================================
-#
-# Scope note (lesson 12): the design parameterises cases 1-3c/5 over all 12
-# Tier 2 routers; this exercises them fully against one representative
-# router — `carriers` (config), a `{tenant_id}` router with NO independent
-# app-layer tenant check today besides `require_path_tenant_access` (design
-# "Tier 2" table), which is exactly the shape case 3b needs to prove RLS is
-# an independent layer rather than a mirror of require_path_tenant_access
-# (a router like `agents.py` that ALSO checks the caller itself in its own
-# handler would still 404 with require_path_tenant_access removed, proving
-# nothing about RLS specifically). Cases 1-3/3c reuse the already-passing
-# Tier 2 coverage in test_tier3_carriers's sibling assertions above and in
-# test_rls_coverage.py part (b); this block adds the two cases nothing else
-# in this file covers: 3b (RLS alone) and 5 (negative control).
+# Tier 2 cases use `carriers`: its only app-layer tenant check is
+# require_path_tenant_access, so removing it isolates RLS (case 3b).
 
 from services.config import db as config_db  # noqa: E402
 
@@ -733,15 +636,7 @@ async def test_ac6_case3c_leftover_tenant_superadmin_narrowed_to_own_tenant(two_
 
 
 async def test_ac6_case3b_rls_alone_independent_of_the_app_layer(pool, two_tenants, tenant_admin_a):
-    """The one case that distinguishes this design's `target if caller is
-    None else caller` reader from the old `target`-wins reader: with
-    `require_path_tenant_access` removed AND a real yuviz_app connection
-    (not the superuser DSN every other case in this file runs under), a
-    tenant-scoped admin of A hitting `/tenants/{B}/carriers` still reads
-    zero rows (RLS's USING clause, not the app check) and still can't
-    write into B (WITH CHECK). Under a restored `target`-wins reader this
-    would incorrectly ADMIT both, because current_tenant() would resolve
-    to B for this caller."""
+    """With the app check removed and a yuviz_app pool, A's admin reads nothing from B and can't write to it."""
     from services.config import deps as config_deps
 
     with _as_tenant(two_tenants["b"]["id"]):
@@ -756,7 +651,7 @@ async def test_ac6_case3b_rls_alone_independent_of_the_app_layer(pool, two_tenan
         async with _client(config_app, tenant_admin_a["token"]) as c:
             resp = await c.get(f"/tenants/{two_tenants['b']['id']}/carriers")
         assert resp.status_code == 200
-        assert resp.json() == []  # RLS's USING clause, not require_path_tenant_access, emptied this
+        assert resp.json() == []  # emptied by RLS USING, not the app check
 
         with _as_tenant(two_tenants["a"]["id"]):
             with pytest.raises(asyncpg.InsufficientPrivilegeError):
@@ -771,9 +666,7 @@ async def test_ac6_case3b_rls_alone_independent_of_the_app_layer(pool, two_tenan
 
 
 async def test_ac6_case5_negative_control_bind_path_tenant_is_what_makes_case1_pass(two_tenants, superadmin):
-    """Removing `bind_path_tenant` (the dependency case 1 depends on) must
-    make case 1 fail — proving the passing case above isn't a false
-    positive (lesson 12)."""
+    """Without bind_path_tenant, case 1 must fail (it isn't a false positive)."""
     from services.config import deps as config_deps
 
     with _as_tenant(two_tenants["b"]["id"]):
@@ -783,12 +676,7 @@ async def test_ac6_case5_negative_control_bind_path_tenant_is_what_makes_case1_p
 
     config_app.dependency_overrides[config_deps.bind_path_tenant] = lambda: None
     try:
-        # A NULL-tenant caller with no target set at all is an unresolved
-        # scope (AC 9): TenantUnresolved propagates as an unhandled error —
-        # never a 200 with B's rows — which is exactly the regression
-        # bind_path_tenant exists to prevent (ASGITransport re-raises app
-        # exceptions by default rather than turning them into a response,
-        # which is what lets this assert the exception directly).
+        # NULL-tenant caller with no target is unresolved; ASGITransport re-raises it.
         with pytest.raises(TenantUnresolved):
             async with _client(config_app, superadmin["token"]) as c:
                 await c.get(f"/tenants/{two_tenants['b']['id']}/carriers")

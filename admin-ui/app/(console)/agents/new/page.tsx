@@ -1,12 +1,6 @@
 "use client";
 
-// Stage-wise agent creation. Replaces the old two-field modal (name + tenant)
-// that dropped straight onto the canvas with a hardcoded greeting/system
-// prompt and left voice/model/transfer/knowledge-base for later. Every field
-// collected here already exists on the agent row or in a tenant-scoped
-// junction table (agent_knowledge_bases / agent_custom_apis) — this page is
-// pure frontend orchestration over the existing create/update/assign
-// endpoints, no backend changes.
+// Stage-wise agent creation over the existing create/update/assign endpoints.
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -51,10 +45,7 @@ export default function NewAgentPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  // Prefill from ?template= (see lib/agentTemplates.ts). Read once as the
-  // initial state of the fields it touches, never as an effect that writes
-  // over what's already typed — a template is a starting point, and every
-  // field stays freely editable afterwards.
+  // ?template= is read once as initial state only, so it never overwrites typed input.
   const template = templateByKey(searchParams.get("template"));
 
   const [step, setStep] = useState<Step>("identity");
@@ -84,12 +75,7 @@ export default function NewAgentPage() {
   const [goodbyeGraceMs, setGoodbyeGraceMs] = useState<number | "">(3000);
   const [escalationThreshold, setEscalationThreshold] = useState<number | "">("");
 
-  // Step 4 — Advanced (transfer rules + compliance/fallback — the latter
-  // two have no dedicated agent columns, so they're folded straight into
-  // the generated system prompt rather than invented as new DB fields).
-  // A template's transfer condition is only meaningful with a transfer type
-  // set — otherwise the Advanced step renders it disabled and it never
-  // reaches the prompt.
+  // Step 4 — Advanced. Compliance/fallback have no agent columns; they go into the generated prompt.
   const [transferType, setTransferType] = useState<AgentUpdate["transfer_type"]>(
     template ? "cold" : "none",
   );
@@ -133,9 +119,7 @@ export default function NewAgentPage() {
     listCustomApis(tenant.id).then(setCustomApis).catch(() => {});
   }, [tenant]);
 
-  // Regenerate the draft prompt from structured inputs until the reviewer
-  // edits it by hand — once edited, their own wording wins and stops being
-  // silently overwritten by a later step change.
+  // Regenerate the draft prompt until the user edits it by hand.
   useEffect(() => {
     if (promptEdited) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -252,9 +236,6 @@ export default function NewAgentPage() {
         ...Array.from(selectedApiIds).map((apiId) => setAgentCustomApiEnabled(agent.id, apiId, true)),
       ]);
 
-      // Land on a live test call, not the canvas — the first thing to
-      // verify is that the agent actually talks the way steps 1-4 said it
-      // should, before touching the flow at all.
       router.push(`/agents/${tenantSlug}/${agent.slug}?test=1`);
     } catch (e) {
       setCreateError(e instanceof ApiError ? e.detail : String(e));

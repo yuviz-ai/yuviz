@@ -1,22 +1,7 @@
 "use client";
 
-// Knowledge — what the agents can look things up in. Two kinds of source
-// live here, because both answer the same question at call time:
-//
-//   Sources  — documents, chunked and embedded into this tenant's namespace
-//   APIs     — custom HTTP calls, including ones whose parameters come from
-//              another API's response (custom_api_params.upstream_api_id),
-//              which is what makes a chain multi-level
-//
-// The APIs tab is the tenant-level builder. The agent's own Knowledge &
-// Tools tab renders the *attach* view instead (AgentCustomApisPanel) — you
-// define an API once here and tick it on per agent, the same relationship
-// knowledge bases already have.
-//
-// Every figure in the stat row is counted from something this system
-// actually stores. There is deliberately no storage-used or retrieval-calls
-// tile: no column records document bytes and nothing meters retrievals, and
-// an invented number on a page about grounding facts would be its own joke.
+// Knowledge: document sources and tenant-level custom APIs (attached per agent in AgentCustomApisPanel).
+// Stats show only stored values; storage/retrieval aren't metered.
 
 import { useEffect, useMemo, useState } from "react";
 import { ApiError, getCurrentUser } from "@/lib/api";
@@ -87,9 +72,7 @@ export default function KnowledgeBasesPage() {
   const [tenantErrors, setTenantErrors] = useState<string[]>([]);
   const [canManage, setCanManage] = useState(false);
   const [loading, setLoading] = useState(true);
-  // Fatal only for listTenants() — every fetch downstream of it depends on
-  // the tenant list, so its failure alone renders a page-level error
-  // (lesson 21 for everything below it).
+  // Page-level error only for listTenants(); everything downstream depends on it.
   const [pageError, setPageError] = useState<string | null>(null);
   const [addSourceOpen, setAddSourceOpen] = useState(false);
   const [tab, setTab] = useState<Tab>("sources");
@@ -98,11 +81,7 @@ export default function KnowledgeBasesPage() {
     setLoading(true);
     setPageError(null);
     setTenantErrors([]);
-    // One account at a time by default (the header switcher picks it), or
-    // every account when "All tenants" is selected — each tenant's fetch
-    // fails independently below (Promise.allSettled) rather than the old
-    // unconditional every-tenant query that turned into thousands of
-    // requests and a page full of "Failed to fetch" on hundreds of accounts.
+    // Each tenant's fetch fails independently below (Promise.allSettled).
     const fetchedTenants = isAllTenants ? allTenants : tenant ? [tenant] : [];
     if (fetchedTenants.length === 0) {
       setLoading(false);
@@ -144,10 +123,7 @@ export default function KnowledgeBasesPage() {
         );
       });
       setSources(nextSources);
-      // A knowledge base with no documents is a container someone started
-      // and never filled — usually an upload that failed. Surfaced as a row
-      // rather than only as a count, so it can be seen and removed instead
-      // of quietly inflating the tile.
+      // Empty KBs (usually failed uploads) are listed so they can be removed.
       setEmptyKbs(
         nextKbs.filter((kb) => !nextSources.some((src) => src.kb_id === kb.id)),
       );
@@ -178,9 +154,7 @@ export default function KnowledgeBasesPage() {
   const stats = useMemo(() => {
     const ready = sources.filter((s) => s.status === "ready").length;
     const chunks = sources.reduce((n, s) => n + (s.chunk_count ?? 0), 0);
-    // An API is "chained" when one of its parameters is filled from another
-    // API's response — that is the dependency, not chain_levels, which is
-    // only the depth budget.
+    // "Chained" = a param comes from another API's response; chain_levels is only the depth budget.
     const chained = apis.filter((a) => (a.params ?? []).some((p) => p.source === "upstream")).length;
     return { ready, chunks, chained };
   }, [sources, apis]);

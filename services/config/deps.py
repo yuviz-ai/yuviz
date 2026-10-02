@@ -1,27 +1,8 @@
 """
-Shared FastAPI dependencies — real request-scoped identity.
+Shared FastAPI dependencies — verified JWT identity, role and tenant gates.
 
-get_current_user() verifies a signed JWT (see auth.py) and returns the
-CurrentUser it encodes; it raises 401 itself rather than returning None, so
-a route depending on it is unreachable without a valid token — there is no
-"forgot to check" failure mode the way an optional dependency would have.
-This replaces the previous current_user_email, which only read a
-caller-supplied header with no verification at all — real, but never
-enforced, identity.
-
-require_role() builds on top of it for endpoints that need more than "any
-authenticated user" (e.g. only superadmin/admin may write, viewer is
-read-only).
-
-CONSOLE_ROLES / get_current_user() also fence off `supervisor`/`agent` — two
-roles added to `users_role_check` for the invite feature that have no Config
-API surface at all in this build (see design doc's "the console-role gate").
-`get_authenticated_user` is the raw decode-or-401 step, unchanged from
-before; it exists as its own name only for `/auth/me` and
-`/auth/change-password`, which a supervisor/agent must still be able to
-reach. Every other route keeps depending on `get_current_user`, so the gate
-sits inside identity resolution itself rather than being an exemption list
-some future router can forget to add itself to.
+get_current_user() enforces CONSOLE_ROLES (fencing off supervisor/agent);
+get_authenticated_user() is the raw decode-or-401 for routes those roles need.
 """
 
 from __future__ import annotations
@@ -41,37 +22,24 @@ from .auth import CurrentUser, InvalidTokenError, decode_access_token
 
 CONSOLE_ROLES = frozenset({"superadmin", "admin", "viewer"})
 
-# Live Calls Monitoring: supervisor reaches exactly these two routes, and no
-# others — see require_live_calls_operator below, built on
-# get_authenticated_user rather than get_current_user so CONSOLE_ROLES stays
-# untouched (lesson 4).
+# Supervisor reaches only live-calls routes, via its own dependency, so
+# CONSOLE_ROLES stays untouched.
 LIVE_CALLS_ROLES = frozenset({"superadmin", "admin", "supervisor"})
 
-# Matches who reaches GET /calls/{id}/transcript today (get_current_user's
-# CONSOLE_ROLES minus viewer — see routers/calls.py) — supervisor is
-# deliberately excluded (AC15).
+# Supervisor is deliberately excluded from transcripts.
 TRANSCRIPT_ROLES = frozenset({"superadmin", "admin"})
 
 AUTHORITY_MEMO_TTL_S = 60
 
-# Same TTL as the live-calls memo below, kept as its own constant/dict
-# (_console_authority_memo, not _live_calls_authority_memo) because the two
-# checks mean different things — this one just answers "does this user's row
-# still exist", not "is this role still in some route-specific set" — and
-# sharing one dict for both would let either concern silently affect the
-# other's cached result.
+# Separate memo from live-calls: that one also checks role, this only existence.
 CONSOLE_AUTHORITY_MEMO_TTL_S = 60
 
-# scope_key is attacker-influenced (it's the tenant_slug query/body param) —
-# an actor hammering GET/POST live-calls with many distinct nonexistent
-# slugs must not be able to grow the memo without bound (finding #8). This
-# caps total entries regardless of the eviction below.
+# scope_key is attacker-influenced (tenant_slug param), so cap the memo.
 AUTHORITY_MEMO_MAX_ENTRIES = 10_000
 
 
 async def get_authenticated_user(authorization: str | None = Header(default=None)) -> CurrentUser:
-    """Decode-or-401. No role gate — see module docstring for why this name
-    exists separately from get_current_user()."""
+    """Decode-or-401 with no role gate."""
     if authorization is None or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="missing or malformed Authorization header")
     token = authorization.removeprefix("Bearer ").strip()
@@ -79,10 +47,7 @@ async def get_authenticated_user(authorization: str | None = Header(default=None
         user = decode_access_token(token)
     except InvalidTokenError:
         raise HTTPException(status_code=401, detail="invalid or expired token")
-    # RLS (libs/tenancy): records WHO this request's caller is, before any
-    # role gate runs — the ceiling current_tenant() enforces regardless of
-    # what a /tenants/{...} path later claims. Every authenticated route in
-    # every HTTP service flows through this one decode point (lesson 9).
+    # RLS ceiling: the caller's tenant, regardless of what a path later claims.
     set_caller_tenant(user.tenant_id)
     return user
 
@@ -90,12 +55,7 @@ async def get_authenticated_user(authorization: str | None = Header(default=None
 async def get_current_user(
     request: Request, user: CurrentUser = Depends(get_authenticated_user),
 ) -> CurrentUser:
-    # Re-reads `users` (memoized — see fresh_console_authority) before the
-    # role gate below, so a soft-deleted user's still-valid-until-expiry JWT
-    # is rejected here instead of only at /auth/me (lesson 35: a JWT claim is
-    # a login-time snapshot, not a live fact). This is every console route's
-    # shared identity-resolution point, so putting the check here — rather
-    # than in each router — is what actually closes it everywhere at once.
+    # JWT claims are a login-time snapshot; re-read the user row (memoized).
     user = await fresh_console_authority(request.app.state, user)
     if user.role not in CONSOLE_ROLES:
         raise HTTPException(status_code=403, detail=f"role {user.role!r} cannot access this service")
@@ -103,16 +63,7 @@ async def get_current_user(
 
 
 def is_platform_scoped(user: CurrentUser) -> bool:
-    """"Is this actor privileged?" and "which tenant is this actor scoped
-    to?" are different questions (lesson 24) — the scoping one is answered
-    by `tenant_id is None`, not by `role == "superadmin"`. A NULL tenant_id
-    also covers the viewer-role service accounts (Conversation's startup
-    prewarm, vobiz's per-call telephony lookup), which legitimately need
-    platform-wide reads and are not superadmins. Routes that gate a
-    `?tenant_id=` filter or an unscoped listing on "is this actor
-    platform-scoped" should call this, not compare role directly — see
-    routers/tenants.py's list_tenants for the original correct version of
-    this predicate."""
+    """Platform scope is `tenant_id is None`, not role (also covers service accounts)."""
     return user.tenant_id is None
 
 
@@ -131,13 +82,9 @@ def require_role(*allowed_roles: str):
 
 
 async def bind_path_tenant(request: Request) -> None:
-    """Router-level dependency for /tenants/{tenant_slug|tenant_id}/...
-    routers. Records the target tenant for RLS (libs/tenancy.
-    set_target_tenant) and nothing else: no authorization, no exception.
-    Safe to run unauthenticated and before get_current_user, because
-    current_tenant() ignores the target for any caller that already has a
-    tenant of their own (lesson 1: router-level dependencies run before
-    endpoint dependencies in FastAPI, i.e. before get_authenticated_user)."""
+    """Record the path tenant as the RLS target; no authorization.
+
+    Safe before auth: current_tenant() ignores the target for tenant-scoped callers."""
     tenant = request.path_params.get("tenant_slug") or request.path_params.get("tenant_id")
     set_target_tenant(tenant)
 
@@ -145,47 +92,25 @@ async def bind_path_tenant(request: Request) -> None:
 async def require_path_tenant_access(
     request: Request, current_user: CurrentUser = Depends(get_current_user),
 ) -> None:
-    """Router-level dependency, paired with bind_path_tenant on every
-    /tenants/{...} router. A Request-reading wrapper over
-    assert_tenant_access below: reads whichever path segment the router
-    carries and applies the same predicate and the same 403/404 shapes."""
+    """assert_tenant_access on the path's tenant segment; pairs with bind_path_tenant."""
     tenant = request.path_params.get("tenant_slug") or request.path_params.get("tenant_id")
     await assert_tenant_access(tenant, current_user)
 
 
 async def assert_tenant_access(tenant: "str | uuid.UUID | None", current_user: CurrentUser) -> None:
-    """The one predicate, shared by Tier 2 (a path segment),
-    Tier 3 (a fetched row's tenant_id) and Tier 4 (a request body field), so
-    the three tiers cannot drift apart. Lifted from
-    toolexec/routers/custom_apis.py's `_require_tenant_access` for the
-    UUID case — same predicate, same 403, same detail string:
+    """Shared tenant-access predicate for path segments, fetched rows and body fields.
 
-        is_platform_scoped(current_user) -> allowed (tenant_id IS NULL only)
-        UUID argument, mismatch -> 403 "tenant_id does not match the caller's tenant"
-        slug argument, mismatch or unknown -> 404 f"tenant {slug!r} not found"
+        is_platform_scoped(current_user) -> allowed
+        UUID mismatch (or None) -> 403
+        slug mismatch or unknown -> 404 (no slug oracle)
 
-    `tenant is None` means a platform-scoped row (a NULL-tenant user,
-    invite or audit row) and is allowed only for a platform-scoped caller.
-    A slug can't be compared without a lookup (CurrentUser carries only
-    tenant_id), so that branch resolves it via tenants.get_tenant and
-    folds "no such tenant" and "exists, but not the caller's" into the same
-    404 — a {tenant_slug} path must not become a slug oracle (agents.py's
-    existing precedent, lesson 2).
-
-    It never sets a GUC, so it is safe to call after a fetch that a cache
-    satisfied without touching Postgres — which is exactly why the cached
-    reads depend on it.
+    Sets no GUC, so it is safe after a cache-satisfied fetch.
     """
     if is_platform_scoped(current_user):
         return
     if tenant is None:
         raise HTTPException(status_code=403, detail="tenant_id does not match the caller's tenant")
-    # A fetched row's tenant_id arrives as an actual uuid.UUID (asyncpg's
-    # native type for a UUID column, e.g. row["tenant_id"]), not a string —
-    # uuid.UUID(<uuid.UUID instance>) raises AttributeError (it expects a
-    # hex string), which used to silently misroute every such caller into
-    # the slug branch below. Same bug class as libs/tenancy.session's
-    # _split_tenant fix; same fix here.
+    # asyncpg rows give uuid.UUID; uuid.UUID(UUID) raises, misrouting to the slug branch.
     if isinstance(tenant, uuid.UUID):
         if str(tenant) != current_user.tenant_id:
             raise HTTPException(status_code=403, detail="tenant_id does not match the caller's tenant")
@@ -202,11 +127,8 @@ async def assert_tenant_access(tenant: "str | uuid.UUID | None", current_user: C
 
 
 def require_live_calls_operator():
-    """Returns a dependency admitting exactly superadmin/admin/supervisor —
-    403 for viewer/agent and any future role. Built on get_authenticated_user,
-    NOT get_current_user: supervisor is deliberately outside CONSOLE_ROLES and
-    must stay outside it (lesson 4), so this grant lives on its own dependency
-    rather than widening the shared console gate."""
+    """Dependency admitting LIVE_CALLS_ROLES only; built on get_authenticated_user
+    because supervisor must stay outside CONSOLE_ROLES."""
 
     async def _check(user: CurrentUser = Depends(get_authenticated_user)) -> CurrentUser:
         if user.role not in LIVE_CALLS_ROLES:
@@ -217,11 +139,7 @@ def require_live_calls_operator():
 
 
 def _row_to_effective_user(row: dict[str, Any]) -> CurrentUser:
-    """Rebuild a CurrentUser from a fresh `users` row rather than a token's
-    claims — the row is what fresh_authority()/assert_current_authority()
-    exist to substitute for `user.tenant_id`/`user.role` everywhere after
-    their call (lesson 35: a JWT claim is a login-time snapshot, not a live
-    fact)."""
+    """Rebuild a CurrentUser from a fresh `users` row instead of token claims."""
     return CurrentUser(
         id=str(row["id"]),
         email=row["email"],
@@ -259,12 +177,7 @@ def forget_user(app_state: Any, user_id: str) -> None:
 
 
 async def assert_current_authority(user: CurrentUser) -> CurrentUser:
-    """Re-read users WHERE id=$1 AND deleted_at IS NULL. 403 if the row is
-    gone, if role has changed out of LIVE_CALLS_ROLES, or if tenant_id no
-    longer matches the token's. Closes lesson 27 / AC9 for the intervention
-    route, which must refuse a demoted, deleted or re-tenanted actor outright
-    rather than silently rescoping it the way fresh_authority()'s branch
-    selection does."""
+    """Re-read the user; 403 if deleted, demoted out of LIVE_CALLS_ROLES, or re-tenanted."""
     row = await users_service.get_user_by_id(user.id)
     if row is None:
         raise HTTPException(status_code=403, detail="account is no longer active")
@@ -279,26 +192,9 @@ async def assert_current_authority(user: CurrentUser) -> CurrentUser:
 
 
 async def fresh_console_authority(app_state: Any, user: CurrentUser) -> CurrentUser:
-    """The console-wide analogue of fresh_authority() below, run inside
-    get_current_user() itself so no router can be missed. Re-reads `users`
-    WHERE id=$1 AND deleted_at IS NULL and 401s if the row is gone — closing
-    the gap where a soft-deleted user's JWT kept full API access (including
-    writes) until natural expiry, with only /auth/me re-checking the
-    database (07-qa-report.md finding #1).
+    """401 if the user row is gone; returns the row's current identity.
 
-    Only checks existence, not role/tenant drift — get_current_user()'s own
-    CONSOLE_ROLES gate runs on the row's current role (via
-    _row_to_effective_user) immediately after this returns, so a demoted
-    user is still caught there rather than silently kept at their token's
-    stale role.
-
-    Memoized per user.id for CONSOLE_AUTHORITY_MEMO_TTL_S in an in-process
-    dict on app_state (same bounded/LRU-evicted shape as fresh_authority()'s
-    memo, just keyed on user.id alone — there is no per-request scope_key
-    here, unlike the live-calls tenant-switch case) — bounds worst-case
-    revocation lag to that TTL instead of the token's full ACCESS_TOKEN_TTL
-    (12h), at the cost of one Postgres row-read per cache miss instead of
-    per request."""
+    Memoized per user.id (bounded LRU) so revocation lag is the memo TTL, not the token TTL."""
     memo: OrderedDict[str, tuple[float, CurrentUser]] = getattr(
         app_state, "_console_authority_memo", None,
     )
@@ -315,9 +211,7 @@ async def fresh_console_authority(app_state: Any, user: CurrentUser) -> CurrentU
 
     row = await users_service.get_user_by_id(user.id)
     if row is None:
-        # Same posture as /auth/me: a validly-signed token whose user row is
-        # gone is treated as an expired token (401), not a 404 that would
-        # leak whether the id ever existed.
+        # 401, not 404: don't leak whether the id ever existed.
         raise HTTPException(status_code=401, detail="user no longer exists")
 
     effective_user = _row_to_effective_user(row)
@@ -332,26 +226,10 @@ async def fresh_console_authority(app_state: Any, user: CurrentUser) -> CurrentU
 async def fresh_authority(
     app_state: Any, user: CurrentUser, scope_key: str, *, ttl_s: int = AUTHORITY_MEMO_TTL_S,
 ) -> CurrentUser:
-    """The same `users` re-read as assert_current_authority(), returning a
-    CurrentUser built from the ROW's current role/tenant_id rather than the
-    token's claims — memoized per (user.id, scope_key) for ttl_s in an
-    in-process dict on app_state (same placement convention as
-    app.state.invite_throttle in services/config/app.py).
+    """Row-based identity memoized per (user.id, scope_key); 403 if deleted or demoted.
 
-    Unlike assert_current_authority(), this does NOT reject a tenant_id that
-    no longer matches the token's claim — _resolve_scope's branch selection
-    is exactly what needs the row's current tenant_id, not a rejection of it.
-    It still 403s on a gone row or a role that has left LIVE_CALLS_ROLES.
-
-    scope_key must come from the REQUEST (the tenant_slug query parameter, or
-    "self" when absent), never from the caller's identity, so a tenant SWITCH
-    always re-reads instead of inheriting another selection's validation.
-
-    Bounded (AUTHORITY_MEMO_MAX_ENTRIES, evicted least-recently-used) and
-    entered only for a scope_key this identity check accepts — a scope_key
-    whose TENANT never resolves (_resolve_scope's own 404) is evicted again
-    by forget_authority() below, so a flood of nonexistent slugs can't retain
-    entries here either (closes security finding #8, alongside the cap)."""
+    Unlike assert_current_authority(), a changed tenant_id is returned, not rejected.
+    scope_key must come from the request (tenant_slug or "self"), never the identity."""
     memo: OrderedDict[tuple[str, str], tuple[float, CurrentUser]] = getattr(
         app_state, "_live_calls_authority_memo", None,
     )
@@ -383,21 +261,14 @@ async def fresh_authority(
 
 
 def forget_authority(app_state: Any, user_id: str, scope_key: str) -> None:
-    """Evict a single (user_id, scope_key) entry. Called by _resolve_scope
-    when the scope_key's tenant slug fails to resolve (its own 404) — a
-    scope_key that will never again be useful must not linger in the memo,
-    so a caller flooding GET/POST live-calls with distinct nonexistent slugs
-    can't grow it (finding #8, alongside AUTHORITY_MEMO_MAX_ENTRIES above)."""
+    """Evict one entry, e.g. for a nonexistent slug, so slug floods can't grow the memo."""
     memo = getattr(app_state, "_live_calls_authority_memo", None)
     if memo is not None:
         memo.pop((user_id, scope_key), None)
 
 
 async def get_or_404(fetch: Awaitable[Any | None], detail: str) -> Any:
-    """Await `fetch`, raising a clean 404 with `detail` if it resolves to
-    None, instead of letting the caller repeat the same if-None-raise
-    block. Same fetch-then-check shape used to be inlined separately in
-    each router (tenants, agents, calls, phone_numbers, provider_configs)."""
+    """Await `fetch`, raising 404 with `detail` if it resolves to None."""
     row = await fetch
     if row is None:
         raise HTTPException(status_code=404, detail=detail)
@@ -409,11 +280,7 @@ async def validate_id_exists(
     fetch_by_id: Callable[[str], Awaitable[Any | None]],
     entity_name: str,
 ) -> None:
-    """UUID-format-then-existence check for a foreign-key id in a request
-    body, e.g. phone_numbers.agent_id — a clean 400 (malformed id) or 404
-    (well-formed but nonexistent) instead of an INSERT's FK violation
-    reaching the client as a raw 500. A None id_ (optional FK, e.g. no
-    fallback_agent_id given) is a no-op, not an error."""
+    """400 for a malformed FK id, 404 for a missing one; None is a no-op."""
     if id_ is None:
         return
     try:

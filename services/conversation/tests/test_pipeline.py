@@ -1,14 +1,4 @@
-"""
-Tests for the Phase 5 pipeline: provider interfaces + PipelineConversationHandler.
-
-All providers are mocked so the tests run without FasterWhisper, Ollama, or
-Kokoro installed.  The tests verify:
-  - ISTT/ILLM/ITTS contracts
-  - PipelineConversationHandler produces correct HandlerResponse sequence
-  - Cancellation stops the pipeline mid-stream
-  - Empty STT result short-circuits (no LLM/TTS called)
-  - ConversationSession accumulates audio and calls on_speech_ended
-"""
+"""Tests for provider interfaces and PipelineConversationHandler, with all providers mocked."""
 
 from __future__ import annotations
 
@@ -86,10 +76,7 @@ class FakeMetrics:
         return sum(1 for n, _ in self.increments if n == name)
 
 def _silence(n_frames: int = 60, frame_samples: int = 320) -> bytes:
-    # Default must clear PipelineConversationHandler's 1000ms min_bytes gate
-    # (60 frames * 320 samples * 2 bytes = 38400 bytes > 32000 byte floor at
-    # 16kHz) so on_speech_ended() call sites actually exercise the pipeline
-    # instead of silently short-circuiting on the short-utterance check.
+    # Default clears the handler's 1000ms min_bytes gate (38400 > 32000 bytes at 16kHz).
     return b"\x00" * (n_frames * frame_samples * 2)
 
 
@@ -97,10 +84,7 @@ def _make_stt(text: str = "hello world") -> MagicMock:
     stt = MagicMock()
     stt.transcribe = AsyncMock(return_value=SttResult(text=text, confidence=0.95))
 
-    # Delegates through the same transcribe AsyncMock (not a stale captured
-    # `text`) so tests that reassign transcribe's return_value/side_effect
-    # keep working — matches this fake's own transcribe(), same posture as
-    # FasterWhisperSTT's real finalize_stream() fallback.
+    # Delegates to the transcribe AsyncMock so tests reassigning its return_value/side_effect still work.
     async def _finalize_stream(session_id, audio, sample_rate):
         return await stt.transcribe(audio, sample_rate)
 
@@ -133,11 +117,7 @@ def _make_tts(pcm: bytes = b"\x00" * 320) -> MagicMock:
     tts = MagicMock()
     tts.synthesize = AsyncMock(return_value=pcm)
 
-    # Delegates through the same synthesize AsyncMock (not a stale captured
-    # `pcm`) so tests that reassign tts.synthesize's return_value/side_effect
-    # or assert on tts.synthesize.await_args_list keep working unchanged —
-    # this fake just doesn't do genuine chunked streaming, same posture as
-    # macOS/Kokoro/ElevenLabs's real synthesize_stream wrappers.
+    # Delegates to the synthesize AsyncMock so tests reassigning or asserting on it still work.
     async def _stream(text, sample_rate):
         audio = await tts.synthesize(text, sample_rate)
         if audio:
@@ -158,12 +138,7 @@ def _make_handler(
     workflow: dict | None = None, node_tools: list[str] | None = None,
     node_knowledge: list[str] | None = None, transcripts=None,
 ) -> PipelineConversationHandler:
-    """Builds the minimal (RuntimeConfig, ProviderBundle) pair these tests
-    need — PipelineConversationHandler's real constructor contract now (see
-    pipeline.py) — without standing up a real IConfigProvider. These tests
-    are about pipeline/FSM behavior (STT->LLM->TTS sequencing, cancellation,
-    history), not config resolution, so a hand-built RuntimeConfig with
-    placeholder tenant/agent/provider rows is the right level of fake."""
+    """Build a handler from a hand-built RuntimeConfig/ProviderBundle, no IConfigProvider."""
     now = datetime.now(timezone.utc)
     tenant = Tenant(
         id="t1", slug="test", name="Test", region="us",
@@ -351,11 +326,7 @@ async def test_pipeline_cancel_stops_generation():
 
 @pytest.mark.asyncio
 async def test_on_cancel_interrupts_background_workflow_llm_and_on_dtmf_is_inert():
-    """An editing accident once moved _interrupt_workflow_background_llm()
-    out of on_cancel() and into on_dtmf() behind a dead `pass` — silently
-    breaking barge-in's interrupt of the background extractor/summarizer on
-    every ordinary call, and making a keypress (documented as inert on a
-    plain conversational session) mutate workflow state. Pin both halves."""
+    """on_cancel() interrupts the background workflow LLM; on_dtmf() is inert on a plain session."""
     stt = _make_stt("hello")
     llm = _make_llm(["Reply."])
     tts = _make_tts()
@@ -403,14 +374,8 @@ async def test_pipeline_history_accumulates():
 
 @pytest.mark.asyncio
 async def test_pipeline_marker_only_reply_gets_fallback_audio():
-    """
-    LLM emits the end-call marker with no spoken text before it (a model
-    not following the "after your spoken words" instruction). Without a
-    fallback, no TTS audio is produced for the turn and the servicer's
-    tts_started_sent guard silently drops EndCall (servicer.py), so the
-    call never hangs up. The pipeline must synthesize a fallback goodbye
-    so at least one tts_payloads response precedes end_call=True.
-    """
+    """A marker-only LLM reply still gets fallback goodbye audio before end_call=True,
+    since the servicer drops EndCall when no TTS was sent."""
     stt = _make_stt("tear down the call")
     llm = _make_llm([_END_CALL_MARKER])        # marker only, nothing spoken
     tts = _make_tts(b"\x00" * 640)
@@ -435,10 +400,7 @@ async def test_pipeline_marker_only_reply_gets_fallback_audio():
 
 
 def _make_spy_llm(tokens: list[str]) -> tuple[MagicMock, list[int]]:
-    """_make_llm's `generate` is a plain async-generator function, not a
-    Mock — llm.generate.assert_not_called() is silently a no-op against it
-    (no such attribute), so it can't actually prove the LLM was skipped.
-    This tracks real invocations via a closure-captured counter instead."""
+    """LLM whose generate() invocations are counted (assert_not_called is a no-op on a plain generator)."""
     calls: list[int] = []
 
     async def _gen(messages):
@@ -453,10 +415,7 @@ def _make_spy_llm(tokens: list[str]) -> tuple[MagicMock, list[int]]:
 
 @pytest.mark.asyncio
 async def test_pipeline_max_call_duration_ends_call_without_calling_llm():
-    """Once policies.max_call_duration_s has elapsed, on_speech_ended must
-    skip the LLM entirely (no response is generated only to be discarded)
-    and instead speak a fixed wrap-up line, ending the call the same way
-    farewell_message/[[END_CALL]] do."""
+    """After max_call_duration_s, the LLM is skipped and a fixed wrap-up line ends the call."""
     stt = _make_stt("are you still there")
     llm, calls = _make_spy_llm(["should never be reached"])
     tts = _make_tts(b"\x00" * 640)
@@ -587,14 +546,7 @@ async def test_session_speech_ended_clears_buffer_and_yields_responses():
 
 @pytest.mark.asyncio
 async def test_agent_id_falsy_sentinel_becomes_none_not_a_fake_string():
-    """Regression test: RuntimeConfig.agent.id is a non-optional str field,
-    so the legacy-fallback adapter (agent_config.to_runtime_config()) uses
-    "" as its honest "no real Postgres row" sentinel. Without the `or None`
-    in PipelineConversationHandler's constructor, that empty string (or a
-    tempting-but-wrong literal sentinel like "legacy") would flow into
-    TranscriptBuilder.begin_call()'s agent_id argument and then into
-    calls.agent_id, a real UUID FK column — breaking the insert outright,
-    not just being cosmetically wrong."""
+    """A "" agent.id (legacy fallback sentinel) becomes None, never a string in the calls.agent_id UUID FK."""
     from ..agent_config import AgentConfig, to_runtime_config
 
     legacy_runtime_config, legacy_bundle = to_runtime_config(
@@ -640,8 +592,7 @@ async def test_agent_id_falsy_sentinel_becomes_none_not_a_fake_string():
 
 
 # ---------------------------------------------------------------------------
-# StreamBuffer + DirectiveParser — streaming-safe marker detection
-# (directives.py)
+# StreamBuffer + DirectiveParser: streaming-safe marker detection
 # ---------------------------------------------------------------------------
 
 def test_stream_buffer_no_tag_passes_text_through_unchanged():
@@ -693,11 +644,7 @@ def test_directive_parser_end_call_has_no_attrs():
 
 
 def test_stream_buffer_holds_back_unterminated_tag():
-    """A tag split across two streamed chunks must not leak a partial
-    fragment as "safe" text — this is what protects TTS from ever reading
-    a raw tag fragment aloud. feed() only returns text once it can prove
-    no tag inside it is still open; parsing that text is DirectiveParser's
-    separate job."""
+    """A tag split across chunks is held back so TTS never reads a partial tag."""
     buf = StreamBuffer()
     safe1 = buf.feed('Connecting you. [[TRANSFER type="warm" ')
     assert safe1 == "Connecting you. "
@@ -713,12 +660,7 @@ def test_stream_buffer_holds_back_unterminated_tag():
 
 
 def test_stream_buffer_reason_with_period_does_not_leak_partial_tag():
-    """Regression guard: a reason value containing sentence-ending
-    punctuation followed by whitespace (e.g. "resolved. thanks") must not
-    confuse a downstream sentence-splitter into treating mid-tag text as a
-    complete, speakable sentence — feed() must hold the *entire* tag back
-    until it closes, regardless of what looks like sentence punctuation
-    inside it."""
+    """Sentence punctuation inside a tag's reason doesn't release the tag early."""
     buf = StreamBuffer()
     safe = buf.feed('[[TRANSFER reason="issue is resolved. thanks" type="cold"')
     assert safe == ""
@@ -740,17 +682,12 @@ def test_directive_parser_strip_removes_every_complete_tag():
 
 
 # ---------------------------------------------------------------------------
-# Phase 3 — transfer detection wired into PipelineConversationHandler
+# Transfer detection in PipelineConversationHandler
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_pipeline_detects_transfer_directive_and_yields_transfer_request():
-    """
-    Phase 3 requirement: detecting [[TRANSFER ...]] creates a TransferRequest
-    and surfaces it via HandlerResponse — no gRPC, no gateway/ESL call, no
-    transfer actually performed (that's what the servicer's bus.publish
-    does with it — observability only, see servicer.py/event_bus.py).
-    """
+    """[[TRANSFER ...]] yields a TransferRequest via HandlerResponse; no transfer is performed here."""
     stt = _make_stt("I need to speak to billing")
     llm = _make_llm([
         "Connecting you now. ",
@@ -819,7 +756,7 @@ async def test_pipeline_no_transfer_request_when_no_directive_present():
 
 
 # ---------------------------------------------------------------------------
-# Phase 3 — escalation_threshold / record_guardrail_violation()
+# escalation_threshold / record_guardrail_violation()
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -924,7 +861,7 @@ async def test_transfer_request_suppressed_on_barge_in_cancel():
 
 
 # ---------------------------------------------------------------------------
-# Phase 5C — PipelineConversationHandler.on_transfer_failed() (recovery)
+# PipelineConversationHandler.on_transfer_failed() (recovery)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -947,10 +884,7 @@ async def test_on_transfer_failed_synthesizes_apology_via_llm():
 
 @pytest.mark.asyncio
 async def test_on_transfer_failed_sends_structured_system_event_to_agent_runtime():
-    """Requirement 5/6: AgentRuntime (the LLM call) receives the structured
-    system event verbatim — {"type": "system_event", "event":
-    "transfer_failed", "reason": ...} — not a hardcoded recovery sentence;
-    the LLM (via its existing prompt) generates the actual reply."""
+    """The LLM receives the structured transfer_failed system event, not a hardcoded sentence."""
     import json as _json
 
     captured_messages = []
@@ -1048,9 +982,7 @@ async def test_on_transfer_failed_defers_transcript_persistence_to_session_end()
 
 @pytest.mark.asyncio
 async def test_on_transfer_failed_second_turn_continues_normally():
-    """After recovery, a normal caller utterance must still work — proves
-    on_transfer_failed's history-only-assistant-turn doesn't corrupt the
-    (user, assistant) pairing on_speech_ended relies on."""
+    """A normal turn after recovery still works (history pairing intact)."""
     stt = _make_stt("are you still there")
     llm = _make_llm(["Yes, still here!"])
     tts = _make_tts(b"\x00" * 640)
@@ -1071,9 +1003,7 @@ async def test_on_transfer_failed_second_turn_continues_normally():
 
 @pytest.mark.asyncio
 async def test_on_speech_ended_records_turn_latency():
-    """A normal, uninterrupted turn should record all four latency
-    numbers, none of them zero/negative, and voice_to_voice_ms should be
-    at least as large as stt_ms (it starts measuring earlier)."""
+    """A normal turn records all four latencies, positive, with voice_to_voice_ms >= stt_ms."""
     stt = _make_stt("book me a haircut")
     llm = _make_llm(["Sure, what time works?"])
     tts = _make_tts(b"\x00" * 640)
@@ -1097,9 +1027,7 @@ async def test_on_speech_ended_records_turn_latency():
 
 @pytest.mark.asyncio
 async def test_on_speech_ended_cancelled_turn_records_partial_latency():
-    """A barge-in before any audio synthesizes must not crash record_turn —
-    tts_ms/voice_to_voice_ms stay None (never a misleading 0) when no
-    audio ever actually played."""
+    """A barge-in before any audio leaves tts_ms/voice_to_voice_ms as None, not 0."""
     stt = _make_stt("hello")
     llm = _make_llm(["Sure thing right away."])
     tts = _make_tts(b"\x00" * 640)
@@ -1169,21 +1097,13 @@ def _set_history(handler, session_id: str, messages: list[ChatMessage], max_hist
 
 @pytest.mark.asyncio
 async def test_trim_history_does_not_orphan_a_tool_call_pair():
-    """Confirmed live: OpenAI 400s with 'messages with role tool must be a
-    response to a preceeding message with tool_calls' once a tool-using
-    turn's assistant/tool pair straddles the fixed-count cut boundary. A
-    naive history[-N:] slice has no notion of that pairing; the fix must
-    snap the cut forward to the next 'user' message instead."""
+    """A tool_calls/tool pair straddling the cut is never orphaned; the cut snaps forward to the next user message."""
     stt = _make_stt("hi")
     llm = _make_llm(["hi"])
     tts = _make_tts(b"")
     handler = _make_handler(stt, llm, tts)
 
-    # 4 turns: two ordinary (2 msgs each), one tool-using (user, assistant
-    # tool_calls, tool result, assistant final — 4 msgs), one more ordinary.
-    # 10 messages total; max_history=2 => max_msgs=4, so the naive cut index
-    # (10-4=6) lands exactly on the tool-result message (index 6) — the
-    # message right after the assistant's tool_calls message.
+    # 10 messages, max_history=2 => max_msgs=4: the naive cut (index 6) lands on the tool result.
     messages = [
         ChatMessage(role="user", content="turn 1"),
         ChatMessage(role="assistant", content="reply 1"),
@@ -1200,18 +1120,14 @@ async def test_trim_history_does_not_orphan_a_tool_call_pair():
     handler._trim_history("s1")
 
     trimmed = handler._session("s1").history
-    # No orphaned tool message: the first message is never role "tool", and
-    # any "tool" message is always immediately preceded by an "assistant"
-    # message carrying tool_calls.
+    # No "tool" message may lead, and each must follow an assistant message with tool_calls.
     for i, msg in enumerate(trimmed):
         if msg.role == "tool":
             assert i > 0, "a 'tool' message must never be first in history"
             assert trimmed[i - 1].role == "assistant" and trimmed[i - 1].tool_calls, (
                 f"orphaned tool message at index {i}: {trimmed}"
             )
-    # The naive cut (index 6, mid-pair) must have snapped forward to the
-    # next user message (index 8) instead — the incomplete tool turn is
-    # dropped entirely rather than left half-orphaned.
+    # The cut snapped forward to the next user message (index 8), dropping the incomplete tool turn.
     assert [m.content for m in trimmed] == ["turn 4", "reply 4"]
 
 
@@ -1238,9 +1154,7 @@ async def test_trim_history_preserves_leading_system_message():
 
 @pytest.mark.asyncio
 async def test_trim_history_skips_trim_when_no_safe_cut_point_exists():
-    """If nothing ahead of the target cut is ever a 'user' message (all
-    tool-call churn from one giant turn), trimming must leave history
-    untouched rather than emptying it out from under the next LLM call."""
+    """With no user message ahead of the target cut, history is left untouched."""
     stt = _make_stt("hi")
     llm = _make_llm(["hi"])
     tts = _make_tts(b"")
@@ -1260,7 +1174,7 @@ async def test_trim_history_skips_trim_when_no_safe_cut_point_exists():
 
 
 # ---------------------------------------------------------------------------
-# Phase 5D — PipelineConversationHandler.finalize_session()
+# PipelineConversationHandler.finalize_session()
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -1356,7 +1270,7 @@ async def test_session_cancel_clears_buffer():
 
 
 # ---------------------------------------------------------------------------
-# Phase 5B — gateway → service transfer notifications (session.py)
+# Gateway -> service transfer notifications (session.py)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -1380,9 +1294,7 @@ async def test_session_on_transfer_initiated_drives_fsm_and_publishes_event():
 
 @pytest.mark.asyncio
 async def test_session_on_transfer_completed_finalizes_and_moves_to_closing():
-    """Phase 5D: success now passes through Finalizing (running
-    SessionFinalizer) before reaching Closing — see TestSessionFinalization
-    below for dedicated coverage of that step."""
+    """TransferCompleted passes through Finalizing (SessionFinalizer) before Closing."""
     handler = EchoConversationHandler()
     ctx = SessionContext(session_id="s5")
     bus = RecordingEventBus()
@@ -1402,8 +1314,7 @@ async def test_session_on_transfer_completed_finalizes_and_moves_to_closing():
 
 @pytest.mark.asyncio
 async def test_session_on_transfer_failed_recovers_to_listening_and_publishes_event():
-    """Phase 5C: unlike TransferCompleted, a failure does not end the call —
-    the session returns to LISTENING (recoverable) rather than CLOSING."""
+    """A transfer failure doesn't end the call: the session returns to LISTENING, not CLOSING."""
     handler = EchoConversationHandler()
     ctx = SessionContext(session_id="s6")
     bus = RecordingEventBus()
@@ -1423,10 +1334,7 @@ async def test_session_on_transfer_failed_recovers_to_listening_and_publishes_ev
 
 @pytest.mark.asyncio
 async def test_session_transfer_failed_passes_through_recovering_and_speaking():
-    """Exercises the full workflow transition: Transferring -> Recovering ->
-    Speaking -> Listening — using a handler that actually produces TTS
-    audio (EchoConversationHandler's on_transfer_failed yields nothing, so
-    the simpler test above only exercises the empty-audio safety net)."""
+    """Full TransferFailed path: Transferring -> Recovering -> Speaking -> Listening, with real apology audio."""
     class ApologizingHandler(EchoConversationHandler):
         async def on_transfer_failed(self, session_id, destination, reason):
             yield HandlerResponse(tts_payloads=[b"\x00" * 320])
@@ -1453,10 +1361,7 @@ async def test_session_transfer_failed_passes_through_recovering_and_speaking():
 
 @pytest.mark.asyncio
 async def test_session_transfer_metrics_emitted():
-    """Requirement: transfer_attempts_total, transfer_recovery_success_total,
-    transfer_recovery_latency_ms — transfer_failures_total is covered
-    separately below (it's driven by a real EventBus subscription, not the
-    direct call path)."""
+    """Transfer attempt, recovery-success and recovery-latency metrics are emitted."""
     class ApologizingHandler(EchoConversationHandler):
         async def on_transfer_failed(self, session_id, destination, reason):
             yield HandlerResponse(tts_payloads=[b"\x00" * 320])
@@ -1501,10 +1406,7 @@ async def test_session_transfer_recovery_success_not_counted_when_no_audio():
 
 @pytest.mark.asyncio
 async def test_workflow_engine_subscribes_to_transfer_failed_for_metrics():
-    """Requirement 2+3: GrpcEventBridge (session.py) publishes TransferFailed
-    onto the EventBus; WorkflowEngine (ConversationSession's own bus
-    subscription — see __init__) reacts to it, independent of the direct
-    on_transfer_failed() call chain that streams the apology."""
+    """WorkflowEngine reacts to TransferFailed on the EventBus, independent of the direct apology path."""
     handler = EchoConversationHandler()
     ctx = SessionContext(session_id="s6e")
     bus = EventBus()
@@ -1525,10 +1427,7 @@ async def test_workflow_engine_subscribes_to_transfer_failed_for_metrics():
 
 @pytest.mark.asyncio
 async def test_session_transfer_completed_without_initiated_is_a_no_op():
-    """ConversationFSM guards on state()==TRANSFERRING (see fsm.py) — a
-    TransferCompleted arriving with no prior TransferInitiated (shouldn't
-    happen per the gRPC contract, but the FSM must survive it, not crash)
-    is silently ignored rather than corrupting FSM state."""
+    """TransferCompleted without a prior TransferInitiated is ignored by the FSM."""
     handler = EchoConversationHandler()
     ctx = SessionContext(session_id="s7")
     bus = RecordingEventBus()
@@ -1538,15 +1437,12 @@ async def test_session_transfer_completed_without_initiated_is_a_no_op():
     await session.on_transfer_completed("+15551234567")
 
     assert session.fsm_state == CallFsmState.LISTENING
-    # The event is still published (observability), even though the FSM
-    # itself no-oped — matches TransferInitiated/Completed/Failed being
-    # unconditionally published in session.py.
+    # Still published for observability even though the FSM no-oped.
     assert len(bus.published_of(TransferCompleted)) == 1
 
 
 # ---------------------------------------------------------------------------
-# Transfer instruction auto-injection (single source of truth = policies,
-# never hand-written prompt text — see _TRANSFER_INSTRUCTION_TEMPLATE)
+# Transfer instruction auto-injection (from policies, see _TRANSFER_INSTRUCTION_TEMPLATE)
 # ---------------------------------------------------------------------------
 
 def test_transfer_instruction_injected_when_transfer_configured():
@@ -1593,7 +1489,7 @@ def test_transfer_instruction_injected_even_with_empty_system_prompt_column():
 
 
 # ---------------------------------------------------------------------------
-# Phase 5F — transfer outcome persistence (calls.close_reason/final_state)
+# Transfer outcome persistence (calls.close_reason/final_state)
 # ---------------------------------------------------------------------------
 
 async def _outcome_session(sid: str):
@@ -1631,9 +1527,7 @@ async def test_close_records_transfer_timeout_on_generic_close():
 
 @pytest.mark.asyncio
 async def test_close_keeps_deliberate_reason_after_failed_transfer():
-    """A failed transfer whose call genuinely continued and later ended
-    normally keeps its real close reason — the attempt stays visible in
-    final_state only."""
+    """After a failed transfer, a normal later end keeps its real close reason; the attempt shows only in final_state."""
     session, bus, handler = await _outcome_session("s-cont")
     async for _ in session.on_transfer_failed("1001", "hangup_before_bridge", "tid-3"):
         pass
@@ -1666,7 +1560,7 @@ async def test_close_without_transfer_leaves_reason_untouched():
 
 
 # ---------------------------------------------------------------------------
-# Phase 5F — fail-fast transfer config validation at session setup
+# Fail-fast transfer config validation at session setup
 # ---------------------------------------------------------------------------
 
 def test_transfer_instruction_injected_for_valid_sip_uri():
@@ -1743,7 +1637,7 @@ def test_transfer_destination_problem_names_loopback_uri():
 
 
 # ---------------------------------------------------------------------------
-# Phase 5F — transfer_id generation (observability correlation)
+# transfer_id generation (observability correlation)
 # ---------------------------------------------------------------------------
 
 def test_transfer_request_generates_unique_transfer_ids():
@@ -1844,10 +1738,7 @@ def test_voice_speed_invalid_falls_back_to_default():
 
 @pytest.mark.asyncio
 async def test_frustrated_utterance_triggers_escalation_after_threshold():
-    """A real caller utterance carrying a frustration/abuse phrase is
-    detected inline (no manual record_guardrail_violation() call, unlike
-    the lower-level test above) and, once the configured threshold is
-    exceeded, surfaces a TransferRequest on a later turn."""
+    """A frustrated utterance is detected inline and escalates once the threshold is exceeded."""
     stt_frustrated = _make_stt("This is useless, you are not helping at all.")
     llm = _make_llm(["I'm sorry to hear that."])
     tts = _make_tts(b"\x00" * 640)
@@ -1892,9 +1783,7 @@ async def test_ordinary_utterances_never_escalate():
 
 @pytest.mark.asyncio
 async def test_frustration_counted_even_without_escalation_configured():
-    """escalation_threshold=None means violations are still counted (for
-    future observability) but never trigger a transfer — matches
-    record_guardrail_violation's own documented contract."""
+    """escalation_threshold=None still counts violations but never transfers."""
     stt_frustrated = _make_stt("This is ridiculous, I give up.")
     llm = _make_llm(["Let me try again."])
     tts = _make_tts(b"\x00" * 640)
@@ -1908,15 +1797,12 @@ async def test_frustration_counted_even_without_escalation_configured():
 
 
 # ---------------------------------------------------------------------------
-# Phase 6 — TransferDecisionEngine integration: consecutive reset + duplicate
-# suppression across LLM-directive and escalation triggers
+# TransferDecisionEngine integration: consecutive reset + duplicate suppression
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_guardrail_counter_resets_on_non_violating_turn():
-    """A frustrated turn, then a calm turn, then frustrated again must not
-    reach threshold=2 on the third turn — the calm turn resets the streak
-    (per Phase 6's 'consecutive' counter requirement)."""
+    """A calm turn resets the consecutive frustration streak."""
     frustrated = _make_stt("This is useless, you are not helping at all.")
     calm = _make_stt("Can you tell me your hours?")
     llm = _make_llm(["Ok."])
@@ -1944,10 +1830,7 @@ async def test_guardrail_counter_resets_on_non_violating_turn():
 
 @pytest.mark.asyncio
 async def test_duplicate_transfer_suppressed_after_first_accepted_directive():
-    """Once an LLM directive has produced an accepted TransferRequest for a
-    session, a second directive-carrying turn must not produce another —
-    the engine's already_requested duplicate protection, driven by the
-    pipeline's own _transfer_requested bookkeeping."""
+    """After one accepted directive, a second directive turn produces no duplicate TransferRequest."""
     stt = _make_stt("Please transfer me to a human.")
     llm = _make_llm(["Connecting you now. [[TRANSFER type=\"cold\" destination=\"1001\" reason=\"x\"]]"])
     tts = _make_tts(b"\x00" * 640)
@@ -1978,9 +1861,7 @@ async def test_transfer_requested_bookkeeping_cleared_on_session_end():
 
 
 # ---------------------------------------------------------------------------
-# Phase 6 bug fix: duplicate-suppression must release on cancellation/failure
-# (found live — a barge-in-dropped transfer permanently blocked
-# all further attempts for that session without this)
+# Duplicate suppression must release on transfer cancellation/failure
 # ---------------------------------------------------------------------------
 
 def test_on_transfer_cancelled_clears_duplicate_suppression_flag():
@@ -1995,10 +1876,7 @@ def test_on_transfer_cancelled_clears_duplicate_suppression_flag():
 
 @pytest.mark.asyncio
 async def test_retry_after_barge_in_cancelled_transfer_is_not_treated_as_duplicate():
-    """Mirrors the live sequence: an LLM directive is accepted, the
-    servicer/session-level cancellation fires (barge-in before dispatch),
-    then the caller asks again — the second attempt must be evaluated
-    fresh, not rejected as already_transferring."""
+    """After a barge-in cancels an accepted transfer, a new request is evaluated fresh, not as a duplicate."""
     stt = _make_stt("Please transfer me to a human.")
     llm = _make_llm(["Connecting you now. [[TRANSFER type=\"cold\" destination=\"1001\" reason=\"x\"]]"])
     tts = _make_tts(b"\x00" * 640)
@@ -2038,11 +1916,7 @@ async def test_echo_handler_on_transfer_cancelled_is_a_safe_noop():
 
 @pytest.mark.asyncio
 async def test_pending_escalation_not_starved_by_rejected_directive():
-    """Code-review regression: an escalation-accepted pending transfer must
-    dispatch even when the same/next turn's LLM emits a [[TRANSFER]]
-    directive that the engine rejects as already_transferring — the
-    rejected directive must fall through to the pending request rather
-    than starving it."""
+    """A pending escalation still dispatches when a same-turn directive is rejected as already_transferring."""
     stt = _make_stt("I want a human now.")
     llm = _make_llm(["Connecting you. [[TRANSFER type=\"cold\" destination=\"1001\" reason=\"x\"]]"])
     tts = _make_tts(b"\x00" * 640)
@@ -2118,9 +1992,7 @@ async def test_farewell_message_synthesized_on_end_call():
 
 @pytest.mark.asyncio
 async def test_transfer_announcement_synthesized_before_transfer_request():
-    """Token-only transfer turn with a scripted announcement: announcement
-    audio is yielded BEFORE the transfer_request (so the servicer holds
-    dispatch until it has played)."""
+    """Scripted announcement audio is yielded before the transfer_request."""
     stt = _make_stt("get me a human")
     llm = _make_llm(['[[TRANSFER type="cold" destination="1001" reason="x"]]'])
     tts = _make_tts(b"\x22" * 640)
@@ -2148,9 +2020,7 @@ async def test_no_announcement_token_only_transfer_still_dispatches_without_audi
         stt, llm, tts, system_prompt="You are Alex.",
         transfer_type="cold", transfer_destination="1001",
     )
-    # Not this test's concern — see _FIRST_TURN_FILLER's own tests — so
-    # treat this as a turn beyond the first, keeping this test isolated to
-    # the announcement/no-announcement transfer-audio question it's for.
+    # Skip the first-turn filler; it's covered by its own tests.
     handler._session("s1").first_turn_filler_spoken = True
     responses = [r async for r in handler.on_speech_ended("s1", _silence(), 300, -20.0)]
     assert any(r.transfer_request for r in responses)
@@ -2158,16 +2028,11 @@ async def test_no_announcement_token_only_transfer_still_dispatches_without_audi
 
 
 # ---------------------------------------------------------------------------
-# Tool Execution Framework wiring — orchestrator is optional/injected,
-# same backward-compatible posture as knowledge/metrics above.
+# Tool Execution Framework wiring (orchestrator is optional/injected)
 # ---------------------------------------------------------------------------
 
 class _FakeToolOrchestrator:
-    """Matches the one method _token_stream() actually calls —
-    ToolCallOrchestrator's own internal logic is covered separately by
-    test_tool_call_orchestrator.py. This fake proves the pipeline wiring
-    itself: events unwrapped correctly, sentence-splitting/TTS still works
-    on top of an orchestrator-driven token stream."""
+    """Fake exposing the one method _token_stream() calls; proves pipeline wiring only."""
 
     def __init__(self, events):
         self._events = events
@@ -2210,9 +2075,7 @@ async def test_pipeline_uses_tool_orchestrator_when_provided():
 
 @pytest.mark.asyncio
 async def test_pipeline_without_tool_orchestrator_uses_llm_directly():
-    """Default (tool_orchestrator=None) — identical to pre-tool-calling
-    behavior, the exact backward-compatibility contract this feature was
-    built under."""
+    """With tool_orchestrator=None, the LLM is used directly."""
     stt = _make_stt("hello")
     llm = _make_llm(["Hi", " there", "!"])
     tts = _make_tts(b"\x00" * 640)
@@ -2246,10 +2109,7 @@ async def test_local_tool_completed_event_does_not_crash_the_pipeline():
 
 @pytest.mark.asyncio
 async def test_tool_call_filler_burst_within_one_turn_speaks_only_once():
-    """Two tool calls back to back in the same turn (no real user speech
-    between them) must not each speak a filler — that's the same
-    "sounds broken" repetition the rotation exists to avoid, just via a
-    burst instead of identical wording. See _TOOL_CALL_FILLER_MIN_GAP_S."""
+    """Back-to-back tool calls in one turn speak only one filler (_TOOL_CALL_FILLER_MIN_GAP_S)."""
     from ..tools.llm_adapter import TokenEvent as ToolTokenEvent
     from ..tools.llm_adapter import ToolCallStartedEvent
 
@@ -2273,9 +2133,7 @@ async def test_tool_call_filler_burst_within_one_turn_speaks_only_once():
 
 @pytest.mark.asyncio
 async def test_tool_call_filler_rotates_across_separate_tool_calls(monkeypatch):
-    """Two tool calls on two separate, well-spaced turns (the real case —
-    a caller replying between them) each get a filler, and they aren't the
-    same phrase — see _TOOL_CALL_FILLERS."""
+    """Tool calls on separate, spaced turns each get a filler, with different phrases."""
     from ..tools.llm_adapter import ToolCallStartedEvent
 
     clock = {"t": 0.0}
@@ -2303,13 +2161,7 @@ async def test_tool_call_filler_rotates_across_separate_tool_calls(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_truthful_recap_after_real_booking_is_not_flagged():
-    """Confirmed live: a genuine, tool-confirmed booking success on one
-    turn, truthfully recapped by the LLM on a LATER turn (no tool call
-    needed that turn — nothing about the booking changed), got flagged as
-    a fresh fabrication anyway. Once _confirmed_booking_slot has the real
-    slot for this session, a later plain-text recap of THAT SAME slot
-    (same day-of-month and hour mentioned) must never be corrected or
-    counted."""
+    """A later plain-text recap of the same confirmed slot isn't flagged as fabrication."""
     from ..tools.llm_adapter import DeterministicSpokenEvent as ToolDeterministicSpokenEvent
     from ..tools.llm_adapter import TokenEvent as ToolTokenEvent
     from ..tools.llm_adapter import ToolCallStartedEvent
@@ -2345,12 +2197,7 @@ async def test_truthful_recap_after_real_booking_is_not_flagged():
 
 @pytest.mark.asyncio
 async def test_reschedule_claim_to_a_different_time_is_still_flagged():
-    """The other half of the fix: a real booking succeeding once must NOT
-    give a free pass to a LATER claim about a genuinely different,
-    never-confirmed time — confirmed live, a caller's reschedule request
-    got a false "it's booked" for a new date/time with no
-    reschedule_appointment call behind it, and the old boolean-flag
-    version of this guard silently let it through."""
+    """A claim about a different, never-confirmed time is still flagged after a real booking."""
     from ..tools.llm_adapter import DeterministicSpokenEvent as ToolDeterministicSpokenEvent
     from ..tools.llm_adapter import TokenEvent as ToolTokenEvent
     from ..tools.llm_adapter import ToolCallStartedEvent
@@ -2387,12 +2234,7 @@ async def test_reschedule_claim_to_a_different_time_is_still_flagged():
 
 @pytest.mark.asyncio
 async def test_fabricated_booking_claim_gets_corrected_in_history():
-    """Confirmed live: a local LLM narrated "Booked! ... demo
-    scheduled ..." with no real book_appointment call behind it (verified
-    against the real Cal.com API: zero bookings existed). The pipeline
-    can't unspeak the sentence, but it must append a correction to history
-    so the next turn doesn't compound the lie, and count it as a guardrail
-    violation."""
+    """A booking claim with no booking tool call appends a history correction and counts a violation."""
     from ..tools.llm_adapter import TokenEvent as ToolTokenEvent
 
     stt = _make_stt("book me tomorrow at 3")
@@ -2414,17 +2256,7 @@ async def test_fabricated_booking_claim_gets_corrected_in_history():
 
 @pytest.mark.asyncio
 async def test_fabricated_booking_claim_escalates_on_first_offense():
-    """Confirmed live: escalation_threshold=1 with two
-    consecutive fabricated "Booked!" turns never escalated, because (a)
-    the engine rejects when violation_count <= threshold (so threshold=1
-    actually requires 2+ violations, not 1), and (b) the fabrication count
-    was sharing a counter with the caller-frustration detector, which
-    resets on every polite caller turn — the caller here said "Sure,
-    thank you" between the two fabrications, wiping the count back to 0
-    each time. threshold=0 is the correct configuration for "transfer on
-    the very first fabrication," and the dedicated
-    _booking_fabrication_counter must not be reset by polite caller
-    turns."""
+    """threshold=0 escalates on the first fabrication; polite caller turns don't reset the fabrication counter."""
     from ..tools.llm_adapter import TokenEvent as ToolTokenEvent
 
     stt = _make_stt("Sure, thank you.")
@@ -2446,17 +2278,7 @@ async def test_fabricated_booking_claim_escalates_on_first_offense():
 
 @pytest.mark.asyncio
 async def test_end_call_suppressed_on_fabricated_claim_below_escalation_threshold():
-    """Confirmed live: a first-offense fabricated booking claim (no
-    transfer configured, so it can't escalate) landed in the same turn as
-    the LLM's own [[END_CALL]] marker — the call ended with the false
-    "booked" claim as the last thing the caller heard, before the
-    "Correction" message this same code path appends to history ever got
-    a turn to actually be spoken. Unlike
-    test_pending_transfer_survives_same_turn_end_call_marker (the
-    escalated case, where transfer_request already suppresses end_call),
-    this is the far more common below-threshold case, with no transfer at
-    all — end_call must still be suppressed so the corrected next turn has
-    a chance to reach the caller."""
+    """Below the escalation threshold, end_call is suppressed on a fabricated claim so the correction gets spoken."""
     from ..tools.llm_adapter import TokenEvent as ToolTokenEvent
 
     stt = _make_stt("book me tomorrow at 3")
@@ -2480,14 +2302,7 @@ async def test_end_call_suppressed_on_fabricated_claim_below_escalation_threshol
 
 @pytest.mark.asyncio
 async def test_pending_transfer_survives_same_turn_end_call_marker():
-    """Confirmed live: the LLM's fabricated booking claim came
-    bundled with its own [[END_CALL]] marker in the very same turn (a
-    natural "wrap up and say goodbye" shape) — end_call used to be
-    processed unconditionally first and yielded HandlerResponse(end_call=
-    True), which tears the session down before the transfer_request
-    yielded later in the same generator could ever reach the servicer. A
-    pending transfer must win: no end_call HandlerResponse this turn, and
-    the transfer_request must still be yielded."""
+    """A pending transfer wins over a same-turn [[END_CALL]]: no end_call, transfer_request still yielded."""
     from ..tools.llm_adapter import TokenEvent as ToolTokenEvent
 
     stt = _make_stt("book me tomorrow at 3")
@@ -2512,11 +2327,7 @@ async def test_pending_transfer_survives_same_turn_end_call_marker():
 
 @pytest.mark.asyncio
 async def test_fabrication_triggered_transfer_speaks_specific_announcement():
-    """Product fix, confirmed live: a caller who just heard "Confirmed! ..."
-    followed immediately by a silent handoff to a human reads as the
-    system being broken, even though escalation is working as designed.
-    This transfer must speak a specific double-checking line instead of
-    (or in place of no) generic transfer_announcement."""
+    """A fabrication-triggered transfer speaks a specific double-checking line."""
     from ..tools.llm_adapter import TokenEvent as ToolTokenEvent
 
     stt = _make_stt("book me tomorrow at 3")
@@ -2539,9 +2350,7 @@ async def test_fabrication_triggered_transfer_speaks_specific_announcement():
 
 @pytest.mark.asyncio
 async def test_frustration_triggered_transfer_still_uses_generic_announcement():
-    """A transfer NOT caused by booking fabrication (caller frustration
-    here) must keep using the agent's own configured transfer_announcement
-    — the specific double-checking line is only for the fabrication case."""
+    """A non-fabrication transfer keeps the agent's configured transfer_announcement."""
     stt_frustrated = _make_stt("This is useless, you are not helping at all.")
     llm = _make_llm(["I'm sorry to hear that."])
     tts = _make_tts(b"\x00" * 640)
@@ -2560,11 +2369,7 @@ async def test_frustration_triggered_transfer_still_uses_generic_announcement():
 
 @pytest.mark.asyncio
 async def test_deterministic_spoken_event_reaches_tts_and_history():
-    """End-to-end pipeline wiring for a real, confirmed booking: the
-    DeterministicSpokenEvent's exact text must reach TTS and land in
-    history as this turn's assistant message, with no fabrication warning
-    (tool_calls_made already contains book_appointment by the time the
-    check runs) and no separate LLM narration."""
+    """DeterministicSpokenEvent text reaches TTS and history verbatim, with no fabrication warning."""
     from ..tools.llm_adapter import DeterministicSpokenEvent as ToolDeterministicSpokenEvent
     from ..tools.llm_adapter import ToolCallStartedEvent
 
@@ -2612,9 +2417,7 @@ async def test_no_phone_confirmation_does_not_force_tool_choice():
 @pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_real_booking_tool_call_is_not_flagged_as_fabricated():
-    """A turn where book_appointment genuinely ran must never get the
-    correction appended, even if the response text also happens to say
-    "booked" — that's the honest case."""
+    """A turn where book_appointment really ran is never flagged, even if it says "booked"."""
     from ..tools.llm_adapter import TokenEvent as ToolTokenEvent, ToolCallStartedEvent
 
     stt = _make_stt("book me tomorrow at 3")
@@ -2637,9 +2440,7 @@ async def test_real_booking_tool_call_is_not_flagged_as_fabricated():
 
 @pytest.mark.asyncio
 async def test_fabricated_booking_claim_not_flagged_without_booking_tool():
-    """has_booking_tool=False (e.g. a reception-only agent) must never
-    trigger this check at all — it has no book_appointment tool to have
-    skipped calling in the first place."""
+    """has_booking_tool=False skips the fabrication check entirely."""
     from ..tools.llm_adapter import TokenEvent as ToolTokenEvent
 
     stt = _make_stt("book me tomorrow at 3")
@@ -2658,9 +2459,7 @@ async def test_fabricated_booking_claim_not_flagged_without_booking_tool():
 
 
 def _make_failing_llm(exc: Exception) -> MagicMock:
-    """An ILLM whose generate() raises mid-stream — simulates a provider
-    5xx/429/network error (real example: Gemini's 400 thought_signature
-    bug, or its free-tier 429 quota) reaching _llm_to_tts's token loop."""
+    """ILLM whose generate() raises mid-stream (provider 5xx/429/network error)."""
     async def _gen(messages):
         yield "partial"
         raise exc
@@ -2672,10 +2471,7 @@ def _make_failing_llm(exc: Exception) -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_pipeline_speaks_fallback_when_llm_stream_raises():
-    """A provider error mid-turn (429, 5xx, a bridging bug) must not leave
-    the caller in dead air — _llm_to_tts already catches the exception so
-    the call itself survives, but without a spoken fallback the caller
-    hears silence and the turn looks like a dropped call."""
+    """A provider error mid-turn speaks a fallback instead of dead air."""
     stt = _make_stt("book me tomorrow at 3")
     llm = _make_failing_llm(RuntimeError("simulated provider 429"))
     tts = _make_tts(b"\x00" * 640)

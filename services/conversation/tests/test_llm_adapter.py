@@ -1,10 +1,4 @@
-"""
-LLMAdapter tests — pure unit tests against fake ILLM/IToolAwareLLM stand-ins,
-no network at all. The behavior under test is the feature-detection/fallback
-logic itself: does the adapter call
-generate_with_tools() when both tools are offered AND the provider supports
-it, and fall back to plain generate() (wrapped in TokenEvent) otherwise.
-"""
+"""LLMAdapter feature detection: generate_with_tools() when tools are offered and supported, else wrapped generate()."""
 
 from __future__ import annotations
 

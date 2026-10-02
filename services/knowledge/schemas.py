@@ -1,8 +1,4 @@
-"""
-Pydantic request models for Knowledge Service's HTTP API — same convention
-as services/config/schemas.py: responses are the plain dicts the service
-modules already return, no separate response schema.
-"""
+"""Pydantic request models for Knowledge Service; responses are plain dicts."""
 
 from __future__ import annotations
 
@@ -29,11 +25,7 @@ class DocumentUpdate(BaseModel):
     title: str | None = None
     language: str | None = None
     tags: dict[str, Any] | None = None
-    # 'auto': retrieved only when relevant. 'prompt': always injected into
-    # the LLM context every turn — see kb_documents.usage_mode in
-    # database/knowledge_schema.sql. An admin flips this manually for a
-    # small/critical reference doc; the ingestion worker also sets it
-    # automatically for documents under AUTO_INLINE_THRESHOLD_BYTES.
+    # 'auto': retrieved when relevant; 'prompt': injected every turn.
     usage_mode: str | None = None
 
 
@@ -50,10 +42,7 @@ class RetrieveRequest(BaseModel):
     tenant_slug: str
     agent_slug: str
     query: str
-    # None = no per-call override — retrieval.py's _resolve_policy() falls
-    # back to the agent's agent_retrieval_policies row, then a system
-    # default. Never defaulted to a fixed number here — see
-    # libs/knowledge_sdk/models.py's RetrievalPolicy docstring.
+    # None = no override (falls back to the agent's policy, then system default).
     top_k: int | None = None
     max_tokens: int | None = None
     minimum_score: float | None = None

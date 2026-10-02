@@ -46,9 +46,7 @@ private:
     mutable std::mutex                               sub_mutex_;
     std::unordered_map<SubscriberId, Subscriber>     subscribers_;
     std::atomic<SubscriberId>                        next_id_{1};
-    // Cached flat vector rebuilt only on subscribe/unsubscribe.
-    // Written exclusively by the Dispatcher thread (deliver()) under sub_mutex_;
-    // read by the Dispatcher thread after releasing sub_mutex_ — no data race.
+    // Rebuilt on subscribe/unsubscribe; only touched by the Dispatcher thread.
     std::vector<Subscriber>                          subscriber_cache_;
     bool                                             cache_dirty_{true};
 };

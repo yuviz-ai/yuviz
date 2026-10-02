@@ -1,18 +1,8 @@
 #!/usr/bin/env python3
-"""
-Creates a service-account user for a backend service to authenticate as —
-e.g. Conversation Service's HttpConfigRepository (libs/config_sdk), which
-needs a real JWT to call Config Service's REST API now that every route
-requires auth (see services/config/deps.py). Role is always 'viewer': every
-known Config SDK consumer only ever reads configuration, never writes it,
-so least-privilege is the correct default. Re-run this with a different
-role directly via services.config.users.create_user() if a future service
-genuinely needs to write.
+"""Create a read-only ('viewer') service account for backend services to authenticate as.
 
 Usage: python3 scripts/create_service_account.py <email> <password>
-Requires: POSTGRES_ADMIN_DSN, falling back to POSTGRES_DSN (see services/config/db.py) —
-this writes a tenant_id IS NULL row and must keep bypassing RLS, so it connects
-as the superuser, never as yuviz_app.
+Requires POSTGRES_ADMIN_DSN (or POSTGRES_DSN): writes a tenant_id IS NULL row, so it bypasses RLS.
 """
 
 from __future__ import annotations

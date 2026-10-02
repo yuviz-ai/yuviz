@@ -201,10 +201,7 @@ function Panel({
 
   const graph = useMemo(() => toGraph(nodes, edges), [nodes, edges]);
   const serialized = JSON.stringify(graph);
-  // Compared against the live graph with keys sorted, because that copy has
-  // round-tripped through a Postgres JSONB column, which reorders object
-  // keys — a raw string compare never matches and the badge would read
-  // "draft" forever, including on a freshly published graph nobody touched.
+  // Keys sorted because JSONB reorders object keys.
   const canonical = canonicalize(graph);
 
   // ── Undo/redo ─────────────────────────────────────────────────────────
@@ -214,9 +211,7 @@ function Panel({
   const lastGraph = useRef<string>("");
   const lastPushAt = useRef(0);
   const timeTravelling = useRef(false);
-  // Mirrored into state, not read off the refs at render time: a ref
-  // changing doesn't re-render, so the buttons would sit at their initial
-  // enabled/disabled state forever.
+  // State, not refs, so the undo/redo buttons re-render.
   const [depth, setDepth] = useState({ undo: 0, redo: 0 });
   const syncDepth = useCallback(
     () => setDepth({ undo: past.current.length, redo: future.current.length }),
@@ -321,10 +316,7 @@ function Panel({
     return () => clearTimeout(timer);
   }, [serialized, tenantSlug, agentId, publishing]);
 
-  // ── Live validation ───────────────────────────────────────────────────
-  // The same check that gates a publish, run as you draw — so "this
-  // connection has no condition" surfaces while you're looking at it,
-  // instead of as a wall of red after you press Publish.
+  // Same check that gates publish, run as you draw.
   useEffect(() => {
     if (!loaded.current) return;
     let current = true;
@@ -356,10 +348,7 @@ function Panel({
     return { ...n, data: { ...n.data, __invalid: invalid } };
   }), [nodes, badNodeIds]);
 
-  // ConditionEdge draws the label itself, and reads __invalid off data.
-  // toGraph strips the marker on the way out (see there) — it can't just be
-  // assumed not to reach it, because onEdgeClick selects off this derived
-  // copy and editing writes the selection back into the real edge.
+  // ConditionEdge reads __invalid; toGraph strips it since edits can write it back into real edges.
   const paintedEdges = useMemo(() => edges.map((e) => {
     const invalid = badEdgeIds.has(e.id);
     return {
@@ -430,9 +419,7 @@ function Panel({
   const addNode = (type: Exclude<WorkflowNodeType, "start">, from?: string) => {
     const id = `${type}-${Date.now()}`;
     const origin = from ? nodes.find((n) => n.id === from) : undefined;
-    // Branching is the normal case — a step routes to booking OR to Q&A —
-    // so the second child of a step has to land beside the first, not on
-    // top of it. Offset by however many branches already leave `from`.
+    // Offset by existing branches so siblings don't stack.
     const siblings = from ? edges.filter((e) => e.source === from).length : 0;
     const position = origin
       ? { x: origin.position.x + siblings * 360, y: origin.position.y + 230 }

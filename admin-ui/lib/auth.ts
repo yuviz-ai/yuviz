@@ -1,8 +1,5 @@
-// Token storage for the Config Service's JWT (see services/config/auth.py).
-// localStorage, not a cookie: this is a cross-origin SPA (admin-ui at :3000,
-// Config Service at :8000) talking to the API directly via fetch, not
-// through a same-origin proxy — a bearer token in an Authorization header
-// avoids SameSite/CSRF complexity a cookie would need for this shape.
+// Config Service JWT storage. localStorage + bearer header, not a cookie, since the
+// API is cross-origin and this avoids SameSite/CSRF handling.
 
 const TOKEN_KEY = "yuviz_access_token";
 

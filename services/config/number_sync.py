@@ -1,13 +1,6 @@
-"""
-Keeps a REST provider's inbound routing in step with phone_numbers, so an
-admin never has to wire a number up by hand in the provider's dashboard:
-adding a number under a provider config points that number's calls at the
-telephony service, removing it stops them. Cold path only (Config's CRUD
-routes), never on a live call.
+"""Keeps a REST provider's inbound routing in step with phone_numbers (cold path only).
 
-A sync failure never loses the admin's change: create/update return the
-outcome as `provider_sync` alongside the saved number. Delete is the
-exception, see routers/phone_numbers.py.
+A sync failure never loses the admin's change; create/update report it as `provider_sync`.
 """
 
 from __future__ import annotations

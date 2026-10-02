@@ -1,13 +1,7 @@
 "use client";
 
-// Property forms for whatever is selected — one node, or one connection.
-//
-// The connection's CONDITION field gets more room than anything else on
-// purpose: it becomes the description of the function the LLM calls to
-// advance the conversation, so it is what actually decides the transition.
-// Operators consistently under-write it and then wonder why transitions
-// misfire, so the form says what it does rather than labelling it and
-// hoping.
+// Property forms for the selected node or connection. A connection's condition becomes the LLM
+// function description that decides the transition, hence its prominence.
 
 import { useRef } from "react";
 import type {
@@ -15,17 +9,12 @@ import type {
 } from "@/lib/workflowApi";
 import { ExtractionEditor } from "./ExtractionEditor";
 
-// The codes the platform itself reasons about (libs/config_sdk/workflow.py's
-// SYSTEM_DISPOSITIONS). An end node may carry any string — the calls filter
-// reads distinct values out of the column — so this is a datalist, not a
-// closed select.
+// SYSTEM_DISPOSITIONS from libs/config_sdk/workflow.py; suggestions only, any string is allowed.
 const DISPOSITIONS = [
   "completed", "qualified", "not_qualified", "transferred", "abandoned", "failed",
 ];
 
-// "global" is deliberately not here: this dropdown swaps a node's type in
-// place, and converting a wired-up step into a handle-less always-applies
-// node would strand the connections it already has.
+// No "global": converting a wired step to a handle-less node would strand its connections.
 const TYPE_CHOICES: { value: Exclude<WorkflowNodeType, "start" | "global">; label: string }[] = [
   { value: "agent", label: "Stage — a step in the conversation" },
   { value: "transfer", label: "Transfer — hand the call to a human" },
@@ -61,9 +50,7 @@ function Problems({ items, kind }: { items: WorkflowError[]; kind: "error" | "wa
   );
 }
 
-/** A textarea that can have {{ variables }} dropped in at the cursor.
- *  Typing the braces by hand is how you end up with {{ custmer_name }}
- *  rendering as empty air in a call recording. */
+/** A textarea that can have {{ variables }} inserted at the cursor. */
 function PromptField({
   label, hint, value, placeholder, rows, variables, onChange,
 }: {
@@ -418,9 +405,7 @@ export function Inspector({
   );
 }
 
-/** Mirrors Edge.tool_name in libs/config_sdk/workflow.py — shown so an
- *  operator can see the collision the server would reject before they hit
- *  publish. */
+/** Mirrors Edge.tool_name in libs/config_sdk/workflow.py. */
 function toToolName(label: string): string {
   return label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "…";
 }

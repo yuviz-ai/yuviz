@@ -1,20 +1,6 @@
-"""
-agent_tool_policies CRUD — which tools a given agent may actually use,
-admin-authored via this cold-path CRUD but resolved at call time by the
-Conversation Service's own ToolPolicyResolver (direct Postgres read, not
-through this service — see tool_provider_configs.py's docstring). No cache
-here for the same reason.
+"""agent_tool_policies CRUD, keyed by (agent_id, tool_name).
 
-Keyed by (agent_id, tool_name) rather than a bare policy id — the table's
-own UNIQUE(agent_id, tool_name) constraint already makes that the natural
-key, and it matches the Knowledge Platform's own
-/agents/{agent_id}/knowledge-bases/{kb_id} attach/detach shape (see
-services/knowledge) rather than inventing an opaque id the Admin UI would
-have to track per row.
-
-list_for_agent() joins tool_provider_configs so the Admin UI can render a
-policy row (tool name, provider engine, enabled) without a second round
-trip per row.
+Uncached: Conversation's ToolPolicyResolver reads Postgres directly at call time.
 """
 
 from __future__ import annotations

@@ -1,14 +1,5 @@
-"""
-resolve_call_flow — resolves a RuntimeConfig's agent into a
-(CallFlowGraph, CallFlow) pair, or signals "no flow" so the caller falls
-through to the ordinary conversational agent.
-
-Mirrors agent_resolver.resolve_handler_deps() byte-for-byte on the
-degradation contract: never raises, one Config SDK call, `None` is the
-single signal the caller keys off. Not in scope here (open by user
-decision, round-1 finding 6): this function does not re-check the returned
-CallFlow.tenant_slug against runtime_config.tenant.slug before returning it.
-"""
+"""Resolve an agent's call flow into (CallFlowGraph, CallFlow). Never raises; None
+means fall through to the conversational agent."""
 
 from __future__ import annotations
 

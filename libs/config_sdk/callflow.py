@@ -1,22 +1,7 @@
-"""
-Call-flow (IVR/OBD) graph model + validation.
+"""Call-flow (IVR/OBD) graph model + validation.
 
-Deliberately a separate module from workflow.py rather than more node types
-bolted onto it. workflow.py's graph is the *conversational* one: its edges
-carry natural-language conditions that the conversation service compiles
-into LLM tools at runtime (services/conversation/workflow/runner.py), and
-its correctness is load-bearing on every live call today. An IVR flow
-branches on a keypress, which is a deterministic, non-LLM decision — mixing
-the two vocabularies in one validator would mean every rule here has to
-reason about whether it is in LLM-land or DTMF-land.
-
-The two models meet at exactly one node type: `agent`, which hands the call
-from the IVR to a conversational agent (and from there, that agent's own
-workflow graph takes over).
-
-Same conventions as workflow.py: dataclasses, no pydantic; parse_graph()
-raises on runtime-breaking rules; graph_warnings() reports authoring
-mistakes that should not block publishing.
+Separate from workflow.py: IVR branches on keypresses, not LLM conditions.
+The two meet only at the `agent` node, which hands the call to an agent.
 """
 
 from __future__ import annotations
@@ -93,14 +78,9 @@ class CallFlowNode:
     min_digits:   int = 1
     max_digits:   int = 10
     terminator:   str = "#"
-    # collect only — when true, the collected value never leaves the
-    # runtime: it is not seeded into a handed-off agent's variables, the
-    # transcript, or any log line.
+    # collect only — never seeded into agent variables, transcripts, or logs.
     sensitive:    bool = False
-    # start only — the voice every speaking step in this flow uses. Held on
-    # the start node rather than on the call_flows row because it is part of
-    # the graph the runtime walks: a published version then carries the voice
-    # it was published with, and a rollback restores that too.
+    # start only — on the graph (not the row) so published versions carry their voice.
     tts_config_id: str | None = None
     # dial only
     destination:  str | None = None

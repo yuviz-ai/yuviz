@@ -2,10 +2,8 @@
 
 import { useState } from "react";
 
-// A key ("AIza...", encrypted server-side into enc:...) and a pointer
-// ("env:GEMINI_API_KEY") wear the same shape, and conflating them stored a
-// live key in plaintext. Pasting a key is the default; the
-// pointer is behind a link for deployments with a secret manager.
+// Keys (encrypted server-side to enc:...) and refs ("env:FOO") must not be conflated, or a key
+// gets stored in plaintext. Pasting a key is the default.
 
 const isStored = (v: string) => v.startsWith("enc:");
 
@@ -20,9 +18,7 @@ export function SecretRefInput({
   onChange: (value: string) => void;
   placeholder?: string;
   disabled?: boolean;
-  /** Only true where the caller sends the value through secretPayload() to
-   *  an `api_key` field. Everywhere else it lands in api_key_ref unencrypted,
-   *  so offering "paste the key" there would store one in plaintext. */
+  /** True only if the caller sends the value via secretPayload(); otherwise it'd be stored in plaintext. */
   canEncrypt?: boolean;
 }) {
   const [visible, setVisible] = useState(false);
@@ -41,9 +37,7 @@ export function SecretRefInput({
   let warning: string | null = null;
   if (trimmed && !isStored(value)) {
     if (mode === "key" && /\s/.test(trimmed)) {
-      // The one shape a real key never has — the classic mistake is
-      // pasting a whole header line ("Authorization: Bearer sk-...")
-      // instead of just the token.
+      // Likely a pasted header line rather than the bare token.
       warning = 'This looks like it includes extra text, not just the key — e.g. paste "sk-..." alone, not "Authorization: Bearer sk-...".';
     } else if (mode === "ref" && !/^(env|k8s):\S+$/i.test(trimmed)) {
       warning = 'This doesn\'t look like a pointer — use env:VAR_NAME or k8s:namespace/secret.';
@@ -152,13 +146,8 @@ export function secretPayload(
   // Empty clears only when there was something to clear (the Remove button);
   // otherwise the field is untouched and must not be sent.
   if (!v) return original ? { api_key_ref: "" } : {};
-  // Anything scheme-shaped goes to api_key_ref, including a miscased or
-  // unknown scheme: the server rejects those with an actionable message,
-  // whereas treating "ENV:FOO" as a credential would encrypt the pointer and
-  // surface as a vendor 401 at call time instead. Requiring no whitespace
-  // anywhere is what keeps this from also catching a pasted header line
-  // like "Authorization: Bearer sk-..." — every real ref is one unbroken
-  // token, but that mistake has a space right after its colon.
+  // Any scheme-shaped value (even unknown/miscased) is a ref so the server can reject it clearly.
+  // No-whitespace rule excludes pasted header lines like "Authorization: Bearer sk-...".
   if (/^[A-Za-z0-9_]+:\S+$/.test(v)) return { api_key_ref: v };
   return { api_key: v };
 }

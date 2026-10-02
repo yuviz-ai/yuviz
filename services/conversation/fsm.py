@@ -1,21 +1,5 @@
-"""
-ConversationFSM — Python mirror of the C++ CallFSM's conversation states.
-
-Same conversation-level states and transition table, same one-owner-per-state
-rule — with one deliberate exception: the C++ CallFSM also has a
-WaitingForHangup state (a post-goodbye grace period before ESL hangs up the
-SIP leg) that is NOT mirrored here. That state is pure gateway/telephony
-timing with no analog in the conversation pipeline; Python only ever sees a
-normal playback-finished notification regardless of whether the gateway is
-mid-grace-period. See CallFSM.h's WaitingForHangup comment for the full
-rationale.
-
-Pure class: no EventBus, no async, no I/O.
-Wired to the EventBus by the session handler after construction.
-
-State duration is measured on every transition and reported via the
-on_state_changed callback, giving per-subsystem latency for free.
-"""
+"""ConversationFSM: pure Python mirror of the C++ CallFSM (no I/O). Omits the
+gateway-only WaitingForHangup state and adds Python-only RECOVERING."""
 
 from __future__ import annotations
 
@@ -37,26 +21,15 @@ class CallFsmState(Enum):
     SPEAKING      = "speaking"
     BARGE_IN      = "barge_in"
     TRANSFERRING  = "transferring"
-    # Python-only state (Phase 5C of AI-to-human transfer) — no C++ mirror,
-    # same kind of deliberate one-owner divergence as WaitingForHangup (see
-    # module docstring): a failed transfer generates an LLM apology instead
-    # of ending the call. RECOVERING plays the same role THINKING does for
-    # a normal turn (LLM in flight) — see on_transfer_failed_event()/
-    # on_recovery_response_ready() below.
+    # Python-only: LLM apology in flight after a failed transfer.
     RECOVERING    = "recovering"
-    # Mirrors the C++ CallFSM's Finalizing state exactly (Phase 5D of
-    # AI-to-human transfer — see CallFSM.h). Entered only after a
-    # *successful* transfer, while SessionFinalizer (session_finalizer.py)
-    # runs post-call cleanup; the gateway is waiting on the resulting
-    # ConversationFinalized message before it tears its own side down (see
-    # session.py's on_transfer_completed()).
+    # After a successful transfer, while SessionFinalizer runs.
     FINALIZING    = "finalizing"
     CLOSING       = "closing"
     CLOSED        = "closed"
 
 
-# ── Valid transition table (mirrors kValidTransitions in CallFSM.cpp, minus
-# the WaitingForHangup-only entries — see the module docstring) ──────────────
+# ── Valid transitions (mirrors kValidTransitions in CallFSM.cpp) ─────────────
 
 _VALID: frozenset[tuple[CallFsmState, CallFsmState]] = frozenset({
     # Happy path
@@ -80,21 +53,9 @@ _VALID: frozenset[tuple[CallFsmState, CallFsmState]] = frozenset({
     (CallFsmState.SYNTHESIZING,  CallFsmState.TRANSFERRING),
     (CallFsmState.SPEAKING,      CallFsmState.TRANSFERRING),
     (CallFsmState.TRANSFERRING,  CallFsmState.CLOSING     ),  # transfer failed w/o recovery, or session_close
-    # Phase 5D of AI-to-human transfer — mirrors the C++ CallFSM exactly
-    # (see FINALIZING's own comment above): success waits in FINALIZING for
-    # SessionFinalizer before CLOSED, rather than going straight to CLOSING.
     (CallFsmState.TRANSFERRING,  CallFsmState.FINALIZING  ),
     (CallFsmState.FINALIZING,    CallFsmState.CLOSING     ),
-    # Phase 5C of AI-to-human transfer — deliberate, Python-only fork from
-    # the C++ CallFSM mirror (see RECOVERING's own comment above and the
-    # module docstring's WaitingForHangup precedent): a failed transfer
-    # generates an LLM apology and resumes the conversation instead of
-    # ending the call. RECOVERING → SPEAKING mirrors THINKING → SYNTHESIZING
-    # → SPEAKING's normal shape, condensed to one hop (no separate
-    # "synthesizing" state exists for the recovery flow). SPEAKING →
-    # LISTENING below is the *existing* transition/trigger
-    # (on_playback_finished) — reused as-is once a real PlaybackFinished
-    # arrives from the gateway for the apology's own TTS.
+    # Python-only: failed transfer -> apology -> resume conversation.
     (CallFsmState.TRANSFERRING,  CallFsmState.RECOVERING  ),
     (CallFsmState.RECOVERING,    CallFsmState.SPEAKING    ),
     # Teardown from any active state
@@ -277,44 +238,24 @@ class ConversationFSM:
         if self._handlers.on_transfer_completed:
             self._handlers.on_transfer_completed(success, transfer_id)
         if success:
-            # Phase 5D: success waits in FINALIZING for SessionFinalizer
-            # before CLOSED — see on_session_finalized() below.
             self._transition(CallFsmState.FINALIZING, "transfer_completed")
         else:
             self._transition(CallFsmState.CLOSING, "transfer_failed")
 
     def on_session_finalized(self) -> None:
-        """SessionFinalizer (session_finalizer.py) has finished all
-        post-call cleanup for a successful transfer. Valid only from
-        FINALIZING. Mirrors the C++ CallFSM's on_conversation_finalized()
-        (the gateway's own equivalent wait) — see its own doc comment for
-        why the two are named differently despite mirroring each other."""
+        """Post-transfer cleanup finished. Valid only from FINALIZING."""
         if self._state != CallFsmState.FINALIZING:
             return
         self._transition(CallFsmState.CLOSING, "session_finalized")
 
     def on_transfer_failed_event(self, reason: str = "") -> None:
-        """
-        Phase 5C of AI-to-human transfer: TransferFailed arrived — the
-        caller wasn't handed off, but (unlike on_transfer_completed(False,
-        ...)) the conversation continues rather than ending. See the
-        _VALID table's RECOVERING comment for why this is a deliberate
-        Python-only fork from the C++ CallFSM mirror. Valid only from
-        TRANSFERRING. Does not itself generate the apology — that's
-        session.py/pipeline.py's job, triggered once this transition has
-        happened.
-        """
+        """TransferFailed: the conversation continues in RECOVERING. Valid only from TRANSFERRING."""
         if self._state != CallFsmState.TRANSFERRING:
             return
         self._transition(CallFsmState.RECOVERING, "transfer_failed")
 
     def on_recovery_response_ready(self) -> None:
-        """The LLM's apology has its first sentence/audio ready — same role
-        on_first_audio_chunk() plays for a normal turn (SYNTHESIZING →
-        SPEAKING), condensed to one hop since RECOVERING already covers
-        "LLM in flight." Valid only from RECOVERING. SPEAKING → LISTENING
-        from here is the *existing* on_playback_finished() transition,
-        fired for real once the gateway acks the apology's own playback."""
+        """Apology audio ready; like on_first_audio_chunk(). Valid only from RECOVERING."""
         if self._state != CallFsmState.RECOVERING:
             return
         self._transition(CallFsmState.SPEAKING, "recovery_response_ready")

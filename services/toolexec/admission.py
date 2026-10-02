@@ -1,16 +1,5 @@
-"""
-services/toolexec/admission.py — per-(tenant_id, agent_id) concurrency and
-per-minute run caps (finding 10): without this, an authenticated caller
-could turn the platform's egress into a flood relay against a third party
-with the platform holding the bill and the abuse complaint.
-
-Enforced entirely in-process: two dicts, swept inline on every acquire()
-call. Deliberately no Redis, no background sweep task, no executor — there
-is nothing here with a lifecycle to tear down at shutdown (lesson 26). The
-caps are therefore per-replica: the effective ceiling is replicas × limit,
-which bounds rather than eliminates abuse and is stated as such, not
-hidden (design Risks).
-"""
+"""Per-(tenant, agent) concurrency and per-minute run caps, so egress can't be used as a flood relay.
+In-process only: the effective ceiling is replicas × limit."""
 
 from __future__ import annotations
 
@@ -31,8 +20,6 @@ _run_timestamps: dict[tuple[str, str], list[float]] = defaultdict(list)
 
 
 def _max_concurrent() -> int:
-    # Read fresh, not cached at import time, so an operator env-var change
-    # takes effect without a restart racing this specific knob.
     return int(os.environ.get(_MAX_CONCURRENT_ENV, _DEFAULT_MAX_CONCURRENT))
 
 
@@ -48,13 +35,8 @@ def _sweep(key: tuple[str, str], now: float) -> None:
 
 
 def acquire(tenant_id: str, agent_id: str) -> bool:
-    """Returns True (a slot is held; the caller MUST call release() in a
-    `finally` once the run reaches a terminal status — including the
-    barge-in case, where the chain keeps running server-side and so must
-    keep holding its slot until it actually finishes) or False (refused;
-    the caller takes no run row and makes no HTTP call). No `await`
-    anywhere in this function — asyncio is cooperative, so there is no
-    interleaving window for a second coroutine to race this check."""
+    """True holds a slot (caller MUST release() in a finally when the run ends); False = refused.
+    Must stay await-free so the check-and-increment can't interleave."""
     key = (tenant_id, agent_id)
     now = time.time()
     _sweep(key, now)

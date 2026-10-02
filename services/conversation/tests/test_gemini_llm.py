@@ -1,9 +1,4 @@
-"""
-GeminiLLM tests use httpx.MockTransport — no real network call, no cost.
-See test_openai_llm.py's docstring for why cloud engines are tested this
-way; the mocked chunk shapes here match the real wire format captured
-live against the Gemini API, not a guessed schema.
-"""
+"""GeminiLLM tests via httpx.MockTransport; chunk shapes match the real Gemini wire format."""
 
 from __future__ import annotations
 
@@ -208,11 +203,8 @@ async def test_generate_with_tools_shapes_tool_call_and_result_natively():
 
 
 async def test_generate_with_tools_flattens_foreign_tool_call_with_no_thought_signature():
-    # A tool call replayed into history that Gemini itself never made (e.g.
-    # Groq's) carries no thought_signature — Gemini's native functionCall
-    # part hard-400s without one once any tool-calling has happened in the
-    # conversation. Confirmed live: this broke a real call. Must render as
-    # plain text instead of native function-calling parts.
+    # A replayed tool call Gemini never made (e.g. Groq's) has no thought_signature, and Gemini
+    # 400s on a native functionCall without one; it must render as plain text instead.
     seen_payload = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -239,14 +231,7 @@ async def test_generate_with_tools_flattens_foreign_tool_call_with_no_thought_si
     assert flattened_result["role"] == "user"
 
 
-# --- Timeout: Gemini's streamGenerateContent occasionally never sends a
-# first byte, and the old 30s timeout left a caller in dead air that long.
-# generate()/generate_with_tools() make exactly one attempt each and raise
-# immediately on timeout — retrying is RetryOnceLLM's job (provider_bundle.py),
-# which wraps every provider uniformly; see test_retry_llm.py for that
-# behavior. A provider-local retry loop used to live here too, which
-# double-retried Gemini specifically against every other provider's single
-# retry — removed for that reason.
+# --- Timeout: one attempt per call, raising immediately; retrying is RetryOnceLLM's job.
 
 async def test_generate_raises_immediately_on_timeout():
     def handler(request: httpx.Request) -> httpx.Response:

@@ -111,23 +111,12 @@ void GrpcConversationTransport::close_session(const std::string& /*session_id*/)
     // 2. Tell the server no more client messages are coming.
     stream_->rw->WritesDone();
 
-    // 3. Give the server a short, bounded window to observe the half-close
-    //    and end the stream on its own (the Conversation Service returns
-    //    from Converse() as soon as its request iterator ends, so this
-    //    normally resolves in single-digit ms on loopback). Cancelling
-    //    immediately raced the final queued message — Write() only means
-    //    "accepted by gRPC", and TryCancel() can discard an accepted-but-
-    //    untransmitted frame. Observed live 2026-07-18: a TransferFailed
-    //    sent right before close_session() intermittently never reached
-    //    the service, silently losing the failure outcome (no apology
-    //    path, no TRANSFER_TIMEOUT persistence).
+    // 3. Let the server end the stream itself: TryCancel() can discard an
+    //    accepted-but-untransmitted final message.
     for (int i = 0; i < 50 && !reader_done_.load(std::memory_order_acquire); ++i)
         std::this_thread::sleep_for(std::chrono::milliseconds{5});
 
-    // 4. Fallback: cancel the RPC context so a still-blocked Read() in
-    //    reader_loop() returns (with CANCELLED status). No-op when the
-    //    stream already finished naturally above. Without this bound,
-    //    join() could stall the lws thread if the server never closes.
+    // 4. Fallback so join() can't stall the lws thread if the server never closes.
     stream_->ctx.TryCancel();
     if (reader_thread_.joinable()) reader_thread_.join();
 
@@ -138,11 +127,7 @@ void GrpcConversationTransport::close_session(const std::string& /*session_id*/)
                      status.error_message(), session_id_);
     }
     stream_.reset();
-    // send_queue_ is intentionally NOT reset here.  The control thread may
-    // still have queued send_audio() lambdas that will run after this returns;
-    // they check stream_open_=false and return early, but they may still
-    // dereference send_queue_.  The unique_ptr is reset safely by the destructor
-    // AFTER the control thread is joined in ~CallSession().
+    // send_queue_ is not reset: queued control-thread lambdas may still touch it.
 }
 
 // ── Send path ─────────────────────────────────────────────────────────────────
@@ -386,12 +371,7 @@ void GrpcConversationTransport::reader_loop() noexcept {
 
         case ::voiceai::v1::ServiceMessage::kConversationFinalized: {
             const auto& cf = msg.conversation_finalized();
-            // reason/summary_generated/transcript_written are informational
-            // only — the gateway's own teardown doesn't branch on them, it
-            // just needed to know cleanup is done (see CallFSM's Finalizing
-            // state). Logged so operators can see e.g. a fallback summary
-            // was used without digging through the Conversation Service's
-            // own logs.
+            // Fields are informational only; teardown doesn't branch on them.
             logger_.info("GrpcTransport: ConversationFinalized session={} reason={} "
                          "summary_generated={} transcript_written={}",
                          session_id_,

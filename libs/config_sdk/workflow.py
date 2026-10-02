@@ -1,12 +1,6 @@
-"""
-Shared workflow graph model + validation (docs/workflow.md §5.1).
+"""Shared workflow graph model + validation: Config validates on publish, conversation walks it.
 
-Config validates on publish; conversation walks the same object at runtime.
-Dataclass-only (no pydantic) to match the rest of this SDK.
-
-parse_graph() raises on runtime-breaking rules; graph_warnings() reports
-editor mistakes that should not block publish. Cycles are allowed — loops
-back to Q&A are valid; runaway calls are bounded by max_call_duration_s.
+Cycles are allowed; runaway calls are bounded by max_call_duration_s.
 """
 
 from __future__ import annotations
@@ -38,11 +32,8 @@ CALL_CONTEXT_VARIABLES = (
     "current_date", "current_time", "business_name",
 )
 
-# Deliberately not Jinja2: templates include caller-influenced values, and
-# full Jinja would be a sandbox-escape surface with no upside here.
-# Valid: {{ name }} / {{ name | fallback }}. A second pattern catches any
-# other {{ ... }} (closing braces optional) so typos like {{ name } never
-# reach TTS. [^}]* (not [^{}]*) so a valid fallback may contain `{`.
+# Not Jinja2: templates include caller-influenced values (sandbox-escape risk).
+# _ANY_BRACES_RE catches malformed {{ ... }} (e.g. "{{ name }") so it never reaches TTS.
 _TEMPLATE_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:\|([^}]*))?\}\}")
 _ANY_BRACES_RE = re.compile(r"\{\{[^}]*\}{0,2}")
 
@@ -359,9 +350,7 @@ def _edge_from_raw(raw: dict[str, Any]) -> Edge:
 
 
 def literal_destination_errors(graph: WorkflowGraph) -> list[WorkflowError]:
-    """Publish-time only: a stored graph that fails this must still load at
-    call time, where pipeline.py refuses just the bad transfer. Templated
-    destinations are checked after rendering, at call time."""
+    """Publish-time only; templated destinations are checked after rendering at call time."""
     return [
         WorkflowError("node", node.id, "transfer_destination",
                       f"{node.name!r} has an invalid destination — use a phone number/extension "

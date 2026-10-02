@@ -14,9 +14,7 @@ function formatTime(iso: string): string {
   });
 }
 
-/** Secondary line under the timestamp — "how long ago" is the question a
- *  call log is usually scanned with, and it is tedious to work out from an
- *  absolute time. Both are shown; neither replaces the other. */
+/** "How long ago" line shown under the absolute timestamp. */
 function formatRelative(iso: string): string {
   const diffMs = Date.now() - new Date(iso).getTime();
   if (diffMs < 0) return "just now";
@@ -73,9 +71,7 @@ export default function CallsPage() {
       .finally(() => setLoading(false));
   }, [targetTenants, tenantLoading]);
 
-  // Counts come from the unfiltered set so a chip always shows how many it
-  // would select — a count that shrank as you filtered would be useless for
-  // deciding what to look at next.
+  // From the unfiltered set so each chip shows how many it would select.
   const sentimentCounts = useMemo(() => {
     const counts = new Map<SentimentFilter, number>();
     for (const c of calls) {

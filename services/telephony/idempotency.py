@@ -1,9 +1,4 @@
-"""
-Idempotency over Redis, tenant-scoped by construction — every function
-takes tenant_id required and positional-second, through one private
-_key() helper no caller bypasses (finding #3: two tenants minting the
-identical key must address different Redis entries).
-"""
+"""Redis idempotency, tenant-scoped by construction: every key goes through _key() with tenant_id."""
 
 from __future__ import annotations
 
@@ -71,10 +66,7 @@ async def read(provider: str, tenant_id: uuid.UUID, key: str) -> dict[str, Any] 
 
 
 async def await_outcome(provider: str, tenant_id: uuid.UUID, key: str) -> dict[str, Any] | None:
-    """Bounded poll for a final (non in_flight) entry. Returns None only on
-    budget exhaustion, never on error — a Redis failure during the poll is
-    logged and also returns None, so the caller turns it into 202. There is
-    no branch in which a losing claimant reaches the vendor."""
+    """Bounded poll for a final entry; None on timeout or Redis error. A losing claimant never reaches the vendor."""
     deadline = time.monotonic() + POLL_BUDGET_S
     while True:
         entry = await read(provider, tenant_id, key)

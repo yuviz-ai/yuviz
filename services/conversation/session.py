@@ -48,34 +48,9 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class HandlerResponse:
-    """
-    Rich result from IConversationHandler.on_audio().
+    """One result from an IConversationHandler turn.
 
-    stt_text / stt_confidence  — transcript produced for this audio segment;
-                                  empty string means STT produced no output.
-    tts_payloads               — zero or more raw PCM chunks to stream back.
-    end_call                   — the agent decided this turn ends the call;
-                                  the servicer sends EndCall once this turn's
-                                  TTS is fully streamed (see pipeline.py).
-    end_call_grace_period_ms   — ms the gateway should wait after playback for
-                                  the caller to speak up before hanging up;
-                                  0 = gateway uses its own configured default.
-                                  Only meaningful when end_call is True.
-    transfer_request           — set when this turn detected a [[TRANSFER]]
-                                  directive or an escalation-threshold
-                                  breach (see pipeline.py). The servicer
-                                  publishes it as a TransferRequested event
-                                  and sends TransferRequest to the gateway
-                                  once this turn's audio finishes playing
-                                  uninterrupted (see servicer.py).
-    response_text              — the assistant's complete spoken-turn text,
-                                  assembled once the LLM/TTS streaming loop
-                                  for this turn finishes. Sent alongside,
-                                  never instead of, tts_payloads — today's
-                                  only consumer is the browser test-call
-                                  panel, which has no other way to show
-                                  what the agent said (see servicer.py's
-                                  speech_ended loop and services/webcall).
+    end_call_grace_period_ms: 0 = gateway default. response_text accompanies, never replaces, tts_payloads.
     """
     stt_text:       str         = ""
     stt_confidence: float       = 0.0
@@ -97,32 +72,10 @@ class IConversationHandler(Protocol):
                         items (first: STT result, subsequent: TTS chunks).
     - on_cancel       → abort in-flight generation (barge-in).
     - on_session_end  → release any held resources.
-    - on_transfer_failed → Phase 5C: a cold transfer failed; async-generator
-                        producing an apology (TTS) so the conversation can
-                        continue instead of ending — same yield shape as
-                        on_speech_ended.
-    - on_transfer_cancelled → Phase 6: a pending transfer was dropped before
-                        dispatch (caller barge-in during the acknowledgment
-                        — see ConversationSession.on_transfer_cancelled).
-                        Lets the handler release any "a transfer is already
-                        in flight for this session" bookkeeping it may be
-                        keeping (see PipelineConversationHandler's
-                        _transfer_requested / TransferDecisionEngine's
-                        duplicate-suppression) so a caller who barges in
-                        and then asks again isn't wrongly rejected as a
-                        duplicate.
-    - start_finalization → fire-and-forget: kicks off summary generation
-                        speculatively, in parallel with the gateway's own
-                        ring/answer/bridge sequence, instead of waiting
-                        for finalize_session() to be called on
-                        TransferCompleted (see session_finalizer.py's
-                        start_summary_early()).
-    - record_live_stage → Live Calls Monitoring's mid-call stage column
-                        (database/schema.sql's calls.live_stage). Called
-                        from the four transfer hooks below — the only
-                        places transfer state is known mid-call — and
-                        nothing else; a handler with no transcript
-                        persistence (EchoHandler) is a no-op.
+    - on_transfer_failed → transfer failed; yields an apology like on_speech_ended.
+    - on_transfer_cancelled → transfer dropped on barge-in; clear duplicate-transfer bookkeeping.
+    - start_finalization → fire-and-forget speculative summary generation.
+    - record_live_stage → update calls.live_stage for live monitoring.
     """
 
     async def greeting(self, session_id: str) -> list[bytes]: ...
@@ -143,14 +96,8 @@ class IConversationHandler(Protocol):
 
     async def on_dtmf(self, session_id: str, digit: str) -> None: ...
 
-    # Out-of-band egress channel: a queue of HandlerResponse a handler can
-    # push onto with no inbound message driving it (a call-flow menu
-    # timeout is the only producer today — see callflow/handler.py). None
-    # on every handler that never speaks unprompted (EchoConversationHandler,
-    # PipelineConversationHandler) — declared here as a Protocol attribute
-    # so a future implementer sees it's part of the contract, but it MUST
-    # also land as an explicit class attribute on every implementer (see
-    # ConversationSession.out_responses's own comment for why).
+    # Out-of-band responses with no inbound trigger (e.g. call-flow timeout); None if never used.
+    # Implementers must declare it as a class attribute.
     out_responses: "asyncio.Queue[HandlerResponse] | None"
 
     def on_transfer_failed(
@@ -210,10 +157,7 @@ class ConversationSession:
         self._metrics      = metrics if metrics is not None else NullMetrics()
         self._tts_seq      = 0
         self._audio_buffer = bytearray()   # accumulates inbound PCM per utterance
-        # Last transfer attempt's outcome — TRANSFER_SUCCESS/FAILED/TIMEOUT/
-        # CANCELLED, or None when no attempt happened. Persisted at close()
-        # into calls.final_state (always) and calls.close_reason (only when
-        # the transfer de facto ended the AI session — see close()).
+        # Last transfer outcome (TRANSFER_*), or None; persisted at close().
         self._transfer_outcome: str | None = None
 
         self._fsm = ConversationFSM(
@@ -222,13 +166,7 @@ class ConversationSession:
             logger=log,
         )
 
-        # Phase 5C requirement: "WorkflowEngine subscribes to TransferFailed"
-        # — a real EventBus subscription (decoupled from the direct
-        # servicer -> on_transfer_failed() call chain that actually streams
-        # the apology's TTS back; the bus is fire-and-forget observability
-        # only, see module docstring, so it can't be the thing that
-        # produces a streamed gRPC response). This subscription exists
-        # purely for the transfer_failures_total metric.
+        # Metric only; the apology itself is streamed via on_transfer_failed().
         self._bus.subscribe(TransferFailed, self._on_transfer_failed_event)
 
     async def _on_transfer_failed_event(self, event: TransferFailed) -> None:
@@ -262,11 +200,7 @@ class ConversationSession:
             yield HandlerResponse(tts_payloads=payloads)
 
     async def push_audio(self, payload: bytes, *, trace_id: str = "") -> HandlerResponse:
-        """
-        Accumulate inbound audio and call the handler's per-chunk hook.
-        EchoHandler produces TTS here; PipelineHandler returns empty and waits
-        for on_speech_ended() to fire when the utterance boundary is detected.
-        """
+        """Accumulate inbound audio and call the handler's per-chunk hook."""
         if not self._fsm.can_accept_audio:
             return HandlerResponse()
 
@@ -281,13 +215,8 @@ class ConversationSession:
     async def speech_ended(
         self, duration_ms: int, energy_db: float
     ) -> AsyncGenerator[HandlerResponse, None]:
-        """
-        Utterance boundary detected by the gateway's VAD.  Pass the accumulated
-        audio buffer to the handler and yield its responses (STT result, then
-        TTS chunks) as they are produced.  Clears the buffer afterwards.
-        """
-        # Guard: only process speech_ended from LISTENING.  Arriving in
-        # RECOGNIZING/THINKING/etc. means a prior turn is still in flight; ignore.
+        """Hand the buffered utterance to the handler and yield its responses."""
+        # Any other state means a prior turn is still in flight.
         if self._fsm.state not in _SPEECH_ENDED_STATES:
             log.debug(
                 "speech_ended: ignoring in state %s session=%s",
@@ -298,7 +227,6 @@ class ConversationSession:
         audio = bytes(self._audio_buffer)
         self._audio_buffer.clear()
 
-        # Drive FSM: LISTENING → RECOGNIZING.
         self._fsm.on_speech_started(energy_db)
         self._fsm.on_speech_ended(duration_ms, energy_db)
 
@@ -319,12 +247,8 @@ class ConversationSession:
 
             yield response
 
-        # If the handler exited without completing a turn (empty STT, barge-in
-        # cancel, or pipeline exception), return the FSM to LISTENING from any
-        # mid-turn state so the session stays responsive.
-        # SPEAKING is included: if TTS was buffered by the servicer but never
-        # sent to the gateway (e.g. barge-in cleared the buffer), the gateway
-        # will never send playback_finished, leaving the FSM stuck in SPEAKING.
+        # Turn didn't complete: return to LISTENING. SPEAKING too, since unsent
+        # TTS means no playback_finished will ever arrive.
         if self._fsm.state in (
             CallFsmState.RECOGNIZING,
             CallFsmState.THINKING,
@@ -337,18 +261,11 @@ class ConversationSession:
         """Called by the servicer when a PlaybackFinished message is received."""
         self._fsm.on_playback_finished(interrupted=interrupted)
 
-    # ── Phase 5B of AI-to-human transfer: gateway → service notifications ──
-    # Purely reactive — drives ConversationFSM's TRANSFERRING state (its
-    # first real production trigger; see fsm.py) and publishes the matching
-    # EventBus event for observability. No LLM/prompt change, no fallback
-    # speech, no workflow change results from any of these.
+    # ── Transfer notifications from the gateway ────────────────────────────────
 
     def on_transfer_initiated(self, transfer_type: str, destination: str, reason: str,
                               transfer_id: str = "") -> None:
-        """Called by the servicer when a TransferInitiated message arrives —
-        the gateway has issued uuid_transfer and is waiting on FreeSWITCH to
-        confirm the outcome. The AI session may be closed by the gateway at
-        any point after this, so this is the one guaranteed chance to react."""
+        """Gateway issued the transfer; the session may be closed any time after this."""
         self._fsm.on_transfer_requested(destination, reason)
         self._metrics.increment("transfer_attempts_total")
         self._handler.record_live_stage(self._ctx.session_id, "waiting_for_human")
@@ -356,31 +273,12 @@ class ConversationSession:
             session_id=self._ctx.session_id, transfer_type=transfer_type,
             destination=destination, reason=reason, transfer_id=transfer_id,
         ))
-        # Speculative: starts the summary LLM call now, in parallel with
-        # whatever the gateway does next (uuid_transfer's near-instant
-        # result for cold; ring/answer/bridge for warm), instead of only
-        # starting it once TransferCompleted actually arrives. Discarded by
-        # on_transfer_failed/on_transfer_cancelled below if this attempt
-        # doesn't pan out — see session_finalizer.py's start_summary_early().
+        # Speculatively start the summary now; discarded if the transfer fails.
         self._handler.start_finalization(self._ctx.session_id)
 
     async def on_transfer_completed(self, destination: str,
                                     transfer_id: str = "") -> FinalizationResult:
-        """
-        Called by the servicer when a TransferCompleted message arrives —
-        confirmed (a real CHANNEL_BRIDGE event, not just uuid_transfer's
-        "+OK") that the destination answered and bridged.
-
-        Phase 5D of AI-to-human transfer: drives the workflow Transferring
-        -> Finalizing -> Closing (see fsm.py), running SessionFinalizer's
-        post-call cleanup pipeline (via the handler's finalize_session() —
-        see pipeline.py/session_finalizer.py) in between. Returns the full
-        result so the servicer can build an accurate ConversationFinalized
-        message (reason + whether the summary was really generated vs. a
-        timeout fallback + whether it was persisted) — the gateway is
-        waiting on that message before it tears its own side down (see
-        CallFSM's Finalizing state).
-        """
+        """Destination bridged: finalize the session and return the result for ConversationFinalized."""
         self._transfer_outcome = "TRANSFER_SUCCESS"
         self._metrics.increment("transfer_success_total")
         self._fsm.on_transfer_completed(True, destination)
@@ -404,24 +302,7 @@ class ConversationSession:
     async def on_transfer_failed(
         self, destination: str, reason: str, transfer_id: str = "",
     ) -> AsyncGenerator[HandlerResponse, None]:
-        """
-        Called by the servicer when a TransferFailed message arrives.
-
-        Phase 5C of AI-to-human transfer: unlike TransferCompleted (which
-        ends the call — the transfer worked), a failure does NOT have to be
-        terminal. The caller is often still on the line: the failure is the
-        *destination's* (busy, rejected, no answer), not necessarily the
-        caller's own channel. Delegates to the handler's own on_transfer_
-        failed() to generate an apology through its usual LLM->TTS pipeline
-        (see pipeline.py) and yields the results exactly like speech_ended()
-        does, so the servicer streams them the same way.
-
-        Drives the workflow transition Transferring -> Recovering -> Speaking
-        (see fsm.py) as the apology's first audio becomes available; Speaking
-        -> Listening is the *existing* on_playback_finished() transition,
-        fired for real once the gateway acks the apology's own playback — no
-        new mechanism needed for that last hop.
-        """
+        """Transfer failed but the caller is usually still on the line: yield a spoken apology."""
         start = time.monotonic()
         self._transfer_outcome = (
             "TRANSFER_TIMEOUT" if reason == "transfer_timeout" else "TRANSFER_FAILED"
@@ -442,11 +323,7 @@ class ConversationSession:
             yield response
 
         if not any_audio:
-            # No audio at all (the handler's own fallback synthesis also
-            # failed) — there's nothing for the gateway to play, so no real
-            # PlaybackFinished will ever arrive to close out Speaking.
-            # Force the same Recovering -> Speaking -> Listening path
-            # synthetically rather than leaving the FSM stuck.
+            # No audio means no PlaybackFinished; advance the FSM synthetically.
             self._fsm.on_recovery_response_ready()
             self._fsm.on_playback_finished(interrupted=False)
 
@@ -460,11 +337,7 @@ class ConversationSession:
         ))
 
     def on_transfer_cancelled(self, transfer_id: str = "") -> None:
-        """A pending transfer was dropped before dispatch (caller barge-in
-        during the acknowledgment — see servicer.py). No FSM change: the
-        gateway never received the request, so no TransferInitiated ever
-        arrives. Recorded for persistence (calls.final_state) only; a later
-        attempt's real outcome overwrites it."""
+        """Pending transfer dropped on barge-in before dispatch; no FSM change."""
         self._transfer_outcome = "TRANSFER_CANCELLED"
         self._metrics.increment("transfer_cancelled_total")
         self._handler.record_live_stage(self._ctx.session_id, "ai")
@@ -478,9 +351,7 @@ class ConversationSession:
         self._fsm.on_cancel()  # handles SPEAKING/THINKING/SYNTHESIZING/RECOGNIZING → LISTENING
 
     async def push_dtmf(self, digit: str) -> None:
-        """A caller keypress (servicer's `dtmf` case). Guarded like every
-        other handler call on this class: a handler exception here must not
-        take the stream down."""
+        """Forward a caller keypress; handler errors must not take the stream down."""
         try:
             await self._handler.on_dtmf(self._ctx.session_id, digit)
         except Exception:
@@ -488,21 +359,10 @@ class ConversationSession:
 
     @property
     def out_responses(self) -> "asyncio.Queue[HandlerResponse] | None":
-        """The handler's out-of-band egress queue, or None on every handler
-        that never speaks unprompted. `getattr` with a default is a second
-        line of defence for a test double or a future handler that forgets
-        the class attribute — see the Changes note on echo.py/pipeline.py:
-        without that attribute existing there too, this would raise
-        AttributeError on the no-flow majority path instead of reading
-        None."""
+        """The handler's out-of-band response queue, or None."""
         return getattr(self._handler, "out_responses", None)
 
-    # close() reasons that carry no information beyond "the stream ended" —
-    # a transfer outcome that de facto ended the AI session replaces these
-    # in persistence. Deliberate reasons (goodbye_timeout, caller_hangup) are
-    # never overridden: a failed transfer whose call genuinely continued and
-    # later ended normally keeps its real close reason (the attempt is still
-    # visible in calls.final_state).
+    # Uninformative close reasons that a failed-transfer outcome may replace in persistence.
     _GENERIC_CLOSE_REASONS = frozenset(
         {"stream_ended", "close_timeout", "session_destroyed", "transport_error"}
     )

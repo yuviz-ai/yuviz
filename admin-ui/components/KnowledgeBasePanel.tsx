@@ -30,13 +30,8 @@ interface PolicyForm {
 
 const DEFAULT_POLICY: PolicyForm = { top_k: 5, minimum_score: 0, max_tokens: 1000, include_citations: true };
 
-// agentId absent (Knowledge Base page) = authoring: list every tenant KB
-// and its documents, create/upload/usage-mode/delete-document, no attach
-// affordance and no retrieval-policy card. agentId present (agent's own
-// Knowledge Base tab) = attach-only: the same rows read-only plus
-// attach/enable/detach and the retrieval-policy card — no create, upload
-// or delete-document control (lesson 17: this is the only file for both
-// surfaces, per the design's authoring/attachment split).
+// Without agentId: authoring (create/upload/delete). With agentId: attach-only plus the
+// retrieval-policy card.
 export function KnowledgeBasePanel({ tenantId, agentId }: { tenantId: string; agentId?: string }) {
   const [allKbs, setAllKbs] = useState<KnowledgeBase[]>([]);
   const [kbsError, setKbsError] = useState<string | null>(null);
@@ -63,10 +58,7 @@ export function KnowledgeBasePanel({ tenantId, agentId }: { tenantId: string; ag
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
-  // Each source fetched and caught independently (lesson 21): a viewer's
-  // page must still show the KB/document lists even if a write-scoped
-  // sibling fetch failed, and one 403 must never blank data the API
-  // already returned for the others.
+  // Each source is caught independently so one 403 doesn't blank the others.
   const refresh = async () => {
     setLoading(true);
     let kbs: KnowledgeBase[] = [];
@@ -122,10 +114,7 @@ export function KnowledgeBasePanel({ tenantId, agentId }: { tenantId: string; ag
 
   const assignedKbIds = new Set(assignments.map((a) => a.kb_id));
   const unassignedKbs = allKbs.filter((kb) => !assignedKbIds.has(kb.id));
-  // Mirrors ElevenLabs' "Enable RAG" toggle: there's no separate on/off
-  // switch in our model — retrieval is effectively on exactly when at
-  // least one attached KB is enabled — but the settings detail fields
-  // should only render while that's true, same as theirs.
+  // Retrieval is on exactly when at least one attached KB is enabled.
   const ragEnabled = assignments.some((a) => a.enabled);
 
   const withErrorHandling = async (fn: () => Promise<unknown>, onError: (msg: string) => void) => {

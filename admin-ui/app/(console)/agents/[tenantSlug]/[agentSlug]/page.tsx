@@ -12,10 +12,7 @@ import { LocalVoicePicker } from "@/components/LocalVoicePicker";
 import { ElevenLabsVoicePicker } from "@/components/ElevenLabsVoicePicker";
 import { LANGUAGES, OTHER, asBrowsableTtsEngine } from "@/lib/engineCatalog";
 
-// Same stages as the creation wizard (/agents/new), in the same order, so
-// editing an agent and creating one are the same mental model. The wizard's
-// final "Review" step is "Prompt" here — on an existing agent the prompt is
-// a stored value you edit, not a draft you generate before saving.
+// Same stages as the creation wizard (/agents/new); its "Review" step is "Prompt" here.
 type Tab = "identity" | "voice" | "limits" | "advanced" | "knowledge" | "prompt" | "sip";
 
 const TABS: { key: Tab; label: string }[] = [
@@ -44,34 +41,22 @@ export default function AgentDetailPage() {
   const [saved, setSaved] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
-  // null = still checking; a number once the real check has run (no
-  // override anywhere in this flow — a call in progress is a real person
-  // on the phone, not administrative housekeeping that can wait).
+  // null = still checking.
   const [liveCallCount, setLiveCallCount] = useState<number | null>(null);
   const [deleteChecking, setDeleteChecking] = useState(false);
 
   const [form, setForm] = useState<AgentUpdate>({});
   const [languageChoice, setLanguageChoice] = useState<string>("");
   const [customLanguage, setCustomLanguage] = useState("");
-  // Explicit override once the user picks an engine from the chooser (or
-  // clicks "Change engine") — null defers to whatever engine the agent's
-  // current tts_config_id actually points at, so the Voice card only ever
-  // shows the picker matching the configured provider, never an unrelated
-  // engine's voices (picking one there would silently swap tts_config_id
-  // to a different provider without it being obvious that happened).
+  // null = use the engine of the agent's current tts_config_id, so picking a voice
+  // never silently swaps the agent to a different TTS provider.
   const [chosenEngine, setChosenEngine] = useState<"macos" | "kokoro" | "elevenlabs" | null>(null);
   const [showEngineChooser, setShowEngineChooser] = useState(false);
   // Local slider value while dragging — only PATCHed on release/keyup, not on
   // every pixel of drag, which a plain onChange on a range input would do.
   const [ttsSpeedDraft, setTtsSpeedDraft] = useState<number | null>(null);
 
-  // Greeting / system prompt are edited here again (Prompt tab), not only on
-  // the canvas: they are agent columns, and update_agent mirrors them into
-  // the flow's start/global nodes, so the two stay in sync either way.
-
-  // Landed here straight from the creation wizard (?test=1) — send straight
-  // on to the test page, so the first thing you do with a new agent is hear
-  // whether it talks the way the wizard said it would.
+  // ?test=1 comes from the creation wizard.
   useEffect(() => {
     if (searchParams.get("test") === "1") {
       router.replace(`/agents/${tenantSlug}/${agentSlug}/test`);
@@ -124,11 +109,7 @@ export default function AgentDetailPage() {
       .finally(() => setLoading(false));
   }, [tenantSlug, agentSlug]);
 
-  // Picking a voice sets the agent's language to match it, rather than the
-  // other way around — a voice is a concrete, single-language artifact,
-  // while agent.language is a looser override (see its own "derive from
-  // provider" default), so syncing from voice -> language is the direction
-  // that can't produce a contradiction.
+  // Sync voice -> language (not the reverse): a voice is single-language, agent.language is a looser override.
   const applyDetectedLanguage = (language: string) => {
     if (LANGUAGES.some((l) => l.value === language)) {
       setLanguageChoice(language);
@@ -164,11 +145,7 @@ export default function AgentDetailPage() {
     setSaveError(null);
     setDeleteChecking(true);
     try {
-      // No agent_id on LiveCall (see lib/api.ts) — matched by name, scoped
-      // to this tenant by getLiveCalls(tenantSlug) already. A same-tenant
-      // name collision would undercount, but agent names are admin-chosen
-      // and this is a pre-check only — the DELETE call itself, backed by a
-      // real agent_id match server-side, is still the authoritative one.
+      // LiveCall has no agent_id, so match by name; only a pre-check — the DELETE is authoritative.
       const snapshot = await getLiveCalls(tenantSlug);
       setLiveCallCount(snapshot.items.filter((c) => c.agent_name === agent.name).length);
     } catch (e) {
@@ -185,11 +162,7 @@ export default function AgentDetailPage() {
       await deleteAgent(tenantSlug, agent.id);
       router.push("/agents");
     } catch (e) {
-      // A blocked delete (409) carries the live call count in the body —
-      // switch this same modal to the blocked variant. Authoritative
-      // check; the pre-check on open only decides which copy to show
-      // first, so a race (a call starting between opening the modal and
-      // clicking) still lands here correctly instead of deleting mid-call.
+      // 409 = a call started since the pre-check; switch to the blocked variant.
       if (e instanceof ApiError && e.status === 409 && e.body?.live_call_count !== undefined) {
         setLiveCallCount(Number(e.body.live_call_count));
         setDeleting(false);
@@ -480,11 +453,7 @@ export default function AgentDetailPage() {
                   );
 
                   if (engine === "elevenlabs") {
-                    // Prefer the provider actually assigned to this agent —
-                    // falling back to "any ElevenLabs provider on the
-                    // tenant" only when the agent isn't currently on one —
-                    // otherwise a tenant with multiple connected accounts
-                    // could show a different agent's selected voice here.
+                    // Prefer the agent's own provider; a tenant may have several ElevenLabs accounts.
                     const elevenLabsProvider =
                       (selectedTts?.engine === "elevenlabs" ? selectedTts : undefined) ??
                       providers.find((p) => p.role === "tts" && p.engine === "elevenlabs") ??
@@ -605,12 +574,7 @@ export default function AgentDetailPage() {
                 </div>
                 {(() => {
                   const selectedLlm = providers.find((p) => p.id === form.llm_config_id);
-                  // Ollama's "think" field only exists for a handful of models
-                  // (gemma4 family confirmed live) — every other engine/model
-                  // combination doesn't support it, so the toggle only
-                  // appears when it would actually do something. Mirrors the
-                  // scoping in services/conversation/ai_provider_manager.py's
-                  // _is_thinking_capable().
+                  // Must match _is_thinking_capable() in services/conversation/ai_provider_manager.py.
                   const isThinkingCapable = selectedLlm?.engine === "ollama" && !!selectedLlm.model?.startsWith("gemma4");
                   if (!isThinkingCapable || !selectedLlm) return null;
                   const thinking = Boolean((selectedLlm.extra as Record<string, unknown> | null)?.think ?? false);
@@ -867,10 +831,7 @@ export default function AgentDetailPage() {
           deleteChecking ? (
             <button className="btn btn-ghost btn-sm" onClick={() => setDeleteConfirmOpen(false)}>Cancel</button>
           ) : liveCallCount ? (
-            // Deliberately no "force delete" here — unlike Accounts and
-            // Providers, this blocks a real call in progress, not
-            // administrative housekeeping. Wait for the call to end, then
-            // delete; re-opening this a minute later just works.
+            // Deliberately no "force delete": this would cut off a live call.
             <>
               <button className="btn btn-ghost btn-sm" onClick={() => setDeleteConfirmOpen(false)}>Cancel</button>
               <Link href="/live-calls" className="btn btn-ghost btn-sm">View live calls</Link>

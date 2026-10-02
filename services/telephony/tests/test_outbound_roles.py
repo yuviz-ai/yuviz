@@ -1,7 +1,4 @@
-"""R2-2: a tenant `viewer` must never reach an outbound route, while a
-NULL-tenant `is_service_account` token carrying the SAME role="viewer"
-claim must — distinguishing the two clauses rather than passing on the
-role alone (lesson 24)."""
+"""Tenant viewers are refused outbound routes; NULL-tenant service accounts with role="viewer" are admitted."""
 
 from __future__ import annotations
 

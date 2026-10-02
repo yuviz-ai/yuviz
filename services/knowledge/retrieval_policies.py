@@ -1,11 +1,4 @@
-"""
-agent_retrieval_policies CRUD — the server-side configuration surface that
-lets each agent's RetrievalPolicy be tuned (top_k, minimum_score, max_tokens,
-citation behavior) without touching Conversation Service or any caller's
-code. No row for an agent is a normal, cheap state ("use the system
-default"), not a missing-config error — get_policy() returns None rather
-than raising, matching every other optional-config lookup in this project.
-"""
+"""agent_retrieval_policies CRUD. No row means "use the system default" (get_policy() returns None)."""
 
 from __future__ import annotations
 

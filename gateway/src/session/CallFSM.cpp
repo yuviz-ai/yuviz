@@ -33,9 +33,8 @@ static constexpr std::array<std::pair<CallFsmState, CallFsmState>, 34> kValidTra
     {CallFsmState::Synthesizing,  CallFsmState::Transferring},
     {CallFsmState::Speaking,      CallFsmState::Transferring},
     {CallFsmState::Transferring,  CallFsmState::Closing     },  // session_close mid-transfer
-    {CallFsmState::Transferring,  CallFsmState::Thinking    },  // transfer_completed(success=false) —
-                                                                  // apology-and-continue, see do_transfer_completed_
-    // ── Finalization after a successful transfer (Phase 5D) ────────────────
+    {CallFsmState::Transferring,  CallFsmState::Thinking    },  // transfer_completed(success=false)
+    // ── Finalization after a successful transfer ───────────────────────────
     {CallFsmState::Transferring,  CallFsmState::Finalizing  },  // transfer_completed(success=true)
     {CallFsmState::Finalizing,    CallFsmState::Closing     },  // ConversationFinalized, FinalizingTimeout, or session_close
     // ── Teardown from any active state ─────────────────────────────────────
@@ -65,9 +64,6 @@ CallFSM::CallFSM(std::string         session_id,
     , state_entered_at_(clock.now())
 {}
 
-// All trigger methods run exclusively on CallSession's control thread — the
-// control queue is the serialisation mechanism, so no locking is needed here.
-
 void CallFSM::on_session_start() {
     transition(CallFsmState::Connecting, "session_start");
 }
@@ -80,18 +76,8 @@ void CallFSM::on_service_ready() {
 void CallFSM::on_speech_started(float energy_db) {
     const auto s = state();
     if (s == CallFsmState::WaitingForHangup) {
-        // A bare VAD onset (background noise, a breath, a chair creak)
-        // must not immediately cancel a legitimate goodbye — only
-        // genuinely sustained speech should. Swap GoodbyeTimeout for a
-        // short GoodbyeConfirm window and wait: if notify_speech_ended()
-        // arrives before it fires, this was just a blip (handled there,
-        // restores the grace period). If the confirm timer fires first,
-        // on_timer_fired() below performs the real cancel-and-transition
-        // this method used to do unconditionally. No transition yet —
-        // state stays WaitingForHangup either way until one of those
-        // resolves it. Same "swap the active timer without leaving the
-        // state" pattern notify_speech_ended() already uses for
-        // Recognizing's MaxUtteranceTimeout → SttTimeout swap.
+        // Don't cancel the goodbye on a bare onset; require speech to outlast
+        // GoodbyeConfirm (on_timer_fired) unless it ends first (a blip).
         if (active_timer_ != kNoTimer) {
             if (handlers_.cancel_timer) handlers_.cancel_timer(active_timer_);
             active_timer_ = kNoTimer;
@@ -111,10 +97,7 @@ void CallFSM::on_speech_started(float energy_db) {
 
 void CallFSM::notify_speech_ended(uint32_t duration_ms, float energy_db) {
     if (state() == CallFsmState::WaitingForHangup && awaiting_goodbye_confirm_) {
-        // The onset that interrupted WaitingForHangup ended before
-        // goodbye_confirm elapsed — a blip, not real speech. Treat it as
-        // if it never happened: restore a full goodbye grace window
-        // rather than cancelling the hangup.
+        // A blip: restore the full goodbye grace window.
         awaiting_goodbye_confirm_ = false;
         if (active_timer_ != kNoTimer) {
             if (handlers_.cancel_timer) handlers_.cancel_timer(active_timer_);
@@ -130,15 +113,8 @@ void CallFSM::notify_speech_ended(uint32_t duration_ms, float energy_db) {
     }
     if (state() != CallFsmState::Recognizing) return;
 
-    // Swap the safety-net MaxUtteranceTimeout (bounds how long the caller may
-    // keep talking) for a tighter SttTimeout (bounds how long STT may take
-    // now that it has the full utterance).  State stays Recognizing, so
-    // on_exit/on_enter don't fire on their own — this is the one place that
-    // transitions between the two timers.  A single fixed budget can't serve
-    // both: tight enough for STT cuts off long talkers mid-sentence, and
-    // cutting a caller off isn't just a UX gap — the FSM resets to Listening
-    // and the STT/LLM/TTS result that arrives later hits a stale-state guard
-    // and is silently dropped.
+    // Swap MaxUtteranceTimeout for the tighter SttTimeout; no state change, so
+    // on_exit/on_enter won't do it.
     if (active_timer_ != kNoTimer) {
         if (handlers_.cancel_timer) handlers_.cancel_timer(active_timer_);
         active_timer_ = kNoTimer;
@@ -154,8 +130,7 @@ void CallFSM::notify_speech_ended(uint32_t duration_ms, float energy_db) {
 void CallFSM::on_stt_final(std::string text, float confidence) {
     if (state() != CallFsmState::Recognizing) return;
     if (text.empty()) {
-        // STT produced nothing (noise, echo tail, filtered hallucination) —
-        // return to Listening now instead of waiting out SttTimeout.
+        // Don't wait out SttTimeout on an empty result.
         transition(CallFsmState::Listening, "stt_empty");
         return;
     }
@@ -180,12 +155,9 @@ void CallFSM::on_playback_finished(bool interrupted, bool end_call_pending,
         transition(CallFsmState::BargeIn, "playback_interrupted");
         return;
     }
-    // on_playback_finished fires in both branches: Python only needs to know
-    // playback ended, not that a hangup grace period is now running
-    // gateway-side (WaitingForHangup has no Python-side analog).
+    // on_playback_finished fires in both branches; Python has no WaitingForHangup.
     if (end_call_pending) {
         logger_.info("session={} goodbye played — entering grace period", session_id_);
-        // Consumed synchronously by on_enter(WaitingForHangup) inside transition().
         pending_goodbye_timeout_override_ = goodbye_timeout_override;
         transition(CallFsmState::WaitingForHangup, "goodbye_played");
     } else {
@@ -226,25 +198,10 @@ void CallFSM::do_transfer_completed_(bool success, std::string transfer_id) {
     if (handlers_.on_transfer_completed)
         handlers_.on_transfer_completed(success, std::move(transfer_id));
     if (success) {
-        // Phase 5D: wait for the Conversation Service's own post-call
-        // cleanup (ConversationFinalized) before Closing — see
-        // do_conversation_finalized_() and Finalizing's class-doc comment.
         transition(CallFsmState::Finalizing, "transfer_completed");
     } else {
-        // A failed transfer is NOT terminal — the Conversation Service's
-        // on_transfer_failed() generates a brief apology through the same
-        // LLM→TTS pipeline as any other turn (see pipeline.py) and the
-        // call continues. Thinking, not Listening, is the correct target:
-        // the apology's own TtsStarted/first TtsChunk drive Thinking→
-        // Synthesizing→Speaking exactly like a normal turn (see
-        // CallSession's cbs.on_tts_started/on_tts_chunk, which require
-        // Thinking/Synthesizing respectively) — landing in Listening
-        // instead would silently drop those transitions even though the
-        // audio itself would still play, leaving the FSM's own state
-        // bookkeeping wrong for the rest of the call. This also means a
-        // hung/slow apology is covered for free by the existing
-        // LlmTimeout safety net (see on_enter(Thinking)/on_timer_fired),
-        // with no new timer type needed.
+        // The service speaks an apology as a normal turn, so enter Thinking for its
+        // TTS transitions to apply; LlmTimeout covers a hung apology.
         transition(CallFsmState::Thinking, "transfer_failed");
     }
 }
@@ -329,9 +286,7 @@ void CallFSM::on_timer_fired(FsmTimerType type) {
         break;
     case FsmTimerType::GoodbyeConfirm:
         if (state() == CallFsmState::WaitingForHangup && awaiting_goodbye_confirm_) {
-            // Speech was still ongoing goodbye_confirm ms after onset —
-            // confirmed real. Perform the cancel-and-transition
-            // on_speech_started() used to do unconditionally.
+            // Speech outlasted the confirm window: cancel the hangup.
             awaiting_goodbye_confirm_ = false;
             logger_.info("session={} goodbye_cancelled — caller spoke during grace period",
                          session_id_);
@@ -442,9 +397,7 @@ void CallFSM::on_enter(CallFsmState s) {
             FsmTimerType::NoSpeechTimeout, timer_cfg_.no_speech_timeout);
         break;
     case CallFsmState::Recognizing:
-        // Armed here as a generous safety net for however long the caller
-        // may keep talking.  notify_speech_ended() swaps this for a tighter
-        // SttTimeout once the utterance is complete and STT actually starts.
+        // notify_speech_ended() swaps this for SttTimeout.
         active_timer_ = handlers_.schedule_timer(
             FsmTimerType::MaxUtteranceTimeout, timer_cfg_.max_utterance_timeout);
         break;

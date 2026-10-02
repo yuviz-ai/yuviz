@@ -1,20 +1,7 @@
 """
-SentimentScorer — how the CALLER sounded, scored once per call from the
-finished transcript.
+SentimentScorer — scores the caller's sentiment once per call from the finished transcript.
 
-Runs inside TranscriptBuilder's end_call() background write (see
-transcript_builder.py), never on the live turn path: by the time this is
-called the caller has already hung up, so an LLM round-trip here costs the
-conversation nothing. Everything about this module is best-effort — a
-timeout, an unreachable model, or a model that ignores the output contract
-all resolve to None, which the schema records as "never scored" and the
-Admin UI renders as "—". A call is never left unfinalized because scoring
-failed; _end_call() writes ended_at/duration/turn_count first and only then
-attempts this.
-
-Deliberately NOT per-turn: one score over the whole conversation is the
-question the Call Log actually asks ("did this caller leave happy?"), and
-it costs one LLM call per call instead of one per turn.
+Best-effort and off the live path (runs in end_call); any failure yields None ("never scored").
 """
 
 from __future__ import annotations
@@ -29,9 +16,7 @@ from .providers.interfaces import ChatMessage
 
 log = logging.getLogger(__name__)
 
-# Mirrors database/schema.sql's calls_sentiment_check. 'frustrated' is
-# separate from 'negative' on purpose — see that constraint's comment for
-# why collapsing them loses the actionable half.
+# Mirrors database/schema.sql's calls_sentiment_check.
 LABELS = ("positive", "neutral", "negative", "frustrated")
 
 _SYSTEM_PROMPT = """You analyse finished customer-service phone call transcripts.
@@ -60,9 +45,7 @@ Example of a good reply:
 Example of a BAD reply (this copies the definition instead of the call):
 {"label": "frustrated", "reason": "struggled with the agent, repeating themselves or giving up"}"""
 
-# The model is asked for bare JSON, but small local models habitually wrap it
-# in ```json fences or prepend a sentence. Pull the first balanced-looking
-# object out rather than failing the whole score over formatting.
+# Models often wrap the JSON in fences or prose; extract the first object.
 _JSON_OBJECT = re.compile(r"\{.*?\}", re.DOTALL)
 
 _MAX_REASON_CHARS = 160
@@ -82,18 +65,9 @@ class Turn:
 
 
 class SentimentScorer:
-    """
-    llm       — any ILLM (services/conversation/providers/interfaces.py). Only
-                plain generate() is used, with an explicit system-role message
-                so the agent's own conversational system prompt is overridden
-                rather than appended to (see build_chat_messages()).
-    max_turns — cap on transcript turns sent. A 200-turn call would otherwise
-                build a prompt large enough to be slow and to push the output
-                contract out of a small model's attention; the first and last
-                turns carry the arc, so the middle is dropped, not the end.
-    timeout_s — hard ceiling on the whole generation. Nothing waits on this,
-                but the write chain for this session is held until it returns,
-                so it cannot be unbounded.
+    """Scores a transcript via an ILLM.
+
+    max_turns keeps the head and tail; timeout_s bounds it since the session's write chain waits.
     """
 
     def __init__(
@@ -123,15 +97,8 @@ class SentimentScorer:
             return None
         return self._parse(raw)
 
-    # ── Internal ─────────────────────────────────────────────────────────────
-
     def _render(self, turns: list[Turn]) -> str | None:
-        """None when there is nothing a human could score either.
-
-        Turns where the caller said nothing are dropped before the length
-        check: a call can hold several agent-only turns (a greeting, then a
-        timeout) and scoring the agent talking to itself would report a
-        caller mood that was never expressed."""
+        """Render caller-spoken turns only; None if the caller never spoke."""
         spoken = [t for t in turns if (t.caller_text or "").strip()]
         if not spoken:
             return None
@@ -179,9 +146,6 @@ class SentimentScorer:
 
         label = str(data.get("label", "")).strip().lower()
         if label not in LABELS:
-            # A label outside the contract is a failed read, not something to
-            # coerce to 'neutral' — the schema's NULL says "never scored",
-            # which is the truth here.
             log.warning("SentimentScorer: unknown label=%r", label)
             return None
 

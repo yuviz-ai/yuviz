@@ -11,17 +11,8 @@
 
 namespace voiceai {
 
-// Registry-pattern factory for IConversationTransport implementations.
-// Providers register a creator function keyed by a string type name.
-// Application constructs one instance and injects it wherever sessions are created.
-//
-// Built-in registrations (done by Application::initialize()):
-//   "null"  → NullConversationTransport
-//   "grpc"  → GrpcConversationTransport  (registered in main.cpp)
-//
-// Thread safety: register_provider() takes an exclusive lock; create() and
-// has() take shared locks.  Safe to call concurrently and for late registration
-// (e.g., from a plugin-loader thread after Application::initialize() returns).
+// Thread-safe registry of IConversationTransport creators keyed by type name
+// ("null" from Application, "grpc" from main.cpp).
 class ConversationTransportFactory {
 public:
     using Creator = std::function<std::unique_ptr<IConversationTransport>(Logger&)>;

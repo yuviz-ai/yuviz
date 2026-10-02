@@ -1,11 +1,4 @@
-"""
-Postgres connection pool for Knowledge Service — its own process-wide pool,
-not a shared import from services.config.db. Both services point at the
-same physical Postgres database (voiceai) today, but each service owns its
-own connection lifecycle: a microservice-boundary rule already applied
-consistently elsewhere in this project (Knowledge Service does not import
-services.config internals for config reads either — see libs/config_sdk).
-"""
+"""Process-wide Postgres pool for Knowledge Service (own lifecycle, shared database)."""
 
 from __future__ import annotations
 

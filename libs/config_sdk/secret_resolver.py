@@ -1,21 +1,4 @@
-"""
-SecretResolver — turns a provider_configs.api_key_ref (or carriers.
-auth_token_ref) string into the actual secret value, exactly once, at
-provider-instantiation time — never per-call (see AIProviderManager and
-project_phase5_schema_design.md's non-negotiable latency rule #4).
-
-Ref formats:
-  "env:VAR_NAME"                 — EnvResolver:    reads an environment variable
-  "k8s:namespace/secret"         — K8sFileResolver: reads a Kubernetes-mounted secret file
-  "enc:<fernet-token>"           — EncryptedResolver: decrypts a key stored encrypted at rest
-
-Shared by every service that resolves provider secrets (config,
-conversation, did, knowledge) — each previously carried a byte-identical
-copy of this file; consolidated here since libs/config_sdk is already a
-shared dependency of all of them (each already imported decrypt_secret
-from libs.config_sdk.secrets for EncryptedResolver). The Admin UI only
-ever stores/displays the ref string itself, never a resolved value.
-"""
+"""Resolve secret refs (env:, k8s:, enc:) to values, once at provider construction, never per call."""
 
 from __future__ import annotations
 
@@ -44,14 +27,7 @@ class EnvResolver:
 
 
 class K8sFileResolver:
-    """
-    ref = 'k8s:namespace/secret-name' -> reads the file a Kubernetes Secret
-    volume mount would place at {mount_root}/{namespace}/{secret-name}.
-
-    Kubernetes mounts each key of a Secret as its own file under the mount
-    path; provider_configs stores one api_key_ref per provider, so the
-    convention here is one file per secret, named by the ref's last segment.
-    """
+    """ref = 'k8s:namespace/secret-name' -> file at {mount_root}/{namespace}/{secret-name}."""
 
     def __init__(self, mount_root: str = "/var/run/secrets") -> None:
         self._mount_root = Path(mount_root)
@@ -68,8 +44,7 @@ class K8sFileResolver:
 
 
 class EncryptedResolver:
-    """ref = 'enc:<fernet-token>' -> the key an operator pasted into the Admin
-    UI, encrypted at rest. This one carries the credential sealed inside it."""
+    """ref = 'enc:<fernet-token>' -> decrypted credential."""
 
     async def resolve(self, ref: str) -> str:
         return decrypt_secret(ref)
@@ -90,9 +65,7 @@ class CompositeSecretResolver:
             return await self._k8s.resolve(ref)
         if ref.startswith("enc:"):
             return await self._enc.resolve(ref)
-        # Never log `ref` here — the likeliest cause is a raw API key pasted
-        # into the reference field. A raw key has no colon, so its "scheme"
-        # would be the key itself; report a placeholder instead.
+        # Never echo `ref`: it is most likely a raw API key pasted into the field.
         scheme = ref.split(":")[0] if ":" in ref else "<no scheme>"
         raise ValueError(
             f"unrecognized secret ref scheme (expected env:/k8s:/enc:), got {scheme[:12]!r}"

@@ -1,31 +1,9 @@
-"""
-CallFlowConversationHandler — IConversationHandler that walks a
-CallFlowRunner: synthesizes prompts, arms/cancels `Listen` timers, and
-delegates to a freshly built PipelineConversationHandler the moment the
-flow reaches an `agent` node.
+"""IConversationHandler that turns CallFlowRunner actions into audio, timers and
+egress, then delegates to a pipeline handler at an `agent` node.
 
-Structurally an IConversationHandler — this file never imports session.py's
-Protocol, matching the "no audio/providers" boundary drawn at
-CallFlowRunner (runner.py is the graph walk; this file is where its
-Actions become audio, timers and gRPC egress).
-
-Exactly one task ever mutates the runner: the flow driver task started in
-__init__. `on_dtmf()` and each `Listen` timer only enqueue a `_FlowEvent`
-onto a private queue; a stale timeout is dropped rather than acted on — see
-lesson 34. Staleness is tracked by a per-arm generation counter, not the
-node id: `_invalid_attempt()` can replay the *same* node (a fresh Listen on
-an unchanged `node.id`), so a node-id comparison alone would accept a
-timeout that was already enqueued for an earlier arm of that same node as
-if it were current. Each `Listen` bumps `_listen_generation` and the fired
-timer event carries the generation it was armed for — the state id it was
-armed for, per lesson 34 — so the driver accepts a `("timeout", ...)` event
-only when that generation still matches the current one; a lost/late one is
-inert rather than a double advance. All flow-driven audio — including a
-keypress's own response — leaves through `out_responses`, the out-of-band
-egress queue the servicer drains alongside inbound gateway messages
-(servicer.py's `asyncio.wait`); `on_dtmf()` has no return channel of its
-own to carry a HandlerResponse back on.
-"""
+Only the driver task mutates the runner; DTMF and timers just enqueue events.
+Timeouts carry a per-arm generation (a node can be replayed), so stale ones are dropped.
+All flow audio leaves via `out_responses`."""
 
 from __future__ import annotations
 
@@ -40,11 +18,10 @@ from .runner import Action, CallFlowRunner, Dial, Handoff, Hangup, Listen, Speak
 
 log = logging.getLogger(__name__)
 
-# ("digit", digit) | ("timeout", generation) — see the module docstring.
+# ("digit", digit) | ("timeout", generation)
 _FlowEvent = tuple[str, Any]
 
-# ITTS output is S16LE mono throughout this codebase (pipeline.py) — two
-# bytes per sample.
+# ITTS output is S16LE mono.
 _BYTES_PER_SAMPLE = 2
 
 
@@ -54,12 +31,8 @@ async def _empty_async_gen() -> AsyncGenerator[HandlerResponse, None]:
 
 
 class CallFlowConversationHandler:
-    """One caller's session inside a published call flow.
-
-    Every method other than `on_dtmf`/`out_responses` forwards to
-    `self._delegate` once the flow hands off to an `agent` node, and is an
-    inert no-op/`HandlerResponse()` before that — no STT, LLM, transcript
-    or guardrail work happens while the caller is in the IVR."""
+    """One caller's call-flow session. Handler methods are inert until handoff,
+    then forward to the delegate."""
 
     def __init__(
         self,
@@ -88,16 +61,9 @@ class CallFlowConversationHandler:
         self._delegate: Any | None = None
         self._events: asyncio.Queue[_FlowEvent] = asyncio.Queue()
         self._timers: set[asyncio.Task] = set()
-        # Bumped on every Listen armed, including a replay of the same node
-        # (_invalid_attempt) — the timeout event's staleness check compares
-        # against this, not node id, since a same-node replay is a fresh
-        # arm that a node-id comparison couldn't tell apart from the one it
-        # replaced. See the module docstring and lesson 34.
+        # Bumped on every Listen, including same-node replays; used to drop stale timeouts.
         self._listen_generation = 0
-        # Set once a Hangup/Dial action ends the flow, so a stale event
-        # already queued behind it (e.g. a timeout racing a keypress that
-        # just hung up the call) is dropped rather than re-driving a dead
-        # runner — see lesson 34 and Test 14a.
+        # Set on Hangup/Dial so queued events don't re-drive a finished runner.
         self._ended = False
 
         self.out_responses: asyncio.Queue[HandlerResponse] = asyncio.Queue()
@@ -127,10 +93,7 @@ class CallFlowConversationHandler:
             await self.out_responses.put(HandlerResponse(end_call=True))
 
     async def _run_actions(self, actions: list[Action]) -> None:
-        """Every Action list the runner returns ends in exactly one of
-        Listen/Hangup/Dial/Handoff (runner.py's node semantics never
-        cascade past one of those), so this loop always returns through
-        one of those branches — it never falls off the end."""
+        """Each action list ends in exactly one Listen/Hangup/Dial/Handoff."""
         self._cancel_timers()
         pcm: list[bytes] = []
         for action in actions:
@@ -249,8 +212,6 @@ class CallFlowConversationHandler:
     async def on_session_end(
         self, session_id: str, reason: str, final_state: str | None = None,
     ) -> None:
-        # Owning set: cancelled and joined here, the session's teardown
-        # (lesson 26) — the driver task and every armed Listen timer.
         self._cancel_timers()
         pending = list(self._timers)
         if not self._driver_task.done():
@@ -285,7 +246,5 @@ class CallFlowConversationHandler:
         )
 
     def record_live_stage(self, session_id: str, stage: str) -> None:
-        # No transcript writer of its own — see the design's Open Question
-        # 1: this handler owns no live-stage state before handoff.
         if self._delegate is not None:
             self._delegate.record_live_stage(session_id, stage)

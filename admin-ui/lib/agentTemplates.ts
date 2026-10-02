@@ -1,7 +1,4 @@
-// Starting points for the creation wizard. A template is purely prefill —
-// it fills the same fields you'd type by hand in /agents/new, so there is
-// no template entity, no backend, and nothing to keep in sync: picking one
-// and then editing every field leaves no trace of the template behind.
+// Creation-wizard templates: client-side prefill only, no backend entity.
 
 export interface AgentTemplate {
   key: string;

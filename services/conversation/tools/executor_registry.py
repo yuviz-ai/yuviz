@@ -1,9 +1,4 @@
-"""
-ExecutorRegistry — name -> executor factory, deliberately separate from
-ToolRegistry (design review point 2). Nothing that talks to the LLM
-(LLMAdapter, ToolRegistry itself) ever imports this class — only
-ToolCallOrchestrator, after a tool call has already been detected.
-"""
+"""Tool name -> executor factory; kept separate from ToolRegistry so LLM-facing code never imports it."""
 
 from __future__ import annotations
 
@@ -16,9 +11,7 @@ class IToolExecutor(Protocol):
     async def execute(self, request: ToolExecutionRequest) -> ToolResult: ...
 
 
-# One positional arg: the provider this tool's policy resolved to. The
-# old second "companion provider" slot went away with the calendar
-# built-ins (book_appointment -> send_sms was its only user).
+# One positional arg: the provider this tool's policy resolved to.
 ExecutorFactory = Callable[[Any], IToolExecutor]
 
 

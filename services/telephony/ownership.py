@@ -1,9 +1,5 @@
-"""
-resolve_outbound_identity() — the server-resolved twin (lesson 31) for
-every outbound trigger. Two checks, both before any vendor call (finding
-#2): the caller-id DID must belong to the authenticated tenant, and (for a
-call, not an SMS) the agent must too.
-"""
+"""resolve_outbound_identity() — before any vendor call, verify the caller-id DID (and agent, for calls)
+belong to the authenticated tenant."""
 
 from __future__ import annotations
 
@@ -52,11 +48,7 @@ async def resolve_outbound_identity(
 
 
 async def _assert_agent_owned(tenant_slug: str, agent_slug: str) -> None:
-    """Memo hit (prewarmed by AccountStore's preload/300s refresh) is the
-    steady state — no I/O. A memo miss falls back to the tenant-scoped
-    Redis `agent:{tenant}:{slug}` cache-aside key, and only then to one
-    bounded cold-path Config Service fetch, memoized for next time. Never a
-    synchronous Config call on a connected-call path (see Latency #2)."""
+    """Memo (prewarmed) -> Redis agent cache -> one bounded Config Service fetch, memoized."""
     if accounts.agent_known(tenant_slug, agent_slug):
         return
 

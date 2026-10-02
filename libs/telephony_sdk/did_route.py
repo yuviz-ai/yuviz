@@ -1,18 +1,6 @@
-"""
-DID -> tenant/agent resolution, read directly from Redis — mirrors the
-Gateway's own PhoneRoute::from_redis() exactly (gateway/include/telephony),
-same "did:{did}" key shape. This sits on the real-time call path (a real
-inbound call is waiting on this lookup before audio can start), so it
-follows the platform's hot-path rule: Redis only, never Config
-Service/Postgres here — see project memory "architecture_decisions_voiceai"
-and "phase5_coding_rules".
+"""DID -> tenant/agent from Redis "did:{did}" (same key as the Gateway's PhoneRoute).
 
-Moved here from services/vobiz/redis_route.py so Cloudonix reads the same
-cache key the Gateway reads, rather than a second DID reader.
-`resolve_did_route()` distinguishes a miss from a hit, which
-`resolve_did()` cannot — Cloudonix's tenant boundary needs that
-distinction, because a route to a tenant whose slug is literally
-"default" must not be confused with "no route at all".
+Hot call path: Redis only, never Config Service/Postgres.
 """
 
 from __future__ import annotations
@@ -50,12 +38,7 @@ def _get_client() -> redis.Redis:
 
 
 async def resolve_did_route(did: str) -> tuple[str, str] | None:
-    """Returns (tenant_slug, agent_slug), or None for every non-hit — miss,
-    malformed JSON, timeout, unreachable. `asyncio.wait_for` is a hard
-    ceiling independent of redis-py's own retry/health-check internals.
-    `redis.TimeoutError` is a `RedisError` subclass, so slow and
-    unreachable collapse into the same branch by construction — the
-    caller cannot tell them apart, only the log does."""
+    """(tenant_slug, agent_slug), or None for any non-hit (miss, malformed, timeout, down)."""
     try:
         raw = await asyncio.wait_for(_get_client().get(f"did:{did}"), _timeout_s())
     except (redis.RedisError, asyncio.TimeoutError):
@@ -75,11 +58,5 @@ async def resolve_did_route(did: str) -> tuple[str, str] | None:
 
 
 async def resolve_did(did: str) -> tuple[str, str]:
-    """Returns (tenant_slug, agent_slug). An unrecognized DID (never
-    provisioned, or Redis unreachable) resolves to the default tenant/agent
-    — same "never a rejected call" posture as the Gateway, never an
-    exception on the call path. Legacy wrapper with no known production
-    caller left; new callers should use resolve_did_route directly, since
-    this one cannot distinguish a miss from a genuine route to a tenant
-    whose slug is literally "default"."""
+    """Legacy: falls back to default tenant/agent. Prefer resolve_did_route (distinguishes misses)."""
     return await resolve_did_route(did) or (DEFAULT_TENANT, DEFAULT_AGENT)

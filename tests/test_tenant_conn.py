@@ -1,10 +1,5 @@
-"""tests/test_tenant_conn.py — libs/tenancy/session.py (T9/T10).
-
-Precedence tests need no database at all. The pool-reuse-leak,
-fail-closed and conflict tests exercise `tenant_conn`/`platform_conn`
-against a real Postgres (same convention as services/*/tests/conftest.py),
-because the property under test — SET LOCAL reverting at transaction end
-on a REUSED pooled connection — cannot be faked with a mock.
+"""libs/tenancy/session.py: scope precedence, and tenant_conn/platform_conn on real
+Postgres (SET LOCAL reverting on a reused pooled connection can't be mocked).
 """
 from __future__ import annotations
 
@@ -98,8 +93,7 @@ async def tenant_row(superuser_conn):
 
 @pytest.fixture
 async def pool():
-    # min_size=1 forces the same physical connection to be handed back
-    # across acquire()s, which is exactly what the leak test needs to prove.
+    # Single connection, so the leak test reuses the same physical connection.
     p = await asyncpg.create_pool(POSTGRES_DSN, min_size=1, max_size=1)
     try:
         yield p
@@ -113,9 +107,7 @@ async def test_pool_reuse_does_not_leak_guc_between_requests(pool, tenant_row):
         value = await conn.fetchval("SELECT current_setting('app.tenant_id', true)")
         assert value == str(tenant_row["id"])
 
-    # A second "request" on the same underlying connection (min_size=1,
-    # max_size=1 guarantees reuse) with NO scope set must see no GUC at all —
-    # SET LOCAL reverted when the first transaction ended (AC 8).
+    # Same connection, no scope: SET LOCAL must have reverted.
     _scope.set(TenantScope())
     async with pool.acquire() as conn:
         leaked = await conn.fetchval("SELECT current_setting('app.tenant_id', true)")
@@ -152,13 +144,7 @@ async def test_explicit_tenant_matching_caller_is_allowed(pool, tenant_row):
 
 
 async def test_explicit_tenant_accepts_a_raw_uuid_object_not_just_a_string(pool, tenant_row):
-    # Regression: asyncpg returns UUID-typed columns as uuid.UUID instances
-    # (e.g. row["tenant_id"]), and a caller passing that value straight
-    # through — services/config/users.py's create_user(tenant_id=...) does
-    # exactly this via platform_conn(stamp_tenant=tenant_id) — used to be
-    # silently misrouted into the slug branch and left unresolvable,
-    # because uuid.UUID(existing_uuid_obj) raises AttributeError rather
-    # than round-tripping. _split_tenant must accept the object directly.
+    # asyncpg returns uuid.UUID objects; they must not fall into the slug branch.
     set_caller_tenant(tenant_row["id"])
     async with tenant_conn(pool) as conn:
         value = await conn.fetchval("SELECT current_setting('app.tenant_id', true)")

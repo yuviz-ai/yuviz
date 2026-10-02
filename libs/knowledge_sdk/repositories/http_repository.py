@@ -1,20 +1,6 @@
-"""
-HttpKnowledgeRepository — calls Knowledge Service's internal REST API,
-authenticated as a service account. Mirrors libs/config_sdk's
-HttpConfigRepository exactly: lazy login, one re-authentication on a 401,
-a `transport` testing hook for ASGITransport. Reuses the SAME JWT mechanism
-(services.config.auth) Knowledge Service validates directly — no separate
-auth system, per this phase's explicit "do not introduce libs/auth_sdk yet"
-constraint.
+"""Knowledge Service internal REST client, authenticated as a service account.
 
-JWTs are only ever minted by Config Service's /auth/login (Knowledge
-Service only validates them, via services.config.deps.get_current_user —
-see services/knowledge/app.py) — so login and API calls target two
-different base URLs, unlike HttpConfigRepository where both are the same
-service. The conversation-service@internal.yuviz.ai account already
-bootstrapped for Config SDK is reused here rather than minting a second
-account: the same JWT is valid against any service that shares JWT_SECRET,
-regardless of which service's users table it names.
+JWTs are minted only by Config Service, so login and API calls use different base URLs.
 """
 
 from __future__ import annotations
@@ -44,9 +30,7 @@ class HttpKnowledgeRepository:
         self._email = service_email
         self._password = service_password
         self._client = httpx.AsyncClient(base_url=self._base_url, timeout=5.0, transport=transport)
-        # A second client for auth_base_url (Config Service) — only /auth/login
-        # is ever called on it; auth_transport defaults to `transport` when
-        # both services are the same ASGI app under test.
+        # Config Service client, used only for /auth/login.
         self._auth_client = httpx.AsyncClient(
             base_url=auth_base_url.rstrip("/"), timeout=5.0,
             transport=auth_transport if auth_transport is not None else transport,
@@ -107,10 +91,7 @@ class HttpKnowledgeRepository:
         query: str,
         policy: RetrievalPolicy,
     ) -> dict[str, Any] | None:
-        # Every field is sent, including None ones — None means "no
-        # per-call override", not "field omitted". Knowledge Service's
-        # RetrieveRequest schema and _resolve_policy() treat None the same
-        # way at every tier of the override chain.
+        # None fields are sent explicitly: None means "no per-call override".
         resp = await self._request(
             "POST",
             "/internal/retrieve",

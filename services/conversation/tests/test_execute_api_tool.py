@@ -1,17 +1,5 @@
-"""
-execute_api — Conversation-side integration tests (T20-T23):
-  - ToolRegistry tripwire (AC 1): any future registry addition must be
-    consciously accounted for.
-  - ToolPolicyResolver._specialize_execute_api / enabled_tools() against a
-    fake asyncpg pool (a recording connection, so AC 9's "no second query"
-    claim can actually fail if the query becomes unconditional).
-  - ApiExecExecutor's chain_status -> ToolStatus mapping, including
-    partial -> FAILED/payload["partial"]=True, and the barge-in case
-    driven through the real ToolCallOrchestrator + ExecutorRegistry.
-  - Logging redaction (finding 8) against the real build_default_chain, not
-    a hand-built middleware — so the test fails if redact_arg_keys is never
-    passed at orchestrator.py's call site.
-"""
+"""execute_api integration: registry tripwire, policy specialization, ApiExecExecutor status
+mapping, and logging redaction through the real orchestrator."""
 
 from __future__ import annotations
 
@@ -35,11 +23,7 @@ from services.conversation.tools.types import ToolExecutionContext, ToolExecutio
 
 
 def test_registry_tripwire_every_tool_name_is_accounted_for():
-    # The agent has exactly two tools, and only this one is DB-gated;
-    # search_knowledge is local (see registry.py). A new name appearing
-    # here means someone added a first-class tool per capability again —
-    # which is the shape this design deliberately left behind. A new
-    # capability belongs in custom_apis, routed by its description.
+    # Only execute_api is DB-gated; new capabilities belong in custom_apis, not new tools.
     names = {d.name for d in ToolRegistry().all()}
     assert names == {"execute_api"}
 
@@ -57,10 +41,7 @@ class _FakeConn:
         return self._results.pop(0)
 
     async def fetchrow(self, query: str, *args):
-        # tenant_conn()'s own one-statement GUC resolver (libs/tenancy) —
-        # a truthy row is all _resolve_scope_on needs to not raise
-        # TenantUnresolved; these tests are about enabled_tools()'s own
-        # query shape, not the resolver's SQL.
+        # A truthy row satisfies tenant_conn()'s GUC resolver; its SQL isn't under test.
         return {"set_config": None}
 
     def transaction(self) -> "_NoopTransaction":
@@ -103,9 +84,7 @@ def _atp_row(tool_name: str, tool_provider_config_id: str = "cfg1", max_chain_de
 
 
 def _api_row(name: str, param_name=None, param_sensitive=False, is_intermediate=False) -> dict:
-    """One row of the specialization query. is_intermediate marks an API
-    that is some OTHER enabled API's upstream — the chain runs it
-    automatically, so it must never be offered to the model."""
+    """One specialization-query row; is_intermediate = another API's upstream, never offered to the model."""
     return {
         "id": name, "name": name, "description": f"{name} description",
         "is_intermediate": is_intermediate,
@@ -182,13 +161,6 @@ async def test_no_sensitive_params_means_empty_sensitive_arg_keys():
 
 
 # ── Which APIs the model is allowed to pick, and what it is told they take ──
-#
-# Both regressions below came from one live symptom: the agent kept
-# calling the wrong API. The flat per-API query offered every enabled API
-# including pure chain steps, and documented a terminal API's caller
-# inputs as empty because those inputs belong to its upstream leaf. The
-# model was then picking the only name that advertised somewhere to put
-# what the caller had just said — correctly, given what it was shown.
 
 
 async def test_an_api_that_is_another_apis_upstream_is_never_offered():
@@ -212,10 +184,7 @@ async def test_an_api_that_is_another_apis_upstream_is_never_offered():
 
 
 async def test_a_terminal_apis_caller_params_come_from_its_whole_chain():
-    # get_product_details declares no caller param of its own — `q` lives
-    # on search_products, the leaf it depends on. The model must still be
-    # told get_product_details takes `q`, or it has nowhere to put the
-    # product the caller named.
+    # `q` lives on upstream leaf search_products; get_product_details must still advertise it.
     conn = _FakeConn([
         [_atp_row("execute_api")],
         [
@@ -249,9 +218,7 @@ async def test_a_param_reached_twice_through_a_diamond_is_documented_once():
 
 
 async def test_all_apis_intermediate_falls_back_to_offering_them_all():
-    # Only reachable through a cycle in the data. An empty enum would be
-    # strictly worse than an imperfect one — resolve_order() still refuses
-    # the cycle downstream, with a real error the model can report.
+    # Only reachable via a data cycle; an imperfect enum beats an empty one (resolve_order() rejects the cycle).
     conn = _FakeConn([
         [_atp_row("execute_api")],
         [
@@ -355,11 +322,7 @@ async def test_chain_status_mapping_table():
 
 
 async def test_invalid_argument_forwards_missing_fields_into_the_payload():
-    """QA defect 9, end to end from the executor response through to what
-    the conversation side receives: a caller who asks for a refund
-    without an order id must get back the name of the field that's
-    missing, not an empty payload — that is the one question the LLM
-    needs to ask to complete the task."""
+    """missing_fields from the executor response reaches the conversation-side payload."""
     client = _FakeToolExecClient({
         "chain_status": "invalid_argument", "data": {}, "error": "missing_fields",
         "missing_fields": [{"name": "order_id", "description": ""}],
@@ -424,9 +387,7 @@ async def test_context_max_chain_depth_override_reaches_the_body():
 
 
 async def test_context_max_chain_depth_cannot_exceed_platform_ceiling():
-    """Defense in depth: even if something upstream ever let an override
-    above the platform ceiling through, this executor still clamps it —
-    it never just forwards the context value verbatim."""
+    """The executor clamps a context max_chain_depth above the platform ceiling."""
     client = _FakeToolExecClient({"chain_status": "success", "data": {}})
     executor = ApiExecExecutor(client)
     request = ToolExecutionRequest(
@@ -455,11 +416,7 @@ def _policy(sensitive_arg_keys: frozenset[str] = frozenset(), max_chain_depth: i
 
 
 async def test_orchestrator_threads_policy_max_chain_depth_into_the_request():
-    """Drives the real ToolCallOrchestrator (not a hand-built
-    ToolExecutionContext) so this fails if orchestrator.py's
-    ToolExecutionContext(...) call site ever drops max_chain_depth=
-    policy.max_chain_depth — the only place that holds both the resolved
-    policy and the context it builds."""
+    """The real orchestrator threads policy.max_chain_depth into ToolExecutionContext."""
     from services.conversation.tools.llm_adapter import TokenEvent
 
     client = _FakeToolExecClient({"chain_status": "success", "data": {}})
@@ -605,10 +562,7 @@ async def test_empty_redact_arg_keys_default_logs_byte_identical_to_today(caplog
 
 
 async def test_orchestrator_wires_policy_sensitive_arg_keys_into_the_real_logging_middleware(caplog):
-    """Drives the real ToolCallOrchestrator (not build_default_chain called
-    directly) so this fails if redact_arg_keys is never passed at
-    orchestrator.py's build_default_chain call site — the only place that
-    holds both the resolved policy and the chain."""
+    """The real orchestrator passes policy sensitive_arg_keys as redact_arg_keys to build_default_chain."""
     client = _FakeToolExecClient({"chain_status": "success", "data": {}})
     registry = ExecutorRegistry()
     registry.register(
@@ -651,13 +605,8 @@ async def _pg_pool():
 
 
 async def test_specialize_execute_api_is_tenant_fenced_against_a_cross_tenant_agent_custom_apis_row():
-    """agent_custom_apis carries no tenant_id of its own — the tenant fence
-    is the a.tenant_id = ca.tenant_id join predicate in
-    _specialize_execute_api's own query. Simulates a row that should never
-    exist (the write-time gate in services/toolexec/agent_apis.py is
-    supposed to prevent it) to prove this READ path is a genuine second
-    line of defense, independent of that gate — not merely untestable
-    because the write path already excludes the scenario (lesson 12)."""
+    """The a.tenant_id = ca.tenant_id join in _specialize_execute_api fences out a cross-tenant
+    agent_custom_apis row, independent of the write-time gate."""
     pool = await _pg_pool()
     try:
         tenant_a = await pool.fetchrow(
@@ -678,18 +627,13 @@ async def test_specialize_execute_api_is_tenant_fenced_against_a_cross_tenant_ag
             "VALUES ($1, 'lookup_order', 'desc', 'https://example.com/x', 'GET') RETURNING *",
             tenant_b["id"],
         )
-        # A row that should never exist: agent A's id paired with tenant B's
-        # custom_api_id (agent_custom_apis has no tenant_id column to stop it
-        # at the schema level — the write-time gate is the only other guard,
-        # and this test exists precisely to not rely on it).
+        # A row that should never exist: agent A paired with tenant B's custom_api_id.
         await pool.execute(
             "INSERT INTO agent_custom_apis (agent_id, custom_api_id, enabled) VALUES ($1, $2, true)",
             agent_a["id"], custom_api_b["id"],
         )
 
-        # Calls _specialize_execute_api directly (not through enabled_tools()
-        # / agent_tool_policies) — this test is about the read-path tenant
-        # fence itself, independent of whether execute_api is even enabled.
+        # Called directly: the read-path fence is under test, not whether execute_api is enabled.
         resolver = ToolPolicyResolver(pool=pool, registry=ToolRegistry())
         specialized = await resolver._specialize_execute_api(
             ToolRegistry().resolve("execute_api"), str(agent_a["id"]), tenant_a["slug"],
@@ -724,11 +668,7 @@ def _app_dsn() -> str:
 
 
 async def test_enabled_tools_is_tenant_conn_scoped_and_cannot_read_another_tenants_row():
-    """enabled_tools()'s own connection is scoped via tenant_conn(explicit_
-    tenant=tenant_slug) (T53), which runs as yuviz_app — RLS itself, not
-    merely a SQL predicate, must keep tenant A's agent_tool_policies row
-    invisible to a call scoped to tenant B's slug, even for the same
-    agent_id."""
+    """RLS via tenant_conn hides tenant A's agent_tool_policies row from a tenant-B-scoped call."""
     setup_pool = await _pg_pool()
     app_pool = None
     try:
@@ -773,10 +713,7 @@ async def test_enabled_tools_is_tenant_conn_scoped_and_cannot_read_another_tenan
 
 
 async def test_enabled_tools_raises_tenant_unresolved_for_an_empty_slug():
-    """The legacy YAML fallback path (agent_config.py's to_runtime_config())
-    can hand enabled_tools an empty tenant_slug when Tenant.slug itself is
-    somehow empty — this must fail loudly via TenantUnresolved rather than
-    silently resolving zero tools under an unscoped connection."""
+    """An empty tenant_slug raises TenantUnresolved instead of resolving under an unscoped connection."""
     from libs.tenancy import TenantUnresolved
 
     pool = await _pg_pool()

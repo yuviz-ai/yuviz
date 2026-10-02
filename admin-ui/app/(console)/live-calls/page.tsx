@@ -16,9 +16,7 @@ import {
 import { ACTIVE_TENANT_STORAGE_KEY } from "@/components/AppShell";
 import { ACTIVE_TENANT_EVENT, useActiveTenant } from "@/lib/useActiveTenant";
 
-// AC5's whole poll budget — never slacken this for testing (lesson 25); the
-// pool acquire timeout and rate limit on the server are sized to exactly
-// this cadence.
+// Server pool timeout and rate limit are sized to this cadence; don't change it.
 const REFRESH_MS = 5000;
 
 function formatElapsed(ms: number): string {
@@ -44,12 +42,7 @@ function csvEscape(value: string): string {
   return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 }
 
-// Builds the CSV from the exact rendered `items` array passed in — no
-// re-query (AC8). Column order matches the on-screen table exactly.
-// Exactly the 8 informational columns rendered in the on-screen table (the
-// trailing Listen/Barge column is actions, not data, so it has no CSV
-// counterpart) — row/column count must match the on-screen table exactly
-// (AC8), not a re-derived/re-queried projection.
+// Mirrors the rendered table's rows and data columns exactly (no re-query; actions column omitted).
 function buildCsv(items: LiveCall[]): string {
   const header = ["Agent", "Direction", "From", "To", "Stage", "Elapsed", "Transcript", "Intervention"];
   const rows = items.map((item) => [
@@ -77,16 +70,8 @@ function downloadCsv(csv: string): void {
 
 export default function LiveCallsPage() {
   const [user, setUser] = useState<User | null>(null);
-  // Reads the SAME selection the header switcher writes — a superadmin who
-  // switches tenants anywhere in the console now sees this page follow,
-  // instead of the two staying independently out of sync (T22b/T23's
-  // original picker was seeded from localStorage once on mount but never
-  // listened for the header's own change event).
   const { allTenants, isPlatformScoped, tenant: headerTenant, isAllTenants: headerIsAllTenants } = useActiveTenant();
-  // Live monitoring has no aggregate-across-tenants view server-side (the
-  // backend snapshot is always exactly one tenant's live call floor) — "All
-  // tenants" in the header means "nothing resolved yet" here, same as no
-  // selection at all, and the picker below stays up until one is chosen.
+  // The backend snapshot is always one tenant; "All tenants" means no selection yet.
   const activeTenantSlug = isPlatformScoped ? (headerIsAllTenants ? null : headerTenant?.slug ?? null) : null;
 
   const [snapshot, setSnapshot] = useState<LiveCallsSnapshot | null>(null);
@@ -101,22 +86,17 @@ export default function LiveCallsPage() {
     getCurrentUser().then(setUser).catch(() => {});
   }, []);
 
-  // Writes through to the exact same key + event AppShell's own switcher
-  // uses, so picking a tenant from this page's picker updates the header
-  // too, not just this page's own (now-derived) selection.
+  // Same key + event as AppShell's switcher, so the header follows this picker.
   const selectTenant = (t: Tenant) => {
     try {
       window.localStorage.setItem(ACTIVE_TENANT_STORAGE_KEY, t.slug);
     } catch {
-      // Private-mode/blocked storage — the selection just won't survive a
-      // reload; strictly worse, not a crash.
+      // Blocked storage: selection just won't survive a reload.
     }
     window.dispatchEvent(new CustomEvent(ACTIVE_TENANT_EVENT, { detail: t.slug }));
   };
 
-  // superadmin with nothing selected yet: no fetch, no interval — the
-  // picker renders instead of a table (AC2). Every other role is always
-  // "ready" the instant we know it isn't superadmin.
+  // Superadmin with no tenant selected gets the picker instead of polling.
   const tenantResolved = user != null && (user.role !== "superadmin" || !!activeTenantSlug);
 
   const fetchSnapshot = useCallback(
@@ -129,13 +109,11 @@ export default function LiveCallsPage() {
       } catch (e) {
         if (gen !== generationRef.current) return;
         if (e instanceof ApiError && e.status === 403) {
-          // Demoted/soft-deleted mid-session — stop polling outright
-          // rather than retrying into the same 403 every 5s.
+          // Demoted/deleted mid-session: stop polling instead of retrying into 403s.
           setForbidden(e.detail);
           return;
         }
-        // Any other failure keeps the last good snapshot on screen
-        // (lesson 21's sibling failure mode) — only the banner appears.
+        // Keep the last good snapshot on screen; only show the banner.
         setError(e instanceof ApiError ? e.detail : String(e));
       }
     },
@@ -151,9 +129,7 @@ export default function LiveCallsPage() {
     }, REFRESH_MS);
     return () => {
       clearInterval(id);
-      // Invalidates anything still in flight from THIS effect run — the
-      // one guard that makes pause/tenant-switch/unmount all safe against
-      // a late-arriving response overwriting a frozen or superseded table.
+      // Drop late responses after pause/tenant switch/unmount.
       generationRef.current += 1;
     };
   }, [tenantResolved, paused, forbidden, fetchSnapshot]);
@@ -161,17 +137,13 @@ export default function LiveCallsPage() {
   const resume = () => {
     setForbidden(null);
     setPaused(false);
-    // The effect above fires an immediate fetch as soon as `paused` flips —
-    // AC7's "no stale pre-pause paint" without a second, redundant call here.
   };
 
   const handleIntervention = async (sessionId: string, action: InterventionAction) => {
     setInterveningId(sessionId);
     try {
       await requestIntervention(sessionId, action, user?.role === "superadmin" ? activeTenantSlug ?? undefined : undefined);
-      // No optimistic state change — the next poll (within one 5s cycle,
-      // AC14) surfaces the intervention badge for every operator, this one
-      // included, from the server's own record.
+      // No optimistic update; the next poll shows the server's intervention badge.
     } catch (e) {
       setError(e instanceof ApiError ? e.detail : String(e));
     } finally {

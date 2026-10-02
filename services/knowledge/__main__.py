@@ -1,7 +1,5 @@
 """
-Ingestion worker — separate process from the Knowledge Service API (see
-app.py, which is served via uvicorn instead). Runs ingestion_worker.
-run_loop() forever, picking up pending kb_ingestion_jobs.
+Ingestion worker process (separate from the API); polls pending kb_ingestion_jobs forever.
 
 Run: python3 -m services.knowledge --log-level INFO
 """

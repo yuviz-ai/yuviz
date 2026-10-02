@@ -1,15 +1,5 @@
-"""
-agent_knowledge_bases CRUD — the one write path responsible for keeping
-libs.knowledge_sdk.RedisKnowledgeRepository's agent_kb:{tenant_slug}:
-{agent_slug} flag correct (one writer per key, write-through, no TTL — same
-principle as Config Service's phone_numbers.py DID cache). Every mutation
-here recomputes and rewrites that flag in the same call, so a Conversation
-Service instance never has to wait out a TTL to see a KB attach/detach/
-enable/disable take effect.
-
-Every connection is opened through tenant_conn()/platform_conn() (RLS
-design, libs/tenancy) rather than a bare pool call.
-"""
+"""agent_knowledge_bases CRUD — sole writer of the agent_kb:{tenant}:{agent} Redis flag.
+Every mutation rewrites the flag (write-through, no TTL)."""
 
 from __future__ import annotations
 
@@ -21,10 +11,7 @@ from . import cache, db
 
 
 async def get_agent_tenant_id(agent_id: Any, *, platform_scoped: bool = False) -> str | None:
-    """Resolves the tenant an agent_id belongs to — the authorization check
-    for update_assignment/detach_knowledge_base, whose by-id routes are
-    keyed on agent_id rather than on a row of their own (the junction table
-    carries no tenant column of its own)."""
+    """Tenant of agent_id, for authorizing junction-table routes (which have no tenant column)."""
     pool = await db.get_pool()
     conn_cm = platform_conn(pool, reason="agent-kb-by-id") if platform_scoped else tenant_conn(pool)
     async with conn_cm as conn:
@@ -76,9 +63,7 @@ async def list_for_agent(agent_id: Any) -> list[dict[str, Any]]:
 
 
 async def list_for_kb(kb_id: Any, *, platform_scoped: bool = False) -> list[dict[str, Any]]:
-    """Called from routers/knowledge_bases.py's GET /knowledge-bases/{kb_id}/agents
-    — a flat by-id route (Tier 3), so it takes platform_scoped like the kb_id
-    fetch that already authorized the caller (deps.is_platform_scoped only)."""
+    """Agents linked to kb_id; platform_scoped must come from deps.is_platform_scoped()."""
     pool = await db.get_pool()
     conn_cm = platform_conn(pool, reason="kb-by-id") if platform_scoped else tenant_conn(pool)
     async with conn_cm as conn:
@@ -132,13 +117,7 @@ async def detach(agent_id: Any, kb_id: Any) -> None:
 
 
 async def has_enabled_kb(tenant_slug: str, agent_slug: str) -> bool:
-    """The HTTP-repository fallback for a Redis miss (see
-    libs.knowledge_sdk.HttpKnowledgeRepository / cache_aside.py) — the one
-    place this check is computed straight from Postgres by (tenant_slug,
-    agent_slug) rather than by agent_id, since that's the shape the SDK
-    caller (Conversation Service) actually has on hand. Its router
-    (routers/retrieve.py) sets the target tenant to this same slug before
-    calling in, so the ambient tenant_conn() here resolves correctly."""
+    """Postgres fallback for a Redis miss, by slugs; the router sets the target tenant first."""
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         row = await conn.fetchrow(

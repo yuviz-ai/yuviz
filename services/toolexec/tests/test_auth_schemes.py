@@ -1,11 +1,6 @@
-"""
-Namespace-containment tests for services/toolexec/auth_schemes.py (T4,
-finding 1 — a tenant-authored credential ref must not be able to name a
-platform secret). Every rejection case asserts BOTH the error string and
-that the underlying resolver was never invoked: `_tenant_secret_resolver`
-is monkeypatched to fail the test outright if `resolve()` is ever called,
-so a regression that lets a bad ref through fails loudly here rather than
-merely returning the wrong value.
+"""Tenant credential refs must not name platform or other-tenant secrets.
+
+Rejection cases also assert the underlying resolver is never invoked.
 """
 
 from __future__ import annotations
@@ -25,9 +20,7 @@ OTHER_TENANT_HEX = uuid.UUID(OTHER_TENANT_ID).hex.upper()
 
 @pytest.fixture
 def resolver_must_not_be_called(monkeypatch):
-    """Every rejection test uses this so a validate_tenant_ref bug that lets
-    a bad ref through is caught here — as a loud AssertionError from the
-    resolver itself — rather than by a merely-wrong return value."""
+    """Make any resolver call fail the test loudly."""
 
     async def _fail(ref: str) -> str:
         raise AssertionError(f"resolver.resolve() was called for a ref that should have been rejected: {ref!r}")
@@ -68,26 +61,12 @@ def test_k8s_other_tenants_namespace_rejected(resolver_must_not_be_called):
 
 
 def test_k8s_own_tenant_dotdot_leaf_rejected(resolver_must_not_be_called):
-    """_K8S_REF_RE's leaf class `[A-Za-z0-9._-]+` matches '..' literally (own
-    tenant id, no '/' in the leaf), so the regex alone would ACCEPT
-    'k8s:tenants/<own-tid>/..' — the only thing rejecting it is the
-    .resolve()/relative_to() containment check the module comment calls
-    'belt' to the regex. This is the exact case finding 3 named as untested.
-
-    Verified by mutation: replacing the `target.relative_to(allowed_dir)`
-    containment check with an unconditional `return` (i.e. deleting the
-    'belt') makes this ref resolve to the tenant's own parent directory
-    instead of raising — confirmed locally, then the check was restored.
-    """
+    """The regex accepts a '..' leaf; only the path containment check rejects it."""
     _assert_rejected(f"k8s:tenants/{TENANT_ID}/..")
 
 
 def test_k8s_symlink_escape_rejected(resolver_must_not_be_called, tmp_path):
-    """The regex alone accepts this ref (own tenant, no '/' in the leaf
-    segment) — only the .resolve()/relative_to() containment check catches
-    a symlink planted inside the tenant's own directory that points
-    outside it. This is the case that fails if only the regex is
-    implemented (per the design's test plan note)."""
+    """A symlink in the tenant dir pointing outside is caught by the containment check."""
     root = os.environ["TOOLEXEC_TENANT_SECRET_ROOT"]
     tenant_dir = os.path.join(root, "tenants", TENANT_ID)
     os.makedirs(tenant_dir, exist_ok=True)
@@ -105,11 +84,7 @@ def test_k8s_symlink_escape_rejected(resolver_must_not_be_called, tmp_path):
 
 
 def test_env_ref_accepted_when_tenant_id_is_asyncpg_uuid_object():
-    """Defect 4: update_custom_api passes tenant_id straight off the DB row
-    — an asyncpg.pgproto.pgproto.UUID object, not the str every other
-    caller has (a JSON body field). uuid.UUID() rejects a UUID instance
-    outright ('object has no attribute replace'), so PATCH always 500'd
-    for an env:/k8s: ref. Must behave identically to the str form."""
+    """An asyncpg UUID tenant_id (from a DB row) behaves like the str form."""
     from asyncpg.pgproto.pgproto import UUID as AsyncpgUUID
 
     tenant_id_obj = AsyncpgUUID(TENANT_ID)
@@ -151,21 +126,7 @@ async def test_enc_ref_resolves():
 )
 @pytest.mark.asyncio
 async def test_resolve_tenant_ref_reexamines_namespace_at_resolution(monkeypatch, ref, tenant_id):
-    """Drives resolve_tenant_ref() itself (not validate_tenant_ref directly),
-    with the underlying resolver monkeypatched to return a sentinel rather
-    than raise/fail-loud. This is the case finding 1 identified as missing:
-    every other rejection test in this file calls validate_tenant_ref
-    directly, so deleting the `validate_tenant_ref(tenant_id, ref)` line
-    inside resolve_tenant_ref (auth_schemes.py) left all prior tests
-    green. Here, that deletion makes the sentinel come back as the
-    'resolved' value instead of the call raising — so this test fails
-    under that mutation.
-
-    Verified by mutation: commenting out the `validate_tenant_ref(tenant_id,
-    ref)` call in `resolve_tenant_ref` turns this from a raised ValueError
-    into a return of "SENTINEL-SHOULD-NEVER-BE-RETURNED" — confirmed
-    locally, then the line was restored.
-    """
+    """resolve_tenant_ref() itself re-validates the namespace before resolving."""
 
     async def _sentinel(_ref: str) -> str:
         return "SENTINEL-SHOULD-NEVER-BE-RETURNED"
@@ -178,12 +139,7 @@ async def test_resolve_tenant_ref_reexamines_namespace_at_resolution(monkeypatch
 
 @pytest.mark.asyncio
 async def test_apply_never_puts_the_ref_in_its_own_error_message():
-    """Unit-level proof of apply()'s own docstring claim, independent of
-    whatever executor.py does with the exception it catches (executor.py
-    discards apply()'s message entirely and substitutes a fixed
-    'credential_unavailable' string, which would mask a leak here too —
-    so this has to be checked directly against apply(), not only
-    end-to-end)."""
+    """apply()'s own error never contains the ref (the executor would mask a leak)."""
     tenant_id = str(uuid.uuid4())
     missing_ref = f"env:TENANT_{uuid.UUID(tenant_id).hex.upper()}_NEVER_SET_TOKEN"
     api = {"auth_scheme": "bearer", "auth_config": {"token_ref": missing_ref},
@@ -198,13 +154,7 @@ async def test_apply_never_puts_the_ref_in_its_own_error_message():
 
 @pytest.mark.asyncio
 async def test_k8s_ref_resolves_a_real_file_planted_in_the_tenant_namespace():
-    """QA 'Not covered': only the k8s: rejection paths were driven; no
-    secret file was ever planted, so a successful tenant-namespaced read
-    was unverified. Plants a real file under TOOLEXEC_TENANT_SECRET_ROOT
-    and drives resolve_tenant_ref end to end (validate + the real
-    K8sFileResolver), asserting the file's actual contents come back —
-    fails if the resolver is pointed at the wrong root or the ref
-    resolution logic is broken, not merely if validation is."""
+    """A planted tenant secret file resolves end to end to its contents."""
     tenant_id = str(uuid.uuid4())
     root = os.environ["TOOLEXEC_TENANT_SECRET_ROOT"]
     tenant_dir = os.path.join(root, "tenants", tenant_id)
@@ -219,18 +169,7 @@ async def test_k8s_ref_resolves_a_real_file_planted_in_the_tenant_namespace():
 
 @pytest.mark.asyncio
 async def test_oauth2_token_cached_and_refreshed_60s_before_deployed_expiry(monkeypatch):
-    """Design test plan: 'OAuth2 fetches once, reuses within expiry,
-    re-fetches after' plus the 60s early-refresh margin
-    (auth_schemes.py's `now < cached[1] - 60`) — neither was exercised by
-    any test (QA 'Not covered': no OAuth2 token endpoint was available).
-    Fakes only the token endpoint transport (httpx.AsyncClient), driving
-    the real cache dict and the real time-comparison logic; the clock is
-    advanced by monkeypatching auth_schemes.time.time, never by lowering
-    the 60s constant (lesson 25 — the constant IS the thing under test).
-
-    Mutation proof: removing the `- 60` margin (i.e. only refreshing once
-    now >= cached[1]) makes the third call at exactly expires_at-60 reuse
-    the cached token and calls['n'] stays at 1 — this assertion fails."""
+    """OAuth2 token is cached, then refetched 60s before expiry (clock mocked, constant untouched)."""
     tenant_id = str(uuid.uuid4())
     tenant_hex = uuid.UUID(tenant_id).hex.upper()
     os.environ[f"TENANT_{tenant_hex}_OAUTH_CID"] = "client-id"
@@ -272,16 +211,13 @@ async def test_oauth2_token_cached_and_refreshed_60s_before_deployed_expiry(monk
     token1 = await auth_schemes._oauth2_client_credentials_token(tenant_id, "api-x", config)
     assert calls["n"] == 1
 
-    # Still well inside expiry, and inside the fetch's own 60s margin from
-    # now — must be served from cache with NO new call.
+    # Well inside expiry: served from cache.
     monkeypatch.setattr(auth_schemes.time, "time", lambda: t0 + 10)
     token2 = await auth_schemes._oauth2_client_credentials_token(tenant_id, "api-x", config)
     assert token2 == token1
     assert calls["n"] == 1
 
-    # Exactly expires_at - 60: the deployed early-refresh margin must
-    # already have kicked in, even though the token has not technically
-    # expired yet.
+    # Exactly expires_at - 60: early refresh kicks in.
     monkeypatch.setattr(auth_schemes.time, "time", lambda: t0 + 100 - 60)
     token3 = await auth_schemes._oauth2_client_credentials_token(tenant_id, "api-x", config)
     assert token3 != token1

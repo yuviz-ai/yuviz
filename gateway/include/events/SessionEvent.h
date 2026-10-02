@@ -1,9 +1,6 @@
 #pragma once
 
-// Gateway-side event vocabulary.
-//
-// Rule: raw PCM never goes on the EventBus — it stays on the SPSC RingBuffer hot path.
-// Events carry only metadata (durations, energy levels, state names).
+// Gateway-side event vocabulary. Events carry metadata only, never raw PCM.
 
 #include "observability/ObservabilityContext.h"
 #include "session/CallFSM.h"
@@ -124,7 +121,6 @@ using SessionEvent = std::variant<
     TransportErrorEvent
 >;
 
-// Extract the header from any event without knowing its concrete type.
 inline const EventHeader& event_header(const SessionEvent& ev) {
     return std::visit([](const auto& e) -> const EventHeader& { return e.hdr; }, ev);
 }

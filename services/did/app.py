@@ -1,13 +1,4 @@
-"""
-DID Service — FastAPI app. Thin HTTP wrapper around purchased_numbers.py/
-provider_manager.py, same "routers translate, business logic lives in the
-modules" convention as services/config/app.py and services/knowledge/app.py.
-
-Auth: imports services.config.auth/deps directly (JWT decode/CurrentUser/
-require_role), same explicit temporary choice services/knowledge/app.py
-already made — see that module's docstring. Must share the same
-JWT_SECRET env var as Config Service for a token minted by
-POST /auth/login to validate here.
+"""DID Service — FastAPI app. Auth reuses services.config deps; JWT_SECRET must match Config Service.
 
 Run: uvicorn services.did.app:app --reload --port 8200
 """
@@ -30,8 +21,7 @@ log = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Connect eagerly so a broken POSTGRES_DSN fails at startup, not on the
-    # first request — same reasoning as services/config/app.py's lifespan.
+    # Fail at startup on a broken POSTGRES_DSN, not on the first request.
     await db.get_pool()
     yield
     await db.close_pool()
@@ -39,8 +29,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Voice AI Platform — DID Service", lifespan=lifespan)
 
-# Admin UI is the only browser client — same narrow local-dev origin list
-# as Config Service's/Knowledge Service's app.py.
+# Admin UI is the only browser client.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],

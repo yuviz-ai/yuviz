@@ -1,17 +1,8 @@
 """
-AnthropicLLM — streaming text generation via Anthropic's Messages API.
+AnthropicLLM — streaming text generation via Anthropic's Messages API (SSE).
 
-SSE over POST /v1/messages: every "data: " line carries a "type"
-(content_block_start/_delta/_stop, message_stop, ping, error) rather than
-OpenAI's choices[].delta or Gemini's candidates[].parts.
-
-Four shapes this bridges: system is a top-level field; max_tokens is
-required; there is no "tool" role (a result is a tool_result block on a
-user turn, as in Gemini); tool arguments stream in as input_json_delta
-fragments to concatenate by block index.
-
-Raw httpx rather than the `anthropic` SDK, matching every other provider
-here — requirements.txt is an exact pin-freeze verified from scratch.
+Quirks: top-level system field; max_tokens required; no "tool" role (results are
+tool_result blocks on a user turn); tool args stream as fragments keyed by block index.
 """
 
 from __future__ import annotations
@@ -31,14 +22,8 @@ log = logging.getLogger(__name__)
 _DEFAULT_BASE_URL = "https://api.anthropic.com"
 _API_VERSION = "2023-06-01"
 
-# Claude 4.7-and-later removed the sampling parameters: sending temperature
-# to one of these is a 400, not a warning (haiku-4-5 and the 4.6 family
-# still accept it). The same generation also runs adaptive thinking when
-# `thinking` is omitted, which on a voice turn spends the token budget
-# reasoning instead of speaking. effort=low is the documented lever for
-# that, and unlike thinking={"type": "disabled"} it is accepted across the
-# whole family (Fable rejects "disabled" outright) and doesn't risk the
-# tool-call-leaks-into-visible-text failure mode that disabling it has.
+# These models 400 on `temperature` and think adaptively by default;
+# effort=low curbs thinking and, unlike thinking=disabled, is accepted by all of them.
 _EFFORT_MODELS = (
     "claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-mythos-5",
     "claude-opus-4-8", "claude-opus-4-7",
@@ -46,17 +31,9 @@ _EFFORT_MODELS = (
 
 
 class AnthropicLLM:
-    """
-    ILLM implementation backed by Anthropic's Messages endpoint.
+    """ILLM backed by Anthropic's Messages endpoint.
 
-    api_key    — resolved once at construction by AIProviderManager.
-    model      — "claude-haiku-4-5" (cheap default: a turn here is a
-                 sentence or two), "claude-sonnet-5", "claude-opus-5"
-    system     — used only when the caller hasn't injected one, same
-                 precedent as OllamaLLM.generate().
-    max_tokens — required by the API; a ceiling on a runaway generation,
-                 never a target. Thinking tokens draw from the same budget
-                 on the models that think, hence the headroom.
+    max_tokens is a runaway ceiling; thinking tokens share it, hence the headroom.
     """
 
     def __init__(
@@ -83,10 +60,7 @@ class AnthropicLLM:
         log.info("AnthropicLLM model=%s", model)
 
     def _shape_messages(self, messages: list[ChatMessage]) -> tuple[str | None, list[dict[str, Any]]]:
-        """build_chat_messages() still owns the system-prompt precedence
-        decision; this only re-shapes its output for Anthropic's wire
-        format. Note tool_use "input" is a real object — OpenAI wants that
-        same JSON as a string."""
+        """Re-shape build_chat_messages() output for Anthropic's wire format."""
         shaped = build_chat_messages(self._system, messages)
         system: str | None = None
         out: list[dict[str, Any]] = []
@@ -140,10 +114,7 @@ class AnthropicLLM:
         except json.JSONDecodeError:
             log.warning("AnthropicLLM: malformed JSON line=%r", line)
             return None
-        # An overloaded_error arrives as a 200 SSE line, not an HTTP status.
-        # Raise rather than log-and-continue: swallowing it ends the turn in
-        # silence, while _llm_to_tts already catches and speaks a fallback
-        # line for any exception out of generate() (pipeline.py).
+        # Errors arrive as 200 SSE lines; raise so the pipeline speaks its fallback.
         if data.get("type") == "error":
             raise RuntimeError(f"AnthropicLLM: stream error event={data.get('error')}")
         return data
@@ -165,11 +136,7 @@ class AnthropicLLM:
         self, messages: list[ChatMessage], schemas: list[dict[str, Any]],
         tool_choice: str | dict[str, Any] | None = None,
     ) -> AsyncGenerator[TurnEvent, None]:
-        """IToolAwareLLM companion to generate() — same client/auth. The
-        generic schema's "parameters" becomes "input_schema"; that rename is
-        the only difference from what OpenAI/Gemini are handed.
-
-        tool_choice is translated to Anthropic's {"type": "tool", "name": ...}."""
+        """Tool-aware generate(); schema "parameters" maps to Anthropic's "input_schema"."""
         payload = self._payload(messages)
         payload["tools"] = [
             {
@@ -184,10 +151,7 @@ class AnthropicLLM:
             if forced_name:
                 payload["tool_choice"] = {"type": "tool", "name": forced_name}
 
-        # Keyed by block index: a turn can open several tool_use blocks, and
-        # their argument fragments interleave only by index, never by order.
-        # Fragments accumulate in a list joined once at the end rather than
-        # by repeated `+=`, which reallocates the whole string per fragment.
+        # Keyed by block index: argument fragments of parallel tool_use blocks interleave.
         accumulating: dict[int, dict[str, Any]] = {}
 
         async with self._client.stream("POST", "/v1/messages", json=payload) as resp:

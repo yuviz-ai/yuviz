@@ -1,10 +1,4 @@
-"""
-Postgres connection pool for DID Service — its own process-wide pool, not a
-shared import from services.config.db. Same microservice-boundary
-reasoning as services/knowledge/db.py: both services point at the same
-physical Postgres database (voiceai), but each service owns its own
-connection lifecycle.
-"""
+"""Process-wide Postgres pool for DID Service (own lifecycle, shared database)."""
 
 from __future__ import annotations
 

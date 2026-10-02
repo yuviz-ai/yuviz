@@ -1,6 +1,4 @@
-"""GuardrailDetector: deterministic, inline frustration/abuse phrase
-matching (see guardrails.py) — the detector record_guardrail_violation()
-was built to receive."""
+"""GuardrailDetector: deterministic inline frustration/abuse phrase matching."""
 
 from __future__ import annotations
 
@@ -30,9 +28,7 @@ def test_frustration_repetition_complaint_detected():
 def test_abuse_phrase_detected():
     v = GuardrailDetector.check("This is fucking ridiculous.")
     assert v is not None
-    # Both categories can match the same sentence — either is an
-    # acceptable signal; only the first (categories list order) is
-    # returned, one violation per utterance.
+    # Both categories match; only the first (list order) is returned, one violation per utterance.
     assert v.category in ("abuse", "frustration")
 
 
@@ -61,8 +57,6 @@ def test_one_violation_per_utterance_even_with_multiple_hits():
 
 # ---------------------------------------------------------------------------
 # GuardrailCounter: per-session consecutive count, separate from the engine
-# (see transfer_engine.py's module docstring — the counter answers "what's
-# the current count," the engine answers "given this count, transfer?")
 # ---------------------------------------------------------------------------
 
 from ..guardrails import GuardrailCounter

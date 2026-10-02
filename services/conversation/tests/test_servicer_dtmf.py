@@ -1,7 +1,4 @@
-"""Servicer's `dtmf` case and the out-of-band `asyncio.wait` branch (T12) —
-driven through a real gRPC round-trip so a broken session.out_responses/
-push_dtmf wiring aborts the stream and fails the assertion, rather than
-passing on a mock."""
+"""Servicer `dtmf` handling and out-of-band responses, through a real gRPC round-trip."""
 
 from __future__ import annotations
 
@@ -20,10 +17,7 @@ from ..generated.voiceai.v1 import conversation_pb2_grpc as pb_grpc
 
 
 class _DtmfHandler:
-    """Speaks nothing unless prompted, except on a keypress it's told to
-    react to — pushes a HandlerResponse onto out_responses, exactly the
-    shape CallFlowConversationHandler will use (its driver task is not
-    built yet; this fake stands in for it)."""
+    """Silent except on a configured keypress, which pushes a HandlerResponse onto out_responses."""
 
     def __init__(self) -> None:
         self.out_responses: asyncio.Queue[HandlerResponse] = asyncio.Queue()

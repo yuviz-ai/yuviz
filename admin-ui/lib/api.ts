@@ -1,7 +1,4 @@
-// Typed client for Config Service's REST API (services/config/, port 8000).
-// Field shapes mirror services/config/schemas.py exactly — one place these
-// are defined, matching that file's own "no separate response schema" stance
-// (responses are the plain dicts tenants.py/agents.py/etc. already return).
+// Typed client for Config Service's REST API. Shapes mirror services/config/schemas.py.
 
 import { clearToken, getToken } from "./auth";
 
@@ -41,8 +38,6 @@ export async function request<T>(path: string, options?: RequestInit): Promise<T
       // response body wasn't JSON — fall back to statusText
     }
     if (res.status === 401 && typeof window !== "undefined" && path !== "/auth/login") {
-      // Token missing/expired/invalid — clear it and send the user back to
-      // login rather than leaving every page silently failing its fetches.
       clearToken();
       if (window.location.pathname !== "/login") window.location.href = "/login";
     }
@@ -65,15 +60,12 @@ export interface Tenant {
   no_speech_timeout_ms?: number | null;
   stt_timeout_ms?: number | null;
   llm_timeout_ms?: number | null;
-  // Overrides the gateway's 45s default for how long a transfer waits for
-  // CHANNEL_BRIDGE/CHANNEL_HANGUP before failing. Bounds: 10000-120000.
+  // Overrides the gateway's 45s transfer bridge timeout. Bounds: 10000-120000.
   transfer_timeout_ms: number | null;
   default_stt_config_id: string | null;
   default_llm_config_id: string | null;
   default_tts_config_id: string | null;
-  // Live Calls Monitoring's utilization KPI's only source column — NULL
-  // means "not configured yet" and must never be defaulted client-side any
-  // more than server-side (see live-calls/page.tsx's setup prompt).
+  // NULL = not configured; never default it client-side (drives the utilization KPI).
   max_concurrent_calls: number | null;
   config_version: number;
   created_at: string;
@@ -135,9 +127,7 @@ export interface ProviderConfigCreate {
   api_key_ref?: string;
   /** The credential itself; the server encrypts it into an enc: api_key_ref. */
   api_key?: string;
-  // Engine-specific knobs (jsonb). Known keys: speed (TTS rate multiplier,
-  // 0.7-1.2, default 1.0 — all engines), wpm (macos legacy absolute rate),
-  // model_id/lang_code/temperature/… per engine.
+  // Engine-specific knobs, e.g. speed (TTS rate, 0.7-1.2), wpm (macos), model_id, temperature.
   extra?: Record<string, unknown>;
 }
 
@@ -162,8 +152,7 @@ export interface ProviderConfigUpdate {
   region?: string;
   api_key_ref?: string;
   api_key?: string;
-  // Replaces the whole extra object — spread the existing extra when
-  // changing one key (the PATCH endpoint does not deep-merge).
+  // Replaces the whole object (no deep merge); spread the existing extra to change one key.
   extra?: Record<string, unknown>;
 }
 
@@ -186,15 +175,11 @@ export interface ElevenLabsVoice {
   category: string | null;
   labels: Record<string, string>;
   preview_url: string | null;
-  // May be empty — not every voice has been through ElevenLabs' language
-  // verification. Prefer this over labels.language when present (see
-  // ElevenLabsVoicePicker's voicePrimaryLanguage()).
+  // May be empty; prefer over labels.language when present.
   verified_languages: ElevenLabsVoiceVerifiedLanguage[];
 }
 
-/** Speak `text` in this provider's voice. Returns WAV audio; the API key
- *  stays server-side (services/config/voice_preview.py). Engines that need a
- *  local model (macos, kokoro) return a 400 explaining why. */
+/** Speak `text` in this provider's voice as WAV. Local engines (macos, kokoro) return 400. */
 export const previewVoice = async (providerId: string, text: string): Promise<Blob> => {
   const token = getToken();
   const res = await fetch(`${BASE_URL}/providers/${providerId}/preview`, {
@@ -232,33 +217,22 @@ export interface Agent {
   greeting: string;
   system_prompt: string;
   goodbye_grace_ms: number;
-  // null = derive from the STT/TTS provider's own language setting (see
-  // libs/config_sdk's MediaInfo resolution order) — the behavior before
-  // this field existed.
+  // null = use the STT/TTS provider's language.
   language: string | null;
   stt_config_id: string | null;
   llm_config_id: string | null;
   tts_config_id: string | null;
   transfer_type: "warm" | "cold" | "none";
-  // AI-to-human transfer (see project's transfer architecture phases) —
-  // both "cold" and "warm" are fully implemented and live-verified.
   transfer_destination: string | null;
-  // Accepted and persisted, but not read by any transfer-routing logic yet —
-  // reserved for future queue-based routing.
+  // Persisted but not yet used by transfer routing.
   queue_id: string | null;
-  // Consecutive guardrail violations before auto-escalating. The counting/
-  // threshold mechanism exists (PipelineConversationHandler.
-  // record_guardrail_violation), but no guardrail/content-safety detector
-  // calls it yet — setting this has no effect on live calls until one does.
+  // No guardrail detector reports violations yet, so this has no live effect.
   escalation_threshold: number | null;
-  // What caller ID the human agent sees on a warm transfer's agent leg
-  // (no equivalent for cold transfer). Resolved entirely by the
-  // Conversation Service — the gateway never sees this policy.
+  // Caller ID shown to the human on a warm transfer's agent leg.
   caller_id_policy: "original" | "platform" | "custom";
   platform_did: string | null;      // used when caller_id_policy = "platform"
   custom_caller_id: string | null;  // used when caller_id_policy = "custom"
-  // What the caller experiences while a warm transfer's agent leg rings
-  // (no equivalent for cold transfer).
+  // What the caller hears while a warm transfer's agent leg rings.
   transfer_waiting_experience: "announcement_moh" | "announcement_silence";
   // Published graph on agent GET/cache (call-setup). List responses omit
   // graph bodies and use the lean has_workflow* fields instead.
@@ -267,21 +241,13 @@ export interface Agent {
   has_workflow_draft?: boolean;
   workflow_diverged?: boolean;
   workflow_node_count?: number | null;
-  // Condition-clause overrides for the built-in end-call / transfer trigger
-  // instructions (null/empty = defaults). Only the condition is
-  // configurable — the [[END_CALL]]/[[TRANSFER]] token mechanics are fixed
-  // server-side so a custom prompt can't break directive parsing.
+  // Condition-clause overrides only; the [[END_CALL]]/[[TRANSFER]] tokens stay fixed server-side.
   end_call_prompt: string | null;
   transfer_prompt: string | null;
-  // Exact scripted lines the agent speaks when ending/transferring —
-  // synthesized verbatim (never LLM-paraphrased). null/empty = the LLM
-  // chooses its own wording.
+  // Spoken verbatim when ending/transferring; null = LLM chooses wording.
   farewell_message: string | null;
   transfer_announcement: string | null;
-  // Admin-configured hard ceiling on how long a caller may stay on this
-  // agent, in seconds (30-7200). null = unlimited — the pre-existing
-  // behavior. Enforced by the Conversation Service: once exceeded, the
-  // pipeline skips the LLM, speaks a fixed wrap-up line, and ends the call.
+  // Seconds (30-7200); null = unlimited. On expiry the call is wrapped up and ended.
   max_call_duration_s: number | null;
   /** Which call flow answers ahead of this agent (call_flows.id), or null. */
   call_flow_id: string | null;
@@ -353,11 +319,7 @@ export const generateSystemPrompt = (tenantSlug: string, body: SystemPromptGener
     body: JSON.stringify(body),
   });
 
-// There's no "list agents across all tenants" endpoint on Config Service —
-// agents are always tenant-scoped there (see routers/agents.py). Composing
-// listAgents() per tenant client-side avoids adding new backend surface for
-// what's purely an Admin UI convenience (an aggregate view + a Tenant
-// column), matching "prefer extending existing abstractions."
+// No cross-tenant agents endpoint exists; fan out listAgents() per tenant.
 export interface AgentWithTenant extends Agent {
   tenantName: string;
   tenantSlug: string;
@@ -392,8 +354,7 @@ export interface PhoneNumber {
   region: string | null;
   created_at: string;
   updated_at: string;
-  // Last attempt to point this number at the platform at its provider; null
-  // if never tried or nothing to sync. ok=false: saved, but not wired.
+  // Last provider sync attempt; null if never tried. ok=false: saved but not wired.
   provider_sync?: ProviderSync | null;
 }
 
@@ -472,10 +433,7 @@ export const updateCarrier = (carrierId: string, body: CarrierUpdate) =>
   request<Carrier>(`/carriers/${carrierId}`, { method: "PATCH", body: JSON.stringify(body) });
 
 // ── Telephony Configs ────────────────────────────────────────────────────
-// Cloudonix/Vobiz — webhook-style providers, no DID purchasing. Kept as a
-// separate table/service from Carriers (see services/config/telephony_configs.py) —
-// this binding mirrors listCarriers/createCarrier above rather than being
-// folded into it.
+// Webhook-style providers (Cloudonix/Vobiz), separate from Carriers.
 
 export type TrunkHealth = "healthy" | "degraded" | "standby";
 
@@ -521,8 +479,6 @@ export const setDefaultOutboundTelephonyConfig = (configId: string) =>
 export const listTelephonyProviders = () =>
   request<Record<string, { required: string[]; sensitive: string[] }>>("/telephony-providers");
 
-// Same reasoning as listAllAgents() — no cross-tenant list endpoint exists
-// server-side, composed client-side for the Admin UI's aggregate view.
 export interface PhoneNumberWithTenant extends PhoneNumber {
   tenantName: string;
 }
@@ -543,10 +499,7 @@ export type CallDirection = "inbound" | "outbound";
 export type CallStatus = "live" | "completed";
 export type CallMode = "AI" | "WebRTC";
 
-// Mirrors database/schema.sql's calls_sentiment_check. `sentiment: null` is
-// "never scored" and is NOT the same as "neutral" — it covers calls that
-// ended before scoring existed, calls with no caller speech, and scorer
-// failures. Render it as "—", never as a neutral reading.
+// `sentiment: null` means never scored, not neutral; render it as "—".
 export type CallSentiment = "positive" | "neutral" | "negative" | "frustrated";
 
 export interface Call {
@@ -607,9 +560,6 @@ export const getCall = (sessionId: string) => request<Call>(`/calls/${sessionId}
 export const getTranscript = (sessionId: string) =>
   request<TranscriptEntry[]>(`/calls/${sessionId}/transcript`);
 
-// Same reasoning as listAllAgents()/listAllPhoneNumbers() — calls.tenant_id
-// is a slug (see services/config/calls.py), and there's no cross-tenant list
-// endpoint server-side, so the aggregate view is composed client-side.
 export interface CallWithTenant extends Call {
   tenantName: string;
 }
@@ -625,9 +575,7 @@ export const listAllCalls = async (tenants: Tenant[]): Promise<CallWithTenant[]>
 };
 
 // ── Live Calls Monitoring ────────────────────────────────────────────────
-// Mirrors services/config/routers/live_calls.py's response shape exactly —
-// see that file's docstring/design doc for the full field-by-field rationale
-// (masked numbers, withheld transcript, nullable cap).
+// Mirrors services/config/routers/live_calls.py.
 
 export type LiveStage = "ai" | "waiting_for_human" | "human_connected";
 export type InterventionAction = "listen" | "barge";
@@ -660,8 +608,7 @@ export interface LiveCallsKpis {
   waiting_for_human: number;
   human_connected: number;
   interventions_pending: number;
-  // null (not 0, not a fallback) when the tenant hasn't set a cap yet —
-  // the UI renders a setup prompt for both fields together, never a number.
+  // Both null when no cap is set; the UI shows a setup prompt instead.
   max_concurrent_calls: number | null;
   utilization_pct: number | null;
 }
@@ -675,9 +622,7 @@ export interface LiveCallsSnapshot {
   items: LiveCall[];
 }
 
-// tenantSlug is omitted for supervisor/admin (server scopes to their own
-// tenant) and required for a superadmin with a tenant selected — see
-// live-calls/page.tsx.
+// tenantSlug only for a superadmin; other roles are scoped server-side.
 export const getLiveCalls = (tenantSlug?: string) => {
   const qs = tenantSlug ? `?tenant_slug=${encodeURIComponent(tenantSlug)}` : "";
   return request<LiveCallsSnapshot>(`/live-calls${qs}`);
@@ -703,9 +648,7 @@ export const updateTenantConcurrency = (tenantId: string, maxConcurrentCalls: nu
   });
 
 // ── Latency stats ────────────────────────────────────────────────────────
-// Per-agent, per-LLM-engine voice-to-voice percentiles — see
-// services/config/calls.py's get_latency_stats() for exactly what's
-// computed and why turns with no voice_to_voice_ms are excluded.
+// Per-agent, per-LLM-engine voice-to-voice percentiles.
 
 export interface LatencyStat {
   agent_id: string | null;
@@ -739,10 +682,6 @@ export const listAllLatencyStats = async (
 };
 
 // ── Dashboard aggregates ─────────────────────────────────────────────────
-// Backs admin-ui/app/dashboard/page.tsx. Same "no cross-tenant endpoint
-// server-side, composed client-side" pattern as listAllCalls()/
-// listAllCampaigns()/listAllLatencyStats() above.
-
 export interface DashboardStats {
   total_calls: number;
   total_minutes: number;
@@ -750,10 +689,7 @@ export interface DashboardStats {
   success_count: number;
   failed_count: number;
   outbound_count: number;
-  // Headline-tile inputs. All raw numerator/denominator pairs, never
-  // pre-computed rates — see get_dashboard_stats()'s own note: these get
-  // summed across every tenant below, and averaging per-tenant averages
-  // would weigh a 3-call tenant the same as a 30,000-call one.
+  // Raw numerators/denominators, not rates, so they can be summed across tenants.
   ended_count: number;
   aht_sample_count: number;
   aht_duration_ms: number;
@@ -804,10 +740,7 @@ export const listAllDashboardStats = async (tenants: Tenant[], hours: number = 2
   );
 };
 
-// close_reason is a free-text column, not an enum — the set below is every
-// value the platform actually writes (services/conversation/session.py's
-// close() plus the reconciler), and anything unrecognised falls through to
-// its raw string rather than being bucketed into a misleading "other".
+// close_reason is free text; unknown values render as their raw string.
 const DISPOSITION_LABELS: Record<string, string> = {
   caller_hangup: "Caller hung up",
   stream_ended: "Stream ended",
@@ -898,18 +831,8 @@ export const listAllTodaysActivity = async (tenants: Tenant[]): Promise<TodaysAc
 };
 
 // ── Tools ────────────────────────────────────────────────────────────────
-// Config Service surface for services/conversation/tools/ (Tool Execution
-// Framework): tool_provider_configs (an engine instance) and
-// agent_tool_policies (which agent may use which tool_provider_config).
-// Resolved at call time by the Conversation Service's own
-// ToolPolicyResolver, not read through this API — this is cold-path admin
-// CRUD only.
-//
-// There is exactly one configurable tool, execute_api on
-// engine "toolexec" — the individual integrations behind it are custom
-// APIs (see the APIs tab), not tools. The agent's other tool,
-// search_knowledge, is enabled by linking a knowledge base to the agent
-// and is deliberately absent from this surface.
+// Admin CRUD for tool_provider_configs and agent_tool_policies. search_knowledge is
+// enabled by linking a knowledge base, not here.
 
 export interface ToolCatalogExtraField {
   key: string;
@@ -1031,16 +954,10 @@ export const deleteAgentToolPolicy = (agentId: string, toolName: string) =>
 
 // ── Auth ─────────────────────────────────────────────────────────────────
 
-// Widened alongside services/config's users_role_check (schema.sql) — a
-// real user row can now hold "supervisor"/"agent" (invite-only account
-// roles with no Config API surface of their own), not just the three
-// console roles. Keep this in sync with that CHECK constraint.
+// Keep in sync with schema.sql's users_role_check.
 export type UserRole = "superadmin" | "admin" | "supervisor" | "agent" | "viewer";
 
-// Mirrors services/config/deps.py's CONSOLE_ROLES exactly — supervisor/agent
-// have no Config API surface at all in this build, so a route decision here
-// (e.g. where to land someone right after login) has to agree with the
-// server's own gate, not just with what the sidebar happens to show.
+// Must match services/config/deps.py's CONSOLE_ROLES.
 export const CONSOLE_ROLES: readonly UserRole[] = ["superadmin", "admin", "viewer"];
 export const isConsoleRole = (role: UserRole) => (CONSOLE_ROLES as readonly string[]).includes(role);
 
@@ -1137,10 +1054,7 @@ export interface UserUpdate {
   password?: string;
 }
 
-// `?tenant_id=` is honored by the server only for a super_admin caller — a
-// tenant-scoped caller passing it has it silently overridden to their own
-// tenant_id (services/config/routers/users.py). Passed through as-is here;
-// the UI must not rely on omitting it for correctness.
+// `?tenant_id=` is honored only for superadmin; the server overrides it for scoped callers.
 export const listUsers = (tenantId?: string) =>
   request<User[]>(`/users${tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : ""}`);
 export const updateUser = (userId: string, body: UserUpdate) =>
@@ -1149,14 +1063,6 @@ export const deleteUser = (userId: string) =>
   request<void>(`/users/${userId}`, { method: "DELETE" });
 
 // ── Invites ──────────────────────────────────────────────────────────────
-// Backs the invite-based onboarding flow (services/config/routers/invites.py).
-// `supervisor`/`agent` are real account roles an invite can grant, but have
-// no Config API surface of their own in this build (see design doc) — they
-// only ever appear here as an invite's/user's `role`, never as a route guard.
-
-// Same five roles as UserRole — kept as its own name because an invite's
-// role and a user's role are conceptually different fields, not because the
-// value sets differ.
 export type InviteRole = UserRole;
 export type InviteStatus = "pending" | "accepted" | "revoked";
 
@@ -1174,8 +1080,7 @@ export interface Invite {
   last_sent_at: string | null;
   created_at: string;
   updated_at: string;
-  // Present only on the create/resend responses (AC12) — a failed SMTP send
-  // still leaves the invite row pending and resendable.
+  // Only on create/resend responses; a failed send leaves the invite pending.
   email_sent?: boolean;
 }
 
@@ -1186,7 +1091,7 @@ export interface InviteCreate {
   team?: string | null;
 }
 
-// Same `?tenant_id=` server-side scoping rule as listUsers() above (AC11).
+// Same `?tenant_id=` scoping rule as listUsers().
 export const listInvites = (tenantId?: string) =>
   request<Invite[]>(`/invites${tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : ""}`);
 export const createInvite = (body: InviteCreate) =>
@@ -1197,9 +1102,7 @@ export const revokeInvite = (inviteId: string) =>
   request<Invite>(`/invites/${inviteId}/revoke`, { method: "POST" });
 
 // ── Invite accept (public — no JWT) ─────────────────────────────────────
-// The raw token lives only in the URL fragment (never sent to a server) and
-// is carried on these two requests as the X-Invite-Token header — see
-// app/invite/page.tsx. Never put it in a path or query segment.
+// Token goes in the X-Invite-Token header only, never in a path or query string.
 
 export interface InviteAcceptInfo {
   email: string;
@@ -1261,10 +1164,7 @@ export const listAuditLog = (filters: AuditLogFilters = {}) => {
 };
 
 // ── DID Service (services/did/, port 8200) ──────────────────────────────
-// A separate service/port from Config Service — carrier search/purchase is
-// cold-path, cost-affecting admin action, deliberately kept out of Config
-// Service's own process (see project memory did-management-platform-architecture).
-// Reuses the same bearer token (both services trust the same JWT issuer).
+// Same bearer token as Config Service.
 
 const DID_BASE_URL = process.env.NEXT_PUBLIC_DID_SERVICE_URL || "http://localhost:8200";
 
@@ -1342,9 +1242,7 @@ export const releaseNumber = (purchasedNumberId: string) =>
   didRequest<PurchasedNumber>(`/numbers/${purchasedNumberId}/release`, { method: "POST" });
 
 // ── Campaign Service (services/campaigns/, port 8400) ───────────────────
-// Own service/port, same reasoning as DID Service above — outbound calling
-// is a distinct cold-path admin surface (campaign lifecycle + CSV upload),
-// kept out of Config Service's own process. Reuses the same bearer token.
+// Same bearer token as Config Service.
 
 const CAMPAIGNS_BASE_URL = process.env.NEXT_PUBLIC_CAMPAIGNS_SERVICE_URL || "http://localhost:8400";
 
@@ -1470,9 +1368,6 @@ export const pauseCampaign = (campaignId: string) =>
 export const resumeCampaign = (campaignId: string) =>
   campaignsRequest<Campaign>(`/campaigns/${campaignId}/resume`, { method: "POST" });
 
-// Same reasoning as listAllAgents()/listAllPhoneNumbers() — no cross-tenant
-// list endpoint exists server-side, composed client-side for the Admin
-// UI's aggregate view.
 export interface CampaignWithTenant extends Campaign {
   tenantName: string;
 }

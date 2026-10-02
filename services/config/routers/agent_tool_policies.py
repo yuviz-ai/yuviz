@@ -14,10 +14,7 @@ router = APIRouter(prefix="/agents/{agent_id}/tool-policies", tags=["agent_tool_
 
 
 async def _authorize_agent(agent_id: str, current_user: CurrentUser) -> dict:
-    """agent_tool_policies has no tenant_id of its own (Wave B child table,
-    RLS-visible only via its parent agents row) — so the tenant to check
-    against is the parent agent's, fetched the same way every other Tier 3
-    resolver does (platform_scoped from deps.is_platform_scoped, lesson 24)."""
+    """Policies have no tenant_id of their own; authorize against the parent agent's tenant."""
     agent = await get_or_404(
         agents_service.get_agent_by_id(agent_id, platform_scoped=is_platform_scoped(current_user)),
         f"agent {agent_id!r} not found",
@@ -54,9 +51,7 @@ async def create_agent_tool_policy(
             user_email=current_user.email,
         )
     except Exception as e:
-        # UNIQUE(agent_id, tool_name) violation — this agent already has a
-        # policy for this tool, surfaced as a clean 409 rather than a raw
-        # asyncpg constraint error.
+        # UNIQUE(agent_id, tool_name) violation.
         if "unique" in str(e).lower() or "duplicate" in str(e).lower():
             raise HTTPException(status_code=409, detail=f"agent {agent_id!r} already has a policy for tool {body.tool_name!r}")
         raise

@@ -1,16 +1,5 @@
-"""
-FillerSelector — owns all user-facing filler wording, out of pipeline.py.
-Answers one question for pipeline.py: which tool-call filler fits this
-tool's calibrated average and isn't the phrase we just said. Tool-call
-fillers apply from turn 1 onward — see pipeline.py's ToolCallStartedEvent
-handling for why silence during a real tool call reads as a dropped call
-no matter how early in the conversation it happens. This selector has no
-notion of turns at all; the only suppression is pipeline.py's
-_TOOL_CALL_FILLER_MIN_GAP_S burst gap.
-
-The public method is total (never raises) — see its own docstring for
-its specific fallback.
-"""
+"""FillerSelector: picks a tool-call filler phrase sized to the tool's calibrated
+latency, avoiding the phrase just said."""
 
 from __future__ import annotations
 
@@ -20,10 +9,7 @@ import random
 
 log = logging.getLogger(__name__)
 
-# Spoken while a tool call is in flight, sized against ToolLatencyStore's
-# calibrated average for that (tenant, agent, tool). approx_seconds is a
-# declared, not measured, spoken length — see design's Risks section on
-# why a rough per-phrase estimate is good enough here.
+# (phrase, approx spoken seconds); lengths are estimates, not measured.
 _TOOL_FILLERS: tuple[tuple[str, float], ...] = (
     ("One moment.", 1.0),
     ("Just a second.", 1.0),
@@ -63,12 +49,7 @@ class FillerSelector:
                 shortest = min(p[1] for p in candidates)
                 tier = [p for p in candidates if p[1] == shortest]
 
-            # random, not a rotating counter: a counter on a FillerSelector
-            # shared by every concurrent call across every tenant (see
-            # __main__.py) isn't actually "this call's rotation" — two
-            # callers in flight interleave increments, so what looked like
-            # deterministic variety was really arbitrary anyway. Random
-            # selection is honest about that and needs no shared state.
+            # Random rather than a counter: the selector is shared by all concurrent calls.
             return random.choice(tier)[0]
         except Exception:
             log.exception("FillerSelector.select_tool_filler failed tool=%r", tool_name)

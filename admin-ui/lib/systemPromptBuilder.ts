@@ -1,9 +1,4 @@
-// Deterministic system-prompt assembly — not an LLM call. The wizard asks
-// for structured facts (identity, purpose, tone, transfer rule); this just
-// arranges them into a strict template with hard-coded anti-hallucination
-// and spoken-style guardrails baked in, so those rules can't be dropped or
-// diluted by generation variance. Every generated prompt is still editable
-// before the agent is created.
+// Deterministic system-prompt template (no LLM call) so guardrails can't be dropped by generation variance.
 
 export interface SystemPromptInputs {
   name: string;

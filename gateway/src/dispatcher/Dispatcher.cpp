@@ -76,10 +76,7 @@ void Dispatcher::dispatch_loop() {
 }
 
 void Dispatcher::deliver(const SessionEvent& event) {
-    // Rebuild the cache only when subscribers have changed (rare).
-    // subscriber_cache_ is written here (Dispatcher thread, under sub_mutex_)
-    // and read below (Dispatcher thread, without lock) — no other thread writes
-    // subscriber_cache_, so the lock-free read below is safe.
+    // Only this thread touches subscriber_cache_, so iterating it unlocked is safe.
     {
         std::lock_guard lock{sub_mutex_};
         if (cache_dirty_) {

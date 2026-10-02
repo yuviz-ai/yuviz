@@ -1,18 +1,5 @@
-"""
-Knowledge base CRUD — same audited-mutation pattern as
-services/config/tenants.py. No Redis cache-aside here (unlike Config
-Service's tenant/agent reads): KB rows are read rarely compared to the
-retrieval hot path, which never reads this table directly anyway (see
-retrieval.py — it goes straight from agent_knowledge_bases to kb_chunks).
-
-Every connection is opened through tenant_conn()/platform_conn() (RLS design,
-libs/tenancy) rather than a bare pool call. The by-id functions take
-platform_scoped (source: deps.is_platform_scoped(current_user) only) and, for
-a mutation on the platform branch, stamp_tenant — the tenant of the row the
-caller's own router already fetched via _authorize_kb, so audit_log.tenant_id
-still records the tenant whose row was edited even though the mutation itself
-bypasses RLS.
-"""
+"""Audited knowledge base CRUD over tenant_conn()/platform_conn().
+platform_scoped must come from deps.is_platform_scoped(); stamp_tenant keeps audit_log.tenant_id correct."""
 
 from __future__ import annotations
 

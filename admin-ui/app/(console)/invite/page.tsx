@@ -4,12 +4,8 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { acceptInvite, ApiError, getInvite, InviteAcceptInfo } from "@/lib/api";
 
-// Public accept-invite page. The token lives only in the URL fragment
-// (`/invite#<token>`) — fragments never reach a server, so this is the one
-// place in the Admin UI that must read location.hash instead of a query
-// param, and must never put the token in a URL/query string on its way out
-// (see design doc's "Token placement"). AppShell.tsx treats this route as
-// standalone/unguarded, the same as /login.
+// Public accept-invite page. The token lives only in the URL fragment so it never reaches a
+// server; never move it into a query string.
 export default function InvitePage() {
   const router = useRouter();
   const [token, setToken] = useState<string | null>(null);
@@ -34,9 +30,7 @@ export default function InvitePage() {
     setToken(hash);
     getInvite(hash)
       .then(setInfo)
-      // Every classification (expired/revoked/already used/no-longer-valid/
-      // not-found) reaches here as an ApiError with its own `detail` — just
-      // surface it verbatim; none of them name an account or tenant.
+      // Server details never name an account or tenant, so surface them verbatim.
       .catch((e) => setLoadError(e instanceof ApiError ? e.detail : String(e)))
       .finally(() => setLoading(false));
   }, []);

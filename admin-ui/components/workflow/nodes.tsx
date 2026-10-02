@@ -1,19 +1,5 @@
 "use client";
 
-// The four node renderers. Four hardcoded types, not a spec-driven generic
-// renderer (docs/workflow.md §2.2) — a registry to avoid writing four small
-// components would be more framework than form.
-//
-// Card anatomy: a coloured type pill straddling the top-left corner, a
-// titled header rule, then a labelled prompt block. The type is then
-// readable at a glance from across the canvas instead of being a 9px
-// uppercase word in a corner.
-//
-// Every badge here answers "what does this stage do" without clicking into
-// it: how many tools it can reach, whether it has a knowledge base, whether
-// it extracts anything. A stage that is still missing something says so on
-// the card, so an operator doesn't have to click each one to find the gap.
-
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { WorkflowNodeData, WorkflowNodeType } from "@/lib/workflowApi";
 import { useEditorActions } from "./editorContext";
@@ -86,8 +72,7 @@ function NodeShell({
 }) {
   const { addConnectedStage } = useEditorActions();
   const unwired = type === "global";
-  // No source handle: terminal steps end the call, and a global node was
-  // never in the flow to begin with.
+  // No source handle: terminal steps end the call; global nodes aren't in the flow.
   const terminal = type === "end" || type === "transfer" || unwired;
   const label = `${TYPE_LABEL[type]}: ${data.name || "unnamed"}`;
 
@@ -95,8 +80,6 @@ function NodeShell({
     <div
       className={`wf-node wf-node-${type}${selected ? " selected" : ""}` +
         `${invalid ? " invalid" : ""}`}
-      // Reachable and announced for keyboard/screen-reader users — a bare
-      // div of prompt text tells them nothing about what it is.
       tabIndex={0}
       role="button"
       aria-label={label}

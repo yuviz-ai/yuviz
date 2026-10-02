@@ -1,8 +1,4 @@
-"""The mechanical version of the Latency section's claim: the WS route and
-the inbound voice/status routes carry zero Depends, the WS handler's own
-code makes no call into auth/ownership/idempotency, and a full
-connected-call fixture streams through MediaStreamBridge against a Redis
-client that raises on every operation."""
+"""Hot path isolation: WS and inbound routes have no Depends, and a connected call streams with Redis raising."""
 
 from __future__ import annotations
 
@@ -170,8 +166,7 @@ async def test_connected_call_streams_with_redis_raising_on_every_call(monkeypat
     call = _FakeCall(incoming=[])
     _patch_grpc(monkeypatch, call)
 
-    # Only NOW install the raising Redis client — the webhook phase above
-    # legitimately performs a did: GET and must run before this.
+    # Installed only after the webhook phase, which legitimately reads did:.
     import libs.telephony_sdk.did_route as real_did_route
     monkeypatch.setattr(real_did_route, "_get_client", lambda: _RaisingRedis())
     import services.telephony.idempotency as idem_module

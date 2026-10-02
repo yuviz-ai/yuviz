@@ -102,9 +102,7 @@ async def test_change_password_succeeds_and_new_password_works(pool):
     email = f"test-user-{uuid.uuid4().hex[:8]}@example.com"
     created = await users.create_user(email=email, password="old-password", role="admin")
 
-    # platform_scoped=True: this user has tenant_id=None (a platform actor,
-    # deps.is_platform_scoped's own definition), matching how the real
-    # /auth/change-password route would call this for such a caller.
+    # tenant_id=None user, so the route would pass platform_scoped=True.
     updated = await users.change_password(
         created["id"], current_password="old-password", new_password="new-password", platform_scoped=True,
     )

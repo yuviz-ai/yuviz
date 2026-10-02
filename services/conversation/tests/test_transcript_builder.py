@@ -17,15 +17,7 @@ async def _insert_live_call(pool, session_id: str, *, conv_node: str | None) -> 
 
 
 # ── full begin/turn/end lifecycle ─────────────────────────────────────────
-# A regression test for a real bug found live: _round_or_none()
-# was defined at module level in between _record_turn() and _end_call(),
-# which silently dedented _end_call() OUT of the class body and nested it
-# inside _round_or_none()'s own function scope instead — TranscriptBuilder
-# had no _end_call attribute at all. Every existing test exercised
-# begin_call/record_turn/reconcile_*/heartbeat individually, never the full
-# lifecycle including end_call(), so nothing caught it until a real phone
-# call actually hung up and hit the AttributeError live. This test forces
-# the full sequence so a similar misplacement can't hide again.
+# Exercises begin/turn/end together so a method silently falling out of the class body is caught.
 async def test_full_call_lifecycle_begin_turn_end():
     builder = await TranscriptBuilder.connect(os.environ["POSTGRES_DSN"])
     pool = builder._pool
@@ -69,9 +61,7 @@ async def test_reconcile_stale_calls_closes_only_this_node_ids_rows():
 
 
 async def test_reconcile_stale_calls_never_touches_another_instances_live_call():
-    """The exact bug this scoping fixes: restarting one Conversation
-    Service instance (:50051) must never close out a call genuinely still
-    live on a DIFFERENT running instance (:50052) — see project history."""
+    """Reconciling one instance never closes a call still live on a different instance."""
     this_node = f"test-host:50051-{uuid.uuid4().hex[:8]}"
     other_node = f"test-host:50052-{uuid.uuid4().hex[:8]}"
     builder = await TranscriptBuilder.connect(os.environ["POSTGRES_DSN"], node_id=this_node)
@@ -120,9 +110,7 @@ async def test_reconcile_stale_calls_is_a_noop_when_persistence_disabled():
 
 
 async def test_reconcile_stale_calls_is_a_noop_without_a_node_id():
-    """No node_id means no safe scope to reconcile within — must skip
-    entirely rather than fall back to the old unscoped (and unsafe)
-    behavior."""
+    """Without a node_id there's no safe scope, so reconcile skips entirely."""
     builder = await TranscriptBuilder.connect(os.environ["POSTGRES_DSN"])  # node_id defaults to None
     pool = builder._pool
     stale_id = f"test-stale-{uuid.uuid4().hex[:8]}"
@@ -309,9 +297,7 @@ async def test_reconcile_inactive_calls_leaves_a_call_with_recent_transcript_act
 
 
 async def test_reconcile_inactive_calls_leaves_a_freshly_started_call_untouched():
-    """started_at is the floor that stops a call from being mistaken for
-    stale just because it hasn't had its first turn yet — a call that
-    started 2 seconds ago with no transcript_entries is normal, not dead."""
+    """started_at keeps a just-started call with no turns from being treated as stale."""
     node_id = f"test-node-{uuid.uuid4().hex[:8]}"
     builder = await TranscriptBuilder.connect(os.environ["POSTGRES_DSN"], node_id=node_id)
     pool = builder._pool
@@ -356,12 +342,7 @@ async def test_reconcile_inactive_calls_is_a_noop_when_persistence_disabled():
 
 
 # ── RLS: sweeps hold no open transaction between iterations (T52) ────────
-# platform_conn() opens a transaction for exactly the one UPDATE each sweep
-# issues and closes it before the method returns — never spans the interval
-# between one timer tick and the next (see __main__.py's heartbeat loop).
-# This would fail if a sweep method leaked its transaction past return, e.g.
-# by acquiring the connection outside the `async with platform_conn(...)`
-# block that's supposed to bound it.
+# Each sweep's platform_conn() transaction must close before the method returns.
 async def test_reconcile_sweeps_leave_no_open_transaction_between_iterations():
     node_id = f"test-sweep-{uuid.uuid4().hex[:8]}"
     builder = await TranscriptBuilder.connect(os.environ["POSTGRES_DSN"], node_id=node_id)
@@ -385,16 +366,11 @@ async def test_record_live_stage_is_fire_and_forget_and_updates_the_column():
     builder = await TranscriptBuilder.connect(os.environ["POSTGRES_DSN"])
     pool = builder._pool
     session_id = f"test-live-stage-{uuid.uuid4().hex[:8]}"
-    # begin_call (not the raw-insert helper) so the cached tenant slug
-    # record_live_stage's own write scopes its connection to is populated,
-    # matching how every real call reaches this hook.
+    # begin_call (not the raw-insert helper) so the cached tenant slug used by record_live_stage() is populated.
     builder.begin_call(session_id, "default", "call-1")
 
     builder.record_live_stage(session_id, "waiting_for_human")
-    # The call above returned synchronously with no `await` — proving it
-    # didn't block the caller on a real DB round trip — and scheduled a
-    # background task we can observe directly, same convention as
-    # test_begin_call_stamps_conv_node above.
+    # Returned synchronously (no DB round trip); the write runs as a background task.
     assert session_id in builder._chains
     await builder._chains[session_id]
 
@@ -412,20 +388,11 @@ async def test_record_live_stage_is_noop_when_persistence_disabled():
 
 
 async def test_record_live_stage_serializes_per_session_a_later_call_is_never_overtaken(monkeypatch):
-    """The design's own risk note: record_live_stage rides the per-session
-    _spawn() chain, so an EARLIER hook call's write — even if it happens to
-    be slower to actually land on Postgres — can never overtake a LATER
-    call's write already applied. Simulated here by artificially delaying
-    the first ("waiting_for_human") write; if writes ran unserialized, the
-    delayed write finishing last would clobber "human_connected" back to
-    "waiting_for_human". T18's own mutation proof (see PR notes) bypasses
-    _spawn() to confirm this test actually fails without the chaining."""
+    """Writes are serialized per session via _spawn(), so a delayed earlier write never clobbers a later one."""
     builder = await TranscriptBuilder.connect(os.environ["POSTGRES_DSN"])
     pool = builder._pool
     session_id = f"test-live-stage-order-{uuid.uuid4().hex[:8]}"
-    # begin_call (not the raw-insert helper) so the cached tenant slug
-    # record_live_stage's own write scopes its connection to is populated,
-    # matching how every real call reaches this hook.
+    # begin_call (not the raw-insert helper) so the cached tenant slug used by record_live_stage() is populated.
     builder.begin_call(session_id, "default", "call-1")
 
     original_write = builder._record_live_stage
@@ -441,10 +408,7 @@ async def test_record_live_stage_serializes_per_session_a_later_call_is_never_ov
     builder.record_live_stage(session_id, "human_connected")    # on_transfer_completed, right after
 
     await builder._chains[session_id]
-    # Margin past the injected 0.2s delay: proves the FINAL state once both
-    # writes have truly landed, not just whichever happened to finish first
-    # — an unserialized implementation would otherwise pass this assertion
-    # "by luck" (checked before the slow write lands) rather than for real.
+    # Margin past the injected 0.2s delay so the final state is checked after both writes land.
     await asyncio.sleep(0.3)
 
     row = await pool.fetchrow("SELECT live_stage FROM calls WHERE session_id = $1", session_id)
@@ -455,9 +419,7 @@ async def test_record_live_stage_serializes_per_session_a_later_call_is_never_ov
 
 
 # ── sentiment scoring at end_call ─────────────────────────────────────────
-# Scoring is additive to finalization, never a precondition for it: a call
-# must come out correctly ended even when the scorer is slow, broken, or
-# refuses to commit to a reading.
+# Scoring never blocks finalization: the call must end correctly even if the scorer fails.
 
 class _StubScorer:
     """Stands in for SentimentScorer. Records what it was handed so the
@@ -510,9 +472,7 @@ async def test_end_call_writes_sentiment_from_the_persisted_transcript():
     assert row["sentiment"] == "frustrated"
     assert row["sentiment_reason"] == "caller had to call three times"
 
-    # The scorer is fed what actually landed in transcript_entries, not an
-    # in-memory copy — this is what lets end_call() avoid retaining every
-    # live call's transcript just to score it once.
+    # Scored from transcript_entries, so end_call() needn't keep transcripts in memory.
     assert scorer.seen_turns is not None
     assert scorer.seen_turns[0].caller_text == "this is the third time I've called"
 
@@ -575,9 +535,7 @@ async def test_no_scorer_configured_skips_scoring_entirely():
 
 
 async def test_close_drains_an_in_flight_sentiment_write():
-    """close() used to drop the pool immediately, which only looked safe
-    while the longest chain step was one UPDATE. An LLM score holds a chain
-    open for seconds, so a shutdown landing mid-score would lose the write."""
+    """close() waits for an in-flight sentiment write instead of dropping it."""
     slow = asyncio.Event()
 
     class _SlowScorer:

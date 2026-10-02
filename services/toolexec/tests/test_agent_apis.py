@@ -1,7 +1,4 @@
-"""
-DB-backed tests for services/toolexec/agent_apis.py (T8) — the AC 10
-write-time authorization gate and the chain-depth enable-time gate.
-"""
+"""DB-backed tests for agent_apis.py authorization and chain-depth enable gates."""
 
 from __future__ import annotations
 
@@ -45,9 +42,7 @@ async def test_cross_tenant_custom_api_id_404s_byte_identical_to_random_uuid(poo
         with pytest.raises(LookupError) as random_uuid_exc:
             await agent_apis.set_enabled(agent["id"], str(uuid.uuid4()), enabled=True, current_user=caller)
 
-        # Byte-identical detail (lesson 2) — a divergence in either the
-        # status class or the text would let a tenant-A admin distinguish
-        # "exists elsewhere" from "does not exist at all".
+        # Identical detail, so "exists elsewhere" is indistinguishable from "doesn't exist".
         assert str(cross_tenant_exc.value) == str(random_uuid_exc.value)
 
         rows = await pool.fetch("SELECT * FROM agent_custom_apis WHERE agent_id = $1", agent["id"])
@@ -59,13 +54,7 @@ async def test_cross_tenant_custom_api_id_404s_byte_identical_to_random_uuid(poo
 
 @pytest.mark.asyncio
 async def test_wrong_tenant_caller_404s_byte_identical_to_random_uuid(pool, tenant_agent):
-    """Distinct from the cross-tenant custom_api_id case above: here the
-    agent AND the custom_api both genuinely belong to the SAME tenant (the
-    SQL JOIN's own ca.tenant_id = a.tenant_id condition is satisfied), but
-    the CALLER is a tenant-B admin acting on tenant A's own agent. Only
-    the Python-side `row["tenant_id"] != current_user.tenant_id` check
-    catches this — the JOIN condition alone cannot, since nothing in this
-    query involves the caller's identity."""
+    """Tenant-B caller on tenant A's own agent+api 404s like a random id (JOIN alone can't catch it)."""
     tenant, agent = tenant_agent
     api = await _make_custom_api(pool, tenant["id"], f"own_tenant_api_{uuid.uuid4().hex[:8]}")
     other_tenant = await _make_tenant(pool, f"other-{uuid.uuid4().hex[:8]}")
@@ -116,9 +105,7 @@ async def test_enable_rejected_when_chain_levels_exceeds_effective_ceiling(pool,
 
 @pytest.mark.asyncio
 async def test_enable_succeeds_within_effective_ceiling(pool, tenant_agent):
-    """Control: the SAME shape as the rejection test above, one level
-    shallower, must be admitted — proving the ceiling check is exact, not
-    a rejection that fires unconditionally."""
+    """Control: one level shallower than the rejection case is admitted."""
     tenant, agent = tenant_agent
     api = await _make_custom_api(pool, tenant["id"], "shallow_api", chain_levels=2)
     tpc = dict(await pool.fetchrow(

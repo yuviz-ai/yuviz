@@ -132,8 +132,6 @@ TenantConfig TenantConfig::from_default(const GatewayConfig& cfg) noexcept {
     t.transport = cfg.conversation;
 
     t.backpressure.max_outbound_queue_frames = cfg.media.playback_max_frames;
-    // Derive inbound frame cap from ring_buffer_ms ÷ frame_ms so operators
-    // can tune one field in config and both queues scale together.
     t.backpressure.max_inbound_queue_frames =
         (cfg.media.frame_ms > 0) ? cfg.media.ring_buffer_ms / cfg.media.frame_ms : 25u;
 
@@ -153,10 +151,7 @@ TenantConfig TenantConfig::from_redis(
 
         const auto j = nlohmann::json::parse(*raw);
 
-        // Every field is optional and independently overlaid onto the
-        // from_default() baseline — a tenant row with only vad_hold_ms set
-        // (the common case: everything else still NULL from a freshly
-        // created row) must not zero out timers/VAD fields it never touched.
+        // Each field is optional and overlaid independently; absent fields keep defaults.
         if (j.contains("vad_engine") && j["vad_engine"].is_string())
             t.vad_engine = j["vad_engine"].get<std::string>();
 
@@ -215,8 +210,6 @@ TenantConfig TenantConfig::from_redis(
             }
         }
     } catch (const nlohmann::json::exception&) {
-        // Malformed cache entry — degrade to from_default() rather than
-        // propagate a parse error into session creation.
         return from_default(cfg);
     }
 
@@ -238,8 +231,6 @@ PhoneRoute PhoneRoute::from_redis(RedisClient& redis, const std::string& did) no
         if (j.contains("version") && j["version"].is_number())
             route.version = j["version"].get<uint32_t>();
     } catch (const nlohmann::json::exception&) {
-        // Malformed cache entry — degrade to the {"default","default"}
-        // baseline rather than propagate a parse error into session setup.
         return PhoneRoute{};
     }
 
@@ -259,8 +250,6 @@ CallMetadata CallMetadata::parse(const std::optional<std::string>& raw) noexcept
         if (j.contains("direction") && j["direction"].is_string())
             md.direction = j["direction"].get<std::string>();
     } catch (const nlohmann::json::exception&) {
-        // Malformed metadata frame — degrade to the full default rather than
-        // propagate a parse error into session creation.
         return CallMetadata{};
     }
 

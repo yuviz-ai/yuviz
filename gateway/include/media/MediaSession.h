@@ -20,8 +20,6 @@ namespace voiceai {
 
 // Callbacks fired by MediaSession (invoked on AudioWorker thread unless noted).
 struct MediaSessionCallbacks {
-    // Fired for every drained PCM frame — used by CallSession to forward audio
-    // to the ConversationService via the control queue.
     std::function<void(AudioFrame)>                   on_audio_frame;
 
     std::function<void(float energy_db)>              on_speech_started;
@@ -31,12 +29,8 @@ struct MediaSessionCallbacks {
     std::function<void()>                             on_playback_cancelled;
 };
 
-// Data-plane object owned by one CallSession.
-// AudioWorkerPool holds a raw pointer and calls drain_available() on a fixed thread.
-// The IWebSocketServer lws thread calls push_inbound() from its receive callback.
-//
-// SPSC invariant: push_inbound is the single producer;
-//                 drain_available (via AudioWorkerPool) is the single consumer.
+// Per-call data plane. SPSC: push_inbound (lws thread) is the only producer,
+// drain_available (one AudioWorker thread) the only consumer.
 class MediaSession : private NonCopyable, private NonMovable {
 public:
     MediaSession(std::string              session_id,
@@ -52,28 +46,19 @@ public:
 
     ~MediaSession() = default;
 
-    // Producer side: called from lws WebSocket receive callback.
-    // Thread: lws service thread.
     bool push_inbound(const uint8_t* data, size_t byte_len) noexcept;
 
-    // Consumer side: called by AudioWorkerPool on assigned worker thread.
-    // Drains one frame, runs VAD, fires callbacks.  Returns number of samples consumed.
+    // Drains one frame, runs VAD, fires callbacks. Returns samples consumed.
     size_t drain_available() noexcept;
 
-    // Push a TTS chunk into the PlaybackQueue (outbound).
-    // Thread-safe; called from gRPC receive thread.
+    // Thread-safe; called from the gRPC receive thread.
     void push_outbound(AudioFrame frame);
 
-    // Cancel in-flight playback (barge-in).
+    // Barge-in.
     void cancel_playback();
 
-    // ORDERING CONSTRAINT (TS-4): set_callbacks() MUST be called before
-    // AudioWorkerPool::assign().  The two-phase ordering is:
-    //   1. set_callbacks()  — writes callbacks_ on the constructing thread
-    //   2. assign()         — acquires sessions_mutex (release), making the
-    //                         write visible to the worker thread which acquires
-    //                         sessions_mutex (acquire) on every snapshot.
-    // Calling set_callbacks() after assign() races with drain_available().
+    // Must be called before AudioWorkerPool::assign(); its mutex publishes
+    // callbacks_ to the worker. Calling it after races drain_available().
     void set_callbacks(MediaSessionCallbacks cbs);
 
     [[nodiscard]] const std::string& session_id()    const noexcept { return session_id_; }
@@ -98,8 +83,7 @@ private:
     std::vector<int16_t>  frame_buf_;       // only on AudioWorker thread (T2)
     std::atomic<uint64_t> inbound_seq_{0};  // monotonic per-session frame counter
 
-    // Written by gRPC reader thread (T3) in push_outbound() and by the playback
-    // consumer thread (T4) inside PlaybackQueue::on_drained.  Must be atomic.
+    // Written by both the gRPC reader and the playback thread.
     std::atomic<bool>     playback_active_{false};
 
     // Set when the response's final frame is queued; gates on_drained so

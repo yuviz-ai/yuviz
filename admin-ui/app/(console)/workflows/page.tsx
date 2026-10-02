@@ -1,14 +1,7 @@
 "use client";
 
-// IVR Flows — named IVR/OBD flows, each its own object (call_flows table),
-// separate from Agent Studio (/agents) which owns an agent's identity, voice
-// and knowledge.
-//
-// A flow is NOT one agent's conversation graph: it branches on a keypress,
-// it has a name and a slug of its own, and several agents can point at the
-// same one (agents.call_flow_id). The agent's own conversational graph still
-// lives at /workflows/{tenant}/{agent} — reachable from Agent Studio, not
-// listed here.
+// IVR Flows (call_flows table), shareable by several agents via agents.call_flow_id.
+// An agent's own conversation graph lives at /workflows/{tenant}/{agent} and isn't listed here.
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -31,10 +24,7 @@ export default function CallFlowsPage() {
   const [deleting, setDeleting] = useState<string | null>(null);
 
 
-  // One account at a time by default, or every account under "All tenants"
-  // — each tenant's fetch fails independently below, so one bad account
-  // never blanks the rest (fanning out unconditionally is what broke this
-  // page at scale before the switcher existed).
+  // Each tenant's fetch fails independently so one bad account never blanks the rest.
   useEffect(() => {
     if (tenantLoading) return;
     const targets = isAllTenants ? allTenants : tenant ? [tenant] : [];

@@ -1,14 +1,6 @@
-"""
-Calls — read-only reporting over the calls / transcript_entries tables
-(database/schema.sql). Written by TranscriptBuilder (services/conversation),
-never by this module — Config Service only reads call history for the Admin
-UI, it never mutates it.
+"""Read-only reporting over calls / transcript_entries (written by TranscriptBuilder).
 
-Deliberately NOT cache-aside like tenants.py/agents.py/etc.: call history is
-append-heavy reporting data (new rows constantly, list queries filtered/
-paginated many different ways), not a small set of hot-path config lookups —
-a cache here would either serve stale "recent calls" or need per-filter
-invalidation for no real benefit.
+Uncached: append-heavy data queried many ways would need per-filter invalidation.
 """
 
 from __future__ import annotations
@@ -21,25 +13,16 @@ from . import db
 
 
 def _status_of(row: dict[str, Any]) -> str:
-    """Derived, not stored: close_reason distinguishes *why* a call ended
-    (stream_ended, goodbye_timeout, TRANSFER_SUCCESS/FAILED/TIMEOUT — see
-    ConversationSession.close()), not whether it failed operationally, so
-    the only honest status split is still whether the call is in
-    progress."""
+    """live/completed only: close_reason says why a call ended, not whether it failed."""
     return "live" if row.get("ended_at") is None else "completed"
 
 
 def _mode_of(row: dict[str, Any]) -> str:
-    """Display label, not stored: inbound calls are answered by the AI
-    directly; outbound calls (not yet built — see project memory, no
-    campaign/dialer code exists) are placed via WebRTC. Derived from
-    `direction` so there's one source of truth, not two columns that can
-    drift apart."""
+    """Display label derived from `direction`."""
     return "AI" if row.get("direction") == "inbound" else "WebRTC"
 
 
-# Written as JSONB by TranscriptBuilder.record_workflow_outcome(). Decode so
-# API consumers get objects/lists, not JSON strings.
+# JSONB columns decoded so API consumers get objects, not JSON strings.
 _JSON_COLUMNS = ("nodes_visited", "extracted_variables")
 
 
@@ -59,8 +42,7 @@ async def list_calls(
     offset: int = 0,
     direction: str | None = None,
 ) -> dict[str, Any]:
-    """tenant_slug, not tenant_id: calls.tenant_id is a TEXT slug reference
-    (matching tenants.slug), not a UUID FK — see schema.sql's note on why."""
+    """tenant_slug, not tenant_id: calls.tenant_id is a TEXT slug, not a UUID FK."""
     pool = await db.get_pool()
     where = ["c.tenant_id = $1"]
     params: list[Any] = [tenant_slug]
@@ -140,17 +122,9 @@ async def get_transcript(
 
 
 async def get_dashboard_stats(tenant_slug: str, *, hours: int = 24 * 30) -> dict[str, Any]:
-    """Headline Dashboard numbers for one tenant, windowed by `hours` (default
-    30 days, matching Usage Trends' own default window below).
+    """Headline Dashboard numbers for one tenant over `hours`.
 
-    success/failed is a deliberately narrow, honest proxy — this platform has
-    no business-outcome tracking (no "booking succeeded" flag), so "success"
-    here means "the call actually held a conversation" (turn_count > 0) and
-    wasn't a hard transfer failure, not "the caller got what they wanted".
-    Only counted among ENDED calls — a live call with 0 turns so far just
-    hasn't had one yet, that's not the same as having failed.
-    live_calls (ended_at IS NULL) ignores the hours window on purpose — a
-    call in progress right now is live regardless of when it started."""
+    "success" = ended with turns and no TRANSFER_FAILED; live_calls ignores the window."""
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         row = await conn.fetchrow(
@@ -244,18 +218,7 @@ async def get_dashboard_stats(tenant_slug: str, *, hours: int = 24 * 30) -> dict
 
 
 async def get_disposition_mix(tenant_slug: str, *, hours: int = 24 * 30) -> list[dict[str, Any]]:
-    """How ended calls in the window broke down by close_reason.
-
-    Deliberately returns the RAW close_reason strings plus counts and lets the
-    caller label them. This platform records why a *session* closed
-    (caller_hangup, stream_ended, TRANSFER_SUCCESS, reconciled_inactive, …),
-    which is not the same taxonomy as a contact-centre disposition list
-    ("intent captured", "info delivered", "busy / switched off"). There is no
-    business-outcome field anywhere in the schema to derive those from, so
-    inventing them here would produce a chart that looks authoritative and
-    means nothing. Live calls are excluded — a call still in progress has no
-    disposition yet.
-    """
+    """Ended calls in the window by raw close_reason; the caller labels them."""
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         rows = await conn.fetch(
@@ -294,12 +257,7 @@ async def get_usage_trend(tenant_slug: str, *, days: int = 30) -> list[dict[str,
 
 
 async def get_todays_activity(tenant_slug: str) -> list[dict[str, Any]]:
-    """Today's calls bucketed by hour and channel — direction distinguishes
-    inbound/outbound; 'web' isn't a real channel this platform has (no
-    browser-only calls are persisted as their own direction), so it's
-    always 0 here rather than fabricated — see _mode_of()'s own note that
-    "WebRTC" is just outbound's display label today, not a separate
-    channel."""
+    """Today's calls by hour and direction; 'web' is always 0 (not a persisted channel)."""
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         rows = await conn.fetch(
@@ -318,17 +276,7 @@ async def get_todays_activity(tenant_slug: str) -> list[dict[str, Any]]:
 
 
 async def get_latency_stats(tenant_slug: str, *, hours: int = 24) -> list[dict[str, Any]]:
-    """Per-agent, per-LLM-engine voice-to-voice latency percentiles — the
-    dashboard's whole reason for existing (see project history: repeated
-    manual "does Gemini feel faster than Groq" judgment calls this session,
-    now backed by real numbers instead). voice_to_voice_ms only exists
-    inside latency_ms JSONB (see transcript_builder.py's TurnLatency); the
-    per-stage numbers have their own plain columns too, populated
-    alongside it. Turns with no voice_to_voice_ms (STT produced nothing,
-    cancelled before any audio) are excluded — including them would silently
-    pull percentiles toward zero-ish nonsense rather than reflect real
-    responses.
-    """
+    """Per-agent, per-LLM-engine latency percentiles; turns without voice_to_voice_ms are excluded."""
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         rows = await conn.fetch(

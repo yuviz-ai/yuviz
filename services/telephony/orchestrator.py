@@ -1,11 +1,5 @@
-"""
-handle_inbound_webhook() — the single provider-agnostic pipeline every
-vendor's inbound webhook goes through (AC9). Order is the AC6/AC7/AC11/AC12
-contract and must not be reordered — see 02-design.md's Interfaces section
-for why rate limiting runs before signature verification (AC12: a failed
-signature must still cost quota) and why the tenant is taken from the
-account, never the DID (AC8).
-"""
+"""handle_inbound_webhook() — provider-agnostic inbound pipeline. Step order is a contract: rate limit
+runs before signature (failed signatures still cost quota); tenant comes from the account, never the DID."""
 
 from __future__ import annotations
 
@@ -59,10 +53,7 @@ call_session_map = CallSessionMap()
 _ACCOUNT_LIMIT = int(os.environ.get("TELEPHONY_ACCOUNT_LIMIT", "300"))
 _DID_LIMIT = int(os.environ.get("TELEPHONY_DID_LIMIT", "30"))
 
-# Authenticated-only buckets, keyed on server-derived values only — an
-# unknown account_ref always buckets into "{provider}:unknown", so no real
-# account's quota is reachable without its own UUID (Risks: "rate limiting
-# moved before authentication").
+# Keyed on server-derived values; unknown account_refs share "{provider}:unknown".
 _per_account = FixedWindowCounter(limit=_ACCOUNT_LIMIT, window_seconds=60)
 _per_did = FixedWindowCounter(limit=_DID_LIMIT, window_seconds=60)
 
@@ -81,9 +72,7 @@ class InboundRoute:
 
 
 async def combined_fields(request: Request) -> dict:
-    """query ∪ JSON-or-form body — same shape as
-    services/cloudonix/app.py's _combined_fields, generalized for every
-    provider (Vobiz's form-encoded webhooks included)."""
+    """Query params merged with the JSON or form body."""
     fields: dict = dict(request.query_params)
     content_type = request.headers.get("content-type", "")
     if "application/json" in content_type:
@@ -103,10 +92,8 @@ async def combined_fields(request: Request) -> dict:
 
 
 async def resolve_inbound_route(call: NormalizedInboundCall, account: Account) -> InboundRoute | None:
-    """The tenant is NEVER derived from the DID — it is call.known_tenant_slug
-    when the adapter filled it, and account.tenant_slug otherwise. did_route
-    only selects the agent: a miss yields "default"; a hit whose tenant
-    differs from the account's tenant returns None (foreign_did, AC8)."""
+    """Tenant comes from the call/account, never the DID; the DID only picks the agent.
+    A DID owned by another tenant returns None."""
     tenant_slug = call.known_tenant_slug or account.tenant_slug
 
     route = await did_route.resolve_did_route(call.to_number)
@@ -130,14 +117,13 @@ async def resolve_inbound_route(call: NormalizedInboundCall, account: Account) -
 
 
 async def handle_inbound_webhook(*, provider_name: str, account_ref: str, request: Request) -> Response:
-    # Step 1: unknown provider -> 404, before anything else (AC10). Provider
-    # names are public constants, not tenant-owned (lesson 2).
+    # Step 1: unknown provider -> 404 (provider names are public).
     try:
         provider_cls = TelephonyProviderRegistry.get(provider_name)
     except ValueError:
         return PlainTextResponse("not found", status_code=404)
 
-    # Step 2: "no key map means admit nothing" (matches cloudonix/app.py today).
+    # Step 2: no key map means admit nothing.
     if not accounts.loaded:
         log.warning("telephony.reject.not_loaded provider=%s account=%s", provider_name, account_ref)
         return PlainTextResponse("service unavailable", status_code=503)
@@ -145,18 +131,14 @@ async def handle_inbound_webhook(*, provider_name: str, account_ref: str, reques
     account = accounts.get(provider_name, account_ref)
     bucket_ref = account_ref if account is not None else "unknown"
 
-    # Step 3: rate limit on server-derived values only, BEFORE signature —
-    # increment() runs unconditionally so a signature failure consumes
-    # quota identically to a valid request (AC12).
+    # Step 3: rate limit BEFORE signature, so signature failures still consume quota.
     over, retry_after = _per_account.over_limit(f"{provider_name}:{bucket_ref}")
     _per_account.increment(f"{provider_name}:{bucket_ref}")
     if over:
         log.warning("telephony.reject.rate_limit provider=%s account=%s", provider_name, bucket_ref)
         return PlainTextResponse("too many requests", status_code=429)
 
-    # Step 4: signature, on the instance built from THIS account's
-    # decrypted credentials. Unknown account or a failed check -> 403,
-    # identical body/status for both (AC7).
+    # Step 4: signature; unknown account and bad signature get an identical 403.
     headers = {k.lower(): v for k, v in request.headers.items()}
     if account is None or not account.instance.verify_webhook_signature(str(request.url), headers):
         log.info("telephony.reject.signature provider=%s account=%s known=%s", provider_name, account_ref, account is not None)
@@ -178,16 +160,7 @@ async def handle_inbound_webhook(*, provider_name: str, account_ref: str, reques
         log.warning("telephony.reject.rate_limit_did provider=%s account=%s", provider_name, account_ref)
         return PlainTextResponse("too many requests", status_code=429)
 
-    # Step 7: route resolution. A call this service itself placed carries
-    # its own `?idem=` back on answer_url/hangup_url/ring_url (outbound.
-    # place_call() sets it and remembers the identity under the same key
-    # before ever dialling) — that identity is used directly, skipping DID
-    # resolution entirely, because DID resolution is for a genuinely
-    # inbound call: run against an outbound leg's CALLEE number it either
-    # silently downgrades the answering agent to "default" (the real
-    # agent_slug validated at trigger time is never consulted) or 403s with
-    # dead air whenever that callee number happens to be provisioned as
-    # another tenant's DID.
+    # Step 7: calls we placed use their remembered identity; DID resolution is for inbound only.
     idem_key = request.query_params.get("idem")
     outbound_identity = outbound_identities.recall(provider_name, account_ref, idem_key) if idem_key else None
     if outbound_identity is None:
@@ -255,9 +228,7 @@ async def handle_dtmf_webhook(provider_name: str, account: Account, request: Req
             return False
 
         await _send_dtmf_to_conversation_service(session_id, dtmf_digit)
-        # Presence only: a keypress at a `collect` node is a PIN or a card
-        # number, so the digit never reaches a log line
-        # (services/telephony/tests/test_dtmf_never_logged.py).
+        # Never log the digit: it may be a PIN or card number.
         log.info("telephony.dtmf.sent provider=%s account=%s session=%s", provider_name, account.account_ref, session_id)
         return True
     except Exception as e:

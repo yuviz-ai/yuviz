@@ -1,10 +1,4 @@
-"""
-In-process against the real services.config.app FastAPI app via
-httpx.ASGITransport — same convention services/config/tests/test_api.py
-uses (real routing/validation/auth, no live uvicorn process). Proves
-HttpConfigRepository's login-then-GET flow against the real auth system
-built in services/config/auth.py, not a mock of it.
-"""
+"""HttpConfigRepository against the real Config app in-process via ASGITransport."""
 
 from __future__ import annotations
 

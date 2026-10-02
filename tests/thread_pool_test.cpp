@@ -24,9 +24,7 @@ TEST(ThreadPoolTest, TasksRunConcurrentlyNotSerialized) {
     f2.get();
 
     const auto elapsed = std::chrono::steady_clock::now() - start;
-    // If serialized, this would take >=200ms; concurrent execution on 2
-    // worker threads should finish in ~100ms. 150ms leaves headroom for
-    // scheduling jitter without being loose enough to hide a regression.
+    // Serialized would take >=200ms; 150ms leaves headroom for scheduling jitter.
     EXPECT_LT(elapsed, 150ms);
 }
 
@@ -34,9 +32,7 @@ TEST(ThreadPoolTest, ShutdownDrainsQueuedTasksBeforeReturning) {
     ThreadPool pool{1, "test"};
     std::atomic<int> completed{0};
 
-    // Single worker, several tasks queued back-to-back — shutdown() must not
-    // return (and callers must not proceed to destroy what these tasks
-    // reference) until every one of them has actually run.
+    // shutdown() must not return until every queued task has run.
     for (int i = 0; i < 5; ++i) {
         pool.submit([&completed] {
             std::this_thread::sleep_for(10ms);

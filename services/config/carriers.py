@@ -1,13 +1,6 @@
-"""
-Carriers (BYOC) CRUD — cold-path admin config only, same no-cache posture
-as tool_provider_configs.py: nothing on the call path reads carriers (the
-Gateway/Conversation Service never touch this table; only the DID Service
-reads it, to authenticate its own carrier API calls — a cold, low-frequency
-path, not worth a Redis cache-aside layer for).
+"""Carriers (BYOC) CRUD — cold path, uncached.
 
-Returning auth_token_ref to a caller is fine: it's a reference path (e.g.
-'env:PLIVO_AUTH_TOKEN'), never a resolved secret — same convention as
-provider_configs.api_key_ref.
+auth_token_ref is a reference path (e.g. 'env:PLIVO_AUTH_TOKEN'), safe to return.
 """
 
 from __future__ import annotations
@@ -22,14 +15,7 @@ _UPDATABLE_FIELDS = {"name", "auth_id", "auth_token_ref", "carrier_account_ref"}
 
 
 async def get_carrier_by_id(carrier_id: Any, *, platform_scoped: bool = False) -> dict[str, Any] | None:
-    """Not cached — same reasoning as tenants.get_tenant_by_id(): a cold,
-    low-frequency existence check before an insert that FK-references
-    carriers, not a hot path.
-
-    `platform_scoped` (source: deps.is_platform_scoped(current_user) only,
-    lesson 24) selects platform_conn for a platform actor's by-id read;
-    every other caller — including validate_id_exists()'s FK check — takes
-    the ambient tenant_conn() scope."""
+    """platform_scoped (from deps.is_platform_scoped only) selects platform_conn."""
     pool = await db.get_pool()
     if platform_scoped:
         async with platform_conn(pool, reason="carriers-by-id") as conn:
@@ -115,10 +101,7 @@ async def update_carrier(
         )
         new = dict(new_row)
 
-        # Scoped to the written columns, not the full row — otherwise
-        # auth_token_ref (redacted either way) rides along on every
-        # update and the UI can't tell "redacted, unchanged" from
-        # "redacted, changed."
+        # Written columns only, so a redacted unchanged auth_token_ref isn't logged as changed.
         await audit.write_audit(
             conn,
             entity_type="carrier",

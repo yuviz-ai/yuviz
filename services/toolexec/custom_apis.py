@@ -1,22 +1,6 @@
-"""
-services/toolexec/custom_apis.py — the custom_apis registry module.
+"""Custom APIs registry: SSRF endpoint validation and tenant-scoped CRUD.
 
-resolve_and_validate_endpoint() (T5) is the SSRF guard against a
-tenant-registered endpoint_url: it runs at registration (create/update,
-below) AND again before every outbound call (executor.py step 4, T12 —
-not yet implemented), since a registration-time-only check loses to DNS
-rebinding — the same hostname can resolve to a different, private address
-by the time the call actually fires.
-
-create_custom_api / update_custom_api / soft_delete_custom_api (T7) are
-the registry CRUD: same-tenant validation of every upstream_api_id,
-tenant-namespaced credential ref validation (auth_schemes.py, T4),
-endpoint validation (above), success_template placeholder validation, and
-chain_levels/cycle recompute across the whole tenant graph inside a
-per-tenant advisory-locked transaction — chain_levels is a WRITE-TIME
-denormalization computed independently here, not by calling
-graph.resolve_order() (that function is the READ-TIME backstop the
-executor calls; the two must not share a bug, so they are separate code).
+Endpoint validation runs at registration AND before every outbound call (DNS rebinding).
 """
 
 from __future__ import annotations
@@ -50,9 +34,7 @@ _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
 def _host_allowlist() -> frozenset[str]:
-    # Read fresh each call rather than cached at import time: an operator
-    # env-var change should take effect without a service restart forcing
-    # a redeploy race with this specific knob.
+    # Read per call so an env change applies without restart.
     return frozenset(
         h.strip().lower()
         for h in os.environ.get("TOOLEXEC_HTTP_HOST_ALLOWLIST", "").split(",")
@@ -65,37 +47,22 @@ def _ip_is_denied(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
 
 
 async def _resolve_addresses(hostname: str, port: int) -> list[str]:
-    """Isolated so tests can monkeypatch DNS resolution directly instead of
-    reaching into asyncio/socket internals (also where a multi-record host
-    with one private address is exercised)."""
+    """Separate function so tests can monkeypatch DNS resolution."""
     try:
         records = await asyncio.get_event_loop().getaddrinfo(
             hostname, port, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM,
         )
     except socket.gaierror as exc:
-        # The hostname stays OUT of the client-facing message (finding 2):
-        # "DNS resolution failed for 'internal-billing.corp'" tells a
-        # tenant_admin the platform could not resolve a name they chose,
-        # which is itself a fact about the platform's internal DNS view —
-        # confirmed only in the server log.
+        # Hostname is logged only, never returned: it leaks internal DNS view.
         log.warning("resolve_and_validate_endpoint: DNS resolution failed for %r", hostname)
         raise ValueError("invalid_endpoint_url: dns_resolution_failed") from exc
     return [sockaddr[0] for _family, _type, _proto, _canon, sockaddr in records]
 
 
 async def resolve_and_validate_endpoint(url: str) -> tuple[str, list[str]]:
-    """Returns (hostname, allowed_ips) or raises ValueError('invalid_endpoint_url').
+    """Return (hostname, allowed_ips) or raise ValueError('invalid_endpoint_url').
 
-    - scheme must be 'https', unless the hostname is in the operator-configured
-      TOOLEXEC_HTTP_HOST_ALLOWLIST (an explicit host list, never "any private
-      address").
-    - no userinfo, no fragment, no non-default port unless the host is
-      allow-listed.
-    - getaddrinfo() the host for BOTH families and check EVERY returned
-      record through ipaddress.ip_address() — which normalizes decimal/octal/
-      hex IPv4 and IPv4-mapped IPv6 ('::ffff:127.0.0.1') to their real value.
-      If ANY record falls in _DENIED_NETS (or is not .is_global), reject the
-      WHOLE url — never dial "the good one".
+    Rejects the whole URL if ANY resolved record is denied; http/non-default ports need the allowlist.
     """
     parts = urlsplit(url)
 
@@ -129,11 +96,7 @@ async def resolve_and_validate_endpoint(url: str) -> tuple[str, list[str]]:
     for raw_ip in raw_addresses:
         ip = ipaddress.ip_address(raw_ip.split("%")[0])  # strip an IPv6 zone id, if present
         if _ip_is_denied(ip):
-            # Neither the hostname nor the resolved address reaches the
-            # client (finding 2): "resolves to a denied address (10.0.3.7)"
-            # both confirms the host exists AND discloses its internal
-            # address — an internal-network recon channel from a
-            # tenant-scoped UI. Logged server-side only.
+            # Host/IP logged only: returning them would be an internal-network recon channel.
             log.warning(
                 "resolve_and_validate_endpoint: %r resolves to a denied address (%s)", hostname, ip,
             )
@@ -144,15 +107,10 @@ async def resolve_and_validate_endpoint(url: str) -> tuple[str, list[str]]:
 
 
 class DependentApiExists(Exception):
-    """409 at soft-delete — a live (non-soft-deleted) custom_apis row still
-    declares this one as an upstream dependency. Distinct from ValueError
-    (400) and LookupError (404): this is a real conflict with other
-    tenant-owned data, not a bad request or a missing id."""
+    """409 at soft-delete: a live custom_api still declares this one as upstream."""
 
 
-# auth_scheme -> the auth_config field name(s) that must be a tenant-
-# namespaced ref (enc:/env:/k8s:), per custom_apis.auth_config's shape
-# (see database/schema.sql's custom_apis comment). 'none' needs nothing.
+# auth_scheme -> auth_config fields that must be tenant-namespaced refs (enc:/env:/k8s:).
 _CREDENTIAL_REF_FIELDS = {
     "api_key": ("key_ref",),
     "bearer": ("token_ref",),
@@ -161,12 +119,7 @@ _CREDENTIAL_REF_FIELDS = {
 
 
 def _validate_credential_ref(tenant_id: Any, auth_scheme: str, auth_config: dict) -> None:
-    """Raises ValueError('credential_ref_not_a_reference: <field>') if a
-    required field is missing or a literal secret (no enc:/env:/k8s:
-    scheme), or ValueError('credential_ref_outside_tenant_namespace:
-    <field>') if auth_schemes.validate_tenant_ref() rejects it — the same
-    control T4 built, called again here at registration (and again by
-    resolve_tenant_ref at call time, T15 — never only here)."""
+    """Reject missing/literal credential fields or refs outside the tenant's namespace."""
     for field in _CREDENTIAL_REF_FIELDS.get(auth_scheme, ()):
         value = auth_config.get(field)
         if not isinstance(value, str) or not value.startswith(("enc:", "env:", "k8s:")):
@@ -193,15 +146,7 @@ _TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{\{([^{}]+)\}\}")
 def _validate_success_template(
     success_template: str | None, sensitive_response_paths: list[str], params: list[dict],
 ) -> None:
-    """Parses every {{$.path}} placeholder in success_template and rejects
-    the save (ValueError('invalid_success_template: <placeholder>')) unless
-    the path is well-formed AND is neither equal to, nor a descendant or
-    ancestor of, any entry in sensitive_response_paths, AND its last
-    segment does not name a custom_api_params row marked sensitive.
-    Re-run on every update whose sensitive_response_paths or params
-    change — not only at creation — so a path made sensitive after the
-    template already references it is caught (the PATCH-after-the-fact
-    case)."""
+    """Reject placeholders that are malformed, overlap a sensitive path, or name a sensitive param."""
     if not success_template:
         return
     sensitive_param_names = {p["name"] for p in params if p.get("sensitive")}
@@ -227,9 +172,7 @@ def _validate_success_template(
 
 
 async def _validate_upstream_params(conn, tenant_id: Any, params: list[dict]) -> None:
-    """Same-tenant validation of every 'upstream'-sourced param's
-    upstream_api_id (AC 17) — the FK alone cannot express "same tenant",
-    and it also cannot express "not soft-deleted"."""
+    """Upstream ids must be same-tenant and live; the FK can't express either."""
     for param in params:
         if param.get("source") != "upstream":
             continue
@@ -243,20 +186,9 @@ async def _validate_upstream_params(conn, tenant_id: Any, params: list[dict]) ->
 
 
 def _compute_chain_levels(edges: dict[str, list[str]]) -> dict[str, int]:
-    """Post-order height computation over {api_id: [upstream_api_id, ...]}
-    — a WRITE-TIME recompute, independently implemented from
-    graph.resolve_order() (that one is the READ-TIME backstop the executor
-    calls; the two must not share a bug). height[api] = 1 for a leaf, else
-    1 + max(height[upstream]). Unlike resolve_order()'s runtime depth check
-    (which is path-dependent — the same api can be reached at different
-    ancestor depths from different targets), an api's OWN height is a pure
-    property of the subgraph beneath it, so memoizing it is safe here: it
-    never varies with how it is reached, only with what depends on it.
+    """Write-time height per api (leaf=1); kept independent of graph.resolve_order() on purpose.
 
-    Raises ValueError('dependency_cycle') or
-    ValueError('chain_depth_exceeded') (against graph.MAX_CHAIN_LEVELS)
-    before returning anything, so the caller's transaction can roll back
-    the whole write with no partial chain_levels update ever committed.
+    Raises ValueError('dependency_cycle' | 'chain_depth_exceeded') before returning anything.
     """
     heights: dict[str, int] = {}
 
@@ -279,11 +211,7 @@ def _compute_chain_levels(edges: dict[str, list[str]]) -> dict[str, int]:
 
 
 async def _recompute_tenant_chain_levels(conn, tenant_id: Any) -> None:
-    """Recomputes chain_levels for the edited row AND every transitive
-    dependent (AC 11) — the whole tenant's graph, read back from the rows
-    this same transaction just wrote, so the recompute sees its own writes
-    before anything commits. Cheap: registry CRUD is admin-facing, not the
-    hot path, and a tenant's own API count is small."""
+    """Recompute chain_levels over the whole tenant graph, inside the caller's transaction."""
     api_rows = await conn.fetch(
         "SELECT id FROM custom_apis WHERE tenant_id = $1 AND deleted_at IS NULL", tenant_id,
     )
@@ -331,9 +259,7 @@ def _json_or_none(value: Any) -> str | None:
 
 
 def _decode_custom_api_row(row: Any) -> dict[str, Any]:
-    """asyncpg returns JSONB columns as raw strings (no pool codec — see
-    db.json_col) — decode the two this table has so every reader gets a
-    Python dict/list back, the same shape it was written with."""
+    """Decode JSONB columns (asyncpg returns raw strings; no pool codec)."""
     result = dict(row)
     result["auth_config"] = db.json_col(result["auth_config"])
     result["sensitive_response_paths"] = db.json_col(result["sensitive_response_paths"])
@@ -341,13 +267,7 @@ def _decode_custom_api_row(row: Any) -> dict[str, Any]:
 
 
 def _decode_literal_value(value: Any) -> Any:
-    """literal_value is a JSONB column whose payload IS an arbitrary JSON
-    scalar/object/array by design — including an ordinary string like
-    "ACC-42" — so db.json_col's blanket 'a decoded string means
-    double-encoding' guard (correct for auth_config/sensitive_response_paths,
-    which are never legitimately bare scalars) is the wrong check here and
-    would 500 a perfectly normal string literal. Decode once and accept
-    whatever comes back; only genuinely undecodable JSON is an error."""
+    """Decode once; bare strings are legitimate here, unlike db.json_col's double-encoding guard."""
     if value is None or not isinstance(value, str):
         return value
     try:
@@ -364,25 +284,10 @@ def _decode_param_row(row: Any) -> dict[str, Any]:
 
 
 def _redact_sensitive_literals(params: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Registry reads (list/get) are behind bare Depends(get_current_user)
-    — every authenticated role in the tenant, including viewer — and
-    unlike auth_config, nothing validates a literal param's value against
-    being a real secret (_validate_credential_ref only constrains
-    auth_scheme fields). A param the admin themselves marked `sensitive`
-    (the exact shape the UI's checkbox invites, e.g. a bearer token typed
-    into a header field) must not come back as plaintext here, whatever
-    its source. Only touches the REGISTRY view — executor.py's own
-    _decode_param_row calls (never through this function) still see the
-    real value, which is what actually places it on the outbound call.
+    """Null sensitive literals in registry reads (viewers can read); the executor sees real values.
 
-    Redacted to None, deliberately NOT a placeholder string like
-    "[redacted]": a source='literal' param is DB-constrained to never
-    legitimately hold NULL (custom_api_params_source_shape), so None here
-    is unambiguous — it can only mean "not shown", never a real value —
-    and update_custom_api's merge (below) can tell "the caller echoed
-    back what they were shown" from "the caller supplied a genuine new
-    value" without comparing against redacted TEXT, which would silently
-    misfire the day a tenant's real secret IS that exact string."""
+    None, not a placeholder: literal params can't be NULL in the DB, so None unambiguously means redacted.
+    """
     return [
         {**p, "literal_value": None} if p.get("sensitive") and p.get("literal_value") is not None
         else p
@@ -391,16 +296,7 @@ def _redact_sensitive_literals(params: list[dict[str, Any]]) -> list[dict[str, A
 
 
 def _merge_sensitive_literals(new_params: list[dict], old_params_by_name: dict[str, dict]) -> list[dict]:
-    """update_custom_api's write-side half of lesson 33: an edit form's
-    only source for a sensitive literal is the redacted (None) value
-    _redact_sensitive_literals hands back, so a save that echoes it
-    unchanged has no legitimate way to supply the real one. None here
-    means "not provided" — the same absence-preserves convention
-    update_custom_api already applies to the top-level `params` list
-    itself — never "clear it": preserve the STORED value instead of
-    writing the caller's None over it. A genuinely non-null incoming
-    literal_value (a deliberate change, including to a new sensitive
-    value) always passes through untouched."""
+    """Keep the stored value when a sensitive literal comes back as None (the redacted echo)."""
     merged = []
     for p in new_params:
         if p.get("source") == "literal" and p.get("sensitive") and p.get("literal_value") is None:
@@ -412,12 +308,7 @@ def _merge_sensitive_literals(new_params: list[dict], old_params_by_name: dict[s
 
 
 async def get_custom_api(custom_api_id: Any, *, platform_scoped: bool = False) -> dict[str, Any] | None:
-    """`platform_scoped` (RLS design, Tier 3) selects which connection this
-    flat by-id fetch runs under — its only legitimate source is
-    `deps.is_platform_scoped(current_user)` (lesson 24), never a role
-    comparison. The caller (routers/custom_apis.py's `_authorize_custom_api`)
-    still performs the post-fetch tenant check regardless of which
-    connection produced the row."""
+    """`platform_scoped` must come from `deps.is_platform_scoped`; caller still checks tenant."""
     pool = await db.get_pool()
     conn_cm = (
         platform_conn(pool, reason="custom-apis-admin-by-id") if platform_scoped
@@ -438,17 +329,7 @@ async def get_custom_api(custom_api_id: Any, *, platform_scoped: bool = False) -
 
 
 async def list_custom_apis(tenant_id: Any) -> list[dict[str, Any]]:
-    """Returns each API WITH its params (lesson 33): this is the admin-ui
-    panel's only source for the Edit form, and update_custom_api only
-    replaces params when the caller explicitly sends the key (`params is
-    not None`) — so a list response missing `params` is what makes the
-    form fall back to an empty array and unknowingly wipe a real API's
-    dependency edges on save, rather than the write layer itself treating
-    absent as "clear it".
-
-    Only reached via `tenant_scoped_router` (Tier 2), whose `bind_path_tenant`
-    already set the GUC target for this tenant_id — a plain `tenant_conn()`
-    is correct here even for a platform-scoped caller."""
+    """Return each API with params; the UI edit form relies on them or it wipes edges on save."""
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         rows = await conn.fetch(
@@ -500,11 +381,7 @@ async def create_custom_api(
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         async with conn.transaction():
-            # Serializes every create/update for this tenant so two
-            # concurrent edits cannot each individually pass the depth
-            # check and jointly break it (lesson 8: check-then-act on a
-            # shared row is a race — this makes the check-and-recompute
-            # one atomic section per tenant, not two independent reads).
+            # Per-tenant lock: concurrent edits could each pass the depth check and jointly break it.
             await conn.execute("SELECT pg_advisory_xact_lock(hashtext('custom_apis:' || $1::text))", str(tenant_id))
 
             await _validate_upstream_params(conn, tenant_id, params)
@@ -523,10 +400,6 @@ async def create_custom_api(
             result = _decode_custom_api_row(row)
             await _replace_params(conn, result["id"], params)
 
-            # Recomputes chain_levels for this row and every transitive
-            # dependent (there are none yet for a brand-new row, but this
-            # keeps create/update on one code path) — raises before commit
-            # if the ceiling or a cycle would be violated (AC 11).
             await _recompute_tenant_chain_levels(conn, tenant_id)
 
             result = _decode_custom_api_row(
@@ -557,15 +430,10 @@ async def update_custom_api(
     user_email: str | None = None,
     **fields: Any,
 ) -> dict[str, Any]:
-    """`platform_scoped` (RLS design, Tier 3) — its only legitimate source
-    is `deps.is_platform_scoped(current_user)` (lesson 24) — picks the
-    connection this flat by-id write runs under: `tenant_conn()` for a
-    tenant-scoped caller (already pinned to its own tenant by the router's
-    `_authorize_custom_api` check and by `current_tenant()` itself), or
-    `platform_conn(stamp_tenant=...)` for a platform-scoped one, where
-    `stamp_tenant` is the row's OWN tenant_id (resolved via
-    `get_custom_api` below, under the same flag) so `audit_log.tenant_id`'s
-    column default still stamps the edited tenant's id, not NULL."""
+    """`platform_scoped` must come from `deps.is_platform_scoped`.
+
+    Platform writes stamp the row's own tenant so audit_log.tenant_id isn't NULL.
+    """
     unknown = set(fields) - _UPDATABLE_FIELDS
     if unknown:
         raise ValueError(f"update_custom_api() got non-updatable field(s): {unknown}")
@@ -590,14 +458,9 @@ async def update_custom_api(
             old = _decode_custom_api_row(old_row)
             tenant_id = old["tenant_id"]
 
-            # Serialized per tenant — see create_custom_api's comment (lesson 8).
             await conn.execute("SELECT pg_advisory_xact_lock(hashtext('custom_apis:' || $1::text))", str(tenant_id))
 
-            # The FINAL merged state is what every validation below checks —
-            # not just the fields this call happens to touch — so PATCHing
-            # sensitive_response_paths alone re-validates an unrelated,
-            # already-stored success_template against it (the
-            # PATCH-after-the-fact case).
+            # Validate the merged final state, not just the patched fields.
             final_auth_scheme = fields.get("auth_scheme", old["auth_scheme"])
             final_auth_config = fields.get("auth_config", old["auth_config"])
             final_endpoint_url = fields.get("endpoint_url", old["endpoint_url"])
@@ -611,10 +474,7 @@ async def update_custom_api(
             ]
 
             if params is not None:
-                # Merge BEFORE any validation/write below sees `params` —
-                # every subsequent use (success_template check, upstream
-                # validation, the actual _replace_params write) must see
-                # the real preserved secret, not the caller's None.
+                # Merge before validation/writes so they see the preserved secret.
                 params = _merge_sensitive_literals(params, {p["name"]: p for p in old_params})
                 final_params = params
             else:
@@ -701,15 +561,7 @@ async def soft_delete_custom_api(
 
             await conn.execute("UPDATE custom_apis SET deleted_at = now() WHERE id = $1", custom_api_id)
 
-            # Deliberately NOT cascading to agent_custom_apis.enabled = false:
-            # T11's ownership query joins agent_custom_apis.custom_api_id =
-            # custom_apis.id against a custom_apis row already filtered on
-            # deleted_at IS NULL, so once this row is soft-deleted, no
-            # agent_custom_apis row referencing it can join regardless of
-            # its stale `enabled` flag — the JOIN, not a cascade write, is
-            # what makes it unexecutable the very next turn (lesson 16).
-            # A cascade UPDATE here would be redundant work maintaining an
-            # invariant the read side already guarantees by construction.
+            # No cascade to agent_custom_apis: readers join on deleted_at IS NULL.
 
             await audit.write_audit(
                 conn, entity_type="custom_api", entity_id=custom_api_id, action="deleted",

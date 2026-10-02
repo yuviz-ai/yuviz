@@ -1,17 +1,7 @@
 "use client";
 
-// Agent Studio — the agents and their configuration. Opening an agent goes
-// to its config tabs, NOT to the call-flow canvas: identity/voice/knowledge/
-// limits are what you edit day to day, and the flow is a separate surface
-// under /workflows. Before this split, /workflows was the agent list, the
-// canvas and the settings page all at once.
-//
-// Every figure on a card is read from something this system actually
-// stores: config_version, status, language, the three assigned
-// provider_configs, and the real count of attached knowledge bases and
-// custom APIs. There is deliberately no containment rate or cost-per-call
-// here — nothing in this repo measures either, and a plausible-looking
-// number nobody computed is worse than no number.
+// Agent Studio. Opening an agent goes to its config tabs; the call-flow canvas lives under /workflows.
+// Cards show only stored values — no invented metrics like containment rate.
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -41,11 +31,7 @@ export default function AgentsPage() {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
 
-  // Scoped to the account(s) selected in the header switcher — one tenant by
-  // default, or every tenant when "All tenants" is picked. Each tenant's
-  // fetch fails independently (Promise.allSettled): one bad account never
-  // blanks the rest, matching how the tenant-scoped path already degraded
-  // per-agent attachment lookups to "—" rather than failing outright.
+  // allSettled: one failing tenant must not blank the others.
   useEffect(() => {
     if (tenantLoading) return;
     const targets = isAllTenants ? allTenants : tenant ? [tenant] : [];
@@ -79,9 +65,7 @@ export default function AgentsPage() {
       const provs = provResults.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
       setProvidersById(Object.fromEntries(provs.map((p) => [p.id, p])));
 
-      // Attachment counts are per-agent by necessity (both junction tables
-      // are keyed by agent_id with no bulk endpoint). Failures degrade to
-      // "—" per agent rather than failing the page (lesson 21).
+      // No bulk endpoint for attachment counts; failures degrade to "—" per agent.
       const entries = await Promise.all(
         list.map(async (a) => {
           const [kbs, apis] = await Promise.all([

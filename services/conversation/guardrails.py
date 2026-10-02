@@ -1,25 +1,5 @@
-"""
-GuardrailDetector — deterministic, inline caller-frustration/abuse signal.
-
-This is the detector record_guardrail_violation() (pipeline.py) was built
-to receive: it runs on the caller's transcript string already in hand —
-pure regex matching, microseconds, no LLM call, no network, nothing on the
-media path — matching the platform's hot-path rules (no added latency, no
-sync I/O, deterministic).
-
-Scope deliberately v1: a curated English phrase lexicon in two categories.
-It errs toward precision over recall — a missed frustration cue costs one
-un-counted violation; a false positive erodes trust in the escalation
-counter. Word-boundary, case-insensitive matching only; no stemming, no
-sentiment scoring, no per-tenant customization yet (that would be a
-tenant/agent-level column feeding custom patterns — backlog, same shape as
-every other config override in this codebase).
-
-Detection always runs (violations are counted and logged for
-observability even when escalation_threshold is NULL/disabled — see
-record_guardrail_violation's docstring); an actual transfer only fires
-when the agent's Escalation config says so.
-"""
+"""GuardrailDetector: regex-only caller frustration/abuse detection (no I/O, hot-path
+safe). Curated English lexicon tuned for precision over recall."""
 
 from __future__ import annotations
 
@@ -45,16 +25,12 @@ _FRUSTRATION_PHRASES = [
     r"sick of this",
     r"fed up",
     r"stop repeating",
-    # Added from live-call misses (a caller expressed clear
-    # dissatisfaction that v1 didn't catch — see project memory):
     r"not satisfied",
     r"not helpful",
     r"(?:isn'?t|is not|not) working",
     r"doesn'?t work",
     r"doesn'?t help",
-    # "X is (completely|absolutely|totally|just) ridiculous/useless" — the
-    # live calls said "your service is completely ridiculous", which the
-    # this-is-only patterns above missed.
+    # e.g. "your service is completely ridiculous"
     r"(?:is|was) (?:completely|absolutely|totally|just) (?:ridiculous|useless)",
 ]
 
@@ -85,9 +61,7 @@ class GuardrailViolation:
 
 
 class GuardrailDetector:
-    """check() returns the first violation found in the caller's utterance,
-    or None. One utterance = at most one violation (multiple hits in the
-    same sentence are one signal of one unhappy turn, not several)."""
+    """check() returns the first violation in an utterance, or None (at most one per utterance)."""
 
     @staticmethod
     def check(text: str) -> GuardrailViolation | None:
@@ -101,17 +75,8 @@ class GuardrailDetector:
 
 
 class GuardrailCounter:
-    """Per-session *consecutive* violation count — deliberately separate
-    from TransferDecisionEngine (see transfer_engine.py's module
-    docstring): the engine answers "given this count, should we
-    transfer?", never "what is the current count?" or "was this a
-    violation?". This class answers the latter two, and nothing else —
-    it has no notion of thresholds or transfers.
-
-    increment() bumps and returns the new count; reset() (call on any
-    turn that produced no violation) zeroes it, so a caller who is
-    frustrated once, then satisfied, then frustrated again starts counting
-    from 1 again rather than accumulating across the whole call."""
+    """Per-session consecutive violation count; reset() on any clean turn.
+    Thresholds/transfer decisions live in TransferDecisionEngine."""
 
     def __init__(self) -> None:
         self._counts: dict[str, int] = {}
@@ -127,6 +92,5 @@ class GuardrailCounter:
     def current(self, session_id: str) -> int:
         return self._counts.get(session_id, 0)
 
-    # Alias for call sites cleaning up at session end, where "reset" would
-    # misleadingly imply the session continues — same operation.
+    # Session-end alias for reset.
     forget = reset

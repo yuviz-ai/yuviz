@@ -1,16 +1,5 @@
-"""
-EchoConversationHandler — Phase 4 integration test stub.
-
-Simulates the full STT→LLM→TTS pipeline by:
-  1. Treating the raw inbound PCM payload as the "transcript" (echo).
-  2. Returning stt_text="echo" and the original payload as a single TTS chunk.
-
-This exercises the Gateway FSM's full state chain:
-  Listening → Recognizing → Thinking → Synthesizing → Speaking → Listening
-
-An optional pipeline_delay_ms introduces artificial latency to simulate real
-provider round-trips during load and integration testing.
-"""
+"""EchoConversationHandler: loopback stub that echoes inbound audio as TTS, for
+integration/load testing the gateway FSM."""
 
 from __future__ import annotations
 
@@ -28,11 +17,7 @@ class EchoConversationHandler:
     pipeline_delay_ms: artificial delay applied once per on_audio() call.
     """
 
-    # Echo mode never speaks unprompted — no out-of-band egress. Explicit
-    # class attribute, not just the Protocol's declaration: without this,
-    # ConversationSession.out_responses's getattr(..., None) is the only
-    # thing standing between the no-flow majority path and AttributeError
-    # (see session.py's IConversationHandler/Changes note).
+    # No out-of-band egress.
     out_responses: "asyncio.Queue[HandlerResponse] | None" = None
 
     def __init__(self, pipeline_delay_ms: float = 0.0) -> None:
@@ -79,15 +64,10 @@ class EchoConversationHandler:
     async def on_transfer_failed(
         self, session_id: str, destination: str, reason: str,
     ) -> AsyncIterator[HandlerResponse]:
-        # Echo mode has no LLM/TTS to generate a real apology with —
-        # nothing to do here beyond letting ConversationSession still drive
-        # its own FSM/EventBus (see session.py).
         return
         yield  # make this an async generator
 
     def on_transfer_cancelled(self, session_id: str) -> None:
-        # Echo mode never produces a transfer request, so it never has
-        # duplicate-suppression bookkeeping to release.
         pass
 
     def start_finalization(self, session_id: str) -> None:
@@ -95,9 +75,6 @@ class EchoConversationHandler:
         pass
 
     async def finalize_session(self, session_id: str, reason: str) -> FinalizationResult:
-        # Echo mode has no LLM to summarize with and no transcripts to
-        # persist — nothing to do here beyond letting ConversationSession
-        # still drive its own FSM/EventBus (see session.py).
         return FinalizationResult(
             summary="", summary_generated=False, transcript_written=False,
             status=FinalizationStatus.COMPLETED,

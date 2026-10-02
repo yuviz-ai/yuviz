@@ -1,7 +1,5 @@
 """
-resolve_call_flow() — the never-raises degradation contract, mirrored on
-agent_resolver.resolve_handler_deps() (see test_agent_resolver.py). No
-provider, no I/O: a fake IConfigProvider stands in for Config SDK.
+resolve_call_flow(): never raises; degrades to None. Uses a fake IConfigProvider, no I/O.
 """
 
 from __future__ import annotations
@@ -47,9 +45,7 @@ INVALID_GRAPH = {"version": 1, "nodes": [], "edges": []}  # no start node
 
 
 class FakeConfigProvider:
-    """get_runtime_config() delegates to a real MockConfigProvider; get_
-    call_flow() is what each test controls directly — this is the seam
-    resolve_call_flow() actually calls."""
+    """Real get_runtime_config(); get_call_flow() is controlled per test."""
 
     def __init__(self, mock: MockConfigProvider, call_flow: CallFlow | None = None,
                  raise_on_get: Exception | None = None) -> None:
@@ -107,8 +103,6 @@ async def test_invalid_graph_returns_none_and_does_not_raise():
 async def test_arbitrary_provider_exception_returns_none_and_does_not_propagate():
     runtime_config, mock = await _runtime_config(call_flow_id="flow-1")
     provider = FakeConfigProvider(mock, raise_on_get=RuntimeError("config service unreachable"))
-    # The assertion IS that this doesn't raise — a bare `except Exception`
-    # that let anything through would fail this call, not a follow-up assert.
     result = await resolve_call_flow(runtime_config, provider)
     assert result is None
 

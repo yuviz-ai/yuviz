@@ -1,13 +1,5 @@
 """
-Knowledge Service — FastAPI app. Thin HTTP wrapper around knowledge_bases.py/
-documents.py/agent_kb.py/retrieval.py, same "routers translate, business
-logic lives in the modules" convention as services/config/app.py.
-
-Auth: imports services.config.auth/deps directly (JWT decode/CurrentUser/
-require_role) rather than a shared libs/auth_sdk — an explicit, temporary
-choice for this phase (see project memory: Phase 6A scope). Both services
-must share the same JWT_SECRET env var for a token minted by Config
-Service's /auth/login to validate here.
+Knowledge Service — FastAPI app. Auth reuses services.config deps; JWT_SECRET must match Config Service.
 
 Run: uvicorn services.knowledge.app:app --reload --port 8100
 """
@@ -31,8 +23,7 @@ log = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Connect eagerly so a broken POSTGRES_DSN fails at startup, not on the
-    # first request — same reasoning as services/config/app.py's lifespan.
+    # Fail at startup on a broken POSTGRES_DSN, not on the first request.
     await db.get_pool()
     await get_vector_repo()
     get_embedding_manager()
@@ -42,8 +33,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Voice AI Platform — Knowledge Service", lifespan=lifespan)
 
-# Admin UI is the only browser client — same narrow local-dev origin list as
-# Config Service's app.py.
+# Admin UI is the only browser client.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],

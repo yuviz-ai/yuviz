@@ -1,33 +1,6 @@
-"""
-ToolPolicyResolver — DB-aware agent tool enablement, deliberately separate
-from ToolRegistry (design review point 7): the registry knows what tools
-exist in code; this class knows which of them a given agent may actually
-use, resolved from agent_tool_policies/tool_provider_configs.
-
-v1 simplification, flagged explicitly rather than silently done: this
-queries Postgres directly with a simple in-process TTL cache, mirroring
-TranscriptBuilder's own direct-asyncpg precedent in this same service —
-NOT the full Config SDK cache-aside (HTTP + Redis) pattern RuntimeConfig
-uses. Promoting this to that pattern (so tool-policy changes propagate the
-same way agent config changes do) is the natural v2 hardening step, not
-done here to avoid an invasive change to shared libs/config_sdk for a
-single small table.
-
-KNOWN CONFLICT, found while building this, not resolved here:
-libs/config_sdk/models.py already has RuntimeConfig.tools: list[ToolSpec],
-fed by IConfigProvider.get_tools() — an earlier, pre-existing stub
-explicitly labeled "Phase 6b concept, not built yet," always returning []
-in both CacheAsideConfigProvider and MockProvider, with no real backing
-implementation anywhere. This class is the actual, working implementation
-of that same "which tools can an agent use" concept, but it does NOT go
-through that seam — agent_tool_policies/tool_provider_configs are an
-entirely separate, parallel mechanism. Whoever does the v2 hardening above
-should also resolve this: either retire ToolSpec/get_tools() in favor of
-this resolver's shape, or re-architect this resolver to flow through that
-existing Config SDK seam instead of a direct Postgres query. Left as two
-concepts today rather than guessing which one the rest of the codebase
-will actually standardize on.
-"""
+"""ToolPolicyResolver — which registered tools an agent may use, from
+agent_tool_policies/tool_provider_configs (direct Postgres + in-process TTL cache).
+Note: RuntimeConfig.tools / get_tools() in libs/config_sdk is an unused stub for the same concept."""
 
 from __future__ import annotations
 
@@ -48,14 +21,6 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_CACHE_TTL_S = 30.0
 
-# The auto-derived-companion machinery (book_appointment silently granting
-# cancel_appointment/reschedule_appointment on the same Cal.com config)
-# was removed along with the calendar built-ins themselves.
-# Nothing replaces it: execute_api is the only DB-gated tool left, and a
-# custom API never implies another custom API — if two of them are related,
-# that relationship is an upstream edge in custom_api_params, resolved by
-# services/toolexec, not a second tool grant here.
-
 
 @dataclass(frozen=True)
 class ResolvedToolPolicy:
@@ -66,15 +31,9 @@ class ResolvedToolPolicy:
     extra:                   dict[str, Any]
     timeout_ms:              int | None
     max_calls_per_turn:      int | None
-    # execute_api only — the agent's effective chain-depth ceiling from
-    # agent_tool_policies.max_chain_depth (NULL = platform default, same
-    # NULL-means-framework-default contract as timeout_ms above). None for
-    # every other tool.
+    # execute_api only; None = platform default.
     max_chain_depth:         int | None = None
-    # execute_api only — union of custom_api_params.name WHERE sensitive AND
-    # source='caller', across the agent's enabled APIs (see
-    # _specialize_execute_api). Empty frozenset for every legacy tool, so
-    # their logging stays byte-identical to today (middleware.py finding 8).
+    # execute_api only — sensitive caller-param names across the agent's enabled APIs.
     sensitive_arg_keys:      frozenset[str] = frozenset()
 
 
@@ -85,9 +44,7 @@ class ToolPolicyResolver:
         self._pool = pool
         self._registry = registry
         self._cache_ttl_s = cache_ttl_s
-        # Keyed by (agent_id, tenant_slug), not agent_id alone — an agent_id
-        # collision across tenants can never serve one tenant's cached
-        # tool policy back to another.
+        # Keyed by tenant too, so a cross-tenant agent_id collision can't leak cached policy.
         self._cache: dict[tuple[str, str], tuple[float, list[ResolvedToolPolicy]]] = {}
 
     @classmethod
@@ -104,12 +61,8 @@ class ToolPolicyResolver:
     async def enabled_tools(
         self, agent_id: str, tenant_slug: str, only: list[str] | None = None,
     ) -> list[ResolvedToolPolicy]:
-        """Return enabled tools for agent_id, scoped to tenant_slug. `only`
-        subsets by name (never grants); None = unnarrowed; [] = none this
-        stage. tenant_slug is passed straight to tenant_conn() below — an
-        empty/unresolvable slug (the legacy YAML fallback's placeholder,
-        see agent_config.py's to_runtime_config()) raises TenantUnresolved
-        rather than silently resolving zero tools under the wrong scope."""
+        """Enabled tools for agent_id in tenant_slug; `only` subsets by name (None = all, [] = none).
+        An empty/unresolvable slug raises TenantUnresolved."""
         if not agent_id or self._pool is None:
             return []
 
@@ -164,11 +117,7 @@ class ToolPolicyResolver:
     async def _specialize_execute_api_if_present(
         self, resolved: list[ResolvedToolPolicy], agent_id: str, tenant_slug: str,
     ) -> None:
-        """Runs the execute_api specialization query only when an
-        agent_tool_policies row for it is actually present (AC 9 — an agent
-        that never enabled execute_api issues no second query at all).
-        Drops the policy entirely when the agent has zero enabled custom
-        APIs, so the LLM never sees an execute_api with an empty enum."""
+        """Specialize execute_api if present; drop it when the agent has no enabled custom APIs."""
         for i, policy in enumerate(resolved):
             if policy.definition.name != "execute_api":
                 continue
@@ -183,35 +132,9 @@ class ToolPolicyResolver:
     async def _specialize_execute_api(
         self, defn: ToolDefinition, agent_id: str, tenant_slug: str,
     ) -> tuple[ToolDefinition, frozenset[str]] | None:
-        """Returns (defn with api_name.enum + per-API leaf-input docs, the
-        union of sensitive caller-param names across those APIs), or None
-        when the agent has zero enabled custom APIs.
-
-        The query is the runtime tenant fence for AC 10 — an agent_custom_apis
-        row can only resolve if the agent and the API share a tenant,
-        independent of the write-time check in services/toolexec.
-
-        TWO THINGS THIS GETS RIGHT THAT THE FLAT PER-API QUERY DID NOT
-        (fixed after the model kept picking the wrong API):
-
-        1. An API that is another enabled API's upstream is NOT offered.
-           services/toolexec calls it automatically as a chain step, so
-           offering it invites the model to call a half-chain directly. In
-           the reference tenant that was 5 of 8 names in the enum.
-
-        2. An API's caller params are collected across its WHOLE chain, not
-           just its own row. A terminal API usually declares no caller
-           params of its own — its inputs live on the leaf it depends on
-           (get_product_details needs `q`, which belongs to
-           search_products). The flat query therefore documented exactly
-           the wrong three APIs as taking no arguments at all, while the
-           intermediate ones advertised the `q` the caller had just said.
-           A model shown that will pick the intermediate one, correctly,
-           given what it was told.
-
-        Together these make the enum mean "things you can ask for" and the
-        params mean "what you must supply", which is what execute_api's own
-        description has always promised."""
+        """Return (defn with api_name enum + param docs, sensitive caller-param names), or None if no APIs.
+        Upstream-only APIs are hidden and caller params are gathered across each API's whole chain;
+        the agent/API tenant join is the runtime tenant fence."""
         async with tenant_conn(
             self._pool, explicit_tenant=tenant_slug, reason="conversation-tool-policy",
         ) as conn:
@@ -260,14 +183,9 @@ class ToolPolicyResolver:
         if not rows:
             return None
 
-        # A name is offerable unless it is some other enabled API's
-        # upstream. Collected first so the params pass can skip the rest.
         offerable = {r["name"] for r in rows if not r["is_intermediate"]}
         if not offerable:
-            # Every enabled API is an upstream of another — only reachable
-            # through a cycle in the data, which resolve_order() will
-            # refuse anyway. Offer everything rather than silently handing
-            # the model an empty enum, and say so in the log.
+            # Only possible with a dependency cycle; offer all rather than an empty enum.
             log.warning(
                 "ToolPolicyResolver: every enabled custom API for agent_id=%s is an upstream of "
                 "another (dependency cycle?) — offering all of them unfiltered", agent_id,
@@ -280,8 +198,7 @@ class ToolPolicyResolver:
             if row["name"] not in offerable:
                 continue
             api = apis.setdefault(row["name"], {"description": row["description"], "params": {}})
-            # Keyed by param name: a diamond in the chain reaches the same
-            # leaf twice, and the model must be told about it once.
+            # Dedup: a diamond in the chain reaches the same leaf twice.
             if row["param_name"] is not None and row["param_name"] not in api["params"]:
                 api["params"][row["param_name"]] = row
                 if row["param_sensitive"]:

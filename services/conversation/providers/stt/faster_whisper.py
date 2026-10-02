@@ -58,14 +58,7 @@ class FasterWhisperSTT:
                 self._model_size,
                 device=self._device,
                 compute_type=self._compute_type,
-                # Once cached locally, nothing about a revision check needs
-                # the network — but ctranslate2/huggingface_hub does one by
-                # default on every load regardless (confirmed live: a real
-                # GET to huggingface.co on every single call that
-                # doesn't hit AIProviderManager's cache). That's both
-                # needless per-load latency and a hard dependency on internet
-                # reachability for a hot-path model load, which would hang or
-                # fail outright on a real, possibly air-gapped PSTN host.
+                # Skip huggingface_hub's per-load revision check (latency; breaks air-gapped hosts).
                 local_files_only=True,
             ),
         )
@@ -80,10 +73,7 @@ class FasterWhisperSTT:
             return await loop.run_in_executor(None, self._transcribe_sync, audio, sample_rate)
 
     async def feed_stream(self, session_id: str, chunk: bytes, sample_rate: int) -> None:
-        # No genuine incremental decode here — the full buffer arrives via
-        # finalize_stream's `audio` param instead, same contract transcribe()
-        # always had. See ISTT.feed_stream's docstring: only DeepgramSTT does
-        # real per-chunk streaming today.
+        # No incremental decode; finalize_stream() gets the full buffer.
         return
 
     async def finalize_stream(self, session_id: str, audio: bytes, sample_rate: int) -> SttResult:

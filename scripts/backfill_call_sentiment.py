@@ -1,25 +1,8 @@
 #!/usr/bin/env python3
-"""
-Scores calls that already ended, using the same SentimentScorer the
-Conversation Service runs at end_call (services/conversation/sentiment.py).
+"""Backfill calls.sentiment for ended calls that were never scored (safe to re-run).
 
-Sentiment is written when a call ENDS, so every call that finished before
-that shipped has calls.sentiment NULL forever — this backfills them from
-the transcripts already in Postgres. Nothing else does: there is no retry
-sweep, by design (a scorer that failed once for a real reason should not
-silently re-bill on every restart).
-
-Only touches rows where sentiment IS NULL, so it is safe to re-run and will
-never overwrite a score the live path already wrote. Calls with no
-transcript turns are skipped and stay NULL — "never scored" is the honest
-value for a call with no caller speech to read.
-
-Usage:
-  python3 scripts/backfill_call_sentiment.py [--limit N] [--tenant SLUG] [--dry-run]
-
-Requires: POSTGRES_DSN, and VOICEAI_SENTIMENT_API_KEY or OPENAI_API_KEY
-(see services/conversation/pipeline_config.py's SentimentConfig). Costs one
-model call per scored call — use --limit first to see what you are in for.
+Requires POSTGRES_DSN and VOICEAI_SENTIMENT_API_KEY or OPENAI_API_KEY.
+One model call per scored call; try --limit first.
 """
 
 from __future__ import annotations
@@ -69,9 +52,7 @@ async def main() -> int:
         params.append(args.limit)
         sql += f" LIMIT ${len(params)}"
 
-    # Connects with whatever POSTGRES_DSN names — a maintenance script run by
-    # hand, the same posture as the other scripts here. It reads and writes
-    # across tenants by design; that is the job.
+    # Cross-tenant by design: a hand-run maintenance script.
     pool = await asyncpg.create_pool(dsn)
     llm = OpenAILLM(
         api_key=cfg.api_key, model=cfg.model, system="",

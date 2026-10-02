@@ -1,16 +1,6 @@
-"""
-services/toolexec/routers/agent_apis.py — per-agent enablement (T17).
+"""Per-agent custom API enablement routes.
 
-Every route below is gated by `agent_apis._authorize_agent_api()` (T8) —
-but not by calling it directly here: `list_for_agent`/`set_enabled`/
-`detach` each call it themselves, INSIDE the service function, before any
-read or write. That is what makes a tenant-A admin's PUT of tenant B's
-custom_api_id 404 before any INSERT/UPDATE is even attempted — the guard
-runs first regardless of which of these three thin handlers is entered.
-
-Writes require `require_role("superadmin","admin")`; the list route is a
-read, so it only requires `get_current_user` (mirrors
-routers/custom_apis.py's read/write split).
+Tenant authorization runs inside each service function (`_authorize_agent_api`) before any read/write.
 """
 
 from __future__ import annotations

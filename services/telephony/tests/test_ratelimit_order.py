@@ -1,7 +1,4 @@
-"""N+1 requests, all with an invalid signature, must get 429 (not 403) once
-the account's limit is exhausted — proving the limiter runs before the
-signature check and that a failed signature still consumes quota (AC11,
-AC12). A signature-first implementation would return 403 forever."""
+"""Invalid-signature requests hit 429 once the limit is exhausted: rate limiting runs before signature checks."""
 
 from __future__ import annotations
 

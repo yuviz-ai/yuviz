@@ -1,8 +1,4 @@
-"""
-OllamaLLM tests use httpx.MockTransport — no real network call, no cost.
-generate_with_tools() shapes mirror what was actually captured live against
-a running Ollama server (see project history), not a guessed schema.
-"""
+"""OllamaLLM tests via httpx.MockTransport; tool-call shapes match a real Ollama server."""
 
 from __future__ import annotations
 
@@ -286,11 +282,7 @@ async def test_generate_with_tools_shapes_tool_call_and_result_natively():
 
 
 async def test_400_thinking_rejection_retries_once_without_think_and_remembers_it():
-    """Some Ollama builds 400 on an unsupported `think` field instead of
-    ignoring it. First request 400s (mentioning "think" in the body) -> the
-    client must retry once, without the key, and get a real answer. A
-    second, independent turn on the same instance must skip sending `think`
-    from the start rather than 400-then-retry every single turn forever."""
+    """A 400 on `think` retries once without it, and later turns skip `think` from the start."""
     payloads_seen = []
     call_count = {"n": 0}
 
@@ -321,9 +313,7 @@ async def test_400_thinking_rejection_retries_once_without_think_and_remembers_i
 
 
 async def test_non_thinking_related_400_is_not_swallowed():
-    """A 400 unrelated to `think` (e.g. a genuinely malformed request) must
-    still raise — the graceful-degrade path is specific to the thinking
-    rejection, not a blanket "ignore 400s" behaviour."""
+    """A 400 unrelated to `think` still raises."""
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(400, content=b'{"error":"model not found"}')
 

@@ -1,19 +1,8 @@
 """
 DeepgramSTT — cloud transcription via Deepgram.
 
-transcribe() calls the pre-recorded /v1/listen REST endpoint (kept for
-callers that still want one-shot batch transcription). feed_stream()/
-finalize_stream()/cancel_stream() use Deepgram's real live-streaming
-WebSocket API instead — found live that the batch-only path
-throws away Deepgram's actual latency advantage: it transcribes
-continuously while the caller is still talking, so by the time
-speech_ended fires, the final transcript is already (mostly) computed
-instead of needing a full decode from scratch. See pipeline.py's on_audio
-(feeds every chunk immediately) and on_speech_ended (calls
-finalize_stream() instead of transcribe()).
-
-pip install httpx websockets (both already dependencies — httpx via
-OllamaLLM, websockets via services/webcall)
+transcribe() uses batch /v1/listen; the *_stream methods use the live WebSocket API
+so the transcript is mostly computed by the time speech_ended fires.
 """
 
 from __future__ import annotations
@@ -32,13 +21,7 @@ log = logging.getLogger(__name__)
 _DEFAULT_BASE_URL = "https://api.deepgram.com"
 _LIVE_WS_URL = "wss://api.deepgram.com/v1/listen"
 
-# Deepgram closes a live connection that receives neither audio nor a text
-# message for ~10-12s (confirmed live: "did not receive audio data or a
-# text message within the timeout window"). feed_stream() only sends real
-# audio, so any gap longer than that — the agent's own TTS playing, a
-# caller pause — kills the connection outright. Below that threshold, a
-# periodic KeepAlive message (Deepgram's own documented keepalive type)
-# keeps it open through silence.
+# Deepgram closes a live connection after ~10-12s without audio; KeepAlive holds it through silence.
 _KEEPALIVE_INTERVAL_S = 8.0
 
 
@@ -52,15 +35,7 @@ class _LiveStream:
 
 
 class DeepgramSTT:
-    """
-    ISTT implementation backed by Deepgram's /v1/listen endpoint.
-
-    api_key   — Deepgram API key (resolved once at construction by
-                AIProviderManager via SecretResolver, never re-resolved
-                per call).
-    model     — e.g. "nova-3", "nova-2"
-    language  — BCP-47 code, e.g. "en". None lets Deepgram auto-detect.
-    """
+    """ISTT backed by Deepgram's /v1/listen. language=None lets Deepgram auto-detect."""
 
     def __init__(
         self,
@@ -78,10 +53,7 @@ class DeepgramSTT:
             headers={"Authorization": f"Token {api_key}"},
             timeout=timeout_s,
         )
-        # Swappable for tests — real code always uses websockets.connect; a
-        # test injects a fake connect callable instead of hitting the
-        # network. Keyed by session_id: one live connection per in-progress
-        # call, opened lazily on the first feed_stream() chunk.
+        # Swappable for tests. One live connection per session, opened on first chunk.
         self._ws_connect = websockets.connect
         self._streams: dict[str, _LiveStream] = {}
         log.info("DeepgramSTT model=%s language=%s", model, language)
@@ -155,10 +127,7 @@ class DeepgramSTT:
                 "DeepgramSTT: failed to send audio chunk session=%s — evicting dead "
                 "stream, next chunk will open a fresh one", session_id,
             )
-            # Deepgram already closed its end (e.g. the idle timeout above) —
-            # without this, self._streams keeps handing back the same dead
-            # socket forever and every remaining chunk this call fails the
-            # same way, silently losing STT for the rest of the call.
+            # Otherwise the dead socket is reused and STT is lost for the rest of the call.
             self._evict_stream(session_id, stream)
 
     def _evict_stream(self, session_id: str, stream: "_LiveStream") -> None:
@@ -179,13 +148,7 @@ class DeepgramSTT:
         return stream
 
     async def _keepalive_loop(self, stream: "_LiveStream", session_id: str) -> None:
-        """Sends Deepgram's KeepAlive message every _KEEPALIVE_INTERVAL_S
-        while the stream is open — real audio chunks from feed_stream()
-        share the same connection, so this only matters during a gap with
-        no audio (agent speaking, caller pause). Cancelled by
-        _evict_stream()/finalize_stream()/cancel_stream(); a send failure
-        here just ends the loop quietly — feed_stream()'s own eviction
-        path handles the dead connection when the next real chunk arrives."""
+        """Send KeepAlive periodically; on failure exit quietly (feed_stream() evicts dead streams)."""
         try:
             while True:
                 await asyncio.sleep(_KEEPALIVE_INTERVAL_S)
@@ -196,10 +159,7 @@ class DeepgramSTT:
             log.info("DeepgramSTT: keepalive send failed session=%s — stream likely closed", session_id)
 
     async def _read_loop(self, stream: _LiveStream, session_id: str) -> None:
-        # Collects every is_final segment Deepgram sends during the live
-        # stream — interim (non-final) results aren't used for anything
-        # yet, they exist for a future partial-transcript display, not this
-        # turn-based pipeline's decision-making.
+        # Only is_final segments are kept; interim results are ignored.
         try:
             async for raw in stream.ws:
                 try:
@@ -220,14 +180,9 @@ class DeepgramSTT:
             log.exception("DeepgramSTT: live stream read loop failed session=%s", session_id)
 
     async def finalize_stream(self, session_id: str, audio: bytes, sample_rate: int) -> SttResult:
-        # audio/sample_rate accepted-but-unused: ISTT's contract lets
-        # pipeline.py call every implementation identically. Deepgram
-        # already has everything it needs from feed_stream()'s live
-        # connection; only FasterWhisperSTT's fallback actually uses them.
+        # audio is unused: the live stream already has everything.
         stream = self._streams.pop(session_id, None)
         if stream is None:
-            # feed_stream() was never called (e.g. a 0-chunk utterance) —
-            # nothing was ever streamed.
             return SttResult(text="")
         if stream.keepalive_task:
             stream.keepalive_task.cancel()

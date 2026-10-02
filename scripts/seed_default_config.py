@@ -1,22 +1,8 @@
 #!/usr/bin/env python3
-"""
-Seeds the 'default' tenant with a 'default' agent and matching STT/LLM/TTS
-provider_configs, so the Config Service has something real to resolve for a
-local/dev call (see services/conversation/agent_resolver.py). Idempotent —
-safe to run more than once.
+"""Idempotently seed the 'default' tenant's agent and STT/LLM/TTS provider_configs.
 
-Content mirrors today's fallback path (config/agents/default.yaml +
-PipelineConfig's defaults in services/conversation/pipeline_config.py) so
-seeding this does not change what a local call sounds like — it just moves
-where that configuration comes from.
-
-Goes through the Config Service's own audited write path (services.config.*),
-not raw SQL, so these writes show up in audit_log like any real admin edit.
-
-Usage: python3 scripts/seed_default_config.py
-Requires: POSTGRES_ADMIN_DSN, falling back to POSTGRES_DSN, and REDIS_URL
-(see services/config/db.py, cache.py) — connects as the superuser so it
-keeps bypassing RLS, same as create_superadmin.py/create_service_account.py.
+Uses the audited services.config write path. Usage: python3 scripts/seed_default_config.py
+Requires: POSTGRES_ADMIN_DSN (or POSTGRES_DSN; superuser bypasses RLS) and REDIS_URL.
 """
 
 from __future__ import annotations
@@ -59,13 +45,7 @@ PROVIDER_DEFAULTS = [
      "model": STT_MODEL, "extra": {"device": "cpu", "compute_type": "int8"}},
     {"role": "llm", "engine": "ollama", "name": f"Ollama {LLM_MODEL} (default)",
      "model": LLM_MODEL, "extra": {"temperature": 0.7, "base_url": OLLAMA_BASE_URL}},
-    # Kokoro, not macOS's `say` — found live while auditing
-    # fork-reproducibility: `engine="macos"` shells out to a macOS-only
-    # binary and silently can't work at all on Linux (or even reliably as
-    # a "default" on a fresh Mac). Kokoro is the local, cross-platform
-    # engine every real demo tenant in this project actually uses; its
-    # model downloads from Hugging Face on first use instead of depending
-    # on the host OS.
+    # Kokoro, not macOS `say`: it's cross-platform.
     {"role": "tts", "engine": "kokoro", "name": "Kokoro TTS (default)",
      "voice": "af_sarah", "extra": {"lang_code": "a"}},
 ]
@@ -79,9 +59,7 @@ async def main() -> None:
             f"tenant {TENANT_SLUG!r} not found — apply database/schema.sql first "
             "(it seeds this row)."
         )
-    # No request context here to carry the tenant scope — this script IS the
-    # caller, so it sets the target itself, once, for every ambient
-    # tenant_conn() call below (agents.py/provider_configs.py).
+    # No request context: set the tenant scope for every tenant_conn() below.
     set_target_tenant(str(tenant["id"]))
 
     provider_ids: dict[str, str] = {}

@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # start_local.sh — Starts the full native macOS Voice AI stack.
 # Run each block in a SEPARATE terminal tab, in order (mysql -> kamailio ->
-# freeswitch is a hard dependency chain: kamailio's dispatcher/routing
-# tables live in MySQL, and FreeSWITCH registers with Kamailio as its
-# upstream SIP proxy).
+# freeswitch is a hard dependency chain).
 #
 # Prerequisites (already installed):
 #   MySQL, Kamailio, FreeSWITCH, Redis, PostgreSQL, Ollama, faster-whisper
@@ -30,8 +28,7 @@ start_mysql() {
 
 # ── Block 2: Kamailio — SIP proxy, must be up before FreeSWITCH registers ───
 start_kamailio() {
-  # -Y: a user-owned runtime dir, so this runs without sudo (the default
-  # /var/run/kamailio is root-only).
+  # -Y: user-owned runtime dir so this runs without sudo.
   mkdir -p "$HOME/.yuviz/kamailio/run"
   kamailio -f /usr/local/etc/kamailio/kamailio.cfg -D -E -Y "$HOME/.yuviz/kamailio/run"
 }
@@ -41,25 +38,13 @@ start_data() {
   brew services start postgresql@14 2>/dev/null || true
   brew services start redis         2>/dev/null || true
 
-  # ON_ERROR_STOP=1 (lesson 13) turns a tripped guard — e.g. schema.sql's
-  # case-insensitive email-collision check — into psql exit status 3, which
-  # must reach the operator and stop this launcher: swallowing it (the old
-  # `2>/dev/null || echo "...applied..."`) would have printed a false
-  # success and started every service against a half-applied schema, with
-  # no user_invites table and no invite-onboarding at all. The one case
-  # that old fallback genuinely needed to catch is exit status 2 — psql's
-  # own "could not connect", which is what happens on a fresh checkout
-  # before `createdb voiceai` has ever been run — checked here explicitly,
-  # verified empirically (`psql <missing db>` -> 2, a tripped `RAISE
-  # EXCEPTION` guard under ON_ERROR_STOP=1 -> 3, not 2).
+  # psql exits 2 when it can't connect (db missing) and 3 when a schema guard
+  # trips under ON_ERROR_STOP; the latter must stop the launcher.
   local schema_rc=0
   psql voiceai -v ON_ERROR_STOP=1 -f "$REPO/database/schema.sql" || schema_rc=$?
   if [ "$schema_rc" -eq 2 ]; then
     echo "voiceai db missing — run: psql postgres -c 'CREATE DATABASE voiceai;'" >&2
-    # return 0, not 1: this file is source-d into the operator's shell (docs/setup.md:158)
-    # under `set -euo pipefail`, where a nonzero return from a sourced function
-    # terminates the interactive shell. The hint above is the whole point of
-    # this branch, so it must survive to be read.
+    # return 0: a nonzero return under `set -e` in a sourced file closes the shell.
     return 0
   elif [ "$schema_rc" -ne 0 ]; then
     echo "schema.sql failed to apply — see the error above; PostgreSQL/Redis were NOT started for use" >&2
@@ -68,9 +53,7 @@ start_data() {
 
   psql voiceai -f "$REPO/database/knowledge_schema.sql" 2>/dev/null || true
   psql voiceai -f "$REPO/database/telephony_schema.sql" 2>/dev/null || true
-  # rls.sql is the 4th schema file: creates yuviz_app/yuviz_platform and the
-  # per-table policies. Every start_* block below stays on the superuser
-  # POSTGRES_DSN — RLS is live but inert until a later DSN cutover.
+  # RLS is inert here: every start_* block uses the superuser POSTGRES_DSN.
   _require YUVIZ_APP_PASSWORD || return 0
   psql voiceai -v yuviz_app_password="$YUVIZ_APP_PASSWORD" -f "$REPO/database/rls.sql" 2>/dev/null || true
   echo "✓ PostgreSQL + Redis running"
@@ -104,9 +87,7 @@ start_knowledge_worker() {
 }
 
 # ── Block 8: Campaigns Service (REST API, port 8400) — outbound calling ──────
-# worker.py's pacing loop runs inside this same process (see its own
-# docstring), not a separate process like the Knowledge worker — no extra
-# block needed for it.
+# The pacing worker runs in-process; no separate block.
 start_campaigns_service() {
   _require JWT_SECRET FREESWITCH_ESL_PASSWORD || return 0
   _warn_env_drift SIP_PROXY_HOST
@@ -116,8 +97,7 @@ start_campaigns_service() {
 
 # ── Block 8b: Tool Execution Service (REST API, port 8600) — custom API chains ─
 start_toolexec_service() {
-  # Tenant-namespaced credential refs resolve under TOOLEXEC_TENANT_SECRET_ROOT,
-  # NOT the platform k8s secret mount — see services/toolexec/auth_schemes.py.
+  # Tenant credential refs resolve under TOOLEXEC_TENANT_SECRET_ROOT, not the platform mount.
   _require JWT_SECRET TOOLEXEC_TENANT_SECRET_ROOT TOOLEXEC_ARGS_HMAC_KEY_REF || return 0
   cd "$REPO"
   mkdir -p "$TOOLEXEC_TENANT_SECRET_ROOT"

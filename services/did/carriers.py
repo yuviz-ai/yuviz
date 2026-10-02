@@ -1,10 +1,4 @@
-"""
-Read-only carriers accessor for DID Service — this service only ever reads
-a carrier's own credentials to authenticate its provider API calls; it
-never writes to carriers (services/config/carriers.py owns that table's
-CRUD). Duplicated as its own thin module rather than cross-imported, same
-microservice-boundary reasoning as db.py/secret_resolver.py/audit.py.
-"""
+"""Read-only carriers accessor for DID Service; services/config owns carrier CRUD."""
 
 from __future__ import annotations
 

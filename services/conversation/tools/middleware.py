@@ -1,19 +1,6 @@
-"""
-Middleware chain wrapping any IToolExecutor — see Tool Execution Framework
-design, review point 6: every cross-cutting concern (logging, metrics,
-circuit breaking, retry, timeout) lives here, once, so an executor
-implementation only ever writes execute(), nothing else.
+"""Middleware chain wrapping any IToolExecutor (logging, metrics, circuit breaking, retry, timeout).
 
-Order matters (see design §06/§08): Logging/Metrics wrap the whole call for
-full-request observability; CircuitBreaker sits OUTSIDE Retry so an open
-breaker fails fast without burning a retry attempt; Timeout is innermost,
-bounding each individual attempt rather than the whole retry loop.
-
-No TracingMiddleware yet — this codebase has no tracing infrastructure to
-plug into (see metrics.py's own "NullMetrics is the default, opt-in"
-posture). Omitted deliberately, not silently dropped: add it here first if
-that infra ever exists, rather than bolting tracing onto individual
-executors.
+Order: Logging/Metrics outermost; CircuitBreaker outside Retry so an open breaker fails fast; Timeout innermost, per attempt.
 """
 
 from __future__ import annotations
@@ -33,9 +20,7 @@ NextCall = Callable[[ToolExecutionRequest], Awaitable[ToolResult]]
 
 
 def _redact(value: Any, redact_keys: frozenset[str]) -> Any:
-    """Replaces any dict key in redact_keys with "[redacted]", at any depth
-    of a dict/list structure — used so a `sensitive` caller input never
-    reaches this log line in clear (see class docstring below)."""
+    """Replace values of keys in redact_keys with "[redacted]" at any depth."""
     if isinstance(value, dict):
         return {
             k: ("[redacted]" if k in redact_keys else _redact(v, redact_keys))
@@ -47,22 +32,12 @@ def _redact(value: Any, redact_keys: frozenset[str]) -> Any:
 
 
 class LoggingMiddleware:
-    """Kept generic — no tool name appears here; the orchestrator supplies
-    redact_arg_keys from the resolved policy (ResolvedToolPolicy.
-    sensitive_arg_keys) at the one place that holds both the policy and the
-    chain (orchestrator.py's build_default_chain call site)."""
+    """Logs tool calls; redact_arg_keys comes from the resolved policy's sensitive_arg_keys."""
 
     def __init__(self, redact_arg_keys: frozenset[str] = frozenset()) -> None:
         self._redact_arg_keys = redact_arg_keys
 
     async def __call__(self, request: ToolExecutionRequest, call_next: NextCall) -> ToolResult:
-        # arguments/payload logged here — confirmed live this
-        # was previously the only gap in an otherwise-verifiable tool-call
-        # chain: neither the LLM's arguments nor the executor's returned
-        # payload were ever logged anywhere, so "did the LLM send the right
-        # requested_datetime" and "did the tool actually report booked=true"
-        # could only ever be answered by asking the user to paste terminal
-        # output, never by reading a log directly.
         log.info(
             "tool_call start tool=%s call_id=%s tenant=%s agent=%s arguments=%r",
             request.tool_name, request.tool_call_id,
@@ -92,13 +67,8 @@ class MetricsMiddleware:
 
 
 class LatencyRecorderMiddleware:
-    """Feeds ToolLatencyStore from the exact measurement point MetricsMiddleware
-    already proves correct. Records SUCCESS/FAILED/TIMEOUT — a tool that
-    usually times out genuinely does make the caller wait that long, and
-    excluding failures would bias the average low exactly when the filler
-    matters most. UNAVAILABLE (CircuitBreakerMiddleware's fail-fast short
-    circuit) is not recorded: no work happened, so the near-zero elapsed
-    measures nothing about how long the tool takes."""
+    """Feeds ToolLatencyStore. UNAVAILABLE (breaker fail-fast) isn't recorded: no work happened,
+    but failures and timeouts are, since callers genuinely wait that long."""
 
     def __init__(self, store: ToolLatencyStore) -> None:
         self._store = store
@@ -115,10 +85,7 @@ class LatencyRecorderMiddleware:
 
 
 class CircuitBreakerMiddleware:
-    """Consecutive-failure counting, not a full rolling time window — same
-    pragmatic pattern already used for launchd health-check kickstarts in
-    this project's ops tooling (FAILS_BEFORE_KICKSTART), reused here rather
-    than pulling in a general circuit-breaker library for one counter."""
+    """Consecutive-failure counting, not a rolling time window."""
 
     def __init__(self, fails_before_open: int = 5, cooldown_s: float = 30.0) -> None:
         self._fails_before_open = fails_before_open
@@ -155,11 +122,7 @@ class CircuitBreakerMiddleware:
 
 
 class RetryMiddleware:
-    """Off by default (max_retries=0) — retry policy is a deliberate,
-    per-tool decision (see design §08: retrying inside an already-tight
-    timeout budget is not a safe default), not something every tool gets
-    for free. When enabled, each retry gets its own fresh attempt bounded
-    by TimeoutMiddleware below it — never an extension of the outer budget."""
+    """Off by default (max_retries=0); each retry gets its own Timeout-bounded attempt, not an extended budget."""
 
     def __init__(self, max_retries: int = 0) -> None:
         self._max_retries = max_retries
@@ -187,10 +150,7 @@ class TimeoutMiddleware:
 
 
 class MiddlewareChain:
-    """Composes middlewares outermost-first — see module docstring for why
-    this specific order. Wraps a bare IToolExecutor.execute so callers
-    (ToolCallOrchestrator) only ever see one execute(request) -> ToolResult
-    call, identical in shape to calling the executor directly."""
+    """Composes middlewares outermost-first around a bare IToolExecutor.execute."""
 
     def __init__(self, executor, middlewares: list) -> None:
         self._executor = executor
@@ -217,10 +177,7 @@ def build_default_chain(
     redact_arg_keys: frozenset[str] = frozenset(),
     latency_store: ToolLatencyStore | None = None,
 ) -> MiddlewareChain:
-    """The standard chain every tool gets unless a specific tool has a
-    reason to deviate — Logging, Metrics, (Latency, if a store is given),
-    CircuitBreaker, Retry(disabled by default), Timeout, in that order (see
-    module docstring)."""
+    """Standard chain: Logging, Metrics, Latency (if a store is given), CircuitBreaker, Retry, Timeout."""
     middlewares = [
         LoggingMiddleware(redact_arg_keys=redact_arg_keys),
         MetricsMiddleware(metrics),

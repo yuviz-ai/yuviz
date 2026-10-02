@@ -1,12 +1,4 @@
-"""
-VobizTelephonyProvider — canonical home for Vobiz REST + webhook-signature
-logic, moved here from services/vobiz/client.py + signature.py (which
-originally held it before this SDK existed). Verified live against the
-actual Vobiz API (X-Auth-ID/X-Auth-Token headers, JSON body,
-phone numbers E.164 WITHOUT a leading "+", call_uuid as the call
-identifier) and real Vobiz-signed webhooks (V2/V3 HMAC-SHA256 signature
-scheme).
-"""
+"""Vobiz REST client and webhook-signature verification (V2/V3 HMAC-SHA256)."""
 
 from __future__ import annotations
 
@@ -84,8 +76,7 @@ class VobizTelephonyProvider(ITelephonyProvider, ISmsProvider):
         self, *, from_number: str, to_number: str,
         answer_url: str, hangup_url: str | None = None, ring_url: str | None = None,
     ) -> str:
-        """Numbers must be E.164 WITHOUT a leading "+" — Vobiz's own
-        convention (`to_number.lstrip("+")`)."""
+        """Vobiz's Call API wants E.164 without the leading "+"."""
         body: dict[str, Any] = {
             "from": from_number.lstrip("+"),
             "to": to_number.lstrip("+"),
@@ -137,9 +128,7 @@ class VobizTelephonyProvider(ITelephonyProvider, ISmsProvider):
 
             V2: base64(HMAC-SHA256(auth_token, base_url + nonce))
             V3: base64(HMAC-SHA256(auth_token, base_url + "." + nonce))
-
-        Fail closed: a missing or forged signature must reject the callback
-        before it can touch any call state."""
+        """
         signature = headers.get("x-vobiz-signature-v3") or headers.get("x-vobiz-signature-ma-v3")
         nonce = headers.get("x-vobiz-signature-v3-nonce")
         version = "v3"
@@ -171,12 +160,7 @@ class VobizTelephonyProvider(ITelephonyProvider, ISmsProvider):
         self, *, url: str, headers: dict[str, str], fields: dict[str, Any],
         account_tenant_slug: str,
     ) -> NormalizedInboundCall:
-        """Vobiz's answer webhook is a form-encoded POST carrying
-        CallUUID/To/From (case-tolerant, matching services/vobiz/app.py's
-        existing `form.get("CallUUID") or form.get("call_uuid")` habit).
-        known_tenant_slug is always None: unlike Cloudonix's per-account
-        domain, a Vobiz account does not itself bind a tenant — the
-        orchestrator falls back to account.tenant_slug."""
+        """Case-tolerant CallUUID/To/From. known_tenant_slug is None: a Vobiz account binds no tenant."""
         lowered = {k.lower(): v for k, v in fields.items()}
         call_uuid = lowered.get("calluuid") or lowered.get("call_uuid") or ""
         to_number = lowered.get("to") or ""
@@ -195,9 +179,7 @@ class VobizTelephonyProvider(ITelephonyProvider, ISmsProvider):
         return str(digit)[0] if digit else None
 
     async def check_health(self) -> bool:
-        """GETs the account endpoint used by get_call_status/hangup_call —
-        any 2xx/4xx response means the credentials at least reach Vobiz;
-        only a transport failure or 5xx counts as unhealthy."""
+        """Only a transport failure or 5xx counts as unhealthy."""
         endpoint = f"{_BASE_URL}/v1/Account/{self._auth_id}/"
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
@@ -235,10 +217,8 @@ class VobizTelephonyProvider(ITelephonyProvider, ISmsProvider):
     async def attach_inbound(
         self, number: str, urls: InboundUrls, *, label: str, refresh_app: bool = True,
     ) -> InboundSyncResult:
-        """Binds the number to this config's Vobiz Application, creating the
-        Application on first use (its id comes back as credentials_update).
-        An existing Application gets its URLs refreshed, which repairs every
-        sibling number after the public base URL changes."""
+        """Bind the number to this config's Application, creating it on first use.
+        Refreshing an existing Application's URLs repairs every sibling number."""
         target = _e164(number)
         app_fields = {
             "answer_url": urls.answer_url, "answer_method": "POST",
@@ -344,8 +324,7 @@ class VobizTelephonyProvider(ITelephonyProvider, ISmsProvider):
         return InboundSyncResult(ok=False, message=f"Vobiz rejected detaching {target} (HTTP {resp.status_code})")
 
     async def send_sms(self, *, from_number: str, to_number: str, text: str) -> str:
-        """Vobiz's Message API mirrors its Call API on the same auth
-        headers (unverified live, see design Risks)."""
+        """Assumes the Message API mirrors the Call API (unverified live)."""
         body = {
             "from": from_number.lstrip("+"),
             "to": to_number.lstrip("+"),

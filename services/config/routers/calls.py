@@ -16,15 +16,7 @@ router = APIRouter(prefix="/calls", tags=["calls"])
 
 
 async def _caller_tenant_slug(current_user: CurrentUser) -> str | None:
-    """None = platform-scoped (superadmin / NULL-tenant service account).
-
-    calls.tenant_id is a TEXT slug, so tenant-scoped actors resolve JWT
-    tenant_id (UUID) → slug before the query predicate.
-
-    The bypass predicate is `is_platform_scoped` (tenant_id IS NULL, lesson
-    24) — not role == "superadmin" — so this stays identical to the Tier 2
-    predicate the router-level dependencies above enforce.
-    """
+    """Caller's tenant slug (calls.tenant_id is a slug); None when platform-scoped."""
     if is_platform_scoped(current_user):
         return None
     tenant = await tenants_service.get_tenant_by_id(current_user.tenant_id)

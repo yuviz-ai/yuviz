@@ -1,17 +1,6 @@
-"""
-generate_system_prompt() — one-shot LLM call that turns the agent-creation
-wizard's structured inputs (identity/purpose/tone/transfer rule) into prose,
-using the tenant's own configured LLM provider_config. Modeled directly on
-provider_configs.list_elevenlabs_voices()'s pattern: resolve api_key_ref via
-the already-injected SecretResolver, make one outbound httpx call, never
-return the resolved key or the raw vendor body to the caller.
+"""One-shot LLM call turning the agent wizard's inputs into a system prompt, via the tenant's LLM config.
 
-The wizard's own deterministic template (admin-ui's systemPromptBuilder.ts)
-still owns the actual anti-hallucination guardrail wording — this endpoint's
-meta-prompt requires the model to reproduce it near-verbatim rather than
-trusting the model to invent equivalent wording, so a paraphrase can't
-quietly drop a guardrail. Only openai/anthropic engines are supported today;
-anything else is a clear 400, not a silent fallback.
+The model must reproduce the guardrail lines near-verbatim so a paraphrase can't drop one.
 """
 
 from __future__ import annotations
@@ -28,10 +17,7 @@ log = logging.getLogger(__name__)
 
 _TIMEOUT_S = 20.0
 
-# The guardrail sentences the model is required to reproduce close to
-# verbatim — kept identical to admin-ui/lib/systemPromptBuilder.ts's fixed
-# lines, so a from-scratch LLM draft carries the same non-negotiable rules
-# as the deterministic one.
+# Keep identical to admin-ui/lib/systemPromptBuilder.ts's fixed lines.
 _GUARDRAILS = (
     "Never invent facts, prices, policies, order details, or availability. If you do not have "
     "verified information to answer something, say so plainly and offer to check or transfer the "

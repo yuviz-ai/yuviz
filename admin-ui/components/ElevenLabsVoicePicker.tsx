@@ -5,29 +5,16 @@ import { ApiError, ElevenLabsVoice, ProviderConfig, createProvider, listElevenLa
 import { ELEVENLABS_LANGUAGES } from "@/lib/engineCatalog";
 import { SecretRefInput } from "./SecretRefInput";
 
-// Module-level, not component state — survives the component unmounting
-// (e.g. navigating away from Behaviour and back), so re-opening the Voice
-// card doesn't re-hit the real ElevenLabs API every time. Resets on a full
-// page reload, and explicitly on the Refresh action below. Voice lists
-// change rarely enough that this is a reasonable tradeoff over either a
-// TTL or no caching at all.
+// Module-level so it survives unmounts; cleared on reload or Refresh.
 const voicesCache = new Map<string, ElevenLabsVoice[]>();
 
-// verified_languages is the actual validated field (real ISO 639-1 codes
-// ElevenLabs confirmed this voice speaks); labels.language is arbitrary,
-// unvalidated free text an account owner typed in — prefer the former,
-// fall back to the latter only when a voice has no verified languages at
-// all (e.g. never run through ElevenLabs' verification).
+// Prefer validated verified_languages; labels.language is unvalidated free text.
 function voicePrimaryLanguage(v: ElevenLabsVoice): string | null {
   return v.verified_languages[0]?.language ?? v.labels.language ?? null;
 }
 
-// Unlike LocalVoicePicker (macOS/Kokoro): ElevenLabs voices belong to one
-// account, so there's no "browse then create per voice" — a provider_config
-// with a real api_key_ref must exist first. If the tenant doesn't have one
-// yet, this renders a one-time "connect" step (api_key_ref only, no voice)
-// before it can show any voices — same zero-friction feel as local voices
-// once that's done: pick a voice, it's saved immediately.
+// ElevenLabs voices belong to an account, so a provider_config with an api_key_ref must exist
+// first; without one this renders a one-time "connect" step.
 export function ElevenLabsVoicePicker({
   tenantId,
   provider,
@@ -45,16 +32,8 @@ export function ElevenLabsVoicePicker({
   // Locks the whole picker (can't connect, can't expand/reselect) — see
   // LocalVoicePicker's disabled prop for why this exists.
   disabled?: boolean;
-  // False when `provider` is a fallback ("any ElevenLabs provider on the
-  // tenant") shown because the agent isn't actually assigned to an
-  // ElevenLabs provider yet — see the Voice card's engine-chooser callers.
-  // `provider.voice` can be non-empty in that case purely from unrelated
-  // past use (another agent, earlier testing), which is real data but NOT
-  // this agent's current voice — confirmed live: a fallback provider
-  // showing a stale "✓ Primary voice" checkmark was mistaken for
-  // an actual (and wrong) agent assignment. Default true so a caller that
-  // always passes the genuinely-assigned provider (or none) doesn't need
-  // to think about this.
+  // False when `provider` is a tenant fallback, not the agent's assigned one; its `voice` then
+  // isn't this agent's voice and must not be shown as selected. Defaults to true.
   isCurrentAssignment?: boolean;
 }) {
   const [apiKeyRef, setApiKeyRef] = useState("");
@@ -67,18 +46,10 @@ export function ElevenLabsVoicePicker({
   const [saving, setSaving] = useState<string | null>(null);
   const [savingLanguage, setSavingLanguage] = useState(false);
   const [languageError, setLanguageError] = useState<string | null>(null);
-  // null = no explicit choice yet — defaults to English when the account
-  // has it, matching ElevenLabs' own agent builder ("Default language is
-  // English").
+  // null = no explicit choice; defaults to English when available.
   const [languageFilter, setLanguageFilter] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
-  // Tracks the latest `provider` prop for handleRefresh's staleness check
-  // below — a plain closure over `provider` can't do this: handleRefresh is
-  // re-created every render, so the closure it captures is always the same
-  // snapshot its own comparison would be checked against (always equal,
-  // never actually catching a stale response). A ref updated on every
-  // render is the only way to compare a pending request's provider id
-  // against whatever is *actually* current when it resolves.
+  // Latest provider id for handleRefresh's stale-response check (a closure would be stale).
   const currentProviderId = useRef(provider?.id);
   useEffect(() => {
     currentProviderId.current = provider?.id;
@@ -88,21 +59,14 @@ export function ElevenLabsVoicePicker({
     if (!provider) return;
     const cached = voicesCache.get(provider.id);
     if (cached) {
-      // Cache hit: adopt the list without a fetch, so `loading` (which
-      // starts true) must be cleared here too — same "why" as the reset
-      // below, just for the branch that skips the fetch entirely.
+      // Cache hit: `loading` starts true, so clear it here too.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setVoices(cached);
       setLoading(false);
       return;
     }
     let ignore = false;
-    // Reset for the real fetch below (not just initial mount): if the
-    // Voice card's engine chooser switches to a different ElevenLabs
-    // provider (e.g. multiple connected accounts) while this component
-    // stays mounted, `provider` changes and this effect re-runs — without
-    // resetting here, a stale error/stale "not loading" from the previous
-    // provider would flash before the new fetch resolves.
+    // Reset on provider change too, so the previous provider's state doesn't flash.
     setLoading(true);
     setError(null);
     listElevenLabsVoices(provider.id)
@@ -124,13 +88,7 @@ export function ElevenLabsVoicePicker({
 
   const handleRefresh = () => {
     if (!provider) return;
-    // Same stale-response guard as the effect above: if the Voice card
-    // switches to a different ElevenLabs provider while this refresh is in
-    // flight, its resolution must not clobber the new provider's state.
-    // Checked against currentProviderId.current (kept fresh every render),
-    // not the `provider` this closure captured — that value never changes
-    // within one call of handleRefresh, so comparing against it here would
-    // always be true and never actually catch a stale response.
+    // Drop the response if the provider changed while in flight.
     const providerId = provider.id;
     voicesCache.delete(providerId);
     setLoading(true);
@@ -226,18 +184,9 @@ export function ElevenLabsVoicePicker({
   if (error) return <div className="error-banner">{error}</div>;
   if (!voices || voices.length === 0) return <div className="empty-state">No voices on this ElevenLabs account.</div>;
 
-  // Languages come from each voice's own verified_languages — ElevenLabs
-  // has no fixed list to draw from (unlike local engines' static
-  // VOICES_BY_ENGINE), so the filter options are whatever languages this
-  // account's voices actually have. Not every voice has been through
-  // ElevenLabs' language verification, so labels.language (arbitrary,
-  // unvalidated free text) is only a fallback for those.
+  // Filter options come from the account's own voices; ElevenLabs has no fixed list.
   const languages = Array.from(new Set(voices.map(voicePrimaryLanguage).filter((l): l is string => !!l))).sort();
-  // languageFilter only wins when it's still a real option — a Refresh (or
-  // switching provider) can return a voice list that no longer has the
-  // previously-selected language, and without this guard the filter would
-  // stay stuck on a value that matches zero voices with no visible way to
-  // reset it (the filter chips are hidden once only one language remains).
+  // Ignore a filter no longer in the list, else it could match nothing with no way to reset it.
   const activeLanguageFilter =
     languageFilter && languages.includes(languageFilter) ? languageFilter : languages.includes("en") ? "en" : "all";
   const filteredVoices =

@@ -1,14 +1,6 @@
-"""
-One-off generator for the local-voice preview samples used by
-admin-ui/components/LocalVoicePicker.tsx (the macOS/Kokoro equivalent of
-ElevenLabs' preview_url). Unlike ElevenLabs, our macOS/Kokoro voice lists
-are a small fixed catalog (see admin-ui/lib/engineCatalog.ts), so these
-samples are pre-rendered once and served as static files rather than
-synthesized on demand behind a new API endpoint.
+"""Pre-render static macOS/Kokoro voice preview samples for LocalVoicePicker.
 
-Re-run this whenever a voice is added to/removed from
-engineCatalog.ts's VOICES_BY_ENGINE.
-
+Re-run when engineCatalog.ts's VOICES_BY_ENGINE changes.
 Usage: ./venv/bin/python scripts/generate_voice_samples.py
 """
 
@@ -26,9 +18,7 @@ SAMPLE_TEXT = "Hi there, this is a quick preview of my voice."
 
 OUT_ROOT = Path(__file__).resolve().parent.parent / "admin-ui" / "public" / "voice-samples"
 
-# Mirrors admin-ui/lib/engineCatalog.ts's VOICES_BY_ENGINE — kept in sync by
-# hand since one lives in TS and the other in Python; if that list changes,
-# update both.
+# Mirrors admin-ui/lib/engineCatalog.ts's VOICES_BY_ENGINE; keep in sync by hand.
 MACOS_VOICES = ["Samantha", "Karen", "Moira", "Alex", "Daniel"]
 KOKORO_VOICES = [
     "af_sarah", "af_bella", "af_nicole",
@@ -59,8 +49,6 @@ async def generate_macos() -> None:
 
 
 async def generate_kokoro() -> None:
-    # One KPipeline load, reused across voices — loading it once per voice
-    # would multiply the model-load cost 9x for no reason.
     for voice in KOKORO_VOICES:
         tts = KokoroTTS(voice=voice)
         pcm = await tts.synthesize(SAMPLE_TEXT, SAMPLE_RATE)

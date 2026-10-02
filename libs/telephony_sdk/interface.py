@@ -1,13 +1,6 @@
-"""
-ITelephonyProvider — the shared interface every telephony provider
-(Vobiz today; Twilio/Telnyx additively later) implements.
+"""Telephony/SMS provider interfaces: call control, webhook verification, answer markup.
 
-Covers only outbound call control, inbound webhook verification, and the
-provider-specific answer-response shape. It does NOT cover the long-lived
-WebSocket/media-bridging side (libs/media_stream_sdk/bridge.py,
-libs/vad_sdk/) — that's a protocol/media concern, not a provider-config
-one. The native Gateway/Kamailio/FreeSWITCH call path never implements
-this interface.
+Media bridging lives in libs/media_stream_sdk, not here.
 """
 
 from __future__ import annotations
@@ -63,16 +56,12 @@ class ITelephonyProvider(ABC):
     @classmethod
     @abstractmethod
     def required_credential_fields(cls) -> list[str]:
-        """Field names this provider needs in `credentials` — backs the
-        Config Service's provider-discovery endpoint so an admin UI can
-        render the right form without hardcoding per-provider fields."""
+        """Field names this provider needs in `credentials` (drives the admin form)."""
 
     @classmethod
     @abstractmethod
     def validate_credentials(cls, credentials: dict[str, Any]) -> None:
-        """Raise TelephonyProviderError if credentials are missing/malformed.
-        Called by Config Service at telephony_configs creation time, before
-        the row is ever written — never at call time."""
+        """Raise TelephonyProviderError if credentials are missing/malformed (at save time)."""
 
     @abstractmethod
     async def initiate_call(
@@ -91,26 +80,19 @@ class ITelephonyProvider(ABC):
 
     @abstractmethod
     def verify_webhook_signature(self, url: str, headers: dict[str, str]) -> bool:
-        """headers should already be lower-cased keys. Fail closed: a
-        missing/invalid signature returns False, never raises past this
-        point — the caller (a webhook route) turns False into a 403 before
-        touching any call state."""
+        """Header keys must be lower-cased. Fails closed: returns False, never raises."""
 
     @abstractmethod
     def build_answer_response(self, websocket_url: str) -> str:
-        """The provider-specific XML/markup response to the answer webhook
-        that tells the provider to open a media WebSocket to websocket_url."""
+        """Answer-webhook markup telling the provider to open a media WebSocket."""
 
     @abstractmethod
     def normalize_inbound_webhook(
         self, *, url: str, headers: dict[str, str], fields: dict[str, Any],
         account_tenant_slug: str,
     ) -> NormalizedInboundCall:
-        """Parses the vendor's inbound-call webhook shape into the
-        provider-agnostic NormalizedInboundCall. Raises WebhookRejected for
-        a vendor-specific rejection (Cloudonix's domain mismatch). Contains
-        NO DID lookup and NO call-context work (AC9) — that is the
-        orchestrator's job, not the adapter's."""
+        """Parse the vendor webhook into NormalizedInboundCall; no DID lookup here.
+        Raises WebhookRejected for vendor-specific rejections."""
 
     @abstractmethod
     def parse_dtmf_digit(self, fields: dict[str, Any]) -> str | None:
@@ -118,16 +100,11 @@ class ITelephonyProvider(ABC):
 
     @classmethod
     def sensitive_credential_fields(cls) -> list[str]:
-        """Field names in `credentials` this provider needs encrypted at
-        rest — usable default (AC1): a provider with no secrets need not
-        override this."""
+        """Field names in `credentials` to encrypt at rest."""
         return []
 
     async def check_health(self) -> bool:
-        """Cheap liveness probe against the vendor, called only from the
-        health loop's own asyncio task — never on a request path. Usable
-        default (AC3): a provider with no probe endpoint is always
-        healthy."""
+        """Cheap vendor liveness probe; health loop only, never on a request path."""
         return True
 
     async def transfer_call(self, *, call_id: str, destination: str) -> None:
@@ -167,11 +144,7 @@ class ITelephonyProvider(ABC):
     async def reconcile_call(
         self, *, reference: str, observed_call_id: str | None,
     ) -> ReconcileResult:
-        """Default: if a callback already observed a vendor call id for this
-        reference, confirm it with get_call_status() and report placed/
-        not_placed; otherwise 'indeterminate'. A provider whose API can
-        look up by our own reference overrides this. Never guesses
-        'not_placed' (AC16/17)."""
+        """Confirm an observed call id via get_call_status(); never guesses 'not_placed'."""
         if observed_call_id is None:
             return ReconcileResult(outcome="indeterminate")
         try:

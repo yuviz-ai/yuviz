@@ -1,11 +1,6 @@
 "use client";
 
-// One edge renderer, labelled with the keypress that takes it.
-//
-// Unlike the conversational canvas's ConditionEdge — whose label is prose an
-// LLM has to interpret — this label is the literal key the caller presses, so
-// a blank one is a hard error on a menu (which key is this?) rather than a
-// soft "needs a condition" nudge.
+// Edge labelled with the keypress that takes it; a blank label on a menu is a hard error.
 
 import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath, type EdgeProps } from "@xyflow/react";
 

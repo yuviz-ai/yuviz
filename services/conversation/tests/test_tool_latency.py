@@ -109,11 +109,8 @@ def test_tenant_dropped_from_outer_map_once_only_key_ages_out(monkeypatch):
 
 
 def test_outer_tenant_map_is_bounded():
-    # A stream of unique tenant ids must not grow the outer map without
-    # bound — record()'s O(1) cap, independent of _sweep()'s scan window.
-    # Which specific tenant gets evicted can shift under _sweep()'s own
-    # move_to_end bookkeeping (it also touches LRU order); the property
-    # that must always hold is the size cap and that recent tenants survive.
+    # Unique tenant ids must not grow the outer map unbounded. Exactly which tenant is evicted
+    # can shift with _sweep()'s LRU touches; only the cap and recent-tenant survival are asserted.
     store = ToolLatencyStore()
     for i in range(_MAX_TENANTS + 5):
         store.record(f"t{i}", "a1", "tool", 500.0)

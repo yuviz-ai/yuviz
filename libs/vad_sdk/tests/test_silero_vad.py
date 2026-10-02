@@ -1,12 +1,4 @@
-"""
-SileroVAD tests — runs the real ONNX model (models/silero_vad.onnx, already
-committed to the repo and used by faster-whisper too) rather than mocking
-inference; no network call, no API key, model load is fast (~50ms). Only
-covers what's verifiable without a real speech recording: config gating,
-wrong-size-input handling, and that sustained silence never falsely
-triggers SPEECH_START. See test_energy_vad.py for the fallback detector's
-full state-machine coverage.
-"""
+"""SileroVAD tests against the real ONNX model (no speech recording needed)."""
 
 from __future__ import annotations
 

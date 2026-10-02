@@ -1,13 +1,6 @@
-"""
-TelephonyProviderRegistry — name -> ITelephonyProvider class. Each provider
-module (providers/vobiz.py, and later providers/twilio.py etc.) registers
-itself on import; adding a new provider is a new file + one import line in
-providers/__init__.py, no edits anywhere else (same "additive, not invasive"
-shape as libs/knowledge_sdk's provider registration).
+"""Name -> provider class registries; providers register themselves on import.
 
-`hidden=True` registers a provider that resolves by name via get() but is
-absent from visible() — used by "fake", which exists only for tests and
-must never appear in the Admin UI's provider list (AC4).
+`hidden=True` resolves via get() but is absent from visible() (e.g. the test-only "fake").
 """
 
 from __future__ import annotations

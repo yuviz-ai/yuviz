@@ -1,14 +1,6 @@
 """
-DeepgramSTT tests use httpx.MockTransport for transcribe() (REST) and a fake
-`_ws_connect` callable for feed_stream()/finalize_stream()/cancel_stream()
-(live WebSocket) — no real network call, no cost, no API key needed. This is
-the committed-test convention for cloud engines (see
-test_ai_provider_manager.py's docstring for why faster_whisper/kokoro are
-excluded from committed tests for a different reason — model load
-cost/platform availability, not network cost); cloud engines are excluded
-from *live* testing here specifically because every real request costs
-money, so the committed suite proves the code against scripted fakes, and
-live validation is a separate, manual, uncommitted concern.
+DeepgramSTT tests: httpx.MockTransport for REST and a fake `_ws_connect` for the live
+WebSocket — no network, no cost.
 """
 
 from __future__ import annotations
@@ -172,8 +164,7 @@ async def test_cancel_stream_closes_the_connection_without_finalizing():
     await stt.cancel_stream("s1")
 
     assert fake_ws.closed
-    # A later finalize_stream for the same session finds nothing — the
-    # stream was already dropped by cancel_stream, not left dangling.
+    # The stream was dropped, so a later finalize finds nothing.
     result = await stt.finalize_stream("s1", b"unused", 16000)
     assert result.text == ""
 
@@ -201,10 +192,7 @@ async def test_feed_stream_evicts_dead_connection_and_reconnects_on_next_chunk()
         pass
 
     class _DyingWs(_FakeLiveWs):
-        """The very first send across the whole test raises like a
-        server-closed connection would (Deepgram's own idle-timeout close)
-        — feed_stream must not keep handing this dead object back on the
-        next call; it should open a fresh connection instead."""
+        """First send raises like a server-closed connection."""
 
         async def send(self, data):
             total_sends["count"] += 1

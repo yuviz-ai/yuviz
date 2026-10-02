@@ -1,8 +1,5 @@
-"""
-ToolCallOrchestrator — joins LLMAdapter with ToolPolicyResolver /
-ExecutorRegistry / ToolProviderManager. Provider-agnostic: no tool names
-hardcoded here.
-"""
+"""ToolCallOrchestrator — joins LLMAdapter with policy resolution, providers and executors.
+Provider-agnostic: no tool names hardcoded here."""
 
 from __future__ import annotations
 
@@ -101,14 +98,7 @@ class ToolCallOrchestrator:
         iteration = 0
         local, policies_by_name, schemas, local_schemas = await resolve()
 
-        # One line per turn naming exactly what the model was offered. Added
-        # after an "it isn't calling the API" report cost an hour:
-        # every layer (policy row, provider config, node allow-list, the
-        # api_name enum) had to be checked by hand because nothing recorded
-        # what actually reached the LLM. A turn that offered tools and got
-        # no tool call is a model/prompt problem; a turn that offered none
-        # is a config problem, and these two look identical from the
-        # caller's side.
+        # Offered-but-not-called is a prompt problem; nothing offered is a config problem.
         log.info(
             "tools offered agent=%s turn=%s: remote=%s local=%s%s",
             agent_id, turn_id,
@@ -158,14 +148,7 @@ class ToolCallOrchestrator:
                     )
                 else:
                     iteration += 1  # remote only — locals must not burn this budget
-                    # Start the real work before announcing it, not after:
-                    # yielding first (as this used to) suspends this
-                    # generator until the whole filler finishes
-                    # synthesizing, so the tool call didn't actually begin
-                    # until the filler was done speaking — the opposite of
-                    # "the filler covers the wait." Starting the task first
-                    # means the filler genuinely overlaps real work instead
-                    # of prepending to it.
+                    # Start before yielding: the yield suspends until the filler finishes speaking.
                     execute_task = asyncio.ensure_future(self._execute_tool_call(
                         event, policies_by_name, tenant_id, agent_id, call_id, session_id, turn_id,
                         iteration, caller_number, cancel_event,
@@ -295,8 +278,7 @@ async def _execute_local_tool(
         try:
             await execute_task
         except asyncio.CancelledError:
-            # Bare `pass` swallows call-teardown cancellation of *this*
-            # coroutine. Only absorb the cancel we sent to execute_task.
+            # Only absorb the cancel we sent to execute_task, not teardown of this coroutine.
             me = asyncio.current_task()
             if me is not None and me.cancelling():
                 raise

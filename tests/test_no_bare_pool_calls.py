@@ -1,21 +1,7 @@
-"""tests/test_no_bare_pool_calls.py — AST tripwire for bare pool calls (T55).
+"""AST tripwire: no `services/` code queries a Pool directly.
 
-The 116 pool-level `pool.fetch/fetchrow/fetchval/execute/executemany` sites
-that bypassed `acquire()` entirely (design "Conversion inventory") are the
-failure mode a per-module checklist demonstrably misses twice over (lesson
-12/29): after cutover any such call runs on an arbitrary pooled connection
-with no GUC set, and looks — from the app's side — exactly like "this
-tenant has no data" rather than a bug. This walks every module under
-`services/` (excluding `*/tests/*`) and fails on any `.fetch/.fetchrow/
-.fetchval/.execute/.executemany` attribute call whose receiver resolves to
-a name bound either to a parameter annotated `asyncpg.Pool` or to the
-result of a `get_pool()`/`create_pool()` call — the two shapes every
-pool-level call site in this codebase actually takes.
-
-Deliberately does NOT flag `.acquire()` itself, nor calls on a name bound by
-`async with tenant_conn(pool) as conn: ...` — `conn` there is a Connection,
-not a Pool, which is exactly the shape conversion is supposed to leave
-behind.
+A bare pool call runs with no tenant GUC, so under RLS it silently sees no rows.
+Use `tenant_conn(pool)` instead.
 """
 from __future__ import annotations
 
@@ -47,10 +33,7 @@ def _is_pool_factory_call(call: ast.AST) -> bool:
 
 
 def _bound_pool_names(node: ast.AST) -> set[str]:
-    """Names bound, anywhere in `node`'s subtree, either as a
-    `: asyncpg.Pool`-annotated parameter or as the target of an assignment
-    from `get_pool()`/`create_pool()` (bare or dotted, e.g. `db.get_pool()`,
-    `self._pool = await create_pool(...)`)."""
+    """Names bound as a Pool-annotated parameter or from get_pool()/create_pool()."""
     names: set[str] = set()
     for n in ast.walk(node):
         if isinstance(n, ast.arg) and _is_pool_annotation(n.annotation):
@@ -65,10 +48,7 @@ def _bound_pool_names(node: ast.AST) -> set[str]:
 
 
 def bare_pool_calls_in_source(source: str) -> list[tuple[int, str, str]]:
-    """Returns (lineno, receiver_name, method) for every bare pool-level
-    call found in `source`. Exposed as a function (not just a test) so the
-    "trips on a deliberately reintroduced call" case can exercise it
-    directly against a scratch string, per lesson 12."""
+    """(lineno, receiver_name, method) for every bare pool-level call in `source`."""
     try:
         tree = ast.parse(source)
     except SyntaxError:
@@ -117,9 +97,6 @@ def test_zero_bare_pool_calls_across_services():
 
 
 def test_walker_trips_on_a_deliberately_reintroduced_bare_pool_call():
-    # Proves the check can actually fail (lesson 12): a scratch module with
-    # the exact two shapes real call sites take before conversion — a
-    # Pool-annotated parameter and a get_pool()-derived local — both trip it.
     scratch = """
 import asyncpg
 
@@ -138,9 +115,6 @@ async def also_leaky():
 
 
 def test_walker_does_not_flag_a_connection_acquired_via_tenant_conn():
-    # The shape conversion is supposed to LEAVE BEHIND: conn is a
-    # Connection yielded by tenant_conn(pool), not the pool itself, so
-    # conn.fetchrow(...) must not be flagged.
     scratch = """
 from libs.tenancy import tenant_conn
 

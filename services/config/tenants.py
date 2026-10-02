@@ -1,12 +1,4 @@
-"""
-Tenant CRUD — cache-aside reads (Redis, TTL 60s), Postgres as source of
-truth, every mutation audited in the same transaction it's written in.
-
-This module is called directly by scripts/tests today and will be the same
-thing the REST API (Phase 5 step 6) calls later — the API layer is a thin
-HTTP wrapper around these functions, not a second place business logic
-lives.
-"""
+"""Tenant CRUD: cache-aside reads (Redis, 60s TTL), mutations audited in the same transaction."""
 
 from __future__ import annotations
 
@@ -18,9 +10,7 @@ from libs.tenancy import platform_conn
 from . import audit, cache, db, phone_numbers
 from .provider_configs import require_usable_tts_voice
 
-# Columns an UPDATE is allowed to touch — deliberately not "whatever kwargs
-# the caller passes", so a typo'd field name fails loudly instead of being
-# silently ignored or (worse) building an invalid dynamic column reference.
+# Allow-list, so a typo'd field fails loudly instead of building a bad column reference.
 _UPDATABLE_FIELDS = {
     "name", "region",
     "vad_engine", "vad_onset_ms", "vad_hold_ms", "vad_speech_threshold",
@@ -78,9 +68,7 @@ async def get_tenant(slug: str) -> dict[str, Any] | None:
 
 
 async def get_tenant_by_id(tenant_id: Any) -> dict[str, Any] | None:
-    """Not cached — used for existence checks before an insert that FK-
-    references tenants (see provider_configs router), a cold, low-frequency
-    path unlike get_tenant()'s per-call hot path."""
+    """Uncached; used for cold-path existence checks."""
     pool = await db.get_pool()
     async with platform_conn(pool, reason="tenants-out-of-rls-scope") as conn:
         row = await conn.fetchrow(
@@ -90,13 +78,7 @@ async def get_tenant_by_id(tenant_id: Any) -> dict[str, Any] | None:
 
 
 async def list_tenants(*, tenant_id: Any | None = None) -> list[dict[str, Any]]:
-    """`tenant_id=None` returns every live tenant — the router passes this
-    only for a platform-scoped actor (superadmin, or a service account:
-    both have tenant_id=None on their verified JWT, see deps.py's
-    CONSOLE_ROLES docstring on why viewer service accounts keep full
-    Config API access). Any other actor's own tenant_id narrows this to
-    the single row they're allowed to see — the router never trusts a
-    client-supplied filter, only the JWT's own tenant_id."""
+    """`tenant_id=None` (platform-scoped actors only) returns every live tenant; otherwise just that one."""
     pool = await db.get_pool()
     async with platform_conn(pool, reason="tenants-out-of-rls-scope") as conn:
         if tenant_id is None:
@@ -155,11 +137,7 @@ async def update_tenant(
         # Before the tenants lock: provider delete locks the provider, then
         # the tenant, so this must take them in the same order.
         await _validate_default_providers(conn, tenant_id, fields)
-        # FOR UPDATE locks the row for the rest of this transaction — a
-        # plain SELECT here would let two concurrent update_tenant() calls
-        # both read the same "old" value, so the audit_log row from
-        # whichever commits second would record a stale old_value instead
-        # of the state its own update actually changed away from.
+        # FOR UPDATE so a concurrent update can't make the audit old_value stale.
         old_row = await conn.fetchrow(
             "SELECT * FROM tenants WHERE id = $1 AND deleted_at IS NULL FOR UPDATE", tenant_id,
         )
@@ -191,13 +169,8 @@ async def update_tenant(
 
 
 class TenantHasActiveResources(Exception):
-    """Raised instead of deleting when the tenant still has active agents
-    or active phone numbers attached and the caller didn't pass force=True
-    — a deleted tenant's DIDs stop resolving immediately (get_by_did()'s
-    own `t.deleted_at IS NULL` check), so this isn't "some calls might slip
-    through," it's an instant, total outage for that tenant's callers with
-    zero warning today. Counts are exposed so the caller (the router, then
-    the Admin UI) can show them without a second query."""
+    """Raised instead of deleting a tenant with active agents/numbers unless force=True;
+    deletion stops its DIDs routing immediately."""
 
     def __init__(self, active_agents: int, active_phone_numbers: int) -> None:
         self.active_agents = active_agents

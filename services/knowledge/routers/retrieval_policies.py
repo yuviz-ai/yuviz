@@ -14,11 +14,7 @@ router = APIRouter(prefix="/agents/{agent_id}/retrieval-policy", tags=["retrieva
 
 
 async def _authorize_agent(agent_id: str, current_user: CurrentUser) -> None:
-    """Found with no tenant check at all (T21/T36's coverage tripwire
-    surfaced this router being absent from the design's own Tier 3 table
-    entirely) — mirrors agent_kb.py's `_authorize_agent`, the established
-    pattern for a route keyed on agent_id with no tenant column of its
-    own to check directly."""
+    """Authorize an agent_id-keyed route via the agent's tenant."""
     platform_scoped = is_platform_scoped(current_user)
     tenant_id = await agent_kb_service.get_agent_tenant_id(agent_id, platform_scoped=platform_scoped)
     if tenant_id is None:

@@ -18,25 +18,10 @@ router = APIRouter(prefix="/users", tags=["users"])
 async def list_users(
     tenant_id: str | None = None, current_user: CurrentUser = Depends(get_current_user),
 ):
-    # is_platform_scoped(current_user) (lesson 24: tenant_id is None) only
-    # answers *which tenant* an actor is scoped to — it is a different
-    # question from whether that actor is *privileged* to read across
-    # every tenant. This route has no authority gate at all, only
-    # CONSOLE_ROLES (get_current_user), so a NULL-tenant viewer-role
-    # service account (Conversation, vobiz) is just as platform-scoped as
-    # a superadmin. Both signals are required for the unscoped,
-    # cross-tenant, role-unfiltered branch: `?tenant_id=` is honored, and
-    # is_platform_scoped=True is passed to the service, only when the
-    # actor is *also* superadmin. Anyone else — platform-scoped or not —
-    # is forced to their own tenant_id (still NULL for that service
-    # account) with users_service.list_users' `role != 'superadmin'`
-    # exclusion applied, same as before this PR.
+    # Scope isn't privilege: NULL-tenant viewer service accounts exist, so the cross-tenant
+    # branch needs platform scope AND superadmin. Everyone else gets their own tenant.
     platform_scoped = is_platform_scoped(current_user) and current_user.role == "superadmin"
     scoped_tenant_id = tenant_id if platform_scoped else current_user.tenant_id
-    # tenant_conn()'s ambient GUC only follows the caller's own tenant
-    # unless a platform-scoped actor's target is set explicitly — a
-    # superadmin filtering to another tenant via ?tenant_id= needs this so
-    # users.list_users' tenant_conn() branch resolves to THAT tenant.
     if scoped_tenant_id is not None:
         set_target_tenant(scoped_tenant_id)
     users = await users_service.list_users(
@@ -62,10 +47,7 @@ async def update_user(
         f"user {user_id!r} not found",
     )
     await assert_tenant_access(row["tenant_id"], current_user)
-    # Check the value being WRITTEN, not just the row being read — this is
-    # what closes self-promotion: {"tenant_id": null} is a 403 for anyone
-    # not already platform-scoped, and a privilege no-op for anyone who is
-    # (assert_tenant_access admits None only for a platform-scoped caller).
+    # Check the written tenant_id too, or {"tenant_id": null} would self-promote to platform scope.
     if "tenant_id" in fields:
         await assert_tenant_access(fields["tenant_id"], current_user)
 
@@ -78,10 +60,7 @@ async def update_user(
         row_tenant_id=row["tenant_id"],
         **fields,
     )
-    # A password change revokes older tokens (token_version bump). A role or
-    # tenant move does not, by design: the live-calls and console gates
-    # re-read the row instead. Either way, drop this process's memoized
-    # authority so those re-reads see the new row now, not after the TTL.
+    # Drop memoized authority so gates that re-read the row see the change now, not after the TTL.
     if fields.keys() & {"password", "role", "tenant_id"}:
         forget_user(request.app.state, str(user["id"]))
     return users_service.to_public_dict(user)

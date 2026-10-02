@@ -1,9 +1,4 @@
-"""SentimentScorer — parsing, transcript rendering, and failure modes.
-
-No database and no real model: the scorer's contract is entirely "given
-these turns and this model output, what gets written (or not)". The
-end-to-end wiring into end_call() is covered in test_transcript_builder.py.
-"""
+"""SentimentScorer: parsing, transcript rendering, and failure modes (no DB, no real model)."""
 
 from __future__ import annotations
 
@@ -47,9 +42,7 @@ async def test_parses_a_well_formed_response():
 
 
 async def test_tolerates_fenced_and_prefixed_json():
-    """Small local models habitually wrap JSON in prose or code fences —
-    that is a formatting quirk, not a failed reading, so it must not cost
-    the score."""
+    """JSON wrapped in prose or code fences still parses."""
     llm = FakeLLM('Here is my analysis:\n```json\n{"label": "positive", "reason": "caller thanked the agent"}\n```')
     result = await SentimentScorer(llm).score(_TURNS)
     assert result is not None
@@ -65,9 +58,7 @@ async def test_tolerates_fenced_and_prefixed_json():
     '["frustrated"]',                          # JSON, but not an object
 ])
 async def test_unusable_responses_score_as_none(response):
-    """None means "never scored". Crucially, a bad response must NOT fall
-    back to 'neutral' — that would assert a reading nobody made, and the
-    Call Log would show it as a real result."""
+    """Unusable responses yield None, never a fabricated 'neutral'."""
     assert await SentimentScorer(FakeLLM(response)).score(_TURNS) is None
 
 
@@ -94,9 +85,7 @@ async def test_no_caller_speech_is_never_scored():
 
 
 async def test_system_prompt_is_injected_so_the_agent_prompt_is_overridden():
-    """build_chat_messages() only skips the provider's own configured system
-    prompt when the caller supplies a system-role message — without this the
-    scorer would inherit the agent's conversational persona."""
+    """A system-role message is injected so the scorer doesn't inherit the agent's persona."""
     llm = FakeLLM('{"label": "neutral", "reason": "routine"}')
     await SentimentScorer(llm).score(_TURNS)
     assert llm.messages[0].role == "system"

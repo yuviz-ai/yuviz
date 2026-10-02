@@ -1,13 +1,6 @@
-"""
-services/toolexec/routers/execute.py — the internal service boundary
-(T19). Conversation Service's only call into this service; firing a
-side-effecting chain in a tenant is a write, so this is gated on a NAMED
-service identity, never `get_current_user` alone and never
-`is_platform_scoped` alone: every service account on this platform
-(Conversation, vobiz, the Config/Knowledge SDK accounts) is a
-`role="viewer"`, `tenant_id=NULL` identity, so "platform-scoped" would let
-any one of them fire any tenant's side-effecting API chain (lesson 24's
-inverse — scope answers "which tenant", never "may this actor act").
+"""Internal chain-execute endpoint for the Conversation Service.
+
+Gated on a named service identity: every service account is platform-scoped, so scope alone isn't enough.
 """
 
 from __future__ import annotations
@@ -33,15 +26,7 @@ _EXECUTE_SUBJECTS = frozenset(
 
 
 async def require_execute_subject(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
-    """Named-identity gate: the caller must be a service account whose
-    email is in the operator-configured allow-list. `is_service_account`
-    is carried in the JWT (services/config/auth.py), so this needs no DB
-    read and cannot be satisfied by a human console account — a human
-    `superadmin` still 403s here, which is exactly what proves the
-    `is_service_account` half is load-bearing, not just the email match.
-
-    403 (not 404) is correct: the caller is a platform service, not a
-    tenant actor, so there is no tenant boundary to leak existence across."""
+    """Require an allow-listed service account (humans, even superadmin, get 403)."""
     if not (user.is_service_account and user.email.lower() in _EXECUTE_SUBJECTS):
         raise HTTPException(status_code=403, detail="identity may not execute API chains")
     return user
@@ -51,13 +36,8 @@ async def require_execute_subject(user: CurrentUser = Depends(get_current_user))
 async def execute_chain(
     body: ChainExecuteRequest, current_user: CurrentUser = Depends(require_execute_subject),
 ) -> ChainExecuteResponse:
-    # A tenant-scoped service account (should one ever exist) must
-    # additionally match the body's own tenant_id — checked here, since
-    # only the handler has the body.
     if current_user.tenant_id is not None and current_user.tenant_id != body.tenant_id:
         raise HTTPException(status_code=403, detail="identity may not execute API chains")
-    # RLS (libs/tenancy): tenant arrives in the body, not the path, so
-    # there is no router-level bind_path_tenant to run this for us — the
-    # existing identity/body check above is what already authorizes it.
+    # Tenant comes from the body, so there's no path-based bind_path_tenant.
     set_target_tenant(body.tenant_id)
     return await executor.execute_chain(body)

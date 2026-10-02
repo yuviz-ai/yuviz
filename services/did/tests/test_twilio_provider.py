@@ -1,15 +1,4 @@
-"""
-TwilioProvider tests — httpx.MockTransport, no real network.
-
-*** These test the ASSUMED shape documented in providers/twilio.py's
-module docstring, not a confirmed real API contract *** — unlike
-test_cal_com_provider.py (which mirrors shapes actually captured live).
-Confidence here is higher than test_plivo_provider.py's (Twilio's
-2010-04-01 API is long-stable and near-universally documented), but it is
-still a prior, not a confirmation. When real Twilio credentials exist and
-this provider is live-verified, these tests should be checked against
-whatever the real API actually returns and corrected if anything differs.
-"""
+"""TwilioProvider tests via MockTransport; purchase/release mocks encode an unverified shape."""
 
 from __future__ import annotations
 
@@ -64,8 +53,7 @@ async def test_search_empty_result_is_empty_list_not_error():
 
 
 async def test_search_falls_back_to_mobile_when_local_404s():
-    # Confirmed live: countries that only sell Mobile numbers (e.g. India)
-    # 404 outright on /Local.json rather than returning an empty list.
+    # Mobile-only countries (e.g. India) 404 on /Local.json instead of returning [].
     calls = []
 
     def handler(request: httpx.Request) -> httpx.Response:

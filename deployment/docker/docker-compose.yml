@@ -164,16 +164,11 @@ services:
       VOICEAI_TTS_VOICE: af_sarah
       VOICEAI_STT_MODEL: ${VOICEAI_STT_MODEL:-small.en}
       VOICEAI_LLM_MODEL: ${VOICEAI_LLM_MODEL:-llama3.2}
-      # dev.sh --no-stt / --no-tts. Off keeps the model out of startup (see
-      # _prewarm_agents); default on, so a normal run is unchanged.
+      # dev.sh --no-stt / --no-tts: skip loading the model at startup.
       VOICEAI_ENABLE_STT: ${VOICEAI_ENABLE_STT:-1}
       VOICEAI_ENABLE_TTS: ${VOICEAI_ENABLE_TTS:-1}
       VOICEAI_LLM_URL: ${OLLAMA_BASE_URL}
-      # Cloud LLM keys. The container's environment is an explicit allow-list,
-      # so a key in deployment/.env does NOT reach this process unless it is
-      # named here. Referenced from a provider_configs row as
-      # api_key_ref='env:GEMINI_API_KEY' — the row stores the reference, never
-      # the key itself (see services/conversation/secret_resolver.py).
+      # Cloud keys must be listed here to reach the container; providers reference them as env:NAME.
       SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -234,10 +229,7 @@ services:
       CAMPAIGNS_SERVICE_URL: http://campaigns:8400
       CONVERSATION_SVC_TARGET: conversation:50051
       LOG_LEVEL: INFO
-    # Own bind/port variables, never the shared BIND_ADDR — that variable
-    # also publishes Postgres, Redis and the unauthenticated conversation
-    # gRPC port (docs/docker-startup.md:423). See docs/telephony.md for
-    # the exposure model this service actually needs.
+    # Own bind address: BIND_ADDR also exposes Postgres, Redis and unauthenticated gRPC.
     ports:
       - "${TELEPHONY_BIND_ADDR:-127.0.0.1}:${TELEPHONY_PORT:-8750}:8750"
     depends_on:

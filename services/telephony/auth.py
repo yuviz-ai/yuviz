@@ -1,11 +1,5 @@
-"""
-Outbound-route authentication/authorization — see 02-design.md's `auth.py`
-section for the full rationale, including why `deps.assert_tenant_access`
-MUST be awaited (a missing `await` silently deletes the entire tenant
-gate) and why `get_authenticated_user` (pure JWT decode) is the deliberate
-choice over `get_current_user` (which reads Postgres, forbidden on this
-Redis-only path — lesson 27's accepted revocation-lag trade-off).
-"""
+"""Outbound-route auth. Uses JWT-only get_authenticated_user (no Postgres on this path).
+`deps.assert_tenant_access` MUST be awaited — a missing await silently removes the tenant gate."""
 
 from __future__ import annotations
 
@@ -25,13 +19,7 @@ TELEPHONY_CALLER_ROLES = frozenset({"superadmin", "admin"})
 async def require_telephony_caller(
     user: CurrentUser = Depends(get_authenticated_user),
 ) -> CurrentUser:
-    """401 on a missing/invalid/expired Bearer token (get_authenticated_user
-    raises it itself). 403 unless the caller is either a
-    TELEPHONY_CALLER_ROLES console user, or a platform service account —
-    "is this actor privileged?" and "which tenant is this actor scoped to?"
-    are different questions (lesson 24): a tenant-scoped viewer fails both
-    clauses, the NULL-tenant service account (Campaigns/Conversation, which
-    both carry role="viewer") passes the second."""
+    """403 unless an admin-role user or a NULL-tenant service account (which carries role="viewer")."""
     if user.role in TELEPHONY_CALLER_ROLES:
         return user
     if user.is_service_account and user.tenant_id is None:
@@ -40,17 +28,8 @@ async def require_telephony_caller(
 
 
 async def resolve_caller_tenant(user: CurrentUser, tenant_slug: str) -> tuple[uuid.UUID, str]:
-    """Maps tenant_slug -> tenant UUID via the AccountStore's already-loaded
-    map (no Postgres, no tenants.get_tenant slug lookup — see the Latency
-    section's tightening #1). A tenant-scoped caller must see an identical
-    404 whether the slug is unmapped or belongs to another tenant (lesson
-    2: per-caller invariance) — that comparison is made here, BEFORE the
-    resolved UUID ever reaches deps.assert_tenant_access, because its own
-    UUID branch raises 403 on a mismatch, not 404, which would let a
-    tenant-scoped caller distinguish "doesn't exist" from "not mine" by
-    status code alone. assert_tenant_access is still AWAITED unconditionally
-    on every surviving path — a no-op confirmation for the case this
-    function has already admitted, not a second, differently-shaped guard."""
+    """Map tenant_slug to UUID from AccountStore. Unknown and foreign slugs both 404 (checked before
+    assert_tenant_access, which would 403) so tenant-scoped callers can't probe existence."""
     tenant_id = accounts.tenant_id_for_slug(tenant_slug)
     platform_scoped = deps.is_platform_scoped(user)
 

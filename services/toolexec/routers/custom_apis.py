@@ -1,27 +1,6 @@
-"""
-services/toolexec/routers/custom_apis.py — the admin surface (T16).
+"""Custom APIs admin routes: reads need any user, writes need superadmin/admin.
 
-Auth on every route: reads behind plain `Depends(get_current_user)`, writes
-behind `Depends(require_role("superadmin","admin"))` — the same
-services/config/deps.py dependencies services/knowledge/routers/
-knowledge_bases.py uses, never a bare authenticated check (that would hand
-supervisor/agent — every other console role — read+write access, lesson
-4). Tenant scope for the `/tenants/{tenant_id}/...` routes is
-`deps.assert_tenant_access` (RLS design T18: this module's own
-`_require_tenant_access` was the verbatim source lifted into
-services/config/deps.py, so this is now the import, not a duplicate); the
-id-addressed `/custom-apis/{id}` routes are scoped by `_authorize_custom_api`.
-
-RLS (libs/tenancy): `tenant_scoped_router` also carries `bind_path_tenant`
-+ `require_path_tenant_access` (Tier 2) so the `app.tenant_id`/
-`app.tenant_slug` GUCs are set for a platform-scoped caller acting on
-another tenant, and so the path's tenant is authorized even before this
-module's own checks run — a second, independent layer, not a replacement
-for them (see design "What must not change").
-
-Both helpers raise LookupError with the SAME fixed detail string for "no
-such id" and "exists, but not your tenant" (lesson 2) — app.py's existing
-LookupError handler turns that into a 404 with no extra wiring needed here.
+Missing and cross-tenant ids both raise LookupError with the same detail (404) to avoid existence probing.
 """
 
 from __future__ import annotations
@@ -56,18 +35,7 @@ _NOT_FOUND_DETAIL = "custom_api not found"
 async def _authorize_custom_api(
     custom_api_id: str, current_user: CurrentUser, *, platform_scoped: bool = False,
 ) -> dict[str, Any]:
-    """404, identical detail, for both 'no such id' and 'exists but is
-    another tenant's' — deliberately diverging from provider_configs.py's
-    403 for the equivalent case, which lets a tenant admin probe whether an
-    opaque id exists elsewhere on the platform (lesson 2).
-
-    `platform_scoped` (Tier 3, RLS design) selects which connection the
-    fetch runs under (`platform_conn`/`tenant_conn`, inside
-    custom_apis_service.get_custom_api) — its only legitimate source is
-    `deps.is_platform_scoped(current_user)`, never a role comparison
-    (lesson 24). The post-fetch check below is unaffected: it is the
-    control that closes a cached or cross-tenant read regardless of which
-    connection produced the row."""
+    """Fetch and tenant-check a custom API; 404 for both missing and cross-tenant ids."""
     api = await custom_apis_service.get_custom_api(custom_api_id, platform_scoped=platform_scoped)
     if api is None:
         raise LookupError(_NOT_FOUND_DETAIL)

@@ -1,10 +1,4 @@
-"""Regression coverage for review findings #2/#3: the vendor's answer_url
-callback for a call THIS service placed must use the outbound leg's real
-agent_slug/tenant_slug (remembered at place_call() time), never re-derive
-a route via DID lookup against the callee's number — which previously (a)
-silently downgraded the answering agent to "default", and (b) 403'd with
-dead air whenever the dialled number happened to be provisioned as
-another tenant's own DID."""
+"""Answer webhooks for calls we placed use the remembered outbound identity, not DID resolution."""
 
 from __future__ import annotations
 
@@ -95,9 +89,7 @@ async def test_answer_webhook_for_outbound_call_uses_remembered_agent_not_defaul
 
 @pytest.mark.asyncio
 async def test_answer_webhook_for_outbound_call_to_a_foreign_tenants_did_is_not_rejected(monkeypatch):
-    """The callee number happens to be provisioned as tenant-b's DID in the
-    did: cache — this must not trip the foreign_did rejection for a call
-    this service itself placed for tenant-a."""
+    """Callee being another tenant's DID must not trip foreign_did for our own outbound call."""
     key = f"k-{uuid.uuid4()}"
     outbound_identities.remember("fake", "cfg-a", key, tenant_slug="tenant-a", agent_slug="sales")
 
@@ -117,9 +109,7 @@ async def test_answer_webhook_for_outbound_call_to_a_foreign_tenants_did_is_not_
 
 @pytest.mark.asyncio
 async def test_answer_webhook_without_a_recognized_idem_still_uses_did_resolution(monkeypatch):
-    """A genuinely inbound call (no ?idem=, or one this process never
-    remembered) must still take the ordinary DID-resolution path — the fix
-    is additive, not a blanket bypass."""
+    """Inbound calls (no or unknown ?idem=) still use DID resolution."""
     calls: list[str] = []
 
     async def _resolve(did: str):

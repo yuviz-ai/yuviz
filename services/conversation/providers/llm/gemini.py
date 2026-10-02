@@ -1,31 +1,8 @@
 """
-GeminiLLM — streaming text generation via Google's Gemini API.
+GeminiLLM — streaming text generation via Gemini's streamGenerateContent (SSE).
 
-Streaming is Server-Sent Events (SSE) over the streamGenerateContent
-endpoint: lines prefixed "data: ", each a JSON chunk carrying an
-incremental candidates[0].content.parts[].text — same token-yielding
-contract as OllamaLLM/OpenAILLM, different wire format.
-
-Gemini's message shape differs from OpenAI/Ollama's in three ways this
-class has to bridge, not push onto callers: (1) the system prompt is a
-top-level system_instruction field, never a "system"-role message inside
-contents; (2) the assistant's own role is named "model", not "assistant";
-(3) a functionCall part returned with tool-calling carries a sibling
-"thoughtSignature" field (Gemini's "thinking" models) that MUST be
-echoed back verbatim on that same functionCall
-part when it's replayed into history for a later turn — omitting it is a
-hard 400 (INVALID_ARGUMENT: "missing a thought_signature"), not a
-degraded-quality warning. Carried end-to-end via ToolCallEvent/ChatMessage's
-generic provider_metadata passthrough (see llm_adapter.py) so the
-orchestrator never has to know this exists.
-build_chat_messages() still owns the "does the caller already have a
-system message" precedence decision — this class only re-shapes its
-output for Gemini's wire format afterward.
-
-Auth is the x-goog-api-key header — never the "key" query parameter, which
-httpx logs at INFO (see generate()).
-
-pip install httpx (already a dependency via OllamaLLM)
+Quirks: top-level system_instruction; assistant role is "model"; a functionCall's
+thoughtSignature must be echoed back verbatim on replay or the request 400s.
 """
 
 from __future__ import annotations
@@ -46,11 +23,7 @@ _DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com"
 
 
 def _tool_name_for_call_id(shaped: list[dict[str, Any]], tool_call_id: str | None) -> str:
-    """Gemini's functionResponse needs the original call's tool name, which
-    a "tool"-role ChatMessage only references indirectly via
-    tool_call_id — looked up from whichever earlier message's tool_calls
-    entry has a matching id (a tool-result message always follows its own
-    assistant tool_calls message in a well-formed history)."""
+    """Find the tool name for a tool_call_id (functionResponse requires the name)."""
     for m in shaped:
         for call in m.get("tool_calls") or []:
             if call.get("id") == tool_call_id:
@@ -59,20 +32,7 @@ def _tool_name_for_call_id(shaped: list[dict[str, Any]], tool_call_id: str | Non
 
 
 class GeminiLLM:
-    """
-    ILLM implementation backed by Google's Gemini streamGenerateContent endpoint.
-
-    api_key     — resolved once at construction by AIProviderManager via
-                  SecretResolver, never re-resolved per call.
-    model       — e.g. "gemini-flash-latest" (an alias Google keeps pointed
-                  at its current stable fast model — recommended default,
-                  since pinned version strings get deprecated for new
-                  callers over time), "gemini-2.5-pro"
-    system      — system prompt sent as Gemini's system_instruction when
-                  the caller hasn't already injected one (same precedent
-                  as OllamaLLM.generate()).
-    temperature — sampling temperature (0.0 = deterministic)
-    """
+    """ILLM backed by Gemini's streamGenerateContent endpoint."""
 
     def __init__(
         self,
@@ -82,13 +42,7 @@ class GeminiLLM:
                           "Keep responses concise and natural for speech.",
         temperature: float = 0.7,
         base_url:    str = _DEFAULT_BASE_URL,
-        # 30s left a caller sitting in dead air for a full 30 seconds — Gemini's
-        # streamGenerateContent endpoint occasionally never sends even its
-        # first byte (httpx.ReadTimeout while still waiting on response
-        # headers, not a slow-but-progressing stream). 10s cuts that wait
-        # dramatically; RetryOnceLLM (provider_bundle.py) is what makes this
-        # safe to shorten — a genuinely slow-but-working request that trips
-        # this timeout still gets one retry before failing the turn.
+        # Short: the stream sometimes never sends a first byte; RetryOnceLLM retries.
         timeout_s:   float = 10.0,
     ) -> None:
         self._model       = model
@@ -99,38 +53,18 @@ class GeminiLLM:
         log.info("GeminiLLM model=%s", model)
 
     def _shape_contents(self, messages: list[ChatMessage]) -> tuple[str | None, list[dict[str, Any]]]:
-        """Bridges two Gemini-specific shapes build_chat_messages()'s generic
-        output doesn't know about: a tool_calls-bearing assistant message
-        becomes a functionCall part (args, not "arguments"), and a
-        "tool"-role message becomes a functionResponse
-        part on a "user"-role turn — Gemini has no distinct tool role at
-        all. functionResponse.response must be a JSON object, not a string,
-        so a tool message's content (always a JSON string by convention —
-        see ChatMessage's docstring) is parsed back into one here."""
+        """Map tool calls to functionCall parts and tool results to functionResponse on a user turn."""
         shaped = build_chat_messages(self._system, messages)
         system_instruction = None
         contents: list[dict[str, Any]] = []
-        # Tool-call ids whose originating assistant message got flattened to
-        # plain text below (foreign-origin, no thought_signature) — the
-        # paired "tool"-role result must follow the same path, since a
-        # native functionResponse only makes sense pointing at a native
-        # functionCall right before it.
+        # Results of flattened calls must be flattened too: functionResponse needs a native functionCall.
         flattened_call_ids: set[str] = set()
         for m in shaped:
             if m["role"] == "system":
                 system_instruction = m["content"]
                 continue
             if m.get("tool_calls"):
-                # A tool call this class itself never produced — e.g. Groq's
-                # or OpenAI's, replayed into history if this engine was ever
-                # switched to mid-conversation — carries no thought_signature,
-                # and Gemini's native functionCall part hard-400s without one
-                # ("missing a thought_signature") once any tool-calling has
-                # happened. There's no signature to echo back that this
-                # class didn't invent, so render it as plain text instead of
-                # Gemini's native function-calling grammar, which this
-                # message was never part of. Confirmed live: this broke a
-                # real call mid-booking-flow the first time this happened.
+                # Foreign tool calls lack a thought_signature and would 400; render as text.
                 if not all((c.get("provider_metadata") or {}).get("thought_signature") for c in m["tool_calls"]):
                     flattened_call_ids.update(c["id"] for c in m["tool_calls"])
                     summary = "; ".join(f"{c['name']}({json.dumps(c['arguments'])})" for c in m["tool_calls"])
@@ -175,11 +109,6 @@ class GeminiLLM:
         params = {"alt": "sse"}
         headers = {"x-goog-api-key": self._api_key}
 
-        # No retry here — RetryOnceLLM (provider_bundle.py) already wraps
-        # every ILLM, including this one, and retries once on any exception
-        # raised before a token yields. A second, provider-local retry loop
-        # used to live here too, which meant Gemini alone got double-
-        # retried against every other provider's single retry.
         async with self._client.stream("POST", path, params=params, headers=headers, json=payload) as resp:
             await raise_with_body_logged(resp, log=log, provider="GeminiLLM")
             async for line in resp.aiter_lines():
@@ -203,19 +132,7 @@ class GeminiLLM:
         self, messages: list[ChatMessage], schemas: list[dict[str, Any]],
         tool_choice: str | dict[str, Any] | None = None,
     ) -> AsyncGenerator[TurnEvent, None]:
-        """IToolAwareLLM companion to generate() — same client/auth, additive
-        method. Gemini wraps the generic {name, description, parameters}
-        schema list into a single functionDeclarations entry, unlike
-        OpenAI/Ollama's per-tool wrapper. A functionCall part, like a text
-        part, arrives as a complete unit in whichever chunk it appears —
-        never built up incrementally the way text streams — so plain-text
-        turns keep the same per-sentence TTS latency they have today.
-
-        tool_choice, when given as the same OpenAI-shaped dict every other
-        provider accepts ({"type": "function", "function": {"name": ...}}),
-        is translated to Gemini's own tool_config.function_calling_config
-        (mode="ANY" + allowed_function_names) — Gemini's real equivalent of
-        forcing one specific function call instead of leaving it optional."""
+        """Tool-aware generate(); a forced tool_choice maps to function_calling_config mode=ANY."""
         system_instruction, contents = self._shape_contents(messages)
 
         payload: dict = {
@@ -238,10 +155,6 @@ class GeminiLLM:
         params = {"alt": "sse"}
         headers = {"x-goog-api-key": self._api_key}
 
-        # No retry here — see generate()'s comment: RetryOnceLLM already
-        # wraps every provider uniformly, so a second, Gemini-local retry
-        # loop would double-retry instead of matching every other engine's
-        # single retry.
         async with self._client.stream("POST", path, params=params, headers=headers, json=payload) as resp:
             await raise_with_body_logged(resp, log=log, provider="GeminiLLM")
             async for line in resp.aiter_lines():

@@ -1,17 +1,5 @@
-"""
-Workflow draft/publish/versions for agents.workflow (docs/workflow.md §4.2).
-
-- workflow_draft: editor autosave; may be invalid; never read by a call
-- workflow: live graph; only written by publish/create after validation
-- agent_workflow_versions: append-only publish history (rollback republishes)
-
-`workflow` is intentionally absent from agents._UPDATABLE_FIELDS so PATCH
-cannot put an unvalidated graph on a live agent.
-
-Until the Conversation FSM reads ConversationInfo.workflow, live calls still
-use agents.greeting / agents.system_prompt. publish() mirrors those columns
-from the start/global nodes so a Publish 200 means callers hear the new text.
-"""
+"""Workflow draft/publish/versions. `workflow_draft` may be invalid; `workflow` is
+written only by validated publish; versions are append-only."""
 
 from __future__ import annotations
 
@@ -149,11 +137,7 @@ async def save_draft(
     graph: dict[str, Any],
     base_config_version: int | None = None,
 ) -> dict[str, Any]:
-    """Autosave. Optional base_config_version fences publish races (409 StaleDraft).
-
-    Draft is not cached on the agent row (GET /agents strips it), so no cache
-    invalidation — GET .../workflow always reads Postgres.
-    """
+    """Autosave. Optional base_config_version fences publish races (StaleDraft)."""
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         if base_config_version is None:
@@ -225,17 +209,8 @@ async def publish(
     user_id: Any | None = None,
     user_email: str | None = None,
 ) -> dict[str, Any]:
-    """Validate, write live graph + draft, append a version, bump config_version.
-
-    graph=None publishes workflow_draft (editor Publish button).
-    Identical logic to the already-live graph (ignoring RF chrome / order)
-    syncs positions onto workflow + workflow_draft without a new version row;
-    config_version still bumps when the stored JSON actually changes.
-
-    Also mirrors start.greeting / global.prompt into agents.greeting /
-    system_prompt — those columns are what the runtime reads today.
-    A missing start/global node clears that column (no leftover stale text).
-    """
+    """Validate and publish `graph` (or the draft); also mirrors greeting/system_prompt
+    columns, which the runtime still reads. Logic-identical graphs add no version."""
     peeked = graph if graph is not None else await _peek_draft(agent_id, tenant_slug)
     if peeked is None:
         raise ValueError("nothing to publish — this agent has no workflow draft")
@@ -252,9 +227,7 @@ async def publish(
 
         current = _as_graph(old["workflow"])
         if graphs_equivalent(candidate, current):
-            # Logic matches live, but canvas chrome (positions) may differ.
-            # Write both columns so the editor's position compare clears;
-            # no version row — conversation logic did not change.
+            # Only canvas positions may differ: sync them, no version row.
             new_row = await conn.fetchrow(
                 """
                 UPDATE agents SET

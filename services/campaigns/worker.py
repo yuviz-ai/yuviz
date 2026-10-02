@@ -1,18 +1,4 @@
-"""
-CampaignWorker — the background pacing loop that actually places calls for
-'running' campaigns. Runs as an asyncio background task inside the
-FastAPI app's own process (see app.py's lifespan) rather than a separate
-process like services/knowledge/'s ingestion worker — a deliberate v1
-simplification given campaign call volume on a single dev machine is
-nowhere near what would justify a separate scaled-out worker process;
-revisit if real usage needs it.
-
-*** UNVERIFIED END TO END *** — see originate.py's module
-docstring. This module's own logic (pacing, concurrency, claiming
-contacts, retry-on-failure) is fully real and testable; what's unverified
-is specifically whether the ESL commands it issues actually produce a
-working AI phone call once a real trunk/DID exists.
-"""
+"""CampaignWorker — in-process asyncio pacing loop that dials 'running' campaigns."""
 
 from __future__ import annotations
 
@@ -44,10 +30,7 @@ def _parse_hhmm(value: str) -> dtime:
 
 
 def _within_calling_hours(campaign: dict) -> bool:
-    """None/None on either bound means unrestricted — preserves existing
-    campaigns' behavior from before this guardrail existed. A window that
-    wraps past midnight (e.g. 22:00-06:00) is supported by treating it as
-    "outside [end, start)" instead of "inside [start, end]"."""
+    """A missing bound means unrestricted; windows may wrap midnight (22:00-06:00)."""
     start, end = campaign.get("calling_hours_start"), campaign.get("calling_hours_end")
     if not start or not end:
         return True
@@ -64,15 +47,10 @@ class CampaignWorker:
         self._task: asyncio.Task | None = None
         self._last_attempt_at: dict[str, float] = {}     # campaign_id -> monotonic time
         self._in_flight: dict[str, int] = {}              # campaign_id -> count of 'calling' contacts
-        # job_uuid -> (campaign_id, contact_id, max_attempts, attempt_count-at-dial-time) —
-        # max_attempts/attempt_count captured here so _on_job_complete can
-        # decide retry-vs-exhaust without an extra DB round trip.
+        # job_uuid -> (campaign_id, contact_id, max_attempts, attempt_count-at-dial-time)
         self._job_to_contact: dict[str, tuple[str, str, int, int]] = {}
         # (campaign_id, contact_id) -> (provider, tenant_slug, idempotency_key,
-        # max_attempts, attempt_count) — a REST provider's 202 leaves the
-        # contact at 'calling' rather than requeueing it, since the vendor
-        # may already have dialled; resolved via poll_idempotency on a
-        # later tick instead of the ESL job-event listener.
+        # max_attempts, attempt_count) for REST 202s awaiting poll_idempotency.
         self._pending_idem: dict[tuple[str, str], tuple[str, str, str, int, int]] = {}
         self._event_listener = originate.EslJobEventListener(self._on_job_complete)
 
@@ -102,10 +80,7 @@ class CampaignWorker:
 
     async def _tick(self) -> None:
         pool = await db.get_pool()
-        # Cross-tenant scan, no request context — the loop itself stays
-        # outside the connection so it never pins a transaction snapshot
-        # for the tick's lifetime (lesson: a worker loop inside a
-        # transaction holds locks for as long as the loop runs).
+        # Loop stays outside the connection so no transaction spans the tick.
         async with platform_conn(pool, reason="campaign-worker-scan") as conn:
             running = await conn.fetch("SELECT * FROM campaigns WHERE status = 'running' AND deleted_at IS NULL")
         for row in running:
@@ -152,19 +127,11 @@ class CampaignWorker:
         if contact is None:
             progress = await campaigns.get_progress(campaign_id, platform_scoped=True)
             if progress["calling"] == 0:
-                # No pending contacts left and nothing still in flight —
-                # the campaign is genuinely done, not just paced-out.
                 await campaigns.set_status(campaign_id, "completed", platform_scoped=True)
                 log.info("CampaignWorker: campaign=%s completed (no contacts remain)", campaign_id)
             return
 
-        # DNC re-check, defense in depth: the primary enforcement point is
-        # the upload endpoint (routers/campaigns.py), which never lets a
-        # blocked number become a 'pending' row in the first place. This
-        # catches a number added to the DNC list after upload, for a
-        # campaign that's already running. Deliberately doesn't touch
-        # pacing/in_flight — no real dial attempt happens, so it shouldn't
-        # cost this campaign a pacing slot.
+        # Catches numbers DNC-listed after upload; costs no pacing slot.
         if await dnc.is_blocked(campaign["tenant_id"], contact["phone_number"], platform_scoped=True):
             log.info("CampaignWorker: contact=%s phone=%s is on the DNC list — blocking", contact["id"], contact["phone_number"])
             await campaign_contacts.mark_contact_status(contact["id"], "blocked", platform_scoped=True)
@@ -181,15 +148,8 @@ class CampaignWorker:
 
         contact_id = str(contact["id"])
         if not route["caller_id_owned"]:
-            # caller_id is not a phone_numbers row for THIS tenant at all —
-            # routers/campaigns.py validates ownership at create/update
-            # time, but a DID can be deleted/reassigned afterward. This
-            # must refuse the dial, never fall through to the ESL path
-            # below: that path performs no caller-id ownership check at
-            # all (security finding: "not owned" is exactly the condition
-            # that used to route around the check). An OWNED DID with no
-            # REST telephony_config binding (route["provider"] is None) is
-            # a legitimate native/ESL number and is not refused here.
+            # DID may have been deleted/reassigned since create; never fall
+            # through to ESL, which has no ownership check.
             log.warning(
                 "CampaignWorker: caller_id=%s is not owned by tenant=%s, refusing to dial contact=%s",
                 campaign["caller_id"], campaign_id, contact_id,
@@ -206,18 +166,14 @@ class CampaignWorker:
                         agent_slug=route["agent_slug"], idempotency_key=idem_key,
                     )
                 except telephony_originate.TelephonyOriginatePending:
-                    # The vendor accepted but hasn't confirmed yet — leave
-                    # the contact at 'calling' and resolve it on a later
-                    # tick via poll_idempotency, never requeue an attempt
-                    # the vendor may already have dialled.
+                    # Never requeue: the vendor may already have dialled.
                     self._pending_idem[(campaign_id, contact_id)] = (
                         route["provider"], route["tenant_slug"], idem_key, max_attempts, attempt_count,
                     )
                     return
             else:
-                # originate_call refuses these too; catching them here keeps a
-                # campaign-wide config error from failing every contact in turn,
-                # and a permanently bad stored number from burning its retries.
+                # Pre-checked so a bad caller_id doesn't fail every contact and a
+                # bad stored number doesn't burn its retries.
                 if not originate.is_valid_dial_number(campaign["caller_id"]):
                     log.warning(
                         "CampaignWorker: campaign=%s caller_id is not a plain dial number — "
@@ -238,8 +194,7 @@ class CampaignWorker:
             if job_uuid:
                 self._job_to_contact[job_uuid] = (campaign_id, contact_id, max_attempts, attempt_count)
             else:
-                # Accepted but no trackable id came back — can't resolve
-                # this one later, so don't leave it stuck at 'calling'.
+                # No trackable id: don't leave it stuck at 'calling'.
                 log.warning(
                     "CampaignWorker: originate accepted with no trackable id contact=%s", contact["id"],
                 )
@@ -280,11 +235,7 @@ class CampaignWorker:
     async def _resolve_with_retry(
         self, campaign_id: str, contact_id: str, max_attempts: int, attempt_count: int, status: str,
     ) -> None:
-        """A failed/no_answer contact gets requeued to 'pending' (so the
-        normal claim path picks it up again, respecting pacing/concurrency
-        same as any other contact) as long as campaigns.max_attempts
-        hasn't been reached yet — otherwise it's left in its terminal
-        failed/no_answer state, exhausted."""
+        """Requeue a failed/no_answer contact to 'pending' until max_attempts, else leave it terminal."""
         if attempt_count < max_attempts:
             log.info(
                 "CampaignWorker: contact=%s attempt=%s/%s ended %s — requeueing for retry",

@@ -1,18 +1,5 @@
-"""
-User CRUD + authentication. Same audited-mutation pattern as tenants.py/
-agents.py — no Redis caching here, unlike those: auth checks are
-comparatively low-frequency (once at login, not per hot-path call) and
-correctness (a role change or deactivation taking effect immediately)
-matters more than shaving a few ms off a login request.
-
-auth.hash_password/verify_password are bcrypt (cost 12, ~250ms of pure CPU)
-called synchronously — every call site here goes through asyncio.to_thread
-so that work runs off the event loop (lesson 18), not just the ones already
-reachable from an authenticated route: POST /invites/accept
-(invites.accept_invite -> _insert_user) is public and unauthenticated, so
-without this a burst of accepts at the AcceptThrottle ceiling would stall
-the whole loop, including /health.
-"""
+"""User CRUD + authentication. Uncached so role changes take effect immediately.
+bcrypt calls always go through asyncio.to_thread (~250ms CPU each)."""
 
 from __future__ import annotations
 
@@ -35,8 +22,7 @@ _BOOTSTRAP_LOCK_KEY = 7749012026
 
 
 def to_public_dict(user: dict[str, Any]) -> dict[str, Any]:
-    """Strips password_hash — never returned to a client, in a login
-    response or anywhere else."""
+    """Strips password_hash, which is never returned to a client."""
     return {k: v for k, v in user.items() if k != "password_hash"}
 
 
@@ -52,15 +38,8 @@ async def get_user_by_email(email: str) -> dict[str, Any] | None:
 
 
 async def get_user_by_id(user_id: Any) -> dict[str, Any] | None:
-    """Identity resolution ONLY — answers "who is the actor on this
-    request", not "may this actor touch that user". Shared by exactly four
-    callers (deps.assert_current_authority, deps.fresh_authority,
-    routers/auth.py's GET /auth/me, routers/tenants.py's concurrency route),
-    all of which run before the request's tenant is known and all of which
-    must be able to see a NULL-tenant platform account, which no RLS policy
-    can ever return — hence the one platform_conn bypass here, not per
-    caller. See get_user_for_admin() below for the "may this actor touch
-    that user" question, which takes the normal tenant-scoped path."""
+    """Identity resolution only ("who is the actor"); bypasses RLS to see NULL-tenant
+    accounts. Use get_user_for_admin() for authorization lookups."""
     pool = await db.get_pool()
     async with platform_conn(pool, reason="identity-resolution") as conn:
         row = await conn.fetchrow(
@@ -70,13 +49,8 @@ async def get_user_by_id(user_id: Any) -> dict[str, Any] | None:
 
 
 async def get_user_for_admin(user_id: Any, *, platform_scoped: bool = False) -> dict[str, Any] | None:
-    """"May this actor touch THAT user" — the Tier 3 by-id resolver for
-    PATCH/DELETE /users/{user_id}, as opposed to get_user_by_id's identity
-    resolution. `platform_scoped` (source: deps.is_platform_scoped(current_user)
-    only, lesson 24) selects platform_conn for a platform actor's read;
-    every other caller takes the ambient tenant_conn() ceiling, so a
-    tenant-scoped actor asking for another tenant's user id gets today's
-    404 from an empty policy result (lesson 2)."""
+    """By-id lookup for PATCH/DELETE /users; tenant-scoped unless `platform_scoped`
+    (from deps.is_platform_scoped only), so cross-tenant ids come back None."""
     pool = await db.get_pool()
     conn_cm = platform_conn(pool, reason="users-admin-by-id") if platform_scoped else tenant_conn(pool)
     async with conn_cm as conn:
@@ -87,33 +61,9 @@ async def get_user_for_admin(user_id: Any, *, platform_scoped: bool = False) -> 
 
 
 async def list_users(*, tenant_id: Any | None, is_platform_scoped: bool) -> list[dict[str, Any]]:
-    # Service accounts (conversation-service@internal.yuviz.ai etc.) never
-    # appear here — see is_service_account's schema.sql comment for why:
-    # an admin soft-deleted one through this exact listing once already,
-    # breaking every live call until it was noticed. They're managed
-    # directly in Postgres, not through the Users UI.
-    #
-    # `is_platform_scoped` reflects the *actor's* tenant scope
-    # (deps.is_platform_scoped: tenant_id is None), not their role — a
-    # platform-scoped actor (superadmin, or a viewer-role service account
-    # like Conversation/vobiz, lesson 24) filtering to one tenant via
-    # ?tenant_id= still gets every role in that tenant; only a tenant-
-    # scoped actor gets the `role != 'superadmin'` exclusion, since they
-    # must never see a superadmin row regardless of tenant. PR #19 finding
-    # 4: this used to be `role == "superadmin"`, which scoped a NULL-tenant
-    # service account to `tenant_id IS NOT DISTINCT FROM NULL` instead of
-    # the platform-wide access it actually needs. (Also review finding 3,
-    # earlier in the same PR: `is_superadmin`/tenant_id were conflated,
-    # which silently dropped superadmin-role rows from a superadmin's own
-    # filtered listing — same fix, still holds under the new name.)
-    # A NULL tenant_id argument is, by construction, a listing no RLS policy
-    # can ever return (platform-scoped cross-tenant, or a NULL-tenant
-    # service account's own scoped view) — platform_conn regardless of
-    # is_platform_scoped, so a naive tenant_conn() here doesn't raise
-    # TenantUnresolved on a request that isn't actually an error (the
-    # NULL-tenant, non-superadmin service-account case; see "GET /users for
-    # a NULL-tenant service account" in the design doc). Every other
-    # listing is scoped to a real tenant_id and takes tenant_conn().
+    # Service accounts are hidden: deleting one via the UI breaks live calls.
+    # `is_platform_scoped` is the actor's tenant scope, not role; only tenant-scoped
+    # actors get the superadmin exclusion. NULL tenant_id needs platform_conn (no RLS match).
     pool = await db.get_pool()
     conn_cm = platform_conn(pool, reason="users-null-tenant-listing") if tenant_id is None else tenant_conn(pool)
     async with conn_cm as conn:
@@ -186,10 +136,7 @@ async def create_user(
     creator_user_id: Any | None = None,
     creator_user_email: str | None = None,
 ) -> dict[str, Any]:
-    # tenant_id may be a real tenant or NULL (a platform admin) — either
-    # way there's no request-scope GUC to inherit here (not called from a
-    # tenant-path route today), so this bypasses like the other pre-auth/
-    # admin-provisioning writers in this module.
+    # No request-scope tenant to inherit here (tenant_id may be NULL), so bypass RLS.
     pool = await db.get_pool()
     async with platform_conn(pool, reason="users-create", stamp_tenant=tenant_id) as conn:
         return await _insert_user(
@@ -296,9 +243,7 @@ async def register_admin_on(
 
 
 async def authenticate(email: str, password: str) -> dict[str, Any] | None:
-    """Returns the user row on success, None on any failure (unknown email,
-    wrong password) — deliberately the same shape for both, so a login
-    endpoint can't be used to enumerate which emails have accounts."""
+    """User row on success, else None for both unknown email and wrong password (no enumeration)."""
     user = await get_user_by_email(email)
     if user is None:
         return None
@@ -315,13 +260,8 @@ async def update_user(
     row_tenant_id: Any | None = None,
     **fields: Any,
 ) -> dict[str, Any]:
-    """`row_tenant_id` is the target row's tenant_id, already fetched and
-    authorized by the router (get_user_for_admin + assert_tenant_access) —
-    passed through rather than re-derived so the fetch and this mutation
-    share one resolved scope. None means a genuinely platform-scoped row
-    (no tenant to write under RLS), so that branch alone bypasses; every
-    real-tenant row mutates on plain tenant_conn(), which the router has
-    already pointed at this tenant via set_target_tenant()."""
+    """`row_tenant_id` is the target row's tenant, already authorized by the router;
+    None (platform-scoped row) is the only case that bypasses RLS."""
     if not fields:
         raise ValueError("update_user() called with no fields to update")
 
@@ -366,10 +306,7 @@ async def update_user(
         )
         new = dict(new_row)
 
-        # old_value/new_value cover only the columns actually written, not
-        # the full row — otherwise password_hash (redacted either way)
-        # rides along on every role/tenant_id-only update and the UI
-        # can't tell "redacted, unchanged" from "redacted, changed."
+        # Only written columns, so a redacted password_hash doesn't appear changed on every update.
         await audit.write_audit(
             conn,
             entity_type="user",
@@ -386,17 +323,8 @@ async def update_user(
 async def change_password(
     user_id: Any, *, current_password: str, new_password: str, platform_scoped: bool = False,
 ) -> dict[str, Any] | None:
-    """Returns the updated row (with a bumped token_version, revoking older
-    sessions), or None (no write happens) if current_password doesn't match —
-    the router turns that into a 400, distinct from update_user()'s
-    role/tenant_id path since this always needs the caller to prove they
-    still know the old password, not just be authenticated as someone with
-    permission to edit the row.
-
-    Always the caller's own row (user_id is current_user.id), so
-    `platform_scoped` is the caller's own known tenant_id-is-None-ness
-    (deps.is_platform_scoped(current_user)) — no fetch-then-decide needed,
-    unlike the admin-by-id routes."""
+    """Updated row with bumped token_version (revokes older sessions), or None if
+    current_password doesn't match. Always the caller's own row."""
     pool = await db.get_pool()
     conn_cm = platform_conn(pool, reason="users-change-password") if platform_scoped else tenant_conn(pool)
     async with conn_cm as conn:
@@ -416,10 +344,7 @@ async def change_password(
             "updated_at = now() WHERE id = $1 RETURNING *",
             user_id, new_hash,
         ))
-        # old_value/new_value both carry password_hash, but audit.py
-        # redacts that field before it ever reaches Postgres (see
-        # audit.py's _SECRET_REF_FIELDS) — this row only records "a
-        # password change happened," never either hash.
+        # audit.py redacts password_hash before it reaches Postgres.
         await audit.write_audit(
             conn,
             entity_type="user",
@@ -440,9 +365,7 @@ async def soft_delete_user(
     actor_user_email: str | None = None,
     row_tenant_id: Any | None = None,
 ) -> None:
-    """`row_tenant_id` — see update_user()'s docstring: the router's own
-    fetch (get_user_for_admin + assert_tenant_access) decides it, passed
-    through so fetch and delete share one resolved scope."""
+    """`row_tenant_id`: same contract as update_user()."""
     pool = await db.get_pool()
     conn_cm = (
         platform_conn(pool, reason="users-admin-by-id", stamp_tenant=row_tenant_id)

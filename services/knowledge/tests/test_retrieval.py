@@ -1,18 +1,4 @@
-"""
-_resolve_policy() proves the three-tier override chain (call override >
-agent's agent_retrieval_policies row > system default) — the mechanism
-that makes RetrievalPolicy actually configurable per agent instead of a
-hardcoded constant anywhere in the call path.
-
-test_retrieve_end_to_end_with_real_ollama_embeddings hits real Ollama
-(nomic-embed-text, already pulled locally — see database/knowledge_schema.
-sql's dimension comment) and real pgvector — matching this project's
-"real infra when fast/available" testing convention, not mocked.
-
-retrieve()/_resolve_policy()/PgVectorRepository.search() take a connection
-rather than the pool (RLS design, libs/tenancy) — each test opens one via
-tenant_conn(pool), the same helper routers/retrieve.py opens in production.
-"""
+"""Retrieval tests: policy override chain and end-to-end retrieve (real Ollama + pgvector)."""
 
 from __future__ import annotations
 
@@ -110,11 +96,7 @@ async def test_prompt_mode_document_always_included_regardless_of_query_relevanc
     kb = await kb_service.create_knowledge_base(tenant_id=tenant["id"], slug="notices", name="Notices")
     await agent_kb_service.assign(agent["id"], kb["id"])
 
-    # Tiny document, uploaded and ingested through the real pipeline so it
-    # auto-inlines exactly like ingestion_worker.py's own test proves —
-    # no embedding_config_id needed on the KB at all, since a usage_mode=
-    # 'prompt' document (whether auto-inlined or manually flipped) is
-    # never embedded/vector-searched.
+    # Tiny doc auto-inlines as prompt-mode, so the KB needs no embedding config.
     from services.knowledge.ingestion_worker import process_one_job
 
     doc = await documents_service.upload_document(
@@ -228,9 +210,6 @@ async def test_prompt_mode_document_excluded_from_ordinary_vector_search(pool, t
 async def test_agent_with_prompt_only_kb_and_no_embedding_provider_still_retrieves(pool, tenant_agent):
     tenant, agent = tenant_agent
     set_caller_tenant(str(tenant["id"]))
-    # No embedding_config_id at all — a KB holding only always-include
-    # documents needs no embedding provider, since none of its content is
-    # ever vector-searched.
     kb = await kb_service.create_knowledge_base(tenant_id=tenant["id"], slug="no-embed", name="No Embed")
     await agent_kb_service.assign(agent["id"], kb["id"])
 

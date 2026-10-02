@@ -124,8 +124,7 @@ async def login(body: LoginRequest):
         raise HTTPException(
             status_code=403, detail="Please verify your email — enter the code we sent to your inbox.",
         )
-    # Same 401 for "no such email" and "wrong password" — see
-    # users.authenticate()'s docstring for why.
+    # Same 401 for unknown email and wrong password, so this can't probe accounts.
     raise HTTPException(status_code=401, detail="invalid email or password")
 
 
@@ -217,9 +216,7 @@ async def google_callback(
 async def me(current_user: CurrentUser = Depends(get_authenticated_user)):
     user = await users_service.get_user_by_id(current_user.id)
     if user is None:
-        # Token is validly signed but the user row is gone (deleted since
-        # the token was issued) — same posture as an expired token: 401, not
-        # a 404 that would leak whether the id ever existed.
+        # 401, not 404, so a deleted user's id doesn't leak existence.
         raise HTTPException(status_code=401, detail="user no longer exists")
     if user["token_version"] != current_user.token_version:
         raise HTTPException(status_code=401, detail="session expired — please sign in again")

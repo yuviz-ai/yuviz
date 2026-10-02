@@ -1,12 +1,6 @@
-"""services/config/tests/test_deps_tenant_access.py — T11.
+"""assert_tenant_access: 403 on UUID mismatch, identical 404 for unknown or foreign slugs.
 
-assert_tenant_access's 403 (UUID mismatch) / 404 (slug mismatch or
-unknown) shapes must match the two existing precedents verbatim: the UUID
-403 is toolexec/routers/custom_apis.py's `_require_tenant_access`
-("tenant_id does not match the caller's tenant"); the slug 404 is
-agents.py's `_resolve_tenant` (f"tenant {slug!r} not found"). bind_path_tenant
-must never raise, for any input — it is unauthenticated and order-
-independent by construction.
+bind_path_tenant must never raise for any input.
 """
 from __future__ import annotations
 
@@ -72,8 +66,7 @@ async def test_unknown_slug_is_404_not_a_slug_oracle(monkeypatch):
 
 
 async def test_foreign_slug_is_404_identical_to_unknown_slug(monkeypatch):
-    """A {tenant_slug} path must 404 identically for 'missing' and 'not
-    yours', or it becomes a slug oracle (lesson 2)."""
+    """'Missing' and 'not yours' must 404 identically, or it's a slug oracle."""
     caller = _user(tenant_id=str(uuid.uuid4()))
     foreign_tenant_row = {"id": uuid.uuid4()}
     monkeypatch.setattr(deps.tenants_service, "get_tenant", _fake_get_tenant(foreign_tenant_row))

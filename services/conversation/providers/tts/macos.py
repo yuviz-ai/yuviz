@@ -77,9 +77,6 @@ class MacOSTTS:
                 pass
 
     async def synthesize_stream(self, text: str, sample_rate: int):
-        # No genuine incremental synthesis here — yield the one complete
-        # result once. See ITTS.synthesize_stream's docstring: only
-        # DeepgramTTS does real chunk-by-chunk streaming today.
         audio = await self.synthesize(text, sample_rate)
         if audio:
             yield audio
@@ -94,9 +91,7 @@ class MacOSTTS:
             log.exception("MacOSTTS read failed path=%s", path)
             return b""
 
-        # Downmix to mono before resampling: some macOS voices (e.g. Karen, Daniel)
-        # output stereo AIFF.  Averaging channels preserves amplitude and avoids
-        # the 2× byte count that would corrupt the gateway's L16 PCM framing.
+        # Some voices output stereo AIFF; stereo would corrupt the gateway's mono L16 framing.
         if audio_f32.ndim == 2:
             audio_f32 = audio_f32.mean(axis=1).astype(np.float32)
 

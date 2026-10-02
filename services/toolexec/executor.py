@@ -1,27 +1,6 @@
-"""
-services/toolexec/executor.py — the chain runner (T11-T15). Steps, per the
-design's "Chain execution semantics":
+"""Custom API chain runner: ownership, ordering, admission, pinned outbound calls, side-effect claims.
 
-  1-3 (T11): verify ownership in one query, resolve the execution order
-      (graph.resolve_order, an independent runtime backstop over
-      chain_levels), admit-or-refuse (admission.py), and claim the run row
-      (conditional insert, loser's path — lesson 8).
-  4   (T12): per-step outbound call — re-validate the endpoint (SSRF/DNS
-      rebinding), pin the connection to the pre-validated address, cap the
-      response read.
-  5   (T13): resolve and PLACE arguments (never concatenate) with header/
-      path injection guards.
-  6   (T14): the side-effect fail-closed claim — one HMAC derivation, two
-      domain-separation tags, atomic conditional insert before the call.
-  7-8 (T15): apply tenant credentials at call time, persist each step
-      redacted, finalize the run, and interpolate success_template from
-      the redacted projection only.
-
-Every DB write in this module is its own auto-committed statement, never
-part of a transaction spanning an outbound HTTP call — holding a
-transaction open across network I/O is what would make the run claim and
-the side-effect claim invisible to a genuinely concurrent second request
-until commit, defeating the reason they are conditional inserts at all.
+Every DB write is auto-committed; a transaction spanning HTTP I/O would hide claims from concurrent requests.
 """
 
 from __future__ import annotations
@@ -70,15 +49,7 @@ _HEADER_VALUE_RE = re.compile(r"^[\x20-\x7E]*$")
 # ── step 1-3: ownership, ordering, admission, run claim ──────────────────
 
 async def _resolve_tenant_uuid(conn: Any, tenant_id: str) -> str | None:
-    """`tenant_id` on the wire may be a slug or a UUID.
-
-    The conversation service carries the tenant as its SLUG all the way
-    through a call (ToolExecutionContext.tenant_id), and libs.tenancy
-    accepts either when it resolves the RLS GUCs — so a slug arrives here
-    already correctly scoped. It is only the raw `a.tenant_id = $1`
-    comparison below that needs a UUID, and handing it a slug raised
-    `invalid UUID` as a 500 rather than any tenant-safety verdict.
-    """
+    """Resolve a wire `tenant_id` (slug or UUID) to a UUID for raw SQL comparisons."""
     try:
         uuid.UUID(tenant_id)
         return tenant_id
@@ -91,22 +62,10 @@ async def _resolve_tenant_uuid(conn: Any, tenant_id: str) -> str | None:
 
 
 async def _verify_ownership(tenant_id: str, agent_id: str, api_name: str) -> dict | None:
-    """The single ownership-verification query. tenant_id/agent_id/api_name
-    all arrive as independent, untrusted body fields — this is what stops
-    a caller pairing one tenant's tenant_id with another tenant's agent_id,
-    and ca.deleted_at IS NULL / a.deleted_at IS NULL are load-bearing: a
-    soft-deleted API (T7) or agent is unexecutable the very next turn with
-    no cascade write, purely because this JOIN can no longer produce a row
-    (lesson 16).
+    """One query binding untrusted tenant/agent/api together; deleted_at filters make soft-deletes immediate.
 
-    Column note: the task's query is `SELECT ca.*, atp.timeout_ms,
-    atp.max_chain_depth` — custom_apis ALSO has its own timeout_ms column,
-    so an unaliased atp.timeout_ms collides with ca.timeout_ms under the
-    same name. asyncpg's dict(row) keeps only the LAST of two same-named
-    columns, which would silently replace the API's own per-step ceiling
-    with the agent policy override every time one exists. The two atp.*
-    columns are aliased below so both survive dict(row) intact; every
-    JOIN, WHERE and deleted_at filter is unchanged from the task's query."""
+    atp.* columns are aliased: dict(row) would otherwise let atp.timeout_ms overwrite ca.timeout_ms.
+    """
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         resolved_tenant_id = await _resolve_tenant_uuid(conn, tenant_id)
@@ -128,13 +87,7 @@ async def _verify_ownership(tenant_id: str, agent_id: str, api_name: str) -> dic
 
 
 class _UnbuildableApi(Exception):
-    """Raised by _build_api_tree when the chain being resolved needs an
-    api whose own row, or one of its declared params, could not be
-    decoded. Never silently dropped (lesson 19/32): a hole in a
-    side-effecting api's argument list must refuse the call, not dispatch
-    it with the field missing — so this can only be raised for an api the
-    CURRENT chain actually touches, never merely because some other,
-    unrelated row in the tenant happens to be malformed."""
+    """An api this chain touches has an undecodable row or param; refuse rather than dispatch with holes."""
 
     def __init__(self, api_id: str) -> None:
         super().__init__(f"custom_api {api_id} could not be decoded")
@@ -142,28 +95,12 @@ class _UnbuildableApi(Exception):
 
 
 async def _build_api_tree(tenant_id: str, target_id: str) -> tuple[dict, dict[str, dict], dict[str, list[dict]]]:
-    """Builds the nested graph.resolve_order()-shaped tree for target_id
-    fresh from custom_api_params on every call — never from the
-    denormalized chain_levels (AC 11 backstop). Returns (tree, api_rows,
-    params_by_api) so the caller can look up each node's own row/params
-    during execution without re-querying per step.
+    """Return (tree, api_rows, params_by_api) built fresh from params, never from chain_levels.
 
-    Raises _UnbuildableApi if target_id, or an api reachable from it via a
-    declared upstream edge, has an undecodable row or an undecodable
-    param — a hole in a declared argument (esp. a required one on a
-    side-effecting api) must refuse the call, never proceed with the field
-    silently absent."""
+    Raises _UnbuildableApi only if an api reachable from target_id is undecodable.
+    """
     pool = await db.get_pool()
-    # dict(row) alone leaves auth_config/sensitive_response_paths as the
-    # raw JSON strings asyncpg returns for JSONB (no pool codec — see
-    # db.json_col); decoded here via custom_apis' own row decoder so
-    # redaction.redact() gets a real list, not a string it would
-    # silently iterate character-by-character.
-    #
-    # Decoded ROW BY ROW (lesson 34): this loads every non-deleted API/param
-    # in the tenant in one pass, so a single malformed legacy row must not
-    # fail every execute_api chain in the tenant — only a chain that
-    # actually reaches the poisoned api (below) is affected.
+    # Decoded row by row so one malformed row only breaks chains that reach it.
     api_rows: dict[str, dict] = {}
     poisoned: set[str] = set()
     async with tenant_conn(pool) as conn:
@@ -189,11 +126,7 @@ async def _build_api_tree(tenant_id: str, target_id: str) -> tuple[dict, dict[st
         try:
             decoded = custom_apis_module._decode_param_row(r)
         except RuntimeError:
-            # A param row that cannot be decoded is a hole in that API's
-            # OWN declared arguments — the api itself is poisoned (not
-            # merely this one param dropped), so a chain that actually
-            # calls it refuses rather than dispatching with the field
-            # missing.
+            # Poison the whole api, not just this param.
             log.exception("malformed custom_api_params row %s in tenant %s", r["id"], tenant_id)
             poisoned.add(str(r["custom_api_id"]))
             continue
@@ -217,9 +150,7 @@ async def _build_api_tree(tenant_id: str, target_id: str) -> tuple[dict, dict[st
 
 
 def _compute_levels(order: list[dict]) -> dict[str, int]:
-    """order is post-order (every upstream appears before its dependent),
-    so levels can be read off directly — leaf = 1, same semantic as
-    custom_apis.chain_levels."""
+    """Levels from a post-order list (leaf = 1, same as chain_levels)."""
     levels: dict[str, int] = {}
     for node in order:
         ups = node.get("upstream_apis") or []
@@ -228,10 +159,7 @@ def _compute_levels(order: list[dict]) -> dict[str, int]:
 
 
 async def _claim_run(tenant_id: str, agent_id: str, target_api_id: str, request: ChainExecuteRequest) -> tuple[str | None, dict | None]:
-    """Conditional insert, the loser's path (lesson 8) — never a
-    SELECT-then-INSERT. Returns (run_id, None) if this call won the claim,
-    or (None, existing_run_row) if a run with this (tenant_id,
-    idempotency_key) already exists."""
+    """Conditional insert; returns (run_id, None) on win or (None, existing_run) on conflict."""
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         row = await conn.fetchrow(
@@ -254,9 +182,7 @@ async def _claim_run(tenant_id: str, agent_id: str, target_api_id: str, request:
 
 
 async def _response_from_existing_run(run: dict) -> ChainExecuteResponse:
-    """The loser's path when the existing run is already terminal (or
-    still running) — reconstructs the response with ZERO new transport
-    calls."""
+    """Rebuild the response for an existing run without any new outbound calls."""
     pool = await db.get_pool()
     if run["status"] == "running":
         return ChainExecuteResponse(run_id=str(run["id"]), chain_status="failed", error="chain_already_running")
@@ -286,17 +212,10 @@ async def _response_from_existing_run(run: dict) -> ChainExecuteResponse:
 # ── step 4: pinned outbound transport + capped response read ─────────────
 
 class PinnedResolverTransport(httpx.AsyncHTTPTransport):
-    """Connects to one of resolve_and_validate_endpoint()'s own
-    already-validated allowed_ips rather than letting the transport
-    re-resolve DNS itself at connect time (finding 6 — DNS rebinding): a
-    validate-then-connect design whose connect step does its own fresh
-    lookup can still land on a different, unvalidated address if the
-    record changes in between the two. SNI and certificate verification
-    stay on the ORIGINAL HOSTNAME via httpcore's `sni_hostname` request
-    extension; the Host header httpx already set from the original URL at
-    Request-construction time is untouched here. TLS therefore still
-    validates a real certificate against the real hostname — verify=False
-    is never used and is forbidden outright."""
+    """Dial a pre-validated IP (no re-resolve, defeats DNS rebinding); SNI/cert stay on the original host.
+
+    Never use verify=False.
+    """
 
     def __init__(self, allowed_ips: list[str], **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -310,9 +229,7 @@ class PinnedResolverTransport(httpx.AsyncHTTPTransport):
 
 
 def _step_transport(allowed_ips: list[str]) -> httpx.AsyncHTTPTransport:
-    """Isolated call site so tests can monkeypatch this to inject an
-    httpx.MockTransport instead of dialing anything real — same pattern
-    services/toolexec/custom_apis.py's _resolve_addresses already uses."""
+    """Separate function so tests can inject an httpx.MockTransport."""
     return PinnedResolverTransport(allowed_ips)
 
 
@@ -321,10 +238,7 @@ def _max_response_bytes() -> int:
 
 
 async def _read_capped(response: httpx.Response) -> tuple[bytes, bool]:
-    """Abandons the stream past the cap instead of reading to completion
-    first — an unbounded read is both a memory hazard and free egress
-    amplification (finding 10). Short-circuits on Content-Length when
-    present."""
+    """Read up to the cap, abandoning the stream past it; returns (body, truncated)."""
     cap = _max_response_bytes()
     content_length = response.headers.get("content-length")
     if content_length is not None and content_length.isdigit() and int(content_length) > cap:
@@ -348,7 +262,7 @@ async def _do_request(
     method: str, url: str, headers: dict, query_params: dict,
     json_body: dict | None, data_body: dict | None, allowed_ips: list[str], step_timeout_ms: int,
 ) -> tuple[int, bytes, bool]:
-    timeout = httpx.Timeout(step_timeout_ms / 1000)  # explicit on every axis (lesson 18) — never the library default
+    timeout = httpx.Timeout(step_timeout_ms / 1000)  # explicit on every axis, never the library default
     transport = _step_transport(allowed_ips)
     async with httpx.AsyncClient(transport=transport, timeout=timeout, follow_redirects=False) as client:
         async with client.stream(
@@ -393,12 +307,10 @@ def _coerce(value: Any, json_type: str) -> Any:
 def _resolve_arguments(
     api_row: dict, params: list[dict], caller_arguments: dict, prior_responses: dict[str, Any],
 ) -> tuple[dict, dict, dict, list[str]]:
-    """Returns (headers, query_params, body_fields, [path url after
-    substitution]) — actually returns (headers, query_params, body_fields,
-    url) plus argument_sources and from_prior_step via the caller reading
-    the same params list. Raises _StepFailure for a missing required
-    caller value, an unresolved upstream path, or an injection attempt —
-    in every case BEFORE any request is built."""
+    """Return (headers, query_params, body_fields, url, argument_sources, from_prior_step).
+
+    Raises _StepFailure on missing/unresolved/injected values before any request is built.
+    """
     headers: dict[str, str] = {}
     query_params: dict[str, Any] = {}
     body_fields: dict[str, Any] = {}
@@ -408,12 +320,7 @@ def _resolve_arguments(
     missing_fields: list[dict] = []
     raw_values: dict[str, Any] = {}
 
-    # Pass 1: resolve every value from its declared source. All missing
-    # required `caller` fields are collected before raising, so
-    # missing_fields names every gap in one response rather than one at a
-    # time; an unresolvable `upstream` value raises immediately (no
-    # request can be built without it regardless of what else is caller
-    # or literal).
+    # Pass 1: resolve values; collect all missing caller fields before raising.
     for param in params:
         name = param["name"]
         source = param["source"]
@@ -438,18 +345,7 @@ def _resolve_arguments(
             else:
                 extracted, miss_reason = graph.extract_with_reason(upstream_response, json_path)
             if extracted is graph.MISSING:
-                # Two different situations, deliberately two different
-                # errors. NO_MATCH means the prior step ran fine and found
-                # nothing — an ordinary answer ("we don't stock that",
-                # "no appointment under that name") the agent should say
-                # plainly and can often recover from by asking for a
-                # different spelling. PATH_ABSENT is a config bug: the
-                # json_path does not fit the response shape, and no amount
-                # of rephrasing by the caller will fix it.
-                #
-                # These used to share upstream_value_missing, so a product
-                # we do not sell reached the caller as a failure the agent
-                # could only apologise for.
+                # NO_MATCH is a normal "nothing found" answer; PATH_ABSENT is a config bug.
                 if miss_reason == graph.NO_MATCH:
                     raise _StepFailure(
                         "invalid_argument", "upstream_no_match",
@@ -475,14 +371,7 @@ def _resolve_arguments(
         try:
             typed_value = _coerce(raw_values[name], param["json_type"])
         except (TypeError, ValueError):
-            # e.g. an LLM-supplied {"qty": "three"} against an `integer`
-            # param — must become a step outcome (invalid_argument, this
-            # param named) rather than escape the step loop past
-            # _finalize_run: an uncaught exception here leaves
-            # api_chain_runs.status stuck 'running' forever and, since
-            # that row already won the idempotency-key claim, wedges
-            # every corrected retry under the same key at
-            # chain_already_running permanently.
+            # Must be a step outcome: escaping would leave the run stuck 'running' and wedge retries.
             raise _StepFailure(
                 "invalid_argument", "invalid_argument_type",
                 [{"name": name, "description": param.get("description", "")}],
@@ -497,18 +386,12 @@ def _resolve_arguments(
 
         if location == "header":
             if not _HEADER_VALUE_RE.fullmatch(string_value):
-                # The value is deliberately NOT included in the error —
-                # a spoken "\r\nAuthorization: Bearer x" must not itself
-                # be echoed back into logs or step rows either.
+                # Value deliberately omitted so injected headers aren't echoed into logs.
                 raise _StepFailure("invalid_argument", "illegal_header_value")
             headers[name] = string_value
         elif location == "path":
             if ".." in string_value:
-                # quote(value, safe="") does NOT percent-encode '.' (it is
-                # an RFC3986 unreserved character), so "../../admin/refund"
-                # would survive quoting completely unchanged and still
-                # read as a parent-directory segment. THIS check — not
-                # the quoting below — is what actually blocks it.
+                # quote() leaves '.' unencoded, so this check is what blocks traversal.
                 raise _StepFailure("invalid_argument", "illegal_path_value")
             url = url.replace("{" + name + "}", quote(string_value, safe=""))
         elif location == "query":
@@ -524,15 +407,7 @@ _hmac_key_cache: dict[str, bytes] = {}  # keyed by the ref string, so two differ
 
 
 async def _get_hmac_key() -> tuple[bytes, str]:
-    """Resolved via the platform CompositeSecretResolver — NOT
-    auth_schemes' tenant-namespaced resolver, since TOOLEXEC_ARGS_HMAC_KEY_REF
-    is a platform secret, not tenant-authored input. Absent -> fails
-    loudly the same way JWT_SECRET does. Called eagerly from app.py's
-    lifespan so a misconfigured deploy fails to START rather than passing
-    /health and then failing on the first real chain; cached by ref for
-    the process lifetime, so that startup call and every later call
-    inside execute_chain() share the same resolved key without
-    re-resolving."""
+    """Resolve the platform HMAC key (cached by ref); raises if unset so startup fails loudly."""
     ref = os.environ.get(_HMAC_KEY_REF_ENV, "").strip()
     if not ref:
         raise RuntimeError(
@@ -551,19 +426,10 @@ def _canonical_json(obj: Any) -> str:
 
 
 def _derive(tag: str, tenant_id: str, custom_api_id: str, resolved_arguments: dict, key: bytes, kid: str) -> str:
-    """ONE derivation function, TWO domain-separation tags: 'claim'
-    (stored in api_chain_steps.arguments_hash and
-    api_side_effect_claims.arguments_hash) and 'idem' (exported ONLY in
-    the downstream idempotency header, custom_apis.idempotency_header).
-    Same key, same canonical input, so the stored and exported values
-    cannot drift apart — different tag, so neither reveals the other: the
-    idempotency header is sent in plaintext to an endpoint the tenant
-    admin controls, so a single derivation would hand that admin an HMAC
-    oracle over its own argument space (finding 7).
+    """HMAC with domain-separation tag ('claim' stored, 'idem' sent downstream) so neither reveals the other.
 
-    Rotation: a key rotation blinds both the platform claim and the
-    downstream idempotency dedupe for one TOOLEXEC_SIDE_EFFECT_CLAIM_TTL
-    window, since both derive from the same secret."""
+    Key rotation blinds both dedupes for one claim-TTL window.
+    """
     canonical = _canonical_json({"t": str(tenant_id), "a": str(custom_api_id), "args": resolved_arguments})
     digest = hmac.new(key, (tag + "|" + canonical).encode(), hashlib.sha256).hexdigest()
     return f"{kid}:{digest}"
@@ -578,10 +444,7 @@ _INTERVAL_UNIT_SECONDS = {
 
 
 def _parse_interval(value: str) -> datetime.timedelta:
-    """asyncpg's interval codec requires an actual datetime.timedelta, not
-    a bare string, even when the SQL parameter is cast `::interval` — the
-    cast happens server-side, after client-side encoding already needs the
-    right Python type."""
+    """Parse '24 hours' into a timedelta; asyncpg won't encode a string for ::interval."""
     amount_str, _, unit = value.strip().partition(" ")
     unit = unit.strip().lower()
     if not unit or unit not in _INTERVAL_UNIT_SECONDS:
@@ -594,9 +457,7 @@ def _claim_ttl() -> datetime.timedelta:
 
 
 async def _claim_side_effect(tenant_id: str, custom_api_id: str, arguments_hash: str, run_id: str, session_id: str) -> bool:
-    """The atomic conditional insert (lesson 8) taken BEFORE the outbound
-    call — never a read-then-write. Zero rows = the loser's path: a live
-    claim already exists, so this step must not fire the call again."""
+    """Atomic claim taken before the call; False means a live claim exists, so don't fire."""
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         row = await conn.fetchrow(
@@ -615,10 +476,7 @@ async def _claim_side_effect(tenant_id: str, custom_api_id: str, arguments_hash:
 
 
 async def _release_side_effect_claim(tenant_id: str, custom_api_id: str, arguments_hash: str) -> None:
-    """Called only on proof no mutation occurred (a non-409 4xx) — frees
-    an immediate legitimate retry. Timeout/5xx never call this: the claim
-    stays 'claimed' (fail closed — a timed-out mutation may well have
-    landed)."""
+    """Release only on proof of no mutation (non-409 4xx); timeouts/5xx stay claimed."""
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         await conn.execute(
@@ -629,10 +487,7 @@ async def _release_side_effect_claim(tenant_id: str, custom_api_id: str, argumen
 
 
 async def _mark_side_effect_success(tenant_id: str, custom_api_id: str, arguments_hash: str) -> None:
-    """A genuine 2xx sets the claim 'success' (distinct from merely
-    'claimed') — reclaimable only after the TTL window, same as 'claimed',
-    but recorded distinctly so chain history can tell a timed-out claim
-    apart from one that is known to have actually gone through."""
+    """Mark a 2xx claim 'success' (still TTL-bound) to distinguish it from a timed-out claim."""
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         await conn.execute(
@@ -649,22 +504,7 @@ _CONTROL_CHAR_RE = re.compile(r"[\x00-\x1F\x7F]")
 
 
 def _interpolate_success_template(template: str, redacted_response: dict) -> str | None:
-    """Reads every placeholder value ONLY from the already-redacted
-    projection — never the raw response — so a path made sensitive since
-    the template was registered is caught here too, not just at
-    registration. A placeholder is unresolved, and suppresses the WHOLE
-    template (returns None rather than a partially-filled or literal
-    '{{...}}' string), in EITHER of two cases:
-
-      - the path is genuinely absent from this response, or
-      - the path IS present but its value is the redaction sentinel
-        "[redacted]" — speaking that sentinel back as if it were a real
-        value ("your SSN on file is [redacted]") both confirms to the
-        caller that a sensitive field exists and reads as a malfunction;
-        the LLM narrates from `data` instead, which itself still shows
-        "[redacted]" as an ordinary field value rather than a spoken
-        confirmation of anything.
-    """
+    """Fill placeholders from the redacted response only; None if any is absent or redacted."""
     def _resolve(match: "re.Match[str]") -> str:
         raw_path = match.group(1).strip()
         value = graph.extract(redacted_response, raw_path)
@@ -689,21 +529,12 @@ async def execute_chain(request: ChainExecuteRequest) -> ChainExecuteResponse:
     agent_id = request.agent_id  # verified to exist by a.id = $2 in the WHERE clause above
     target_api_id = str(verified["id"])
 
-    # Reuses T8's agent_apis._effective_max_chain_depth — the SAME notion
-    # of "effective ceiling" the enable-time gate already applies, so the
-    # two can never disagree (an API allowed to enable is also allowed to
-    # run, and vice versa). It already folds in graph.MAX_CHAIN_LEVELS
-    # (NULL override = platform ceiling; a set override can only LOWER
-    # it), so the request's own max_chain_depth is min'd against it here,
-    # never against the platform ceiling alone.
+    # Same ceiling the enable-time gate uses, so enable and run can't disagree.
     effective_ceiling = await agent_apis._effective_max_chain_depth(agent_id)
     max_levels = min(request.max_chain_depth, effective_ceiling)
     try:
         tree, api_rows, params_by_api = await _build_api_tree(tenant_id, target_api_id)
     except _UnbuildableApi as exc:
-        # A row this chain actually needs (the target or a declared
-        # upstream) could not be decoded — refuse the call rather than
-        # dispatch with a hole in it, or raise a bare KeyError (lesson 19).
         log.error("chain for %s refused: %s", target_api_id, exc)
         return ChainExecuteResponse(run_id="", chain_status="failed", error="custom_api_row_undecodable")
     try:
@@ -716,20 +547,12 @@ async def execute_chain(request: ChainExecuteRequest) -> ChainExecuteResponse:
     if not admission.acquire(tenant_id, agent_id):
         return ChainExecuteResponse(run_id="", chain_status="rate_limited", error="rate_limited")
 
-    # Bound before the try — and admission_released tracked separately
-    # from run_id — so a raise from _claim_run itself (pool timeout, or
-    # the api_chain_runs FK on agent_id/target_api_id) neither hits an
-    # UnboundLocalError that masks the original exception nor leaks the
-    # admission slot acquired above: `run_id is not None` alone cannot
-    # tell the finally "was this slot already released", since _claim_run
-    # can raise before run_id is ever assigned, leaving it None exactly
-    # like the ordinary loser's path (which DOES release explicitly below).
+    # Tracked separately from run_id: _claim_run can raise before run_id is set.
     run_id: str | None = None
     admission_released = False
     try:
         run_id, existing_run = await _claim_run(tenant_id, agent_id, target_api_id, request)
         if run_id is None:
-            # The loser's path — no new work, no new transport call.
             admission.release(tenant_id, agent_id)
             admission_released = True
             if existing_run is None:
@@ -742,13 +565,7 @@ async def execute_chain(request: ChainExecuteRequest) -> ChainExecuteResponse:
             chain_budget_ms=chain_budget_ms,
         )
     finally:
-        # Reached for the winning path, and for any exception (including
-        # _claim_run raising before run_id is ever assigned) — held until
-        # the run reaches a terminal status, including the barge-in case
-        # where the chain keeps running server-side (lesson 26: nothing
-        # here is un-torn-down, this IS the teardown). Skipped only when
-        # the loser's path already released above, to avoid a double
-        # release.
+        # Slot held until the run is terminal, even if the caller barged in.
         if not admission_released:
             admission.release(tenant_id, agent_id)
 
@@ -786,9 +603,7 @@ async def _run_steps(
             )
             continue
 
-        # Defined before the try block so the except handler can always
-        # redact and persist whatever was resolved so far, even if the
-        # failure happened before every one of these was assigned.
+        # Defined before try so the failure path can persist partial state.
         headers: dict[str, str] = {}
         query_params: dict[str, Any] = {}
         body_fields: dict[str, Any] = {}
@@ -807,22 +622,9 @@ async def _run_steps(
             try:
                 injected_auth_keys = await auth_schemes.apply(api_row, headers, query_params)
             except ValueError:
-                # auth_schemes.apply() already never puts the ref itself in
-                # its own ValueError — re-raised here as the step outcome
-                # the design specifies, still with no ref anywhere in it.
                 raise _StepFailure("unavailable", "credential_unavailable")
 
-            # The auth-injected keys (Authorization / an api_key header or
-            # query param) are excluded here, before anything downstream
-            # ever sees this dict — never persisted, never hashed. Both
-            # halves matter: leaving the resolved credential in would put
-            # a live bearer token in api_chain_steps.arguments_redacted
-            # (readable tenant-wide via GET /calls/{session_id}/chain-runs),
-            # and would make arguments_hash a function of a value that
-            # rotates (oauth2_client_credentials' cached token, refreshed
-            # 60s before expiry) rather than of the declared arguments —
-            # breaking the ON CONFLICT (tenant_id, custom_api_id,
-            # arguments_hash) dedupe AC 15 relies on.
+            # Exclude auth-injected keys: never persist credentials, and rotating tokens would break the hash dedupe.
             resolved_arguments = {
                 k: v for k, v in {**body_fields, **query_params, **headers}.items()
                 if k not in injected_auth_keys
@@ -850,13 +652,11 @@ async def _run_steps(
                     timeout=step_timeout_ms / 1000,
                 )
             except (asyncio.TimeoutError, httpx.TimeoutException):
-                # Fail closed on a side-effecting step: keep the claim (do
-                # NOT release) since a timed-out mutation may well have landed.
+                # Keep the claim: a timed-out mutation may have landed.
                 raise _StepFailure("timeout", "step_timeout")
 
             if truncated:
-                # Keep the claim here too — the response was abandoned, so
-                # whether the mutation landed is genuinely unknown.
+                # Keep the claim: whether the mutation landed is unknown.
                 raise _StepFailure("failed", "response_too_large")
 
             if side_effecting and status_code != 409 and 400 <= status_code < 500:
@@ -918,13 +718,7 @@ async def _run_steps(
     if failed_step is None:
         chain_status = "success"
     elif chain_error == "upstream_no_match":
-        # Deliberately NOT "partial", even though earlier steps completed.
-        # "Partial" means the chain broke half way and the caller cannot be
-        # told anything useful; this chain did not break — it ran, and the
-        # answer is that nothing matched. Reporting it as partial maps to a
-        # bare FAILED whose payload is {"partial": true}, which drops
-        # missing_fields and leaves the agent apologising for an error
-        # instead of saying "we don't have that".
+        # Not "partial": the chain ran fine and nothing matched; keeps missing_fields for the agent.
         chain_status = "invalid_argument"
     elif completed_steps:
         chain_status = "partial"
@@ -978,14 +772,6 @@ async def _persist_step(
             json.dumps(arguments_redacted) if arguments_redacted is not None else None,
             json.dumps(response_redacted) if response_redacted is not None else None,
             json.dumps(argument_sources) if argument_sources is not None else None,
-            # The persisted flag records whether THIS row is actually
-            # hash-keyed, not merely whether the API is registered
-            # side_effecting=true. arguments_hash is only ever derived once
-            # the claim is about to be taken (executor.py's `if
-            # side_effecting:` block), so any step that never got that far —
-            # skipped, or failed before the hash existed (missing argument,
-            # endpoint/credential resolution failure) — genuinely made no
-            # side-effecting attempt and must not claim one, or it retrips
-            # api_chain_steps_side_effect_keyed (lesson 32).
+            # side_effecting means "this row is hash-keyed" (DB constraint), not the API's flag.
             arguments_hash, arguments_hash is not None, idempotency_key, duration_ms,
         )

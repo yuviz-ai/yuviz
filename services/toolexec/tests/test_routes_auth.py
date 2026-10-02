@@ -1,11 +1,4 @@
-"""
-Route-level auth/tenant-isolation tests for services/toolexec/app.py
-(T16-T19) — real Postgres (tenant_agent/pool fixtures), a real signed JWT
-per role (services.config.auth.create_access_token — the same module
-services/config/tests/test_console_gate.py already proves is shared
-across services, lesson 9), and httpx's ASGITransport against the real
-app (no mocked routing).
-"""
+"""Route-level auth/tenant-isolation tests against the real app, Postgres and signed JWTs."""
 
 from __future__ import annotations
 
@@ -100,8 +93,7 @@ async def test_viewer_403s_on_every_write_route_and_200s_on_reads(pool, tenant_a
         r = await c.delete(f"/custom-apis/{api['id']}", headers=viewer_headers)
         assert r.status_code == 403
 
-        # Reads: 200 with the expected body (reads are not locked out —
-        # the task cannot be satisfied by 403ing everything).
+        # Reads: 200.
         r = await c.get(f"/tenants/{tenant['id']}/custom-apis", headers=viewer_headers)
         assert r.status_code == 200
         assert any(row["id"] == str(api["id"]) for row in r.json())
@@ -114,18 +106,7 @@ async def test_viewer_403s_on_every_write_route_and_200s_on_reads(pool, tenant_a
 
 @pytest.mark.asyncio
 async def test_sensitive_literal_param_value_not_readable_by_every_tenant_role(pool, tenant_agent):
-    """Security finding 2 (medium): _validate_credential_ref only
-    constrains auth_config fields for the API's auth_scheme — nothing
-    stops a literal param (source='literal') from carrying a real secret,
-    and the list route (bare Depends(get_current_user), no require_role)
-    now also returns params, so a normal 'sensitive' literal param — a
-    bearer token typed straight into a header field, exactly the shape the
-    UI's 'sensitive' checkbox invites — is readable in PLAINTEXT by the
-    lowest role in the tenant. This pins the intended exposure boundary:
-    a param marked sensitive=True must never come back as its raw value to
-    a viewer, on either the list or the single-item read. If the current
-    code exposes it in plaintext (fails open), that is the defect the
-    security review flagged — report it and leave this failing."""
+    """A viewer never sees a sensitive literal param's raw value on list or get."""
     secret_value = "sk-live-do-not-leak-me"
     api = await custom_apis.create_custom_api(
         tenant_id=str(tenant_agent[0]["id"]), name=f"secretapi_{uuid.uuid4().hex[:8]}", description="d",
@@ -255,14 +236,7 @@ async def test_put_tenant_bs_agent_id_404s_byte_identical_no_row(pool, tenant_ag
 
 @pytest.mark.asyncio
 async def test_put_wrong_tenant_caller_404s_byte_identical_no_row(pool, tenant_agent):
-    """Distinct from both cases above: here the agent AND the custom_api
-    genuinely belong to the SAME tenant (tenant B) — the query's own JOIN
-    condition (ca.tenant_id = a.tenant_id) is satisfied, so it alone
-    cannot reject this. Only the caller-tenant boundary check
-    (current_user.tenant_id vs the row's tenant_id) can. This is the
-    shape that silently passed against a mutation removing that check in
-    an earlier verification pass, because the OTHER two route tests both
-    happen to fail the JOIN condition first — this one does not."""
+    """Agent and api both in tenant B: only the caller-tenant check (not the JOIN) rejects."""
     tenant_a, _agent_a = tenant_agent
     other_tenant = await _make_tenant(pool, f"other-{uuid.uuid4().hex[:8]}")
     try:
@@ -354,9 +328,7 @@ async def test_every_route_401s_with_no_auth_header(pool, tenant_agent):
 
 @pytest.mark.asyncio
 async def test_viewer_service_account_not_in_allowlist_403s():
-    """The vobiz/SDK case: a role=viewer, tenant_id=NULL service account
-    NOT on TOOLEXEC_EXECUTE_SUBJECTS. This is what fails under an
-    is_platform_scoped-only gate, since tenant_id=NULL alone would pass it."""
+    """A platform-scoped service account not on the allow-list is refused."""
     headers = await _bearer("viewer", None, is_service_account=True,
                             email=f"vobiz-service-{uuid.uuid4().hex[:8]}@internal.yuviz.ai")
     async with _client() as c:
@@ -370,9 +342,7 @@ async def test_viewer_service_account_not_in_allowlist_403s():
 
 @pytest.mark.asyncio
 async def test_human_superadmin_403s_proving_is_service_account_is_load_bearing(monkeypatch):
-    """A human superadmin whose email happens to equal the allow-listed
-    identity string still 403s, because is_service_account is False —
-    proving the gate checks BOTH conditions, not just the email."""
+    """A human superadmin with an allow-listed email still 403s."""
     email = f"conversation-service-{uuid.uuid4().hex[:8]}@internal.yuviz.ai"
     monkeypatch.setattr(execute_router, "_EXECUTE_SUBJECTS", frozenset({email}))
     headers = await _bearer("superadmin", None, is_service_account=False, email=email)
@@ -418,8 +388,7 @@ async def test_allowlisted_conversation_account_succeeds(pool, tenant_agent, mon
     assert r.json()["chain_status"] == "success"
 
 
-# ── FIX 4a/4b — the blanket exception handlers must not leak infrastructure
-# facts, verified through a REAL live request, not just a handler unit test ──
+# ── exception handlers must not leak infrastructure details ──────────────
 
 @pytest.mark.asyncio
 async def test_ssrf_rejection_over_http_never_returns_the_resolved_ip(pool, tenant_agent, monkeypatch, caplog):
@@ -447,9 +416,7 @@ async def test_ssrf_rejection_over_http_never_returns_the_resolved_ip(pool, tena
     assert detail == "invalid_endpoint_url: resolves to a denied address"
     assert denied_ip not in detail
     assert "internal-billing.corp" not in detail
-    # The rejected reason IS observable server-side — this proves the
-    # information still exists for an operator to debug, it just never
-    # crosses the HTTP response.
+    # Still available to operators in the server log.
     joined_log = " ".join(rec.getMessage() for rec in caplog.records)
     assert denied_ip in joined_log
     assert "internal-billing.corp" in joined_log
@@ -457,10 +424,7 @@ async def test_ssrf_rejection_over_http_never_returns_the_resolved_ip(pool, tena
 
 @pytest.mark.asyncio
 async def test_lookup_error_over_http_never_leaks_the_underlying_message(pool, tenant_agent, monkeypatch, caplog):
-    """Simulates the exact shape finding 1 describes — a raw KeyError from
-    a secret resolver, which IS a LookupError subclass, embedding a
-    credential ref and an absolute mount path — reaching the blanket
-    LookupError handler through a real live route."""
+    """A resolver KeyError carrying a ref and mount path reaches the client as a bare 404."""
     sentinel_leak = "K8sFileResolver: no secret file at /var/run/tenant-secrets/tenants/t1/probe (ref='k8s:tenants/t1/probe')"
 
     async def _boom(custom_api_id, **_kwargs):

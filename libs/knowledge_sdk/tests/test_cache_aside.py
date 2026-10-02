@@ -1,10 +1,4 @@
-"""
-Fake availability/retrieval repositories, not real Redis/HTTP — this file
-proves CacheAsideKnowledgeProvider's own orchestration logic (the
-Redis-boolean-then-HTTP-fallback pre-check, all-or-nothing retrieval, dict
-mapping, RepositoryUnavailableError degrading to None), matching
-config_sdk/tests/test_cache_aside.py's approach.
-"""
+"""CacheAsideKnowledgeProvider orchestration tests against fake repositories."""
 
 from __future__ import annotations
 

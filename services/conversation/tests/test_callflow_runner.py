@@ -1,7 +1,4 @@
-"""
-Dry-run tests for CallFlowRunner — no providers, no audio, no I/O, mirrors
-test_workflow_runner.py's shape.
-"""
+"""Dry-run tests for CallFlowRunner — no providers, no audio, no I/O."""
 
 from __future__ import annotations
 
@@ -33,9 +30,7 @@ def _menu_graph(**menu_extra):
 
 
 def _menu_with_timeout_fallback_graph():
-    # Only a "timeout" branch — no "invalid" branch — so an unmatched
-    # keypress still replays (no edge to take), and only a real timeout
-    # takes the explicit edge immediately.
+    # Timeout branch only: unmatched digits still replay.
     g = _menu_graph()
     g["nodes"].append({"id": "gone", "type": "hangup", "data": {"name": "gone", "prompt": "Gone."}})
     g["edges"].append({"id": "e2", "source": "menu", "target": "gone", "data": {"key": "timeout"}})
@@ -79,9 +74,6 @@ def test_menu_matching_digit_branches_immediately():
 def test_menu_explicit_timeout_edge_taken_with_retries_untouched():
     runner = _runner(_menu_with_timeout_fallback_graph())
     runner.open()
-    # Visit the menu node repeatedly first via unmatched digits (below), but
-    # here: an explicit timeout edge fires immediately regardless of prior
-    # retries, and lands on "gone" without hanging up.
     runner.on_digit("9")  # unmatched, no invalid branch -> replay
     actions = runner.on_timeout()
     assert actions[-1] == Hangup("flow_complete")
@@ -133,17 +125,7 @@ def test_collect_max_digits_auto_submits_without_terminator():
 
 
 def test_collect_terminator_submits_below_max_digits():
-    # AC 11: terminator pressed with min_digits <= len(buffer) < max_digits.
-    # test_collect_terminator_at_min_digits_stores_and_excludes_terminator
-    # (above) uses min_digits == max_digits == 4, so its 4th digit alone
-    # already hits max_digits and auto-submits — the terminator press there
-    # is never the *cause* of submission. Here min_digits=2, max_digits=4,
-    # so the buffer (2 digits) is well below max_digits when "#" is pressed;
-    # only the terminator branch can cause this to submit. This fails if
-    # the terminator branch's min_digits comparison were ever dropped or
-    # swapped for a max_digits check, or if pressing "#" were treated as an
-    # ordinary buffered digit (it would fail to advance to "next" and would
-    # instead still be listening at 3 buffered characters).
+    # Buffer below max_digits, so only the terminator can cause submission.
     runner = _runner(_collect_graph(min_digits=2, max_digits=4, terminator="#"))
     runner.open()
     assert runner.on_digit("1") == []
@@ -179,11 +161,7 @@ def test_collect_timeout_below_min_digits_replays_then_exhausts():
 
 
 def _collect_only_graph(**node_kwargs) -> CallFlowGraph:
-    """Builds a CallFlowGraph directly, bypassing parse_graph() — which
-    coerces a falsy terminator to "#" (libs/config_sdk/callflow.py) and so
-    can never produce a parsed graph with an empty terminator. This is
-    exactly the "graph that bypassed parse_graph()" case OQ3's guard is
-    for (see runner.py's `_collect_digit` comment)."""
+    """Build a graph directly, bypassing parse_graph() (which coerces an empty terminator to "#")."""
     collect = CallFlowNode(
         id="collect", type="collect", name="collect", prompt="Enter your PIN.",
         timeout_ms=5000, max_retries=1, variable="pin",
@@ -202,8 +180,7 @@ def test_collect_empty_terminator_submits_only_on_max_digits_or_timeout():
     graph = _collect_only_graph(terminator="", min_digits=2, max_digits=4)
     runner = CallFlowRunner(graph, tts_config_id=None)
     runner.open()
-    # A DTMF key that would have been the terminator elsewhere is now just
-    # a buffered digit — OQ3's proposed default.
+    # With no terminator, "#" is just a buffered digit.
     assert runner.on_digit("#") == []
     actions = runner.on_timeout()  # 1 digit buffered, below min_digits=2
     assert isinstance(actions[-1], Listen)
@@ -317,11 +294,7 @@ def test_agent_node_emits_handoff():
 
 
 def test_transition_budget_trips_on_self_looping_play_chain():
-    # A two-node play<->play cycle, walked synchronously within one open()
-    # call (no external input drives a `play` transition) far more than
-    # MAX_NODES times. Built directly rather than via parse_graph(), which
-    # separately caps *authored* node count at MAX_NODES — a small graph
-    # with a cycle is what actually exercises the runtime transition budget.
+    # A play<->play cycle walked synchronously in open(); built directly to bypass parse_graph's node cap.
     start = CallFlowNode(id="start", type="start", name="start",
                          out_edges=[CallFlowEdge(id="e0", source="start", target="p0")])
     p0 = CallFlowNode(id="p0", type="play", name="p0", prompt="hi",

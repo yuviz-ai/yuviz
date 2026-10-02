@@ -20,10 +20,7 @@ AudioWorkerPool::~AudioWorkerPool() {
 bool AudioWorkerPool::start() {
     if (running_.exchange(true)) return true;
 
-    // Every Worker must be in workers_ before any thread starts — worker_loop()
-    // reads workers_[idx] immediately, and a thread launched mid-loop can run
-    // ahead of the push_back() that makes its own slot visible (caught by ASan
-    // as a race on the not-yet-inserted vector element).
+    // Populate workers_ fully before starting threads; worker_loop() reads it immediately.
     workers_.reserve(worker_count_);
     for (size_t i = 0; i < worker_count_; ++i) {
         workers_.push_back(std::make_unique<Worker>());
@@ -68,8 +65,6 @@ void AudioWorkerPool::unassign(MediaSession* session) {
                                [&](const auto& e) { return e->session == session; });
         if (it != w->sessions.end()) {
             entry = *it;
-            // Mark removed while holding sessions_mutex so the worker's
-            // double-check (under drain_mutex) sees it immediately.
             entry->removed.store(true, std::memory_order_release);
             w->sessions.erase(it);
             break;
@@ -80,10 +75,7 @@ void AudioWorkerPool::unassign(MediaSession* session) {
 
     session_count_.fetch_sub(1, std::memory_order_relaxed);
 
-    // Block until any in-progress drain_available() for this session finishes.
-    // The worker holds drain_mutex while draining; acquiring it here is the barrier.
-    // After this lock_guard destructs, no worker thread can ever call
-    // drain_available() on this session again (removed=true + entry erased).
+    // Barrier: waits out any in-progress drain; removed=true prevents future ones.
     std::lock_guard drain_barrier{entry->drain_mutex};
 }
 
@@ -93,9 +85,7 @@ void AudioWorkerPool::worker_loop(size_t idx) {
     while (running_.load(std::memory_order_acquire)) {
         bool did_work = false;
 
-        // Snapshot shared_ptrs so unassign() can safely erase from the vector
-        // while we iterate.  Each shared_ptr keeps the SessionEntry alive even
-        // after unassign() removes it from the vector.
+        // Snapshot so unassign() can erase while we iterate.
         std::vector<std::shared_ptr<SessionEntry>> snapshot;
         {
             std::lock_guard lock{workers_[idx]->sessions_mutex};
@@ -103,18 +93,14 @@ void AudioWorkerPool::worker_loop(size_t idx) {
         }
 
         for (auto& entry : snapshot) {
-            // Fast pre-check without the drain lock.
             if (entry->removed.load(std::memory_order_acquire))
                 continue;
             if (!entry->session->has_inbound())
                 continue;
 
-            // Acquire drain_mutex before calling drain_available() so that
-            // unassign() is forced to wait if we are mid-drain.
             std::lock_guard drain_lock{entry->drain_mutex};
 
-            // Double-check: unassign() may have set removed=true between the
-            // pre-check above and acquiring drain_mutex.
+            // Re-check: unassign() may have run before we took drain_mutex.
             if (entry->removed.load(std::memory_order_acquire))
                 continue;
 

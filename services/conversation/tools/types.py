@@ -1,15 +1,5 @@
-"""
-Core Tool Execution Framework types — see the architecture design (Tool
-Execution Framework doc) for the full reasoning behind each of these
-shapes. Deliberately no dependency on anything in providers/ or
-pipeline.py: this module is the seam every other tools/ module and every
-executor imports, and it must stay importable on its own.
-
-ToolStatus is intentionally small (7 values) and shared by every tool,
-present and future — see the doc's §07/§12 reasoning for why "unavailable"
-is SUCCESS and "missing required field" reuses INVALID_ARGUMENT rather than
-each new tool inventing its own status vocabulary.
-"""
+"""Core tool-execution types. Must stay importable on its own (no providers/ or pipeline imports).
+ToolStatus is a small vocabulary shared by every tool; don't add per-tool statuses."""
 
 from __future__ import annotations
 
@@ -33,68 +23,31 @@ class ToolResult:
     status:  ToolStatus
     payload: dict[str, Any] = field(default_factory=dict)
     error:   str | None = None
-    # Set by an executor (never the orchestrator — see orchestrator.py's own
-    # module docstring on staying tool-agnostic) when this exact outcome
-    # must reach the caller verbatim, with zero LLM discretion over the
-    # wording. When set, ToolCallOrchestrator speaks this text directly via
-    # a DeterministicSpokenEvent instead of looping back to the LLM for a
-    # free-text follow-up generate() call to narrate the result. Learned
-    # from the old CalendarExecutor's booking-success case — confirmed
-    # live, repeatedly, that an LLM asked to narrate "what just happened"
-    # will sometimes narrate a false "booked!" instead of having actually
-    # called the tool, no matter how the prompt is worded; a real success
-    # must never be put in a position where it could be confused with
-    # that failure mode.
-    #
-    # Since the calendar built-ins were removed, the only producer is
-    # ApiExecExecutor, relaying services/toolexec's interpolated
-    # custom_apis.success_template. That is the general form of the same
-    # idea and the strongest anti-hallucination mechanism available: any
-    # custom API that returns a price, an identifier or a confirmation
-    # should set a template, so the model never phrases that fact at all.
+    # Spoken verbatim instead of letting the LLM narrate the result (anti-hallucination);
+    # set by executors, e.g. from custom_apis.success_template.
     deterministic_response: str | None = None
-    # The real, business-local wall-clock datetime this deterministic
-    # success actually confirmed (e.g. "2026-08-31T14:00:00") — set
-    # alongside deterministic_response so pipeline.py can tell a later
-    # turn's TRUTHFUL recap of this exact slot apart from a NEW, unconfirmed
-    # claim about a different one (e.g. a caller asking to move an
-    # appointment, which the LLM sometimes narrates without ever calling
-    # anything — confirmed live). Only meaningful when
-    # deterministic_response is also set.
+    # Business-local datetime the deterministic success confirmed; only set with deterministic_response.
     confirmed_datetime: str | None = None
 
 
 @dataclass(frozen=True)
 class ToolDefinition:
-    """What the LLM is allowed to know about a tool — schema only, never an
-    executor reference (see ExecutorRegistry, kept deliberately separate)."""
+    """What the LLM may know about a tool — schema only, never an executor reference."""
     name:              str
     description:       str
     parameters_schema: dict[str, Any]
     category:          str = ""
-    # False for a tool an admin can configure/enable per agent but the LLM
-    # must never see or call itself. Nothing sets this to False today (the
-    # only user was send_sms, removed with the calendar built-ins), but
-    # the check stays in orchestrator.py when building the schemas list:
-    # it is the seam for any future deterministic side effect, and costs
-    # one boolean.
+    # False = enabled per agent but never offered to the LLM.
     llm_visible:       bool = True
 
     def to_generic_schema(self) -> dict[str, Any]:
-        """Vendor-neutral {name, description, parameters} shape — every
-        IToolAwareLLM implementation wraps this into its own wire format
-        (OpenAI/Ollama: {"type":"function","function": this}; Gemini: this
-        goes straight into a functionDeclarations entry), the same way
-        LLMAdapter/each provider already bridges other vendor-specific
-        shape differences rather than pushing them onto callers."""
+        """Vendor-neutral {name, description, parameters}; each LLM provider wraps it in its wire format."""
         return {"name": self.name, "description": self.description, "parameters": self.parameters_schema}
 
 
 @dataclass(frozen=True)
 class ToolExecutionContext:
-    """Everything an executor needs without reaching back into
-    ConversationSession/pipeline state — an executor is a pure function of
-    (request, context)."""
+    """Everything an executor needs; executors are pure functions of (request, context)."""
     tenant_id:                    str
     agent_id:                     str
     call_id:                      str
@@ -103,18 +56,10 @@ class ToolExecutionContext:
     tool_iteration:                int
     deadline:                     float  # time.monotonic() deadline for this call
     request_id:                   str
-    # The caller's real ANI (SIP caller ID), when this session has one — a
-    # webcall/browser test session has none (empty string). A custom API
-    # can take it as a `caller` param, so the agent never has to ask for a
-    # number the call already knows.
+    # Caller ANI; empty for webcall/browser sessions.
     caller_number:                 str = ""
     conversation_history_snapshot: list[dict[str, Any]] = field(default_factory=list)
-    # ResolvedToolPolicy.max_chain_depth for THIS agent's execute_api policy
-    # row (NULL = no override, use the platform default) — only
-    # ApiExecExecutor reads this; every other executor ignores it. Carried
-    # per-call, not baked into the executor at construction time, because
-    # ExecutorRegistry.resolve() has no per-agent policy to close over when
-    # the factory is registered once at process startup (__main__.py).
+    # Per-call because executors are registered once at startup with no per-agent policy.
     max_chain_depth:                int | None = None
 
 

@@ -21,10 +21,7 @@ from services.telephony import idempotency as _idempotency  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _reset_redis_clients_per_event_loop():
-    """Each TestClient(app) in this package runs its own anyio event loop —
-    a module-level redis client created under a prior test's loop raises
-    "Event loop is closed" on first use here, so every test starts with a
-    fresh client bound to whichever loop it actually runs under."""
+    """Each TestClient runs its own event loop; reset module redis clients to avoid "Event loop is closed"."""
     _idempotency._client = None
     _config_cache._client = None
     yield

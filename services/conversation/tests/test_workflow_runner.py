@@ -1,11 +1,4 @@
-"""
-Dry-run tests — the whole point of keeping WorkflowRunner free of voice
-concerns (docs/workflow.md §7.2). A scripted walk through a graph, in
-milliseconds, with no pipeline, no audio and no providers anywhere near it.
-
-If a change to WorkflowRunner makes these tests need a pipeline, that
-change took something away.
-"""
+"""WorkflowRunner dry-run tests: scripted graph walks with no pipeline, audio, or providers."""
 
 from __future__ import annotations
 
@@ -131,9 +124,8 @@ def test_extracted_variables_projection_excludes_call_context():
 
 
 def test_transition_swaps_the_system_prompt_inside_the_same_turn():
-    # The trap in §5.3: run_turn mutates history in place, so a transition
-    # that only took effect between turns would leave the rest of this
-    # turn generating under the previous node's prompt.
+    # run_turn mutates history in place, so a transition must take effect mid-turn,
+    # not only between turns.
     runner = _runner()
     history = [
         ChatMessage(role="system", content=runner.system_prompt()),

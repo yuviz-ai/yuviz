@@ -1,12 +1,4 @@
-"""
-Tests the actual HTTP layer (routing, request validation, status codes, error
-mapping) in-process via httpx's ASGITransport — no live uvicorn process, but
-every request really goes through FastAPI's routing/validation and really
-hits Postgres + Redis (same conftest fixtures as the service-layer tests).
-FastAPI's lifespan isn't triggered here since it only eagerly warms the same
-lazy singletons db.py/cache.py already create on first use — nothing this
-test needs depends on the lifespan hook specifically running.
-"""
+"""HTTP-layer tests via ASGITransport against real Postgres + Redis (lifespan not run)."""
 
 from __future__ import annotations
 
@@ -24,10 +16,7 @@ from services.config.app import app
 
 @pytest.fixture
 async def client(test_superadmin):
-    # Pre-authenticated as superadmin by default — most of this file's tests
-    # predate real auth and are about routing/validation/status codes, not
-    # authorization itself; TestAuthEndpoints below covers login/401/403
-    # explicitly with its own unauthenticated/role-restricted clients.
+    # Superadmin by default; auth itself is covered by TestAuthEndpoints.
     transport = ASGITransport(app=app)
     headers = {"Authorization": f"Bearer {test_superadmin['token']}"}
     async with AsyncClient(transport=transport, base_url="http://test", headers=headers) as c:
@@ -113,11 +102,6 @@ class TestTenantEndpoints:
         await pool.execute("DELETE FROM tenants WHERE id = $1", tenant["id"])
 
     async def test_delete_tenant_with_active_agent_is_409(self, client, test_tenant):
-        # A deleted tenant's DIDs stop resolving immediately (get_by_did()'s
-        # own `t.deleted_at IS NULL` check) — deleting a tenant with a live
-        # agent still attached is an instant outage for its callers, not a
-        # "some calls might slip through" risk, so this must be blocked by
-        # default rather than left to a bare confirm() dialog.
         agent = await client.post(
             f"/tenants/{test_tenant['slug']}/agents", json={"slug": "support-agent", "name": "Support"},
         )
@@ -177,15 +161,9 @@ class TestTenantEndpoints:
             await pool.execute("DELETE FROM phone_numbers WHERE did = $1", did)
 
     async def test_delete_tenant_with_nothing_attached_needs_no_force(self, client, test_tenant):
-        # The common case — the check itself must not become an extra
-        # confirmation step when there's genuinely nothing to warn about.
         resp = await client.delete(f"/tenants/{test_tenant['id']}")
         assert resp.status_code == 204
 
-    # Cross-tenant disclosure fix: list_tenants/get_tenant used to be gated
-    # on Depends(get_current_user) alone, no tenant scoping at all — a
-    # tenant-scoped admin/viewer got every tenant's name/slug (the
-    # customer list) and could read any tenant's full row by slug.
     async def test_tenant_admin_sees_only_own_tenant_in_list(self, admin_client, test_tenant, pool):
         other = await pool.fetchrow(
             "INSERT INTO tenants (name, slug) VALUES ($1, $2) RETURNING *",
@@ -234,10 +212,7 @@ class TestTenantEndpoints:
             "Widen Attempt Tenant", f"test-widen-{uuid.uuid4().hex[:8]}",
         )
         try:
-            # There's no documented ?tenant_id= on this endpoint at all —
-            # this proves one can't be smuggled in to widen the result
-            # regardless, the same "never trust client tenancy" contract
-            # GET /users and GET /invites already enforce.
+            # No ?tenant_id= is supported; a smuggled one must not widen the result.
             resp = await admin_client.get(f"/tenants?tenant_id={other['id']}")
             assert resp.status_code == 200
             slugs = {t["slug"] for t in resp.json()}
@@ -255,12 +230,7 @@ class TestTenantEndpoints:
         try:
             known_other = await admin_client.get(f"/tenants/{other['slug']}")
             unknown = await admin_client.get("/tenants/does-not-exist-at-all")
-            # Same status and the identical detail *shape* either way — a
-            # real tenant that isn't theirs must not be distinguishable
-            # from a slug that doesn't exist (no existence oracle); the
-            # message only ever echoes back the slug the caller already
-            # supplied, so comparing the template rather than the exact
-            # string (which necessarily differs by slug) is the right check.
+            # Same status and detail template, so a foreign tenant isn't distinguishable from a missing one.
             assert known_other.status_code == unknown.status_code == 404
             assert known_other.json() == {"detail": f"tenant {other['slug']!r} not found"}
             assert unknown.json() == {"detail": "tenant 'does-not-exist-at-all' not found"}
@@ -274,7 +244,7 @@ class TestTenantEndpoints:
 
 
 class TestTenantConcurrency:
-    """T16/T17 — PATCH /tenants/{id}/concurrency."""
+    """PATCH /tenants/{id}/concurrency."""
 
     async def test_admin_can_patch_own_tenant(self, admin_client, test_tenant):
         resp = await admin_client.patch(
@@ -319,11 +289,7 @@ class TestTenantConcurrency:
     async def test_retenanted_admin_is_confined_to_the_fresh_tenant(
         self, test_tenant, pool,
     ):
-        # T17's load-bearing regression test for security finding #1 (the
-        # same class as the two highs this whole feature exists to fix):
-        # the token still claims tenant A after the admin's OWN row is
-        # transferred to tenant B — the route must check the FRESH row's
-        # tenant, never the stale claim (lesson 35).
+        # Token still claims tenant A after the admin moves to B; the route must use the fresh row.
         other_tenant = await pool.fetchrow(
             "INSERT INTO tenants (name, slug) VALUES ($1, $2) RETURNING *",
             "Tenant B", f"test-b-{uuid.uuid4().hex[:8]}",
@@ -426,9 +392,6 @@ class TestAgentEndpoints:
         )
         try:
             from services.config import agents as agents_service
-            # Direct service-layer call, no ambient RLS scope from a real
-            # request — set/reset it here, same as libs.tenancy everywhere
-            # else a test calls services/config functions directly.
             set_target_tenant(str(other["id"]))
             try:
                 victim = await agents_service.create_agent(
@@ -590,9 +553,7 @@ class TestAgentEndpoints:
         assert resp.status_code == 400
 
     async def test_create_agent_with_malformed_provider_config_id_is_400_not_500(self, client, test_tenant):
-        """A non-UUID-shaped string previously reached asyncpg's parameter
-        binding directly, raising DataError — not a ValueError/LookupError,
-        so app.py had no handler for it and it surfaced as a raw 500."""
+        """A non-UUID provider id is a 400, not an asyncpg DataError 500."""
         resp = await client.post(
             f"/tenants/{test_tenant['slug']}/agents",
             json={"slug": "support-agent", "name": "Support", "stt_config_id": "not-a-uuid"},
@@ -721,9 +682,7 @@ class TestProviderConfigEndpoints:
         assert [p["engine"] for p in resp.json()] == ["deepgram"]
 
     async def test_nonexistent_tenant_id_is_404_not_500(self, client):
-        """Regression test: a well-formed but nonexistent tenant_id used to
-        hit an unhandled ForeignKeyViolationError and return a bare 500 with
-        Postgres internals in the traceback."""
+        """A well-formed but nonexistent tenant_id is a 404, not an FK-violation 500."""
         resp = await client.post(
             "/tenants/00000000-0000-0000-0000-000000000000/providers",
             json={"name": "X", "role": "stt", "engine": "deepgram"},
@@ -788,9 +747,7 @@ class TestProviderConfigEndpoints:
         assert still_there.status_code == 200
 
     async def test_delete_embedding_provider_in_use_by_kb_is_409(self, client, test_tenant, pool):
-        # Agents never reference an embedding provider directly (see
-        # database/knowledge_schema.sql) — knowledge_bases.embedding_config_id
-        # is the real dependency, checked separately from the agent columns.
+        # Embedding providers are referenced by knowledge_bases, not agents.
         emb = await client.post(
             f"/tenants/{test_tenant['id']}/providers",
             json={"name": "Ollama Embedding", "role": "embedding", "engine": "ollama"},
@@ -988,9 +945,7 @@ class TestProviderConfigEndpoints:
         assert resp.json()["api_key_ref"].startswith("enc:")
 
     async def test_update_with_both_api_key_and_a_real_api_key_ref_is_400(self, client, test_tenant, monkeypatch):
-        # Sending both non-blank is ambiguous, not a legitimate rotation
-        # (that pairs api_key with a *blank* api_key_ref) — likely a UI bug
-        # upstream, so this must not silently prefer one over the other.
+        # Both non-blank is ambiguous; a rotation pairs api_key with a blank api_key_ref.
         monkeypatch.setenv("SECRET_ENCRYPTION_KEY", generate_key())
         create = await client.post(
             f"/tenants/{test_tenant['id']}/providers",
@@ -1071,9 +1026,7 @@ class TestProviderConfigEndpoints:
         ]
 
     async def test_voices_verified_languages_defaults_to_empty_list(self, client, test_tenant, monkeypatch):
-        """Not every voice has been through ElevenLabs' language
-        verification — a missing verified_languages key must come through
-        as [], not be dropped or raise."""
+        """A missing verified_languages key comes through as []."""
         import httpx
 
         create = await client.post(
@@ -1105,8 +1058,7 @@ class TestProviderConfigEndpoints:
         assert resp.json()[0]["verified_languages"] == []
 
     async def test_voices_network_error_is_clean_400_not_500(self, client, test_tenant, monkeypatch):
-        """httpx.RequestError (DNS failure, timeout, ...) must not reach the
-        caller as a bare, unhandled 500."""
+        """httpx.RequestError surfaces as a 400, not a 500."""
         import httpx
 
         create = await client.post(
@@ -1130,9 +1082,7 @@ class TestProviderConfigEndpoints:
         assert "ConnectTimeout" in resp.json()["detail"]
 
     async def test_voices_error_response_body_not_forwarded_to_caller(self, client, test_tenant, monkeypatch):
-        """A non-200 ElevenLabs response (e.g. a 401 body with account
-        details) must be logged server-side, never echoed into the client-
-        facing error detail."""
+        """A non-200 ElevenLabs body is never echoed into the client error detail."""
         import httpx
 
         create = await client.post(
@@ -1159,10 +1109,7 @@ class TestProviderConfigEndpoints:
 
 
 class TestProviderConfigTenantScoping:
-    """A tenant-scoped admin/viewer must never read, edit, delete, or fetch
-    voices for another tenant's provider_config by id — the bare
-    /providers/{id} routes have no tenant_id in their URL path, so nothing
-    scopes them except the explicit check in _authorize_provider()."""
+    """By-id /providers routes must reject another tenant's provider_config."""
 
     async def test_admin_cannot_get_another_tenants_provider(self, admin_client, pool):
         other = await pool.fetchrow(
@@ -1216,9 +1163,7 @@ class TestProviderConfigTenantScoping:
             await pool.execute("DELETE FROM tenants WHERE id = $1", other["id"])
 
     async def test_admin_cannot_fetch_voices_for_another_tenants_provider(self, admin_client, pool):
-        """The highest-stakes case: without this check, a cross-tenant
-        request would resolve the OTHER tenant's real api_key_ref and spend
-        its ElevenLabs quota, not just leak metadata."""
+        """Otherwise the request would spend the other tenant's ElevenLabs key."""
         other = await pool.fetchrow(
             "INSERT INTO tenants (name, slug) VALUES ($1, $2) RETURNING *",
             "Other Tenant", f"other-{uuid.uuid4().hex[:8]}",
@@ -1236,8 +1181,7 @@ class TestProviderConfigTenantScoping:
             await pool.execute("DELETE FROM tenants WHERE id = $1", other["id"])
 
     async def test_superadmin_can_access_any_tenants_provider(self, client, test_tenant):
-        """Superadmin is deliberately exempt from the scope check — same
-        "unscoped" contract as everywhere else in this service."""
+        """A platform-scoped superadmin is exempt from the tenant check."""
         create = await client.post(
             f"/tenants/{test_tenant['id']}/providers",
             json={"name": "Deepgram", "role": "stt", "engine": "deepgram"},
@@ -1246,9 +1190,7 @@ class TestProviderConfigTenantScoping:
         assert resp.status_code == 200
 
     async def test_a_superadmin_with_a_leftover_tenant_id_is_narrowed_to_it(self, pool, test_tenant):
-        """Platform scope is tenant_id IS NULL, not role (RLS design, AC6 case
-        3c; tests/test_cross_tenant_admin.py): a superadmin row that still
-        carries a tenant_id works inside that tenant and gets 403 elsewhere."""
+        """Platform scope is tenant_id IS NULL, not role: a superadmin with a tenant_id is confined to it."""
         own = await pool.fetchrow(
             "INSERT INTO tenants (name, slug) VALUES ($1, $2) RETURNING *",
             "Own Tenant", f"own-{uuid.uuid4().hex[:8]}",
@@ -1277,17 +1219,7 @@ class TestProviderConfigTenantScoping:
             await pool.execute("DELETE FROM tenants WHERE id = $1", own["id"])
 
     async def test_viewer_with_no_tenant_id_is_unscoped(self, client, pool, test_tenant):
-        """Regression (found live): the Conversation Service's own
-        internal service account (conversation-service@internal.yuviz.ai)
-        is role=viewer with tenant_id=NULL — it legitimately reads provider
-        configs across every tenant it serves calls for, one process
-        handling all tenants. A role=="superadmin"-only exemption blocked
-        this account entirely, and every live call silently fell back to
-        agent_config.py's hardcoded legacy default (a generic greeting
-        instead of the real configured one) because agent_resolver treats
-        any RuntimeConfig fetch failure as "fall back," not as a hard
-        error. tenant_id is None must independently exempt regardless of
-        role, matching auth.py's own CurrentUser docstring contract."""
+        """tenant_id=None exempts regardless of role (the Conversation service account is a viewer)."""
         create = await client.post(
             f"/tenants/{test_tenant['id']}/providers",
             json={"name": "Deepgram", "role": "stt", "engine": "deepgram"},
@@ -1309,10 +1241,7 @@ class TestProviderConfigTenantScoping:
 
 
 class TestToolProviderConfigEndpoints:
-    """Regression coverage for the blank api_key_ref gap: a
-    tool_provider_config with no key silently passed creation and only
-    failed at call time (provider_manager.py's _make_cal_com), which broke
-    a live call. Now caught here instead."""
+    """A missing credential is rejected at config time, not discovered at call time."""
 
     async def test_create_with_valid_api_key_ref(self, client, test_tenant):
         resp = await client.post(
@@ -1326,8 +1255,6 @@ class TestToolProviderConfigEndpoints:
         assert resp.json()["api_key_ref"] == "env:CAL_API_KEY"
 
     async def test_create_with_neither_api_key_ref_nor_api_key_is_400(self, client, test_tenant):
-        # Both are optional in the schema now (an admin may supply either)
-        # — the router itself requires at least one.
         resp = await client.post(
             f"/tenants/{test_tenant['id']}/tool-providers",
             json={"name": "X", "tool_name": "book_appointment", "engine": "cal_com"},
@@ -1344,9 +1271,6 @@ class TestToolProviderConfigEndpoints:
         assert resp.json()["api_key_ref"].startswith("enc:")
 
     async def test_create_toolexec_engine_with_no_api_key_ref_succeeds(self, client, test_tenant):
-        # engine='toolexec' is internal infrastructure (services/toolexec/),
-        # not a tenant credential — the Admin UI cannot create the row
-        # agent_tool_policies.tool_provider_config_id requires if this 400s.
         resp = await client.post(
             f"/tenants/{test_tenant['id']}/tool-providers",
             json={"name": "Custom APIs", "tool_name": "execute_api", "engine": "toolexec"},
@@ -1362,8 +1286,6 @@ class TestToolProviderConfigEndpoints:
         assert resp.status_code == 400
 
     async def test_update_to_blank_api_key_ref_is_400(self, client, test_tenant):
-        # A cleared cal_com api_key_ref fails silently until the next live
-        # booking attempt — must not go through without a replacement.
         create = await client.post(
             f"/tenants/{test_tenant['id']}/tool-providers",
             json={
@@ -1377,9 +1299,7 @@ class TestToolProviderConfigEndpoints:
         assert resp.status_code == 400
 
     async def test_update_to_blank_api_key_ref_with_new_api_key_is_allowed(self, client, test_tenant, monkeypatch):
-        # Not a clear — a rotation. The blank api_key_ref is the frontend's
-        # placeholder for "nothing typed here", paired with a real
-        # replacement in api_key.
+        # A rotation: blank api_key_ref is the UI's placeholder alongside a new api_key.
         monkeypatch.setenv("SECRET_ENCRYPTION_KEY", generate_key())
         create = await client.post(
             f"/tenants/{test_tenant['id']}/tool-providers",
@@ -1413,10 +1333,7 @@ class TestToolProviderConfigEndpoints:
 
 
 class TestAgentToolPolicyMaxChainDepth:
-    """FIX 1 (c): before this, there was no API path to set
-    agent_tool_policies.max_chain_depth at all — the column existed but
-    nothing could write it, so the per-agent override was dead on
-    arrival regardless of what the executor did with it."""
+    """max_chain_depth is settable and clearable through the API."""
 
     async def test_create_and_patch_max_chain_depth(self, client, test_tenant, pool):
         agent = dict(await pool.fetchrow(
@@ -1444,9 +1361,7 @@ class TestAgentToolPolicyMaxChainDepth:
         assert patch.status_code == 200
         assert patch.json()["max_chain_depth"] == 3
 
-        # Explicitly clearing it back to NULL (use the platform ceiling)
-        # must also work — exclude_unset must not confuse "not sent" with
-        # "sent as null".
+        # Explicit null clears it; exclude_unset must not treat it as "not sent".
         clear = await client.patch(
             f"/agents/{agent['id']}/tool-policies/execute_api", json={"max_chain_depth": None},
         )
@@ -1455,9 +1370,7 @@ class TestAgentToolPolicyMaxChainDepth:
 
 
 class TestCarrierEndpoints:
-    """DID Management platform: carriers previously had no
-    CRUD/router at all, only an existence-check helper used by
-    phone_numbers' own validation."""
+    """Carrier CRUD routes."""
 
     async def test_create_list_and_get_carrier(self, client, test_tenant):
         create = await client.post(
@@ -1516,10 +1429,7 @@ class TestCarrierEndpoints:
 
 class TestPhoneNumberEndpoints:
     async def test_create_with_nonexistent_carrier_id_is_404_not_400(self, client, test_tenant):
-        """Regression test: carrier_id used to be unvalidated, so a bad value
-        only surfaced via the app-wide FK-violation-to-400 handler — a
-        precise 404 (matching agent_id/fallback_agent_id's own behavior)
-        instead of a generic 400."""
+        """An unknown carrier_id is a precise 404, like agent_id."""
         resp = await client.post(
             f"/tenants/{test_tenant['id']}/phone-numbers",
             json={
@@ -1730,12 +1640,7 @@ class TestAuthEndpoints:
 
 
 class TestUserEndpoints:
-    # POST /users (the temp-password create path) was removed once the
-    # invite-based path (routers/invites.py) was reachable end-to-end —
-    # invite creation/lookup coverage lives in test_invites.py instead. The
-    # cases below that only needed *a* live user now create one directly via
-    # users_service.create_user(), the same helper conftest.py's own
-    # test_admin/test_viewer fixtures use.
+    # Users are created via invites now (see test_invites.py).
     async def test_post_users_route_is_gone(self, client):
         resp = await client.post(
             "/users", json={"email": "new@example.com", "password": "pw", "role": "viewer"},
@@ -1755,11 +1660,7 @@ class TestUserEndpoints:
     async def test_superadmin_tenant_filter_still_includes_superadmin_role_rows(
         self, client, test_tenant, pool,
     ):
-        # Review finding 3: is_superadmin was being conflated with "no
-        # tenant_id filter given", so a superadmin's own ?tenant_id= filter
-        # was silently applying the `role != 'superadmin'` exclusion meant
-        # only for non-superadmin actors — a superadmin-role row in that
-        # tenant would vanish from the actor who's allowed to see it.
+        # The `role != 'superadmin'` exclusion is for non-superadmin actors only.
         email = f"tenant-scoped-superadmin-{uuid.uuid4().hex[:8]}@example.com"
         row = await pool.fetchrow(
             "INSERT INTO users (email, password_hash, role, tenant_id) "
@@ -1811,16 +1712,7 @@ class TestUserEndpoints:
             await pool.execute("DELETE FROM users WHERE id = $1", svc_id)
 
     async def test_viewer_service_account_with_null_tenant_cannot_read_other_tenants(self, pool, test_tenant):
-        # PR #19 security finding 1: is_platform_scoped (lesson 24 —
-        # tenant_id is None) answers *which tenant*, not *how privileged*.
-        # GET /users has no authority gate beyond CONSOLE_ROLES, so a
-        # viewer-role service account — role="viewer", tenant_id=NULL,
-        # exactly the shape Conversation's/vobiz's real service accounts
-        # authenticate as — is just as platform-scoped as a superadmin.
-        # It must not inherit a superadmin's unscoped, cross-tenant,
-        # role-unfiltered read just because its own tenant_id is also
-        # NULL. Would fail (the tenant user below present in the response)
-        # if the route gated the unscoped branch on scope alone.
+        # Platform scope alone (tenant_id NULL) must not grant a viewer the superadmin cross-tenant read.
         svc_row = await pool.fetchrow(
             "INSERT INTO users (email, password_hash, role, tenant_id, is_service_account) "
             "VALUES ($1, 'x', 'viewer', NULL, true) RETURNING *",

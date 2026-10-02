@@ -47,9 +47,7 @@ async def create_tool_provider_config(
     current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
 ):
     await _resolve_tenant_id(tenant_id)
-    # engine='toolexec' is internal infrastructure (services/toolexec/), not
-    # a tenant credential — it has no api_key_ref to require. Every other
-    # engine still needs one.
+    # toolexec is internal infrastructure with no credential; every other engine needs one.
     if body.engine != "toolexec" and not ((body.api_key_ref or "").strip() or (body.api_key or "").strip()):
         raise HTTPException(status_code=400, detail="api_key_ref or api_key is required")
     return await tool_provider_configs_service.create_tool_provider_config(
@@ -66,9 +64,7 @@ async def create_tool_provider_config(
 
 
 async def _authorize_tool_provider(tool_provider_config_id: str, current_user: CurrentUser) -> dict:
-    """404 if missing; 403 if it exists but belongs to a different tenant —
-    same shared predicate/shapes as deps.assert_tenant_access (lesson 24:
-    is_platform_scoped, not role == "superadmin")."""
+    """404 if missing; 403 if it belongs to a different tenant."""
     platform_scoped = is_platform_scoped(current_user)
     cfg = await get_or_404(
         tool_provider_configs_service.get_tool_provider_config(
@@ -97,9 +93,7 @@ async def update_tool_provider_config(
     fields = body.model_dump(exclude_unset=True)
     if not fields:
         raise HTTPException(status_code=400, detail="request body has no fields to update")
-    # A cleared key fails silently until the next real call to this
-    # provider — allowed only when paired with a real replacement in the
-    # same request (a rotation, not a clear).
+    # A cleared key fails silently at call time; blank is allowed only alongside a replacement.
     if "api_key_ref" in fields and not (fields["api_key_ref"] or "").strip() and not (fields.get("api_key") or "").strip():
         raise HTTPException(status_code=400, detail="api_key_ref must not be blank")
     set_target_tenant(cfg["tenant_id"])

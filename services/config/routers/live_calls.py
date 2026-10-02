@@ -1,15 +1,6 @@
-"""
-Live Calls Monitoring — its own auth model (require_live_calls_operator),
-kept out of routers/calls.py so that file's single "is authenticated"
-console gate stays the one gate readers have to reason about, and this
-module's tripwire (T5b) stays legible on its own.
+"""Live Calls Monitoring routes, with their own operator auth model.
 
-_resolve_scope is the load-bearing function in this file: STEP 1 re-reads
-the caller's current identity from the database (fresh_authority) before any
-other decision, and STEP 2 branches on THAT fresh row's tenant_id — never on
-the token's. See its own docstring for why branch selection is a privileged
-decision too. After the fresh_authority() call below, `user` (the token) is
-dead to this module: every subsequent decision reads effective_user.
+Scope decisions use the identity freshly re-read from the database, never the token's claims.
 """
 
 from __future__ import annotations
@@ -30,11 +21,7 @@ router = APIRouter(prefix="/live-calls", tags=["live-calls"])
 
 
 def _extract_client_ip(request: Request) -> str | None:
-    """The left-most X-Forwarded-For hop, validated through
-    ipaddress.ip_address() (NULL on a spoofed/malformed value — never an
-    unvalidated raw header value into the audit row), falling back to
-    request.client.host when no XFF header is present at all. Closes
-    security finding #4."""
+    """Left-most X-Forwarded-For hop if it's a valid IP (None if malformed), else request.client.host."""
     xff = request.headers.get("x-forwarded-for")
     if xff is not None:
         candidate = xff.split(",")[0].strip()
@@ -51,37 +38,20 @@ async def _resolve_scope(
 ) -> tuple[str, uuid.UUID, CurrentUser]:
     """Returns (slug, tenant_uuid, effective_user) or raises.
 
-    scope_key is derived from the REQUEST only (the tenant_slug query
-    parameter, or "self" when absent) — never from the caller's identity —
-    so a tenant SWITCH always re-reads rather than inheriting another
-    selection's validation.
+    scope_key comes from the request only, so switching tenants always re-reads authority.
     """
     scope_key = tenant_slug or "self"
     effective_user = await deps.fresh_authority(request.app.state, user, scope_key)
 
-    # BRANCH ON effective_user.tenant_id — never on user.tenant_id. Branch
-    # selection and the privilege check inside the branch derive from the
-    # SAME fresh row and cannot disagree: this codebase confines by scope,
-    # not by role (users.tenant_id is mutable), so trusting the token's
-    # NULL/non-NULL claim here would route a just-re-tenanted superadmin
-    # down the platform-scoped path for the token's remaining life.
+    # Branch on the fresh row's tenant_id, never the token's: users.tenant_id is mutable.
     if effective_user.tenant_id is not None:
         tenant = await tenants_service.get_tenant_by_id(effective_user.tenant_id)
         if tenant is None:
-            # The actor's OWN tenant has been soft-deleted since the token
-            # was issued — an authority failure (this account currently
-            # belongs to no live tenant at all), not a "does the requested
-            # tenant exist" question. 403, not 404, and NOT a fall-through
-            # to the platform-scoped branch below, which a NULL tenant_id
-            # would otherwise flow into and hand every tenant's live calls
-            # to an account that should have none (closes finding #10).
+            # Actor's own tenant was deleted: 403, and never fall through to the platform-scoped branch.
             deps.forget_authority(request.app.state, effective_user.id, scope_key)
             raise HTTPException(status_code=403, detail="account tenant is no longer active")
         if tenant_slug is not None and tenant_slug != tenant["slug"]:
-            # Identical status/body/path to a nonexistent slug — no
-            # existence oracle (lesson 2). A scope_key that 404s here is
-            # never useful again, so it doesn't stay in the memo either
-            # (finding #8).
+            # Same 404 as a nonexistent slug, so this isn't an existence oracle.
             deps.forget_authority(request.app.state, effective_user.id, scope_key)
             raise HTTPException(status_code=404, detail="tenant not found")
         set_target_tenant(str(tenant["id"]))
@@ -105,9 +75,7 @@ async def get_live_calls(
     tenant_slug: str | None = Query(default=None),
     user: CurrentUser = Depends(deps.require_live_calls_operator()),
 ):
-    # Per-user, sized to the 5s poll — a coarse gate that can only reject,
-    # never widen (like require_live_calls_operator above), so it runs
-    # before the identity re-read below, keyed on the token's stable user id.
+    # Per-user throttle sized to the 5s poll; it can only reject, so it runs before the re-read.
     request.app.state.live_calls_throttle.check(user.id)
     slug, _tenant_id, effective_user = await _resolve_scope(request, user, tenant_slug)
     return await live_calls_service.get_live_calls(
@@ -122,10 +90,7 @@ async def request_intervention(
     request: Request,
     user: CurrentUser = Depends(deps.require_live_calls_operator()),
 ):
-    # assert_current_authority — not fresh_authority — is the gate for a
-    # WRITE: 403 outright on a demoted/deleted/re-tenanted actor (AC9)
-    # rather than silently rescoping it the way _resolve_scope's branch
-    # selection does for the read-only GET route.
+    # Writes 403 on a demoted/deleted/re-tenanted actor instead of silently rescoping.
     fresh = await deps.assert_current_authority(user)
 
     ip_address = _extract_client_ip(request)
@@ -134,17 +99,10 @@ async def request_intervention(
     try:
         slug, tenant_id, effective_user = await _resolve_scope(request, user, tenant_slug)
         if (effective_user.tenant_id, effective_user.role) != (fresh.tenant_id, fresh.role):
-            # _resolve_scope answered from a memo entry that predates a
-            # re-tenant or role change (the memo outlives both for its TTL,
-            # and a PATCH /users served by another process can't evict this
-            # process's copy). A write must act on the row just read, so drop
-            # every entry for this user and resolve again from the DB: the
-            # same outcome as a cold memo, so no new status or body.
+            # Stale memo entry (another process may have changed the user): drop it and re-resolve.
             deps.forget_user(request.app.state, user.id)
             slug, tenant_id, effective_user = await _resolve_scope(request, user, tenant_slug)
             if (effective_user.tenant_id, effective_user.role) != (fresh.tenant_id, fresh.role):
-                # Changed again between the two reads: the same refusal
-                # assert_current_authority gives a re-tenanted actor.
                 raise HTTPException(status_code=403, detail="account tenant has changed; sign in again")
     except HTTPException as exc:
         if exc.status_code == 404:

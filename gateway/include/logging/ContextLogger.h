@@ -7,18 +7,8 @@
 
 namespace voiceai {
 
-// Logger wrapper that prepends all 5 observability IDs to every log line.
-// Construct one per CallSession so callers never repeat the context manually.
-//
-// Usage:
-//   ContextLogger log{obs, logger};
-//   log.info("something happened value={}", 42);
-//   // emits: [s=<sid> t=<tid> tr=<trid> c=<cid> r=<rid>] something happened value=42
-//
-// Thread safety: the underlying spdlog Logger is thread-safe.  obs_ is a
-// value copy of ObservabilityContext; concurrent reads from multiple threads
-// are safe.  set_provider_request_id() writes obs_.provider_request_id —
-// never call it concurrently with any log method.
+// Logger wrapper that prefixes every line with the observability IDs.
+// set_provider_request_id() must not run concurrently with any log method.
 class ContextLogger {
 public:
     ContextLogger(const ObservabilityContext& obs, Logger& logger)

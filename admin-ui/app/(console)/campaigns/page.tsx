@@ -20,10 +20,7 @@ import {
 import { Modal } from "@/components/Modal";
 import { useActiveTenant } from "@/lib/useActiveTenant";
 
-// STATE tabs shown in the mockup order. "draft" is labelled "Scheduled"
-// here — a draft campaign has no caller_id/contacts requirement yet met
-// and simply hasn't been started, which is what "scheduled" means to an
-// operator; the underlying status value is unchanged.
+// "draft" is labelled "Scheduled"; the underlying status value is unchanged.
 const STATUS_TABS: { label: string; value: CampaignStatus }[] = [
   { label: "Running", value: "running" },
   { label: "Scheduled", value: "draft" },
@@ -44,11 +41,7 @@ function statusBadgeClass(status: CampaignStatus): string {
   }
 }
 
-// Connect % / Intent % have no backing data anywhere in this codebase — no
-// disposition classification, no connect-vs-no-answer distinction beyond
-// what PROGRESS already shows, no intent detection. Mocked deterministically
-// per campaign id (not Math.random()) so the numbers don't jump on every
-// refresh, and clearly labelled — never presented as real telemetry.
+// Connect % / Intent % have no backing data; mocked deterministically per id and labelled as such.
 function mockPercent(seed: string, salt: number): number {
   let h = salt;
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
@@ -58,10 +51,7 @@ function mockPercent(seed: string, salt: number): number {
 export default function CampaignsPage() {
   const router = useRouter();
   const { tenant, allTenants, isAllTenants, loading: tenantLoading } = useActiveTenant();
-  // Scopes the campaign LIST to the header switcher. The DNC modal's own
-  // tenant picker below intentionally keeps using allTenants — managing DNC
-  // entries for a specific account is a separate concern from which
-  // account's campaigns this page is currently listing.
+  // Campaign list follows the header switcher; the DNC modal deliberately uses allTenants.
   const targetTenants = useMemo(
     () => (isAllTenants ? allTenants : tenant ? [tenant] : []),
     [tenant, allTenants, isAllTenants],

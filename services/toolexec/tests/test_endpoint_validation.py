@@ -1,8 +1,4 @@
-"""
-SSRF-guard tests for services/toolexec/custom_apis.resolve_and_validate_endpoint
-(T5, finding 6). Every rejection case asserts the whole URL is refused, not
-merely that a bad record is skipped.
-"""
+"""SSRF-guard tests for resolve_and_validate_endpoint; rejections refuse the whole URL."""
 
 from __future__ import annotations
 
@@ -12,9 +8,7 @@ from services.toolexec import custom_apis
 
 
 @pytest.mark.parametrize("url", [
-    # https, not http, so this is denied by the IP deny-list itself, not
-    # merely by the http-scheme gate (that gate is exercised separately
-    # below, against an ordinary host).
+    # https so the IP deny-list, not the http gate, rejects these.
     "https://169.254.169.254/latest/meta-data/",
     "https://[::1]/",
     "https://[::ffff:127.0.0.1]/",
@@ -43,8 +37,7 @@ async def test_userinfo_rejected():
 
 @pytest.mark.asyncio
 async def test_multi_record_one_private_rejects_whole_url(monkeypatch):
-    """A host with two A records, only one of which is private, must reject
-    the whole URL — never silently dial 'the good one'."""
+    """One private record among several rejects the whole URL."""
 
     async def _resolver(hostname, port):
         return ["8.8.8.8", "10.0.0.5"]
@@ -55,12 +48,7 @@ async def test_multi_record_one_private_rejects_whole_url(monkeypatch):
 
 
 @pytest.mark.parametrize("url,expected_reason", [
-    # Each of these previously satisfied only the shared "invalid_endpoint_url"
-    # prefix, which the DNS-failure path ALSO produces on a network-isolated
-    # runner (finding 2: a test passing for the wrong reason). Matching the
-    # specific reason text means a runner with no DNS reachability makes
-    # these fail loudly instead of silently passing via
-    # "DNS resolution failed for ...".
+    # Specific reasons, so a DNS-isolated runner can't pass via the dns_resolution_failed path.
     ("https://169.254.169.254/latest/meta-data/", "resolves to a denied address"),
     ("https://[::1]/", "resolves to a denied address"),
     ("https://100.64.0.1/", "resolves to a denied address"),
@@ -68,14 +56,7 @@ async def test_multi_record_one_private_rejects_whole_url(monkeypatch):
 ])
 @pytest.mark.asyncio
 async def test_rejection_reason_is_specific_not_dns_failure(url, expected_reason):
-    """Verified by mutation: temporarily forcing _resolve_addresses to always
-    raise socket.gaierror (simulating an unreachable/DNS-isolated runner)
-    made the three denied-address cases raise 'DNS resolution failed for'
-    instead of 'resolves to a denied address' — this test failed under that
-    mutation (match=expected_reason no longer satisfied), then the mutation
-    was reverted. The userinfo case is unaffected by DNS at all (it is
-    rejected before any lookup), so it pins the userinfo-specific message on
-    its own merit."""
+    """Each rejection carries its specific reason, not a DNS-failure message."""
     with pytest.raises(ValueError, match=expected_reason):
         await custom_apis.resolve_and_validate_endpoint(url)
 

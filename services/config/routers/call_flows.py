@@ -22,10 +22,7 @@ from ..deps import (
 )
 from ..schemas import CallFlowCreate, CallFlowDraft, CallFlowPublish, CallFlowUpdate
 
-# Tier 2 (a tenant path segment) and Tier 3 (a flat by-id route) — see
-# docs/rls-tenant-isolation.md. The two shapes exist for the same reason
-# every other resource here has both: the list/create pair is naturally
-# tenant-scoped, while the editor holds a flow id and nothing else.
+# List/create are tenant-path scoped; the editor's by-id routes authorize from the row's tenant.
 tenant_scoped_router = APIRouter(
     prefix="/tenants/{tenant_slug}/call-flows",
     tags=["call_flows"],
@@ -57,8 +54,7 @@ def _parse_id(call_flow_id: str) -> str:
 
 
 async def _authorize_flow(call_flow_id: str, current_user: CurrentUser) -> dict:
-    """Tier 3: fetch, assert access, then pin the RLS target to the row's own
-    tenant so every following statement in this request is scoped to it."""
+    """Fetch, assert access, then pin the RLS target to the row's own tenant."""
     _parse_id(call_flow_id)
     platform_scoped = is_platform_scoped(current_user)
     flow = await get_or_404(
@@ -88,13 +84,8 @@ async def get_published_call_flow(
     tenant_slug: str, call_flow_id: str,
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    """The runtime read for the conversation service (IConfigProvider.
-    get_call_flow()) — deliberately NOT _authorize_flow(), which resolves
-    the row first and pins RLS to the row's own tenant. Here {tenant_slug}
-    is the DID-resolved tenant and IS the RLS target (bind_path_tenant, on
-    the router above) before the row is ever looked up, so a call_flow_id
-    naming another tenant's row is invisible rather than rejected. Every
-    negative case is the same bare 404 (lesson 2)."""
+    """Runtime read for the conversation service. RLS is pinned to {tenant_slug} before lookup,
+    so another tenant's flow id is simply a 404."""
     _parse_id(call_flow_id)
     payload = await call_flows_service.get_published_for_runtime(tenant_slug, call_flow_id)
     if payload is None:
@@ -110,12 +101,8 @@ async def create_call_flow(
 ):
     tenant = await _resolve_tenant(tenant_slug, current_user)
     if body.clone_from_id is not None:
-        # Authorize the clone SOURCE the way any other by-id read is
-        # authorized, before it is copied — otherwise "clone" would be a way
-        # to read a flow the caller cannot open.
+        # Authorize the source too, or clone becomes a way to read flows the caller can't open.
         source = await _authorize_flow(body.clone_from_id, current_user)
-        # Cloning across tenants would copy one tenant's flow into another,
-        # so it is refused outright rather than left to RLS to fail opaquely.
         if str(source["tenant_id"]) != str(tenant["id"]):
             raise HTTPException(
                 status_code=400, detail="a call flow can only be cloned within its own account",
@@ -226,9 +213,7 @@ async def rollback(
     version: int,
     current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
 ):
-    """Rollback republishes an old graph as a NEW version rather than moving
-    a pointer back — the history stays append-only and a rollback is itself
-    auditable."""
+    """Republishes an old graph as a new version, keeping history append-only."""
     await _authorize_flow(call_flow_id, current_user)
     graph = await call_flows_service.get_version_graph(call_flow_id, version)
     if graph is None:

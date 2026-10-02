@@ -1,10 +1,4 @@
-"""
-campaigns CRUD — outbound calling campaign lifecycle (draft -> running ->
-paused/completed). Placing actual calls is worker.py's job, not this
-module's — this only owns the campaign row itself, mirroring the
-"routers/CRUD modules translate, a separate process does the work" split
-already used by services/knowledge/'s ingestion worker.
-"""
+"""campaigns CRUD — campaign lifecycle (draft -> running -> paused/completed); worker.py dials."""
 
 from __future__ import annotations
 
@@ -37,19 +31,10 @@ async def list_campaigns(tenant_id: Any) -> list[dict[str, Any]]:
 
 
 async def agent_exists_for_tenant(tenant_id: Any, agent_id: Any) -> bool:
-    """campaigns.agent_id is a NOT NULL FK (database/schema.sql) — an empty
-    string or another tenant's agent id previously reached the INSERT
-    unchecked and surfaced as an unhandled asyncpg UUID-cast/FK-violation
-    exception (a bare 500 with no CORS headers, since the exception occurs
-    after CORSMiddleware's request phase — Chrome then misreports the
-    response as CORS-blocked rather than a server error). Checked up front
-    so the router can raise a clean, CORS-intact 422 instead."""
+    """Checked up front so a bad/cross-tenant agent_id is a clean 422, not an asyncpg 500."""
     try:
         uuid.UUID(str(agent_id))
     except (ValueError, AttributeError, TypeError):
-        # Not even UUID-shaped (e.g. "") — the query below would itself
-        # raise the same uncaught asyncpg cast error this check exists to
-        # avoid, so short-circuit before it ever reaches the database.
         return False
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
@@ -61,15 +46,7 @@ async def agent_exists_for_tenant(tenant_id: Any, agent_id: Any) -> bool:
 
 
 async def caller_id_owned_by_tenant(tenant_id: Any, caller_id: str | None) -> bool:
-    """A `caller_id` a campaign dials out with must be a DID this tenant
-    actually provisioned (`phone_numbers.did`) — same tenant-ownership
-    predicate `services/telephony/ownership.py`'s outbound-trigger path
-    enforces (there, via the Redis `did:{did}` cache; here, cold-path
-    against Postgres directly, matching `agent_exists_for_tenant`'s
-    existing shape). `caller_id` is optional on a campaign row
-    (`None` means "not yet configured, cannot start") — that case is
-    valid at create/update time and is instead caught by worker.py's own
-    "no caller_id configured, skipping" guard before any dial."""
+    """True if caller_id is a DID this tenant provisioned; empty is allowed (worker skips it)."""
     if not caller_id:
         return True
     pool = await db.get_pool()
@@ -145,9 +122,7 @@ async def set_status(
     campaign_id: Any, status: str, *,
     platform_scoped: bool = False, user_id: Any | None = None, user_email: str | None = None,
 ) -> dict[str, Any]:
-    """start/pause/resume are all just status transitions — worker.py polls
-    for status='running' campaigns, so flipping this is the entire
-    "start/pause/resume" API surface; no separate start/stop signal needed."""
+    """start/pause/resume: worker.py polls for status='running', so this is the whole signal."""
     return await update_campaign(
         campaign_id, {"status": status}, platform_scoped=platform_scoped, user_id=user_id, user_email=user_email,
     )
@@ -177,17 +152,9 @@ async def get_progress(campaign_id: Any, *, platform_scoped: bool = False) -> di
 async def resolve_outbound_route(
     tenant_id: Any, agent_id: Any, caller_id: str, *, platform_scoped: bool = False,
 ) -> dict[str, Any]:
-    """Which telephony provider a caller_id DID is bound to, plus the tenant/agent
-    slugs a REST provider (Vobiz) needs.
+    """Provider a caller_id DID is bound to, plus tenant/agent slugs and caller_id_owned.
 
-    `caller_id_owned` is the tenant-ownership fact worker.py's dispatch
-    must gate on: True only when `caller_id` is an actual
-    `phone_numbers.did` row for THIS tenant. `provider` is a second,
-    separate fact — None either for an unowned caller_id OR for an owned
-    one with no REST `telephony_configs` binding (a legitimate native/ESL
-    DID) — so the two must never be conflated: a caller_id this tenant
-    never provisioned must be refused outright, never silently routed to
-    the ESL path, while an owned-but-native DID must still dial."""
+    Gate on caller_id_owned, not provider: provider is None for both unowned and native/ESL DIDs."""
     pool = await db.get_pool()
     conn_cm = platform_conn(pool, reason="campaign-by-id") if platform_scoped else tenant_conn(pool)
     async with conn_cm as conn:

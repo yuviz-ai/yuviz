@@ -1,43 +1,7 @@
-"""
-TwilioProvider — IDidProvider backed by Twilio's REST API.
+"""TwilioProvider — IDidProvider backed by Twilio's REST API.
 
-search_available_numbers() is LIVE-VERIFIED against a real Twilio account
-(Live credentials, not Test credentials —
-Test credentials 403 on this endpoint with code 20008, "Resource not
-accessible with Test Account Credentials", a real gotcha hit while
-verifying this) — request shape, response envelope key
-("available_phone_numbers"), and the capabilities casing quirk below were
-all confirmed byte-for-byte against the real API with zero code changes
-needed.
-
-purchase_number()/release_number() remain UNVERIFIED — not yet tested
-against a real account (a real purchase costs real money, deliberately
-deferred). Treat their shapes as a strong prior (Twilio's 2010-04-01 API
-has been stable and near-universally documented for over a decade) but
-not a confirmation, same discipline as Plivo. Live-verify them the same
-way before trusting a real purchase flow.
-
-Confirmed/assumed API shape:
-  - Base URL: https://api.twilio.com/2010-04-01/Accounts/{AccountSid}
-  - Auth: HTTP Basic (AccountSid, AuthToken) — must be the account's LIVE
-    credentials (console dashboard), not the Test Credentials shown
-    alongside them — same as Plivo's auth mechanics, different credential
-    pair (auth_id here holds AccountSid).
-  - Search (LIVE-VERIFIED): GET /AvailablePhoneNumbers/{IsoCountryCode}/Local.json?AreaCode=415&PageSize=10
-             Response envelope key is "available_phone_numbers"; each
-             entry's "capabilities" dict uses Twilio's own inconsistent
-             casing — {"voice": bool, "SMS": bool, "MMS": bool} — voice is
-             lowercase, SMS/MMS are uppercase — confirmed live, not a typo.
-  - Buy (UNVERIFIED): POST /IncomingPhoneNumbers.json  (form-encoded: PhoneNumber=+E164)
-             Response includes "sid" (a real per-number resource id,
-             "PNxxxxxxxx...") — unlike Plivo, which has no separate id and
-             uses the bare number. This sid is what carrier_number_sid
-             holds and what release() needs.
-  - Release (UNVERIFIED): DELETE /IncomingPhoneNumbers/{Sid}.json
-  - Twilio's available-numbers search does not return a monthly price in
-    this endpoint (pricing lives under a separate /Pricing/v2 API this
-    provider doesn't call) — monthly_price is left None rather than
-    guessed. Confirmed live: the real response has no price field either.
+Auth is HTTP Basic with LIVE credentials (Test credentials 403 on search, code 20008).
+Search is live-verified; purchase/release are UNVERIFIED. carrier_number_sid is Twilio's PN... sid.
 """
 
 from __future__ import annotations
@@ -75,12 +39,7 @@ class TwilioProvider:
         if area_code:
             params["AreaCode"] = area_code
 
-        # Not every country sells every Twilio number type: "Local" 404s
-        # outright (not an empty list) for countries that only offer Mobile
-        # (e.g. India) — confirmed live, not a guess. Try Local first (it's
-        # what most countries, including the US, actually have) and fall
-        # back to Mobile only on that specific 404, so a real error on
-        # either attempt still surfaces instead of being swallowed.
+        # "Local" 404s for Mobile-only countries (e.g. India); fall back to Mobile only on 404.
         last_error: tuple[int, str, str] | None = None
         for number_type in ("Local", "Mobile"):
             try:
@@ -100,7 +59,7 @@ class TwilioProvider:
                 AvailableNumber(
                     phone_number=obj["phone_number"],
                     region=obj.get("region") or obj.get("locality"),
-                    monthly_price=None,  # not returned by this endpoint — see module docstring
+                    monthly_price=None,  # not returned by this endpoint
                     capabilities=_capabilities_from(obj),
                 )
                 for obj in data.get("available_phone_numbers", [])

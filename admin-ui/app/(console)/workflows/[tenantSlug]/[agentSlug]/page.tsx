@@ -1,14 +1,6 @@
 "use client";
 
-// Full-page call-flow editor for one agent. An agent no longer *is* its
-// flow (that was an earlier model): opening an agent now shows its
-// configuration under /agents, and this canvas is the separate, optional
-// surface for splitting a call into steps. The flow graph is still stored
-// on the agent row (agents.workflow), so this route stays keyed by agent.
-//
-// No header row of its own: the back link, the title and the config entry
-// are passed into WorkflowPanel's toolbar so the canvas starts one row down
-// instead of two.
+// Full-page call-flow editor for one agent; keyed by agent because the graph lives on agents.workflow.
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";

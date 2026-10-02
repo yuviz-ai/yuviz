@@ -1,13 +1,4 @@
-"""
-kb_documents CRUD + upload flow. upload_document() is the one function that
-ties storage (StorageProvider), the document row, and the ingestion queue
-(kb_ingestion_jobs) together in one call — the three things that must never
-go out of sync: a document row with no storage-saved bytes, or bytes saved
-with no job queued to chunk/embed them.
-
-Every connection is opened through tenant_conn()/platform_conn() (RLS
-design, libs/tenancy) rather than a bare pool call.
-"""
+"""kb_documents CRUD. upload_document() keeps storage bytes, the document row and its ingestion job in sync."""
 
 from __future__ import annotations
 
@@ -35,9 +26,7 @@ async def get_document(document_id: Any, *, platform_scoped: bool = False) -> di
 async def list_documents(kb_id: Any) -> list[dict[str, Any]]:
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
-        # chunk_count is scoped to chunks matching the document's *current*
-        # version — an older version's chunks are leftover history from a
-        # previous ingestion run, not what's live in retrieval today.
+        # Count only current-version chunks; older versions are stale ingestion leftovers.
         rows = await conn.fetch(
             "SELECT d.*, "
             "(SELECT COUNT(*) FROM kb_chunks c WHERE c.document_id = d.id AND c.version = d.version) AS chunk_count "
@@ -70,12 +59,7 @@ async def upload_document(
         )
         document = dict(row)
 
-        # Bytes are saved before source_ref is committed, and source_ref
-        # is filled in the same transaction as the insert it belongs to
-        # — a crash between save() and this UPDATE leaves an orphaned
-        # file (acceptable: garbage-collectable, never a document row
-        # pointing at nothing), never a document row with a real
-        # source_ref that doesn't exist.
+        # Save before committing source_ref: a crash leaves an orphan file, never a dangling row.
         source_ref = await storage.save(str(tenant_id), str(kb_id), filename, content)
         row = await conn.fetchrow(
             "UPDATE kb_documents SET source_ref = $2 WHERE id = $1 RETURNING *", document["id"], source_ref,

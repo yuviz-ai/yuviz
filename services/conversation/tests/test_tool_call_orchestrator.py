@@ -1,11 +1,5 @@
-"""
-ToolCallOrchestrator tests — pure unit tests against fake stand-ins for
-every collaborator (LLM, policy resolver, provider manager, executor
-registry). No network, no database. Covers run_turn()'s full lifecycle:
-plain-text passthrough, one tool call + fold-back + final answer, the
-max_tool_iterations force-closure bound, and an unknown-tool-name failure
-mode that still lets the turn continue.
-"""
+"""ToolCallOrchestrator.run_turn() unit tests with fake collaborators: passthrough, tool fold-back,
+max_tool_iterations bound, and unknown-tool failure."""
 
 from __future__ import annotations
 
@@ -61,9 +55,7 @@ class _FixedExecutor:
 
 
 class _ScriptedLLM:
-    """Not a real ILLM — implements generate_with_tools() directly (as if
-    it were IToolAwareLLM), yielding a pre-scripted sequence of event lists,
-    one list per call."""
+    """Fake IToolAwareLLM yielding one pre-scripted event list per call."""
 
     def __init__(self, scripted_calls: list[list]) -> None:
         self._scripted_calls = scripted_calls
@@ -72,11 +64,8 @@ class _ScriptedLLM:
         self.seen_schemas: list = []
 
     async def generate(self, messages):
-        # Used whenever LLMAdapter falls back to plain generate() — no
-        # tools enabled at all, or schemas forced to None after
-        # max_tool_iterations. Consumes the same script, unwrapped to bare
-        # token strings (a real ILLM.generate() can never yield a
-        # ToolCallEvent — there's no tools parameter to have produced one).
+        # Plain-generate fallback (no tools, or tools withdrawn after max_tool_iterations):
+        # same script, unwrapped to bare tokens.
         self.seen_messages.append(list(messages))
         events = self._scripted_calls[self.call_count]
         self.call_count += 1
@@ -94,11 +83,7 @@ class _ScriptedLLM:
 
 
 async def test_llm_invisible_tool_is_configurable_but_never_offered_to_the_llm():
-    """A tool with llm_visible=False can be enabled for an agent like any
-    other, but must never appear in the schemas list the LLM sees. Nothing
-    ships with llm_visible=False today (send_sms, its only user, went away
-    with the calendar built-ins) — this covers the seam itself, which is
-    how any future deterministic side effect would be wired."""
+    """An llm_visible=False tool can be enabled but never appears in the LLM's schemas."""
     llm = _ScriptedLLM([[TokenEvent(text="Hi")]])
     hidden_policy = ResolvedToolPolicy(
         definition=ToolDefinition(
@@ -173,12 +158,7 @@ async def test_tool_call_executes_folds_result_and_continues_to_final_answer():
 
 
 async def test_force_tool_name_forces_tool_choice_on_first_call_only():
-    """force_tool_name must reach the LLM as a real tool_choice on the
-    turn's first generate_with_tools() call, and must NOT be re-forced on
-    a second iteration within the same turn (e.g. a forced call that
-    itself needed a follow-up plain-text wrap-up). No caller sets it
-    today — the phone-confirmation trigger went away with the calendar
-    built-ins — but it stays as a generic orchestrator capability."""
+    """force_tool_name sets tool_choice on the turn's first call only, not on later iterations."""
     llm = _ScriptedLLM([
         [ToolCallEvent(tool_call_id="c1", tool_name="execute_api", arguments={"api_name": "x"})],
         [TokenEvent(text="booked")],
@@ -216,13 +196,7 @@ async def test_force_tool_name_forces_tool_choice_on_first_call_only():
 
 
 async def test_deterministic_response_short_circuits_llm_narration():
-    """See ToolResult.deterministic_response's own docstring: when an
-    executor sets this (a real, confirmed booking), the orchestrator must
-    speak it verbatim and never call the LLM again for this turn — the
-    words were never the LLM's to choose, so there's nothing for a second
-    generate_with_tools() call to narrate. Confirmed live, repeatedly,
-    that letting the LLM narrate a tool result at all is exactly how a
-    real success gets fabricated into a false one on a later turn."""
+    """A deterministic_response is spoken verbatim and the LLM isn't called again this turn."""
     llm = _ScriptedLLM([
         [ToolCallEvent(tool_call_id="c1", tool_name="execute_api", arguments={"api_name": "x"})],
         [TokenEvent(text="should never be requested")],
@@ -253,9 +227,7 @@ async def test_deterministic_response_short_circuits_llm_narration():
 
 
 async def test_max_tool_iterations_forces_final_generation_without_tools():
-    # The model tries to call a tool every single time it's offered one —
-    # after max_tool_iterations, the orchestrator must stop offering tools
-    # so the final call is forced to answer in plain text.
+    # After max_tool_iterations, tools are withdrawn so the final call must answer in plain text.
     llm = _ScriptedLLM([
         [ToolCallEvent(tool_call_id="c1", tool_name="execute_api", arguments={"api_name": "x"})],
         [ToolCallEvent(tool_call_id="c2", tool_name="execute_api", arguments={"api_name": "y"})],
@@ -309,10 +281,7 @@ async def test_unknown_tool_name_is_a_failed_result_not_a_crash():
 
 
 class _SlowExecutor:
-    """Doesn't return until release_event is set — lets a test control
-    exactly when a "still in-flight" tool call finally completes, so it can
-    assert on what happens *while* it's still pending, not just its
-    eventual result."""
+    """Blocks until release_event is set, so tests can assert on in-flight behavior."""
 
     def __init__(self, result: ToolResult) -> None:
         self._result = result
@@ -326,11 +295,7 @@ class _SlowExecutor:
 
 
 async def test_cancel_event_stops_waiting_on_an_in_flight_tool_call():
-    """Adopted from pipecat's cancellation-on-interruption pattern: a
-    barge-in during a slow tool call must not be silently
-    swallowed until the call finally times out or completes — run_turn()
-    should stop waiting on it the moment cancel_event is set, not before,
-    not after."""
+    """Setting cancel_event stops run_turn() waiting on an in-flight tool call immediately."""
     llm = _ScriptedLLM([
         [ToolCallEvent(tool_call_id="c1", tool_name="execute_api", arguments={"api_name": "x"})],
     ])
@@ -402,9 +367,7 @@ async def test_cancel_event_set_before_the_tool_call_even_starts_still_stops_the
 
 
 async def test_no_cancel_event_behaves_exactly_as_before():
-    """cancel_event is optional — omitting it (the default None) must
-    behave exactly like the pre-existing await-to-completion path, not
-    silently change behavior for every caller that hasn't been updated."""
+    """Without cancel_event, run_turn() awaits the tool call to completion."""
     llm = _ScriptedLLM([
         [ToolCallEvent(tool_call_id="c1", tool_name="execute_api", arguments={"api_name": "x"})],
         [TokenEvent(text="You're booked!")],

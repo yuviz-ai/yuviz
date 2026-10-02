@@ -1,13 +1,6 @@
-"""
-RedisKnowledgeRepository — read-only, boolean-only. Key format
-agent_kb:{tenant_slug}:{agent_slug} -> "1" | "0", written by
-services/knowledge's agent_knowledge_bases CRUD as a side effect of the
-write (create/enable/disable/detach), the same cache-aside convention
-RedisConfigRepository documents. This repository never writes.
+"""Read-only agent_kb:{tenant}:{agent} -> "1"|"0" flag, written by Knowledge Service.
 
-Existing entirely so a non-RAG agent's turn pays zero added latency beyond
-one Redis GET: no HTTP round trip to Knowledge Service unless this comes
-back True.
+Lets non-RAG agents skip the HTTP round trip entirely.
 """
 
 from __future__ import annotations

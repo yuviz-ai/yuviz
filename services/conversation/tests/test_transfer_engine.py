@@ -1,10 +1,4 @@
-"""
-TransferDecisionEngine (Phase 6): the single arbiter of when to transfer.
-
-evaluate() is a pure function — every test builds its own DecisionContext/
-TransferTrigger and asserts on the returned Decision, with no shared
-session-scoped fixture, matching the engine's own stateless contract.
-"""
+"""TransferDecisionEngine: the single, stateless arbiter of when to transfer."""
 
 from __future__ import annotations
 
@@ -60,9 +54,7 @@ def test_llm_directive_accepted_when_configured():
 
 
 def test_llm_directive_uses_directives_own_type_and_destination_not_context():
-    """A directive can name a different type/destination than the agent's
-    configured default (e.g. explicit escalation to a different number) —
-    the engine trusts the directive's payload for this trigger type."""
+    """An llm_directive's own type/destination override the agent's configured default."""
     engine = TransferDecisionEngine()
     directive = TransferDirective(
         transfer_type=TransferType.COLD, destination="+15559990000", reason="explicit",
@@ -200,18 +192,13 @@ def test_engine_is_pure_same_inputs_same_output():
     second = engine.evaluate(ctx, trigger)
     assert first.accepted == second.accepted
     assert first.rejection_reason == second.rejection_reason
-    # Distinct transfer_id per call (each is logically a new attempt) but
-    # otherwise identical — the engine itself carries no memory of the
-    # first call that would make the second behave differently.
+    # New transfer_id per call, otherwise identical: the engine keeps no memory.
     assert first.request.transfer_id != second.request.transfer_id
     assert first.request.destination == second.request.destination
 
 
 def test_engine_holds_no_session_state_between_calls():
-    """A second session's context must not be affected by a first
-    session's prior accepted decision — proves there is no internal
-    session map (only DecisionContext.already_requested, which the caller
-    supplies fresh each time)."""
+    """A prior accepted decision for one session doesn't affect another's."""
     engine = TransferDecisionEngine()
     engine.evaluate(_ctx(session_id="s1"), TransferTrigger(type=TriggerType.ESCALATION, violation_count=5))
     decision = engine.evaluate(

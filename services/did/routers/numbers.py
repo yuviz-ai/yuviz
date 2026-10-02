@@ -1,22 +1,5 @@
-"""
-Numbers router — search/purchase/release, the DID Service's whole REST
-surface (see project memory did-management-platform-architecture).
-
-Full flow, split across two services on purpose (principle #7 — DID
-Service talks to carriers, Config Service records DID->agent routing):
-  1. GET  .../search    — live carrier lookup, no DB write.
-  2. POST .../purchase  — carrier purchase, then THIS service writes its
-                          own purchased_numbers row (unassigned).
-  3. Admin UI calls Config Service's existing POST
-     /tenants/{id}/phone-numbers directly to assign the number to an
-     agent — DID Service is not involved in that step at all — then calls
-     PATCH .../assign here just to link the two records for display.
-  4. POST .../release   — carrier release, then this service marks its
-                          own row released_at (and Config Service's
-                          phone_numbers row, if assigned, is deleted by the
-                          Admin UI the same way any DID removal already
-                          works today).
-"""
+"""Numbers router — search/purchase/release. Assignment to an agent happens in Config Service;
+PATCH .../assign only links the two records."""
 
 from __future__ import annotations
 
@@ -119,10 +102,7 @@ async def assign_purchased_number(
     phone_number_id: str = Query(...),
     current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
 ):
-    """Links this purchased_numbers row to a phone_numbers row the caller
-    already created via Config Service — see module docstring, step 3.
-    This endpoint does not create or validate the phone_numbers row
-    itself; that's Config Service's job."""
+    """Link to an existing phone_numbers row; does not create or validate it."""
     platform_scoped = is_platform_scoped(current_user)
     purchased = await get_or_404(
         purchased_numbers_service.get_purchased_number(purchased_number_id, platform_scoped=platform_scoped),

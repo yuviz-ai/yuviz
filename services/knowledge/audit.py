@@ -1,12 +1,4 @@
-"""
-audit_log writer for Knowledge Service — writes to the same platform-wide
-audit_log table Config Service uses (same Postgres database, shared table,
-just a different entity_type per row: 'knowledge_base' | 'kb_document').
-Duplicated from services/config/audit.py rather than imported cross-service
-— small (a single INSERT + redaction), and importing services.config.audit
-would pull in a dependency this service doesn't otherwise need, the same
-reasoning already applied to secret_resolver.py.
-"""
+"""audit_log writer for Knowledge Service (shared platform table); duplicated, not cross-imported from services/config."""
 
 from __future__ import annotations
 

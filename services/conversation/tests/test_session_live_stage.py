@@ -1,17 +1,5 @@
-"""
-T19 — an integration test driving each of the four transfer hooks
-(on_transfer_initiated/on_transfer_completed/on_transfer_failed/
-on_transfer_cancelled) through a real ConversationSession + a
-PipelineConversationHandler wired to a REAL TranscriptBuilder, and observing
-calls.live_stage land in Postgres — not just that record_live_stage() was
-called, which test_transcript_builder.py's own tests already cover in
-isolation from the FSM.
-
-Reuses test_pipeline.py's _make_handler/_make_stt/_make_llm/_make_tts
-helpers (same convention as test_pipeline_knowledge.py/
-test_workflow_pipeline.py), passed a real `transcripts=` TranscriptBuilder
-instead of the default None.
-"""
+"""Each transfer hook, through a real ConversationSession + PipelineConversationHandler +
+TranscriptBuilder, lands the right calls.live_stage in Postgres."""
 
 from __future__ import annotations
 
@@ -27,9 +15,7 @@ from .test_pipeline import _make_handler, _make_llm, _make_stt, _make_tts  # noq
 
 
 async def _insert_live_call(builder: TranscriptBuilder, session_id: str) -> None:
-    # begin_call (not a raw insert) so the cached tenant slug the transfer
-    # hooks' own record_live_stage() write scopes its connection to is
-    # populated, matching how every real call reaches these hooks.
+    # begin_call (not a raw insert) so the cached tenant slug used by record_live_stage() is populated.
     builder.begin_call(session_id, "default", "call-1")
     await builder._chains[session_id]
 
@@ -105,9 +91,7 @@ async def test_on_transfer_cancelled_reverts_to_ai():
     await _insert_live_call(builder, session_id)
     session = await _make_session_with_real_transcripts(builder, session_id)
 
-    # A real prior attempt, then the NEXT one gets barged-in before
-    # dispatch — on_transfer_cancelled must revert 'waiting_for_human' back
-    # to 'ai', not leave the stale value from the dropped attempt.
+    # A barged-in attempt must revert 'waiting_for_human' to 'ai', not leave the stale value.
     session.on_transfer_initiated("cold", "+15551234567", "x")
     session.on_transfer_cancelled("tx-2")
     await builder._chains[session_id]

@@ -22,12 +22,8 @@ const GENDER_FILTERS: { value: VoiceGender | "all"; label: string }[] = [
   { value: "neutral", label: "Neutral" },
 ];
 
-// Single-engine dropdown picker (macOS or Kokoro, never both at once) —
-// same collapsed/expand interaction as ElevenLabsVoicePicker, so switching
-// between engines in the Voice card feels consistent. Voices, not
-// providers: picking one still resolves to a provider_config under the
-// hood (find-or-create by engine+voice, then set agent.tts_config_id —
-// the same field the raw Provider Assignments dropdown sets).
+// Single-engine voice picker (macOS or Kokoro). Picking a voice find-or-creates a provider_config
+// by engine+voice and sets agent.tts_config_id.
 export function LocalVoicePicker({
   engine,
   tenantId,
@@ -45,11 +41,7 @@ export function LocalVoicePicker({
   onChange: (providerId: string) => void;
   onProviderCreated: (provider: ProviderConfig) => void;
   onLanguageDetected: (language: string) => void;
-  // Locks the whole picker (can't even expand it) — used once a voice
-  // choice has already been committed elsewhere and changing it here would
-  // silently do nothing (e.g. the new-agent flow post-creation, where
-  // picking a different voice would need a real PATCH this component
-  // doesn't know to send).
+  // Locks the picker once the voice was committed elsewhere and a change here would be a no-op.
   disabled?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);

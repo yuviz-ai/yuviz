@@ -2,13 +2,7 @@
 "use client";
 
 // Call-flow canvas: draw the IVR, autosave a draft, publish when valid.
-//
-// Same shape as components/workflow/WorkflowPanel.tsx (canvas + inspector +
-// debounced draft save + publish gated on server validation) but against
-// call_flows, and with the inspector fields that an IVR step actually has.
-// Validation is always the server's — libs/config_sdk/callflow.py is the one
-// definition of a valid flow, so the editor never has a second opinion that
-// could drift from what publish will accept.
+// Validation is always server-side (libs/config_sdk/callflow.py) so it can't drift from publish.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -138,10 +132,7 @@ function Canvas({ flow, tenantSlug }: { flow: CallFlow; tenantSlug: string }) {
     listProviders(flow.tenant_id, { role: "tts" }).then(setTtsProviders).catch(() => {});
   }, [flow.tenant_id]);
 
-  // Attaching is owned by the flow, not by the agent: this is the page where
-  // you decide which agents answer behind this IVR, so the write happens
-  // here (agents.call_flow_id) rather than in a picker buried in each
-  // agent's own settings.
+  // Writes agents.call_flow_id.
   const toggleAgent = async (agent: Agent, attach: boolean) => {
     setAttaching(agent.id);
     setBanner(null);
@@ -159,9 +150,7 @@ function Canvas({ flow, tenantSlug }: { flow: CallFlow; tenantSlug: string }) {
 
   const graph = useMemo(() => toGraph(nodes, edges), [nodes, edges]);
 
-  // Draft autosave + server validation, debounced together: both are about
-  // "the canvas settled", and running them from one timer keeps the problems
-  // panel in step with what was last saved.
+  // One debounce for autosave and validation so the problems panel matches the saved draft.
   useEffect(() => {
     if (firstRender.current) {
       firstRender.current = false;
@@ -325,9 +314,7 @@ function Canvas({ flow, tenantSlug }: { flow: CallFlow; tenantSlug: string }) {
     }
   };
 
-  // A restore republishes an old graph as a new version, so the canvas has
-  // to reload from the server rather than keep showing the graph that was
-  // on screen when the restore was clicked.
+  // A restore publishes a new version, so reload the canvas from the server.
   const handleRolledBack = async () => {
     const fresh = await getCallFlow(flow.id).catch(() => null);
     if (!fresh) return;
@@ -356,9 +343,7 @@ function Canvas({ flow, tenantSlug }: { flow: CallFlow; tenantSlug: string }) {
   const selectedEdgeFromMenu =
     selectedEdge && nodes.find((n) => n.id === selectedEdge.source)?.type === "menu";
   const d = (selected?.data ?? {}) as CallFlowNodeData;
-  // Problems belonging to the selected step, shown in its own panel — the
-  // flow-wide list names no step, so two identical messages from two
-  // different steps are indistinguishable there.
+  // The flow-wide list doesn't name steps, so show the selected step's problems separately.
   const selectedProblems = problems.filter(
     (pr) => (selected && pr.id === selected.id) || (selectedEdge && pr.id === selectedEdge.id),
   );
@@ -441,9 +426,7 @@ function Canvas({ flow, tenantSlug }: { flow: CallFlow; tenantSlug: string }) {
             fitViewOptions={{ maxZoom: 1, padding: 0.25 }}
             minZoom={0.3}
             maxZoom={1.6}
-            // Default is 20px, which means aiming at an 8px dot. At 70 a
-            // connection snaps to the nearest handle from most of the way
-            // across a neighbouring card.
+            // Default 20px is too small to hit an 8px handle reliably.
             connectionRadius={70}
             // Click the source handle, then click the target — an alternative
             // to dragging for anyone who finds the drag fiddly.

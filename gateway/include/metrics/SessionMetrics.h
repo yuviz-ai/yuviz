@@ -6,12 +6,7 @@
 
 namespace voiceai {
 
-// Metrics wrapper that pre-labels every call with "tenant_id." so callers
-// emit per-tenant metrics without repeating the label on every site.
-//
-// Usage:
-//   SessionMetrics sm{metrics, "acme"};
-//   sm.increment("sessions.created");   // emits "acme.sessions.created"
+// Metrics wrapper that prefixes every name with "<tenant_id>.".
 class SessionMetrics {
 public:
     SessionMetrics(IMetrics& metrics, std::string tenant_id)

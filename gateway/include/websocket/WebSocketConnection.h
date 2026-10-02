@@ -40,9 +40,7 @@ public:
     void handle_close();
     void flush_pending_writes();
 
-    // Thread-safe: may be called from any thread to check whether there is
-    // data waiting to be sent.  Used by WebSocketServer::service_loop() to
-    // know when to request LWS_CALLBACK_SERVER_WRITEABLE from the service thread.
+    // Thread-safe.
     [[nodiscard]] bool has_pending_writes() const noexcept;
 
 private:

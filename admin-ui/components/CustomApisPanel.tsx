@@ -15,10 +15,7 @@ import {
 import { SecretRefInput } from "./SecretRefInput";
 import { Modal } from "@/components/Modal";
 
-// A per-step budget floor consistent with services/toolexec's own default
-// (api.timeout_ms IS NULL -> 6000, see database/schema.sql's custom_apis
-// comment) — used here only to size the worst-case-chain-total hint, never
-// sent to the server as a real value.
+// toolexec's default when timeout_ms is NULL; only used for the chain-total hint.
 const DEFAULT_STEP_TIMEOUT_MS = 6000;
 
 type ParamForm = CustomApiParamSpec;
@@ -49,9 +46,7 @@ const emptyParam = (): ParamForm => ({
   sensitive: false,
 });
 
-/** What a pasted JSON value is, in the param model's vocabulary. Arrays and
- *  objects stay whole rather than being flattened into dotted names: the
- *  executor sends a param's value as-is, so a nested object is one param. */
+/** Param json_type for a pasted value; objects/arrays stay one param (sent as-is). */
 function jsonTypeOf(value: unknown): ParamForm["json_type"] {
   if (Array.isArray(value)) return "array";
   if (value === null) return "string";
@@ -67,10 +62,7 @@ function jsonTypeOf(value: unknown): ParamForm["json_type"] {
   }
 }
 
-/** Expand a pasted JSON object into parameter rows. Everything lands as
- *  `literal` with the pasted value kept — that is what a pasted sample IS, a
- *  set of fixed values. Flip the ones the agent should fill to `caller`, or
- *  to `upstream` to chain them. */
+/** Expand a pasted JSON object into `literal` parameter rows. */
 function paramsFromJson(
   raw: string,
   location: ParamForm["location"],
@@ -111,11 +103,7 @@ const emptyForm = (): ApiForm => ({
   params: [],
 });
 
-// Client-side estimate only — chain_levels itself is a server-computed
-// denormalization (services/toolexec/custom_apis.py's
-// _recompute_tenant_chain_levels). This mirrors that shape closely enough
-// to warn an admin before they save, not to replace the server's own
-// AC 11 rejection.
+// Client-side estimate of _recompute_tenant_chain_levels; the server check is authoritative.
 function estimateChainLevels(params: ParamForm[], allApis: CustomApi[]): number {
   const upstreamIds = params
     .filter((p) => p.source === "upstream" && p.upstream_api_id)
@@ -125,10 +113,7 @@ function estimateChainLevels(params: ParamForm[], allApis: CustomApi[]): number 
   return 1 + Math.max(...upstreamLevels);
 }
 
-// Registry/authoring only — this API's per-agent enablement (the toggle,
-// Detach, the execute_api master switch and the whole-chain budget) lives
-// in AgentCustomApisPanel now; that is a per-agent question and this page
-// is tenant-wide.
+// Tenant-wide registry; per-agent enablement lives in AgentCustomApisPanel.
 export function CustomApisPanel({ tenantId }: { tenantId: string }) {
   const [customApis, setCustomApis] = useState<CustomApi[]>([]);
   const [customApisError, setCustomApisError] = useState<string | null>(null);
@@ -216,9 +201,7 @@ export function CustomApisPanel({ tenantId }: { tenantId: string }) {
       setPasteError(error);
       return;
     }
-    // Merge by name so pasting twice (a body then a header set) adds rather
-    // than replaces, and re-pasting a corrected body updates in place
-    // instead of duplicating every field.
+    // Merge by name so repeated pastes add or update rather than duplicate.
     setForm((f) => {
       const byName = new Map(f.params.map((p) => [p.name, p]));
       for (const p of params) byName.set(p.name, { ...byName.get(p.name), ...p });
@@ -288,12 +271,7 @@ export function CustomApisPanel({ tenantId }: { tenantId: string }) {
     (form.auth_scheme === "oauth2_client_credentials" && (!form.client_id_ref.trim() || !form.client_secret_ref.trim())) ||
     form.params.some((p) => !p.name.trim() || (p.source === "upstream" && (!p.upstream_api_id || !p.upstream_json_path)));
 
-  // AC-agnostic UI hint (design's stated interim mitigation, not an
-  // authoritative check): chain_levels(this api) * a per-step timeout
-  // floor of 6000ms. This registry no longer fetches any agent's
-  // execute_api policy, so it shows the absolute worst-case total only —
-  // whether that exceeds a particular agent's whole-chain budget is shown
-  // per attached row in AgentCustomApisPanel, which owns that budget.
+  // Worst-case hint only: chain_levels * per-step floor. Per-agent budget checks are in AgentCustomApisPanel.
   const estimatedLevels = estimateChainLevels(form.params, customApis);
   const perStepMs = form.timeout_ms.trim() ? Number(form.timeout_ms) : DEFAULT_STEP_TIMEOUT_MS;
   const worstCaseMs = estimatedLevels * perStepMs;

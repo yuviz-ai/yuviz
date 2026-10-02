@@ -1,7 +1,4 @@
-"""Call-flow (IVR) service + the runtime /published route, against real
-Postgres + Redis. Mirrors test_workflows.py's shape for the service-layer
-CRUD, and test_live_calls.py's _client_as()/ASGITransport shape for the
-route-level RLS assertions."""
+"""Call-flow (IVR) service and the runtime /published route, against real Postgres + Redis."""
 
 from __future__ import annotations
 
@@ -21,10 +18,7 @@ from services.config.app import app
 
 @contextmanager
 def _as_tenant(tenant_id):
-    """Direct service-layer calls (not through the app) have no ambient RLS
-    scope the way a real request does (deps.get_authenticated_user/
-    bind_path_tenant) — stand in for that here, the same two GUCs a request
-    would set."""
+    """Sets the RLS scope a real request would, for direct service-layer calls."""
     prev = current_scope()
     set_caller_tenant(None)
     set_target_tenant(str(tenant_id))
@@ -37,9 +31,7 @@ def _as_tenant(tenant_id):
 
 @pytest_asyncio.fixture(autouse=True)
 async def _cleanup_call_flows(pool, test_tenant):
-    """call_flows.tenant_id has no ON DELETE clause (plain RESTRICT), unlike
-    agents/provider_configs — test_tenant's own teardown would fail with a
-    foreign-key violation if a flow created here outlived it."""
+    """call_flows.tenant_id is ON DELETE RESTRICT, so flows must go before test_tenant."""
     yield
     await pool.execute(
         "DELETE FROM call_flow_versions WHERE call_flow_id IN (SELECT id FROM call_flows WHERE tenant_id = $1)",
@@ -62,11 +54,7 @@ def _client_as(user: dict) -> AsyncClient:
 
 @pytest_asyncio.fixture
 async def service_account(pool):
-    """The conversation service account: tenant_id IS NULL, role='viewer' —
-    the platform-scoped-but-not-superadmin shape (lesson 24). A real row,
-    not just a signed token: get_current_user() re-reads it
-    (fresh_console_authority), so a fabricated id with no backing row now
-    401s before the route ever runs."""
+    """Platform-scoped viewer service account; a real row, since get_current_user() re-reads it."""
     user_id = str(uuid.uuid4())
     email = f"test-svc-{uuid.uuid4().hex[:8]}@example.com"
     await pool.execute(
@@ -152,10 +140,7 @@ async def test_payload_resolves_same_tenant_active_agent_and_omits_cross_tenant_
             {"id": "e4", "source": "m1", "target": "a3", "data": {"key": "3"}},
         ],
     }
-    # Publish while all three resolve, THEN take two away — the order reality
-    # produces, and the only order publish() now permits (_agent_reference_errors
-    # refuses a flow naming an agent that cannot answer). The runtime filter's
-    # job is precisely this case: an agent that went away after publish.
+    # Publish while all three resolve, then take two away: publish() refuses unavailable agents.
     with _as_tenant(test_tenant["id"]):
         flow = await call_flows.create_call_flow(
             tenant_id=test_tenant["id"], slug=f"flow-{uuid.uuid4().hex[:6]}", name="Agent Flow", graph=graph,
@@ -163,9 +148,7 @@ async def test_payload_resolves_same_tenant_active_agent_and_omits_cross_tenant_
     assert flow["graph"] is not None, "all three agents resolved, so this must publish"
 
     await pool.execute("UPDATE agents SET status = 'inactive' WHERE id = $1", inactive_agent["id"])
-    # Moved rather than planted: the node's id now names a row that EXISTS but
-    # in the wrong tenant, so a query missing the tenant scope leaks it in
-    # (lesson 29/30 shape — reproduce the leak, don't just assert its absence).
+    # Moved so the id names a real row in the wrong tenant; an unscoped query would leak it.
     await pool.execute("UPDATE agents SET tenant_id = $2 WHERE id = $1",
                        other_tenant_agent_id, other_tenant["id"])
 
@@ -230,31 +213,7 @@ async def test_published_route_returns_payload_for_service_account(test_tenant, 
 async def test_published_route_404_is_invariant_for_tenant_admin_regardless_of_target(
     test_tenant, test_admin, pool,
 ):
-    """Per-caller invariance (lesson 2, sharpened, and narrowed a second time
-    on this feature per product decision): for ONE fixed principal (a
-    tenant-B admin JWT) and ONE fixed tenant-A slug — the only thing this
-    caller supplied — the 404 must not vary with the STATE of the thing
-    behind that slug: a real published flow, a random/nonexistent flow id, a
-    draft (unpublished) flow, an outbound flow, or a soft-deleted flow. All
-    five ids are foreign — different literal call_flow_ids — but since this
-    caller is blocked by require_path_tenant_access on the SLUG alone
-    (assert_tenant_access's mismatch branch fires before get_published_
-    call_flow ever runs, and that branch's detail echoes only the slug,
-    which is held fixed here, never the call_flow_id), the flow's own id
-    and state have no way to reach the body. Deliberately NOT varying the
-    slug itself: a caller-chosen slug echoed back in the 404 (`deps.py`'s
-    `f"tenant {tenant!r} not found"`) tells the caller nothing they did not
-    already know, so comparing across different self-chosen slugs is not a
-    property this test should assert (that was this feature's second
-    over-wide invariance assertion; narrowed here rather than left in).
-    This still goes red if `assert_tenant_access`'s flow-blind mismatch
-    branch is bypassed — e.g. the published route's flow lookup moving
-    ahead of `bind_path_tenant`/`require_path_tenant_access`, so a real
-    foreign flow starts returning 200 while the random-id/draft/outbound/
-    deleted cases stay 404 — or if `assert_tenant_access` itself starts
-    resolving the flow and revealing whether it exists via a distinct
-    branch (a 403 for one state and a 404 for another, or two differently
-    shaped 404s)."""
+    """For a fixed foreign slug, a tenant admin gets an identical 404 whatever the flow's state."""
     other_tenant = await _create_tenant(pool)  # tenant "A": real, but not test_admin's
     real_flow = await _flow(other_tenant)
     with _as_tenant(other_tenant["id"]):
@@ -292,13 +251,7 @@ _UUID_RE = re.compile(
 
 
 def _detail_with_id_normalised(resp) -> str:
-    """`get_published_call_flow`'s 404 detail echoes the caller-supplied
-    call_flow_id (`f"call_flow {call_flow_id!r} not found"`) — caller-
-    supplied identifiers are not an information oracle (the caller already
-    knows the id it sent), so a literal id difference is not the property
-    under test here. Strip any UUID-shaped substring before comparing, so
-    the assertion is on the message SHAPE (which reason-branch fired),
-    not on which id happened to be echoed."""
+    """404 detail with the echoed (caller-supplied) id replaced, to compare message shape only."""
     body = resp.json()
     detail = body["detail"] if isinstance(body, dict) and "detail" in body else str(body)
     return _UUID_RE.sub("<id>", detail)
@@ -307,25 +260,7 @@ def _detail_with_id_normalised(resp) -> str:
 async def test_published_route_404_is_invariant_for_service_account_regardless_of_target(
     test_tenant, pool, service_account,
 ):
-    """Same property, for the platform-scoped conversation service account,
-    with the tenant SLUG held fixed at test_tenant's own real slug (the
-    service account's path segment does not gate it the way it gates an
-    ordinary admin — is_platform_scoped() short-circuits assert_tenant_
-    access — so the slug is not the interesting variable here; the flow's
-    STATE is). Three of the four sub-cases reuse one fixed call_flow_id,
-    mutated in place (unpublished -> outbound -> soft-deleted) with an
-    explicit cache invalidation between each, so the body is compared
-    byte-for-byte with no normalisation needed for those three. The fourth
-    (unknown id) necessarily uses a different literal id — there is no way
-    to "hold the id fixed" for an id that must not exist — so it is
-    compared only after the shared helper strips any UUID-shaped substring
-    from the detail text, per the decision that a caller-supplied id is not
-    part of the property under test. This still goes red if
-    get_published_for_runtime() starts returning a differently-shaped 404
-    for one reason than another (e.g. a distinct detail template for
-    "wrong direction" vs "no such id"), or if the unknown-id branch stops
-    short-circuiting before touching Postgres in a way that changes the
-    response's status or shape."""
+    """For the service account, unpublished/outbound/deleted/unknown flows all get the same 404 shape."""
     with _as_tenant(test_tenant["id"]):
         flow = await call_flows.create_call_flow(
             tenant_id=test_tenant["id"], slug=f"flow-{uuid.uuid4().hex[:6]}", name="Mutable", graph=GRAPH,
@@ -369,10 +304,7 @@ async def test_published_route_404_is_invariant_for_service_account_regardless_o
 
 
 async def test_published_route_never_403s_for_either_caller_shape(test_tenant, test_admin, pool, service_account):
-    """The one cross-caller property actually worth comparing (lesson 2):
-    both an ordinary tenant admin and the platform-scoped service account
-    get 404, never 403, when the target isn't theirs — a 403 here would
-    confirm the flow/tenant exists, which a 404-only contract must not do."""
+    """Both caller shapes get 404, never 403 (which would confirm existence), for a foreign flow."""
     other_tenant = await _create_tenant(pool)
     other_flow = await _flow(other_tenant)
 
@@ -416,10 +348,7 @@ async def test_published_route_404s_for_unpublished_and_outbound_and_soft_delete
 
 
 async def test_publish_refuses_an_agent_node_naming_an_unavailable_agent(test_tenant, pool):
-    """The one tenant-authored id reference with no FK behind it: agent_id
-    lives inside the graph JSONB, so parse_graph() cannot check it and
-    nothing stopped a flow naming a deleted/deactivated/other-tenant agent
-    from publishing clean and then dropping a live call at that node."""
+    """agent_id lives in graph JSONB (no FK), so publish must reject unavailable or foreign agents."""
     other_tenant = await _create_tenant(pool)
     with _as_tenant(test_tenant["id"]):
         live = await agents.create_agent(
@@ -467,10 +396,8 @@ async def test_publish_refuses_an_agent_node_naming_an_unavailable_agent(test_te
         with pytest.raises(call_flows.CallFlowValidationError):
             await call_flows.publish(flow["id"], _graph("not-a-uuid"))
 
-        # Forms uuid.UUID() accepts but that must not get through: asyncpg's
-        # encoder rejects braces and urn:uuid: (a 500, not a red node), and
-        # an uppercase id would miss the runtime's exact-string agent_slugs
-        # lookup even though it names the live agent.
+        # uuid.UUID() accepts these, but asyncpg rejects braces/urn and uppercase misses the
+        # runtime's exact-string agent_slugs lookup.
         live_id = str(live["id"])
         for variant in (f"{{{live_id}}}", f"urn:uuid:{live_id}", live_id.upper()):
             with pytest.raises(call_flows.CallFlowValidationError) as exc:
@@ -486,9 +413,7 @@ async def test_publish_refuses_an_agent_node_naming_an_unavailable_agent(test_te
 
 
 async def test_agent_deactivation_or_delete_reaches_a_warm_runtime_cache(test_tenant, pool):
-    """get_published_for_runtime() caches agent_slugs. Once a flow's payload
-    is warm, an agent deactivated or deleted through the service must drop
-    out of it on the next read, not after the cache TTL."""
+    """A deactivated or deleted agent drops out of a warm cached payload on the next read."""
     with _as_tenant(test_tenant["id"]):
         deactivated = await agents.create_agent(
             tenant_id=test_tenant["id"], slug="to-deactivate", name="To Deactivate",

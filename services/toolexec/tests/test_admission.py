@@ -1,12 +1,4 @@
-"""
-Unit tests for services/toolexec/admission.py (T10) — no DB, no network.
-
-Lesson 25: these drive the DEPLOYED cap values (whatever
-TOOLEXEC_MAX_CONCURRENT_RUNS_PER_AGENT / _MAX_RUNS_PER_MINUTE_PER_AGENT
-resolve to right now — the real default if unset), never a
-test-reconfigured smaller constant, so a passing test proves the shipped
-ceiling actually refuses the (N+1)th caller, not just some easier number.
-"""
+"""Unit tests for admission.py, driven against the deployed cap values, not test-only constants."""
 
 from __future__ import annotations
 
@@ -56,9 +48,7 @@ def test_released_slot_admits_a_subsequent_call():
 
 
 def test_per_minute_cap_refuses_the_nplus1th_run_even_with_slots_free():
-    """Runs that complete immediately (acquire then release right away)
-    never touch the concurrency cap, but the per-minute cap still counts
-    every one of them — proving the two caps are independent."""
+    """Per-minute cap counts runs even when the concurrency cap is free."""
     tenant_id, agent_id = _fresh_ids()
     per_minute_limit = admission._max_per_minute()
 

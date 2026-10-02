@@ -1,10 +1,5 @@
-// Turns the builder's step picks into a starting graph.
-//
-// The picker is a list of building blocks, not a drawing surface: it chains
-// whatever was picked into one straight line, start -> ... -> end, and the
-// canvas is where branches get drawn afterwards. A menu is the one exception
-// — it can't be chained linearly, since its whole point is that the next step
-// depends on the keypress — so it fans out to the steps that follow it.
+// Turns the builder's step picks into a linear starting graph; steps after a menu
+// become its keypress branches instead.
 
 import { CallFlowGraph, CallFlowNodeType } from "./callFlowApi";
 
@@ -74,9 +69,7 @@ export function scaffoldGraph(picks: CallFlowNodeType[], direction: string): Cal
   ];
   const edges: CallFlowGraph["edges"] = [];
 
-  // Anything after a menu becomes one of its branches rather than a step in
-  // the chain, and a menu needs at least one branch to be valid at all — so
-  // if nothing follows it, give it a hangup branch to land on.
+  // Ending on a terminal step also guarantees a menu has at least one branch.
   const chain = [...picks];
   if (chain.length === 0) chain.push("hangup");
   if (!TERMINAL.includes(chain[chain.length - 1])) chain.push("hangup");
@@ -124,8 +117,7 @@ export function scaffoldGraph(picks: CallFlowNodeType[], direction: string): Cal
         data: { key: String(i + 1) },
       });
     });
-    // A menu with no timeout branch just repeats and gives up, so the
-    // scaffold always lands "no answer" somewhere real.
+    // Without a timeout branch a menu just repeats and gives up.
     const bye = "hangup-timeout";
     nodes.push({
       id: bye,

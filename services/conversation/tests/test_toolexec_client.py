@@ -1,7 +1,4 @@
-"""
-ToolExecClient tests — httpx.MockTransport, no real network, no cost.
-Mirrors libs/knowledge_sdk/tests/test_http_repository.py's shape.
-"""
+"""ToolExecClient tests via httpx.MockTransport."""
 
 from __future__ import annotations
 
@@ -51,9 +48,7 @@ async def test_execute_chain_reauthenticates_exactly_once_on_401():
     execute_calls: list = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        # First call ever made carries the token from the lazy login above
-        # (token-1); a 401 on it must trigger exactly one re-login
-        # (token-2), never a retry loop.
+        # A 401 on token-1 must trigger exactly one re-login (token-2), never a retry loop.
         if request.headers["Authorization"] == "Bearer token-1":
             return httpx.Response(401)
         assert request.headers["Authorization"] == "Bearer token-2"
@@ -69,13 +64,7 @@ async def test_execute_chain_reauthenticates_exactly_once_on_401():
 
 
 async def test_execute_chain_timeout_derived_from_chain_budget_not_the_fixed_constant():
-    """BLOCKING 3: the server clamps to TOOLEXEC_MAX_CHAIN_BUDGET_MS
-    (20-30s) and the UI ships a default timeout_ms of 20000, but the
-    client hard-coded a 10s httpx timeout — any chain over 10s raised
-    ReadTimeout client-side even though the server would have completed
-    it (and any side effect it fired) within its own budget. The
-    per-request timeout must scale with the request's own
-    chain_budget_ms, not stay pinned to the constant used for /auth/login."""
+    """The per-request httpx timeout scales with chain_budget_ms, not the fixed login timeout."""
     login_calls: list = []
     execute_calls: list = []
 

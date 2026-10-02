@@ -1,51 +1,12 @@
-"""
-Webcall bridge — lets a browser tab test a specific agent's live voice
-pipeline (STT -> LLM -> tools -> TTS) directly, with zero Gateway,
-FreeSWITCH, Kamailio, or carrier involvement.
+"""Webcall bridge: browser WebSocket <-> Conversation Service gRPC Converse, for testing an agent without telephony.
 
-Why this exists: Conversation Service's Converse RPC already resolves an
-agent by (tenant slug, agent slug) alone — SessionOpenRequest.caller_did/
-called_did are documented as "informational; may be empty in tests" (see
-proto/voiceai/v1/conversation.proto), and __main__.py's handler_factory
-calls resolve_handler_deps(ctx.tenant_id, ctx.script_id, ...) using
-those two fields as slugs, completely independent of DID-based routing.
-So a session that sets tenant_id=<tenant slug>, script_id=<agent slug>,
-and leaves caller_did/called_did blank resolves the exact right agent
-with no code changes anywhere in Conversation Service itself.
-
-The one real gap: browsers can't speak native gRPC, and gRPC-Web's
-support for genuine bidirectional streaming (this RPC sends AudioChunks
-and receives TtsChunks concurrently) is a known weak spot depending on
-browser/library combination — not something to build the first test
-tool's reliability on. This bridge sidesteps that entirely: it's a plain
-WebSocket server the browser talks to (binary frames = raw PCM16 audio in
-both directions, text frames = small JSON control messages), which opens
-a real native gRPC Converse stream to Conversation Service on the
-browser's behalf and shuttles messages between the two — the same
-WS<->gRPC bridging role the C++ Gateway plays for real telephony calls,
-just scoped down to one Python process with no telephony concerns at all.
-
-Audio contract (matches AUDIO_CODEC_PCM_S16LE in the proto exactly):
-16-bit signed PCM, little-endian, 16000 Hz, mono. The browser side is
-responsible for resampling/converting its mic capture to this format
-before sending — see components/TestAgentPanel.tsx.
-
-v1 is push-to-talk, not continuous VAD: the browser sends a
-{"type":"speech_ended"} control message when the caller releases the
-talk button, which this bridge turns directly into a
-SpeechEndedNotification. Reimplementing the Gateway's VAD logic in the
-browser is real work with no clear payoff for a test tool — see the
-admin-facing "memory not supported in Webcall"-style disclosed-limitation
-precedent from a competitor's own test-call UI.
+Binary frames are PCM16 LE 16 kHz mono both ways; text frames are JSON control messages.
+Push-to-talk: the browser sends {"type": "speech_ended"} instead of server-side VAD.
 """
 
 from __future__ import annotations
 
-# Make generated proto stubs importable as "voiceai.v1.*" (absolute package)
-# — same shim services/conversation/__main__.py uses, required because
-# conversation_pb2_grpc.py itself imports "from voiceai.v1 import
-# conversation_pb2" rather than a fully-qualified package path. Must happen
-# before any import that transitively pulls in conversation_pb2_grpc.
+# Generated stubs import "voiceai.v1" absolutely; must run before importing them.
 import os as _os
 import sys as _sys
 _sys.path.insert(0, _os.path.join(
@@ -85,12 +46,7 @@ def _dump_dir() -> str | None:
 
 
 def _write_wav_dump(session_id: str, utterance_num: int, pcm: bytes) -> None:
-    """Debug aid only, opt-in via WEBCALL_DUMP_AUDIO_DIR: writes each
-    utterance's raw audio to a WAV file so it can actually be listened to.
-    Every test run so far (synthetic sine tone, Chromium's fake-audio
-    device) exercised the WS<->gRPC plumbing but never proved the browser's
-    AudioWorklet PCM conversion produces intelligible speech — this is how
-    that gets checked against a real human voice instead of guessed at."""
+    """Debug aid (opt-in via WEBCALL_DUMP_AUDIO_DIR): write an utterance to a WAV file."""
     directory = _dump_dir()
     if not directory or not pcm:
         return
@@ -107,9 +63,7 @@ def _write_wav_dump(session_id: str, utterance_num: int, pcm: bytes) -> None:
 async def _browser_to_grpc(
     ws: ServerConnection, call, session_id: str, response_watchdog: "ResponseWatchdog",
 ) -> None:
-    """Reads frames from the browser and writes them onto the gRPC stream.
-    Binary frames are raw PCM16 audio; text frames are small JSON control
-    messages (speech_ended, cancel, playback_finished)."""
+    """Forward browser audio and control frames onto the gRPC stream."""
     sequence_num = 0
     utterance_num = 0
     current_utterance = bytearray() if _dump_dir() else None
@@ -158,15 +112,7 @@ async def _browser_to_grpc(
 
 
 class ResponseWatchdog:
-    """Conversation Service silently drops a turn with no reply at all when
-    STT transcribes empty text (pipeline.py: 'if not stt_result.text: ...
-    return') — correct for real telephony (nothing said -> stay listening),
-    but with no timeout on this side, the browser UI would wait forever for
-    a message that will never arrive. Arm this right after forwarding
-    speech_ended; disarm it the moment any ServiceMessage actually arrives.
-    If it fires, the caller genuinely got no response of any kind within
-    the timeout, and the browser should say so instead of hanging on
-    'Thinking...' indefinitely."""
+    """Tell the browser when no reply arrives after speech_ended (empty STT turns get no response)."""
 
     def __init__(self, ws: ServerConnection, timeout_s: float = 8.0) -> None:
         self._ws = ws
@@ -200,17 +146,12 @@ class ResponseWatchdog:
 
 
 async def _grpc_to_browser(ws: ServerConnection, call, response_watchdog: ResponseWatchdog) -> None:
-    """Reads ServiceMessages from the gRPC stream and forwards them to the
-    browser — TTS audio payloads as binary frames, everything else as a
-    small JSON text frame."""
+    """Forward ServiceMessages to the browser: TTS audio as binary, the rest as JSON."""
     async for msg in call:
         response_watchdog.disarm()  # anything arriving at all proves the turn isn't stuck
         which = msg.WhichOneof("payload")
         if which == "tts_chunk":
-            # A chunk can legitimately carry an empty payload (seen live:
-            # the chunk right before is_final) — nothing to actually play,
-            # and Web Audio's createBuffer() throws for 0 frames on the
-            # browser side, so don't bother forwarding it as a binary frame.
+            # Skip empty payloads: Web Audio's createBuffer() throws on 0 frames.
             if msg.tts_chunk.payload:
                 await ws.send(msg.tts_chunk.payload)
             if msg.tts_chunk.is_final:
@@ -241,8 +182,7 @@ async def _grpc_to_browser(ws: ServerConnection, call, response_watchdog: Respon
             await ws.send(json.dumps({
                 "type": "end_call", "reason": msg.end_call.reason,
             }))
-        # transfer_request/conversation_finalized: no human-transfer path
-        # exists in a browser test call — deliberately not forwarded.
+        # transfer_request/conversation_finalized: not applicable to browser calls.
 
 
 async def _handle_connection(ws: ServerConnection) -> None:
@@ -253,10 +193,7 @@ async def _handle_connection(ws: ServerConnection) -> None:
         await ws.close(code=1008, reason="missing tenant/agent query params")
         return
 
-    # Default to Envoy's gRPC proxy (config/gateway.yaml uses the same
-    # target) so this bridge load-balances across both ConvSvc instances
-    # like the C++ Gateway does, instead of pinning every call to :50051 —
-    # found live during a deployment audit.
+    # Default to Envoy so calls load-balance across ConvSvc instances, like the Gateway.
     conv_target = os.environ.get("CONVERSATION_SVC_TARGET", "localhost:10000")
     session_id = str(uuid.uuid4())
     log.info("webcall: session=%s tenant=%s agent=%s -> %s", session_id, tenant_slug, agent_slug, conv_target)

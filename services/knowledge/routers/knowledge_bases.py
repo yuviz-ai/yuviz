@@ -48,21 +48,13 @@ async def create_knowledge_base(
 
 
 async def _authorize_kb(kb_id: str, current_user: CurrentUser) -> dict:
-    """404 — never 403 — both when the knowledge_base doesn't exist and when
-    it exists but belongs to a different tenant: a {kb_id} route must not
-    become an existence oracle for another tenant's kb_id (lesson 2), which
-    is why this keeps its own comparator rather than the shared
-    assert_tenant_access (that predicate's UUID branch is 403, correct for
-    a *tenant_id* path segment, wrong here). The resolver takes
-    platform_scoped so a platform actor's fetch runs under platform_conn
-    instead of failing closed under tenant_conn's ambient (unset) scope."""
+    """404 (never 403) for missing or foreign KBs, so kb_id isn't a cross-tenant existence oracle."""
     not_found = HTTPException(status_code=404, detail=f"knowledge_base {kb_id!r} not found")
     platform_scoped = is_platform_scoped(current_user)
     try:
         kb = await kb_service.get_knowledge_base(kb_id, platform_scoped=platform_scoped)
     except asyncpg.DataError:
-        # A malformed non-UUID kb_id reaches asyncpg's uuid column binding —
-        # same 404 as a well-formed but nonexistent id (lesson 2).
+        # Malformed UUID: same 404 as a nonexistent id.
         raise not_found
     if kb is None or (not platform_scoped and str(kb["tenant_id"]) != current_user.tenant_id):
         raise not_found

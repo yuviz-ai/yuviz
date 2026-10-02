@@ -1,11 +1,4 @@
-// Typed client for the Tool Execution Service's REST API
-// (services/toolexec/, port 8600 in this dev setup) — a separate service
-// from Config Service, but the same JWT (see lib/auth.ts) is valid against
-// both: Tool Execution Service only validates tokens
-// (services.config.deps.get_current_user), it never mints them, so no
-// separate login flow exists or is needed here. Exactly
-// admin-ui/lib/knowledgeApi.ts's pattern (its own base URL, shared
-// ApiError).
+// Tool Execution Service client. Uses the Config Service JWT; toolexec only validates tokens.
 
 import { getToken } from "./auth";
 import { ApiError } from "./api";

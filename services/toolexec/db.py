@@ -1,8 +1,4 @@
-"""
-Postgres connection pool for Tool Execution Service — its own process-wide
-pool, not a shared import from services.config.db, same microservice-
-boundary rule services/knowledge/db.py already follows.
-"""
+"""Process-wide Postgres pool for the Tool Execution Service (not shared with services.config)."""
 
 from __future__ import annotations
 
@@ -18,13 +14,9 @@ log = logging.getLogger(__name__)
 
 
 def json_col(value: Any) -> Any:
-    """Decode a JSONB column. asyncpg returns strings (no pool codec —
-    writers already pass json.dumps into $n::jsonb, so a codec would
-    double-encode) — same helper, same reasoning, as services/config/db.py.
+    """Decode a JSONB column (no pool codec: writers already json.dumps).
 
-    Corrupt storage is a server defect — raise RuntimeError (-> 500 via
-    app.py's default handler), not ValueError (-> 400 with column bytes in
-    the body).
+    Corrupt storage raises RuntimeError (500), not ValueError (400 leaking column bytes).
     """
     if value is None or not isinstance(value, str):
         return value

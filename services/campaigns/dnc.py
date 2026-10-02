@@ -1,9 +1,4 @@
-"""
-dnc.py — per-tenant do-not-call list. Numbers on it are always skipped by
-CSV upload (campaign_contacts.py) and re-checked by the worker right
-before dialing (defense in depth, in case a number is added to the list
-after contacts were already uploaded into a still-running campaign).
-"""
+"""Per-tenant do-not-call list; skipped on CSV upload and re-checked right before dialing."""
 
 from __future__ import annotations
 
@@ -15,10 +10,7 @@ from . import db
 
 
 def normalize_phone(phone: str) -> str:
-    """Same last-10-digits tolerance as
-    tools/providers/calendar/cal_com.py's _normalize_phone — a number
-    entered as "+1 415-555-0100" and one uploaded as "4155550100" must be
-    recognized as the same DNC entry."""
+    """Last 10 digits, so "+1 415-555-0100" and "4155550100" match the same entry."""
     digits = "".join(c for c in phone if c.isdigit())
     return digits[-10:] if len(digits) >= 10 else digits
 

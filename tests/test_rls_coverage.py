@@ -1,28 +1,6 @@
-"""tests/test_rls_coverage.py — mechanical tripwires for RLS coverage.
-
-Part (a) (T8): every `public` table with a `tenant_id` column must have RLS
-enabled, forced, and at least one policy — derived from information_schema,
-not hand-enumerated, so a new `tenant_id` column added with no policy fails
-this test (lesson 12/29). The 10 Wave B child tables have no `tenant_id`
-column at all (they are scoped by a parent-join policy instead), so they are
-asserted separately, by the fixed name list the design enumerates.
-
-Part (b)/(c) (T21/T36) walk the six real FastAPI apps' routes rather than
-re-typing the design's Tier 2/Tier 3 tables as assertions — a new
-`/tenants/{...}` router or a new flat by-id route is caught by the walk
-itself, not by a second hand-enumeration (lesson 29).
-
-Part (d)/(f) (T56) collect every `reason=` literal actually passed to
-`tenant_conn`/`platform_conn` and check it against the enumerated bypass/
-explicit-override tables, and check every platform-branch mutation stamps
-its tenant.
-
-Part (e) (T57) checks the four `_cache_key` builders.
-
-Requires database/rls.sql already applied against $POSTGRES_DSN, and the
-same service env vars services/*/tests/conftest.py sets (repeated here
-because this file imports all six apps directly, not through any one
-service's conftest).
+"""Mechanical RLS coverage tripwires: table policies, route tenant checks,
+tenant_conn reason literals, and tenant-safe cache keys.
+Requires database/rls.sql applied against $POSTGRES_DSN.
 """
 from __future__ import annotations
 
@@ -38,9 +16,7 @@ import pytest
 
 POSTGRES_DSN = os.environ.setdefault("POSTGRES_DSN", "postgresql://satish@localhost:5432/voiceai")
 
-# Env vars each service's own conftest.py sets before importing its app —
-# needed here because this file imports all six apps in one process to walk
-# their routes, with no single service's conftest to rely on.
+# Normally set by each service's conftest; this file imports all six apps.
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 os.environ.setdefault("JWT_SECRET", "dev-only-insecure-secret-do-not-deploy-" * 2)
 os.environ.setdefault("TOOLEXEC_TENANT_SECRET_ROOT", "/tmp/voiceai-toolexec-test-secrets")
@@ -56,8 +32,7 @@ if "SECRET_ENCRYPTION_KEY" not in os.environ:
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
-# database/rls.sql "Wave B" — child tables with no tenant_id column, scoped
-# via a parent-join policy. Kept in sync with the design's Wave B table.
+# Child tables with no tenant_id column, scoped via a parent-join policy.
 WAVE_B_TABLES = {
     "agent_tool_policies",
     "agent_workflow_versions",
@@ -137,13 +112,8 @@ async def test_wave_b_child_tables_have_rls_force_and_a_policy(conn):
     )
 
 
-# --- Part (b)/(c): walk the six apps' routes (T21/T36) ----------------------
-
 def _expand(route):
-    """FastAPI's newer `_IncludedRouter` wrapper keeps an included router's
-    routes behind `.original_router.routes` instead of flattening them into
-    `app.routes` eagerly (checked against the real objects, not assumed) —
-    recurse through it so the walk sees every concrete APIRoute."""
+    """Yield concrete APIRoutes, recursing into FastAPI's `.original_router` wrappers."""
     original_router = getattr(route, "original_router", None)
     if original_router is not None:
         for sub in original_router.routes:
@@ -158,10 +128,7 @@ def _iter_api_routes(app):
 
 
 def _all_apps():
-    """All six FastAPI apps in the repo (design "coverage tripwires" (b):
-    "across all six apps, did included") — imported here, not through any
-    one service's conftest, since the walk must see every app in one
-    process."""
+    """All six FastAPI apps in the repo."""
     from services.campaigns.app import app as campaigns_app
     from services.config.app import app as config_app
     from services.did.app import app as did_app
@@ -172,12 +139,7 @@ def _all_apps():
     return [config_app, campaigns_app, knowledge_app, toolexec_app, did_app, telephony_app]
 
 
-# `services/config/routers/tenants.py` mounts under `/tenants/{...}` too
-# (`/tenants/{slug}`, `/tenants/{tenant_id}`, `/tenants/{tenant_id}/concurrency`)
-# but is explicitly out of RLS scope end to end (design "Tier 3": "`tenants`
-# is out of RLS scope entirely, it is the table tenant_conn()'s own resolver
-# reads") — stated here, like the design states it, so it is not
-# re-litigated as a Tier 2 miss.
+# The tenants table is what tenant_conn() itself resolves from, so it's outside RLS.
 _OUT_OF_SCOPE_MODULES = {"services.config.routers.tenants"}
 
 
@@ -200,14 +162,7 @@ def test_every_tenants_path_route_has_bind_and_require_path_tenant_access():
     )
 
 
-# --- Part (c): flat by-id routes call a tenant check (T36) ------------------
-
-# The 17 Tier 3 flat routers (design "Tier 3 — the complete list"), mapped
-# to the sibling service module(s) their authorization may live in (most
-# check inline in the router itself; `agent_apis` delegates into its
-# service module's `_authorize_agent_api`) and the marker substring(s) that
-# prove the check ran. Kept in sync with the design's Tier 3 table, the
-# same convention WAVE_B_TABLES above uses.
+# Flat by-id router -> (sibling modules holding its auth, marker substrings proving a tenant check).
 _TIER3_MODULES = {
     "services.config.routers.provider_configs": ([], {"assert_tenant_access"}),
     "services.config.routers.telephony_configs": ([], {"assert_tenant_access"}),
@@ -227,35 +182,18 @@ _TIER3_MODULES = {
     "services.toolexec.routers.custom_apis": ([], {"_authorize_custom_api", "assert_tenant_access"}),
     "services.toolexec.routers.agent_apis": (["services.toolexec.agent_apis"], {"_authorize_agent_api"}),
     "services.did.routers.numbers": ([], {"assert_tenant_access"}),
-    # services/telephony/app.py's outbound routes (/{provider}/call,
-    # /{provider}/call/idempotency/{key}) check the tenant through
-    # auth.resolve_caller_tenant, which awaits assert_tenant_access — a
-    # sibling module, same shape as toolexec's agent_apis delegation above.
-    # The module's two INBOUND webhook routes (/{provider}/voice/{account_ref},
-    # /{provider}/status/{account_ref}) are a deliberately different trust
-    # boundary — the vendor's own signature is the only gate, never a tenant
-    # check (design "Interfaces": inbound routes take no Depends) — this
-    # module-level marker check cannot see that distinction, same coarseness
-    # `services.config.routers.calls` already has for its own mixed routes.
+    # Outbound routes check via auth.resolve_caller_tenant; inbound webhooks are
+    # gated by vendor signature only, which this module-level check can't distinguish.
     "services.telephony.app": (["services.telephony.auth"], {"assert_tenant_access"}),
 }
 
-# The one Tier 4 route this walk can even see: a Tier 4 route is exempted by
-# path and must call set_target_tenant instead (design "Tier 4"). The other
-# two Tier 4 sites (`POST /internal/retrieve`, `POST /internal/chains/
-# execute`) carry their tenant in the request BODY, so they have no `{...}`
-# path segment and never enter this walk at all — they are covered by
-# test_cross_tenant_admin.py's dedicated Tier 4 cases (T41) instead.
+# Tier 4 path-tenant routes must call set_target_tenant. Body-tenant Tier 4
+# routes have no path param; test_cross_tenant_admin.py covers them.
 _TIER4_PATHS = {"/internal/agents/{tenant_slug}/{agent_slug}/has-knowledge"}
 _TIER4_MARKER = "set_target_tenant"
 
-# Pre-existing flat by-id routers, untouched by this RLS design and absent
-# from its Tier 3 table (verified by reading them, not assumed): `chain_runs`
-# authorizes through `agent_apis._authorize_chain_runs` for an unrelated
-# feature ("AC 14", not this PRD's), and `retrieval_policies` has no tenant
-# check of any kind today. Neither is in scope for this change's Tier 3 list
-# — stated here, like tenants.py above, so a coverage run doesn't re-flag a
-# gap this task set was never asked to close.
+# Known exceptions: chain_runs authorizes via agent_apis._authorize_chain_runs;
+# retrieval_policies has no tenant check yet.
 _PRE_EXISTING_OUT_OF_SCOPE_MODULES = {
     "services.toolexec.routers.chain_runs",
     "services.knowledge.routers.retrieval_policies",
@@ -293,20 +231,13 @@ def test_every_flat_by_id_route_is_tier3_or_tier4():
     assert failures == [], f"flat by-id routes failing Tier 3/Tier 4 coverage: {failures}"
 
 
-# --- Part (d)/(f): reason= literals and stamp_tenant (T56) ------------------
-
-# design "Interfaces" — the complete explicit-override list (three sites).
 _EXPLICIT_OVERRIDE_REASONS = {
     "conversation-session-write",
     "conversation-tool-policy",
     "kb-ingestion-job",
 }
 
-# design "Bypass sites" — every platform_conn(reason=...) literal actually
-# shipped. Not re-derived from the design's prose (which names sites, not
-# always literal strings) — this is the real, current set, so a new bypass
-# added anywhere without a new row here fails this test (lesson 29: the set
-# is asserted, not the prose).
+# Every platform_conn(reason=...) literal; a new bypass must be added here.
 _BYPASS_REASONS = {
     "pre-auth-login", "pre-auth-bootstrap", "pre-auth-register", "pre-auth-invite-accept",
     "invites-create-null-tenant", "invites-null-tenant-listing", "invites-by-id",
@@ -328,9 +259,7 @@ _BYPASS_REASONS = {
     "telephony-config-kind", "number-sync-provider-ids", "phone-numbers-provider-sync",
 }
 
-# Sites where a platform-branch mutation genuinely has no tenant to stamp
-# (design "audit_log gains a tenant column": "only a mutation with
-# genuinely no tenant omits it") — exempted from the stamp_tenant= check.
+# Platform-branch mutations with genuinely no tenant to stamp.
 _UNSTAMPED_MUTATION_EXEMPT_REASONS = {
     "identity-resolution", "users-null-tenant-listing",
     "pre-auth-login", "pre-auth-bootstrap", "pre-auth-register", "pre-auth-invite-accept",
@@ -376,9 +305,7 @@ def _has_stamp_tenant(call: ast.Call) -> bool:
 
 
 def _collect_tenant_conn_calls():
-    """(path, function_name, call_name, reason_literal, has_stamp_tenant,
-    function_is_a_mutation) for every tenant_conn()/platform_conn() call
-    site under services/ and scripts/ (excluding tests)."""
+    """(path, func, call_name, reason, has_stamp_tenant, is_mutation) per tenant_conn/platform_conn call."""
     findings = []
     for path in _iter_production_py_files():
         try:
@@ -420,16 +347,11 @@ def test_every_platform_conn_mutation_stamps_its_tenant():
     assert failures == [], f"platform_conn mutations missing stamp_tenant=: {failures}"
 
 
-# --- Part (e): cache key builders are tenant-safe (T57) ---------------------
-
 _UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
 
 
 def _is_tenant_safe_cache_key(key: str, *, tenant_prefix: str | None = None) -> bool:
-    """A cache key can't collide across tenants iff it embeds a UUID
-    (globally unique on this schema) or is prefixed with the tenant's own
-    slug (design "Caches and RLS" point 3). Neither holds for a bare
-    slug/name/email alone."""
+    """True if the key embeds a UUID or the tenant's slug prefix (can't collide across tenants)."""
     if _UUID_RE.search(key):
         return True
     if tenant_prefix is not None and (key.startswith(f"{tenant_prefix}:") or f":{tenant_prefix}:" in key):
@@ -461,17 +383,11 @@ def test_agent_cache_key_is_tenant_prefixed():
 
 
 def test_phone_number_cache_key_is_globally_unique_by_construction():
-    # did:{e164} — an E.164 number can't belong to two tenants at once, so
-    # this key is exempt from the UUID/tenant-prefix rule by name (design
-    # "Caches and RLS" point 3) — stated here so it is not re-litigated.
+    # An E.164 number can't belong to two tenants, so did:{e164} is safe.
     from services.config.phone_numbers import _cache_key
 
     assert _cache_key("+15551234567") == "did:+15551234567"
 
 
 def test_a_bare_slug_keyed_cache_key_fails_the_classifier():
-    # Proves _is_tenant_safe_cache_key can actually fail (lesson 12): a
-    # hypothetical new cache keyed only on a per-tenant-unique slug, with no
-    # tenant prefix and no UUID, is exactly the cross-tenant collision shape
-    # the design's cache-key rule forbids.
     assert not _is_tenant_safe_cache_key("kb:acme-docs")

@@ -13,19 +13,8 @@
 
 namespace voiceai {
 
-// Neural VAD behind IVAD, backed by the Silero v6 ONNX model.
-//
-// Unlike EnergyVAD it scores speech *probability*, so echo, tones, and noise
-// do not trigger SpeechStart.  The same onset/hold hysteresis semantics apply,
-// counted in Silero's 32 ms windows.
-//
-// Feed granularity: process() accepts arbitrary frame sizes (20 ms frames from
-// AudioWorkerPool) and internally rebuffers to 512-sample windows with the
-// 64-sample context prefix the model expects.  16 kHz mono only.
-//
-// Threading: one instance per MediaSession, driven by a single AudioWorker
-// thread — no internal locking.  Constructor throws if the model cannot be
-// loaded; CallSessionFactory falls back to EnergyVAD.
+// Silero v6 ONNX VAD; rebuffers input to 32 ms windows. 16 kHz mono only, no
+// internal locking. Constructor throws if the model can't be loaded.
 class SileroVAD final : public IVAD, private NonCopyable {
 public:
     SileroVAD(SileroVADConfig cfg, Logger& logger);

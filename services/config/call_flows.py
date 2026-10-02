@@ -1,16 +1,8 @@
 """
-Call-flow (IVR/OBD) CRUD + draft/publish/versions.
+Call-flow (IVR/OBD) CRUD + draft/publish/versions. `graph_draft` autosaves and
+may be invalid; `graph` is what live calls walk.
 
-Mirrors workflows.py's draft/publish split — `graph_draft` autosaves and may
-be invalid, `graph` is the published graph a live call walks, and
-call_flow_versions is append-only publish history — but for an object with
-its own identity: a flow is tenant-scoped, named, and may front several
-agents (agents.call_flow_id), rather than being one agent's own column.
-
-Every statement goes through libs.tenancy's tenant_conn()/platform_conn(),
-never a bare pool call — call_flows and call_flow_versions both carry FORCE
-ROW LEVEL SECURITY (database/rls.sql), so an unscoped connection would read
-back as empty rather than failing loudly.
+Always use tenant_conn()/platform_conn(): FORCE RLS makes a bare pool read empty.
 """
 
 from __future__ import annotations
@@ -75,20 +67,9 @@ async def validate(graph: dict[str, Any]) -> list[dict[str, Any]]:
 async def _agent_reference_errors(
     conn: Any, graph: dict[str, Any], tenant_id: Any,
 ) -> list[CallFlowError]:
-    """Editor-facing errors for `agent` nodes naming an agent that cannot
-    answer: deleted, deactivated, or another tenant's.
+    """Editor errors for `agent` nodes naming a deleted, inactive or foreign agent.
 
-    parse_graph() cannot do this — the agent_id lives inside the graph JSONB,
-    so no FK constrains it and libs/config_sdk has no database. That left the
-    one tenant-authored id reference in this feature with no validation at
-    all: a flow naming a dead agent published clean and then dropped the call
-    at the `agent` node with nothing but a server-side ERROR (see
-    services/conversation/callflow/handler.py's _handoff_to). Agents do get
-    deleted and moved between tenants, so this fires in practice.
-
-    Same predicate as get_published_for_runtime()'s agent_slugs query, so a
-    published flow cannot name an agent that the runtime would then drop.
-    """
+    Same predicate as get_published_for_runtime()'s agent_slugs query."""
     pairs = [
         (str(n.get("id") or ""), str((n.get("data") or {}).get("agent_id") or ""))
         for n in (graph.get("nodes") or [])
@@ -106,12 +87,8 @@ async def _agent_reference_errors(
         except (ValueError, AttributeError, TypeError):
             canonical = None
         if canonical != agent_id:
-            # Only the canonical lowercase hyphenated form gets past here.
-            # uuid.UUID() also accepts braces, a urn:uuid: prefix and
-            # uppercase: asyncpg's uuid encoder rejects the first two, so
-            # `::uuid[]` below would 500 instead of showing a red node, and
-            # an uppercase id would miss the runtime's exact-string
-            # agent_slugs lookup and be reported as a dead agent.
+            # Canonical form only: asyncpg rejects braces/urn (500) and the
+            # runtime's agent_slugs lookup is exact-string (uppercase misses).
             errs.append(CallFlowError(
                 "node", node_id, "agent_id",
                 "This step no longer points at a real agent — pick one again.",
@@ -155,8 +132,7 @@ async def list_call_flows(tenant_id: Any) -> list[dict[str, Any]]:
 
 
 async def get_call_flow(call_flow_id: Any, *, platform_scoped: bool = False) -> dict[str, Any] | None:
-    """platform_scoped is for a NULL-tenant caller doing a by-id read before
-    the target tenant is known — the Tier 3 pattern in docs/rls-tenant-isolation.md."""
+    """platform_scoped: by-id read by a NULL-tenant caller before the tenant is known."""
     pool = await db.get_pool()
     conn_cm = platform_conn(pool, reason="call-flow-by-id") if platform_scoped else tenant_conn(pool)
     async with conn_cm as conn:
@@ -171,18 +147,9 @@ def _runtime_cache_key(tenant_slug: str, call_flow_id: Any) -> str:
 
 
 async def get_published_for_runtime(tenant_slug: str, call_flow_id: Any) -> dict[str, Any] | None:
-    """The read behind GET /published — built for the conversation service's
-    IConfigProvider.get_call_flow(), never for the editor. tenant_conn's
-    ambient target is already the path tenant (bind_path_tenant), and RLS
-    scopes every statement below to it — but the conversation service
-    account is platform-scoped (`tenant_id IS NULL`) and so passes
-    `assert_tenant_access` for *any* path tenant, meaning RLS is the only
-    thing stopping a wrong-tenant `call_flow_id`/`agent_id`/
-    `tts_config_id` from resolving here. Defence in depth, not a
-    replacement: every one of the three reads below also carries an
-    explicit `tenant_id = $N` predicate, so a caller connected as a
-    non-BYPASSRLS role AND a caller connected as a role that bypasses RLS
-    entirely both get the same tenant-scoped result from the SQL itself."""
+    """Runtime read behind GET /published for the conversation service.
+
+    The caller is platform-scoped, so every query also filters tenant_id explicitly, not just via RLS."""
     key = _runtime_cache_key(tenant_slug, call_flow_id)
     cached = await cache.get_json(key)
     if cached is not None:
@@ -254,11 +221,7 @@ async def _invalidate_runtime_cache(call_flow_id: Any, tenant_id: Any) -> None:
 async def invalidate_runtime_caches_naming_agent(
     tenant_id: Any, tenant_slug: str, agent_id: Any,
 ) -> None:
-    """Drop the cached runtime payload of every published flow whose `agent`
-    node names this agent. get_published_for_runtime() resolves agent_slugs
-    once and caches the result, so without this an agent deactivated or
-    deleted after publish keeps resolving until the cache TTL expires. Called by agents.update_agent() and
-    agents.soft_delete_agent() after their writes commit."""
+    """Drop cached runtime payloads of published flows naming this agent (its slug is cached)."""
     needle = json.dumps([{"type": "agent", "data": {"agent_id": str(agent_id)}}])
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
@@ -278,16 +241,9 @@ async def create_call_flow(
     graph: dict[str, Any] | None = None,
     user_id: Any | None = None, user_email: str | None = None,
 ) -> dict[str, Any]:
-    """Its graph comes from one of three places, in order: a clone of another
-    flow, a caller-supplied scaffold (what the builder's step picker
-    produces), or the built-in starter. Cloning reads through tenant_conn, so
-    a clone_from_id belonging to another tenant resolves to nothing and is
-    reported as not-found rather than silently copied across the boundary.
+    """Graph from a clone, a caller scaffold, or the starter; published if valid, else a draft.
 
-    A valid graph is published on creation; an incomplete scaffold, or a
-    clone naming an agent that is no longer available, lands as a draft
-    (see below).
-    """
+    Cloning goes through tenant_conn, so another tenant's clone_from_id is not-found."""
     if clone_from_id is not None:
         source = await get_call_flow(clone_from_id)
         if source is None:
@@ -296,15 +252,7 @@ async def create_call_flow(
     elif graph is None:
         graph = starter_graph()
 
-    # A scaffold from the builder's step picker is expected to have blanks —
-    # "hand to an AI agent" can't name the agent until you pick one, and the
-    # picker is not the place to do that. So an invalid graph lands as a
-    # draft (unpublished, nothing points at it, the canvas shows what to
-    # fix) instead of failing creation outright. The starter publishes
-    # immediately, which is what keeps an attachable flow from ever answering
-    # a call with nothing. A clone usually does too, but lands as a draft if
-    # one of its `agent` nodes names an agent that is no longer available
-    # (checked below, once there is a connection).
+    # Step-picker scaffolds are expected to have blanks, so invalid lands as a draft.
     try:
         await validate(graph)
         publishable = True
@@ -315,10 +263,7 @@ async def create_call_flow(
 
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
-        # A clone carries the source's `agent` nodes, and the agent one of
-        # them names may have been deleted or deactivated since. Land it as a
-        # draft — the same treatment the builder's incomplete scaffold gets —
-        # rather than publishing a flow that would drop a call at that node.
+        # A clone may name an agent deleted/deactivated since; land it as a draft.
         if publishable and await _agent_reference_errors(conn, graph, tenant_id):
             publishable = False
         row = await conn.fetchrow(
@@ -451,9 +396,7 @@ async def publish(
             "VALUES ($1, $2, $3::jsonb, $4, $5)",
             call_flow_id, next_version, graph_json, user_id, note,
         )
-        # action is constrained to created/updated/deleted (audit_log_action_check);
-        # a publish is recorded the way workflows.py records one — "updated"
-        # under its own entity_type, not a fourth action value.
+        # audit_log.action allows only created/updated/deleted.
         await audit.write_audit(
             conn, entity_type="call_flow_publish", entity_id=call_flow_id, action="updated",
             user_id=user_id, user_email=user_email,

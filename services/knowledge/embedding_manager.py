@@ -1,25 +1,5 @@
-"""
-EmbeddingProviderManager — creates, caches, and resolves secrets for
-embedding provider instances, one per distinct provider_configs row with
-role='embedding'. Deliberately a new, small, parallel manager rather than a
-reuse of services.conversation.ai_provider_manager.AIProviderManager: that
-manager lives in Conversation Service's package, and Knowledge Service must
-not import it (same microservice-boundary reasoning as db.py/cache.py/
-secret_resolver.py — the "don't extract libs/auth_sdk yet" instruction's
-spirit applies equally here: a little duplication now, no premature shared
-library). The pattern (registry dict keyed by engine, per-id caching,
-secrets resolved once at instantiation) is intentionally copied, though —
-it is already proven, non-negotiable-latency-rule-compliant design.
-
-Two engines registered today:
-  - "ollama"  — local, no API key, calls http://localhost:11434/api/embeddings
-               with model "nomic-embed-text" (768-dim — matches kb_chunks.
-               embedding's column width; see database/knowledge_schema.sql).
-  - "openai"  — cloud, requires api_key_ref. text-embedding-3-* models are
-               asked for EMBEDDING_DIMS explicitly (they support truncation
-               natively); without that they return 1536 floats, which do not
-               fit kb_chunks.embedding's vector(768) and fail on insert.
-"""
+"""EmbeddingProviderManager — cached embedding providers per provider_configs row (role='embedding').
+Copies AIProviderManager's pattern; Knowledge Service must not import Conversation Service."""
 
 from __future__ import annotations
 
@@ -32,10 +12,7 @@ import httpx
 
 from .secret_resolver import SecretResolver
 
-# kb_chunks.embedding is vector(768) (database/knowledge_schema.sql). Any
-# provider registered here must return vectors of exactly this width, or the
-# insert fails — so a cloud model that defaults to something else is asked to
-# truncate rather than being silently mismatched.
+# kb_chunks.embedding is vector(768); every provider must return exactly this width.
 EMBEDDING_DIMS = 768
 
 
@@ -58,8 +35,7 @@ class OllamaEmbeddingProvider:
         self._base_url = base_url.rstrip("/")
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        # Ollama's /api/embeddings takes one prompt per call — no batch
-        # endpoint exists for this API today, so N texts means N requests.
+        # /api/embeddings has no batch form: one request per text.
         vectors: list[list[float]] = []
         async with httpx.AsyncClient(timeout=30.0) as client:
             for text in texts:
@@ -79,9 +55,7 @@ class OpenAIEmbeddingProvider:
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         payload: dict[str, Any] = {"model": self._model, "input": texts}
-        # Only the text-embedding-3 family supports `dimensions`; sending it
-        # to ada-002 is a 400. Those older models emit a fixed width that
-        # does not match the column, so they are simply not usable here.
+        # Only text-embedding-3 supports `dimensions` (ada-002 400s and can't fit the column anyway).
         if self._model.startswith("text-embedding-3"):
             payload["dimensions"] = EMBEDDING_DIMS
         async with httpx.AsyncClient(timeout=30.0) as client:

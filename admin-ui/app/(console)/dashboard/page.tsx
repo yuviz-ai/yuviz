@@ -26,11 +26,7 @@ const RANGE_OPTIONS = [
   { label: "90 Days", hours: 24 * 90, days: 90 },
 ];
 
-// Explicit "en-IN" rather than the browser default: this renders inside a
-// client component that Next also prerenders on the server, and a
-// locale-dependent group separator that differs between the two is a
-// hydration mismatch. Indian digit grouping (1,36,650) is also what this
-// product's operators read numbers in.
+// Fixed locale avoids SSR/client hydration mismatch; operators read Indian grouping (1,36,650).
 const fmtInt = (n: number) => n.toLocaleString("en-IN");
 
 function fmtDuration(ms: number | null): string {
@@ -41,9 +37,7 @@ function fmtDuration(ms: number | null): string {
   return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
-// AHT's progress bar needs a ceiling to fill against. 2 minutes is the
-// target the tile states out loud rather than an invisible constant, so a
-// bar that looks "nearly full" always means "nearly at the stated target".
+// AHT bar ceiling; the tile displays this target.
 const AHT_TARGET_MS = 120_000;
 
 type Tone = "good" | "bad" | "flat";
@@ -150,12 +144,7 @@ function StackedBars({ points }: { points: TodaysActivityPoint[] }) {
   );
 }
 
-// Disposition bars are coloured by what the reason MEANS, not by rank — a
-// clean caller hangup and a transport error should never read as the same
-// kind of outcome just because they happen to sit next to each other.
-// Returns one of globals.css's existing .badge tones rather than a raw
-// colour, so these rows use the same pills as every other status in the
-// console instead of a palette invented for this one card.
+// Disposition colour by meaning, not rank; uses globals.css .badge tones.
 type BadgeTone = "green" | "amber" | "red" | "gray" | "cyan";
 
 const BADGE_VAR: Record<BadgeTone, string> = {
@@ -176,12 +165,7 @@ function dispositionTone(closeReason: string): BadgeTone {
   return "cyan";
 }
 
-// Rough, named bands rather than a bare number — Retell/Vapi's own
-// published benchmarks cluster around 500-600ms as "good" for a managed
-// voice AI platform; this project has never gotten close to that on a
-// full turn (STT + LLM + tool calls + TTS all sequential today), so the
-// bands are calibrated to what's actually achievable on this stack, not
-// an arbitrary universal target.
+// Bands calibrated to this stack's sequential STT+LLM+TTS turn, not industry 500-600ms benchmarks.
 function latencyBand(ms: number | null): { label: string; badge: string } {
   if (ms == null) return { label: "—", badge: "gray" };
   if (ms < 1500) return { label: "Good", badge: "green" };
@@ -194,13 +178,7 @@ function formatMs(ms: number | null): string {
   return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
-// A small dependency-free multi-series line chart — this is an internal
-// admin tool with no charting library installed; two call sites (Usage
-// Trends, Today's Activity) share this rather than each hand-rolling SVG.
-// Each series is normalized to ITS OWN max, not a shared scale — Calls and
-// Minutes (or Inbound/Outbound/Web) are different units, and letting one
-// flatten to invisible near the x-axis because another series is 100x
-// larger would be misleading, not honest.
+// Dependency-free multi-series line chart. Each series is normalized to its own max (units differ).
 function LineChart({
   series, xLabels, height = 160,
 }: {
@@ -263,11 +241,7 @@ function LineChart({
 
 export default function DashboardPage() {
   const { tenant, allTenants, isAllTenants, loading: tenantLoading } = useActiveTenant();
-  // Scoped to the account selected in the header switcher by default, or
-  // every account under "All tenants" — the listAllX() helpers below
-  // already accept any tenant array and fan out/aggregate over it, so a
-  // single-tenant array scopes them for free with no change to those
-  // functions.
+  // Header switcher selection: one tenant, or all under "All tenants".
   const targetTenants = useMemo(
     () => (isAllTenants ? allTenants : tenant ? [tenant] : []),
     [tenant, allTenants, isAllTenants],
@@ -349,10 +323,7 @@ export default function DashboardPage() {
 
   const activeAgents = agents.filter((a) => a.status === "active").length;
 
-  // Every headline number is derived here from raw counts rather than read
-  // off the API, so a zero denominator stays null (rendered "—") instead of
-  // turning into NaN%, 0% or Infinity. With the window set to 90 days on a
-  // fresh install all four of these are legitimately null.
+  // Derived from raw counts so a zero denominator renders "—" rather than NaN%/Infinity.
   const kpi = useMemo(() => {
     const pctChange = (cur: number, prev: number): number | null =>
       prev === 0 ? null : ((cur - prev) / prev) * 100;
@@ -379,9 +350,7 @@ export default function DashboardPage() {
       ahtDeltaSec: aht !== null && prevAht !== null ? (aht - prevAht) / 1000 : null,
       callsDeltaPct: pctChange(stats.total_calls, stats.prev_total_calls),
       handoffDeltaPct: pctChange(stats.handoff_count, stats.prev_handoff_count),
-      // Share of started calls that actually reached an ended state — the
-      // closest honest analogue to "handled of attempted", since nothing in
-      // the schema records a dial attempt that never became a call row.
+      // Dial attempts that never became a call row aren't recorded; this is ended / started.
       handledPct: ratePct(stats.ended_count, stats.total_calls),
       handoffPct: ratePct(stats.handoff_count, stats.ended_count),
     };
@@ -405,12 +374,7 @@ export default function DashboardPage() {
     weekday: "long", day: "numeric", month: "short",
   });
 
-  // The API only returns hours that had at least one call, so a quiet hour
-  // comes back missing rather than zero. Rendering that raw would silently
-  // close the gap and draw 14:00 flush against 16:00 as if 15:00 never
-  // existed — the dead hour is exactly what an operator is looking for.
-  // Filled between the first and last active hour only; padding out to a
-  // full 00-23 would bury a short business window in empty columns.
+  // API omits zero-call hours; fill gaps with 0, but only between the first and last active hour.
   const hourly = useMemo(() => {
     if (activity.length === 0) return [];
     const byHour = new Map(activity.map((p) => [p.hour, p]));
@@ -477,8 +441,6 @@ export default function DashboardPage() {
           delta={kpi?.callsDeltaPct != null ? signed(kpi.callsDeltaPct, "%") : null}
           deltaTone={(kpi?.callsDeltaPct ?? 0) >= 0 ? "good" : "bad"}
           footnote={stats ? `of ${fmtInt(stats.total_calls)} started` : "no calls yet"}
-          // The old Live Calls StatCard owned this pulse; that tile is gone,
-          // so the signal rides the volume tile rather than disappearing.
           live={(stats?.live_calls ?? 0) > 0}
         />
         <Kpi
@@ -507,9 +469,7 @@ export default function DashboardPage() {
           label="Human handoffs"
           value={statsLoading || !stats ? "—" : fmtInt(stats.handoff_count)}
           fillPct={kpi?.handoffPct ?? null}
-          // Amber, not red, and the same amber dispositionTone() gives
-          // TRANSFER_SUCCESS below: a handoff is an escalation worth
-          // watching, not a failure. Failed transfers are the red ones.
+          // Amber like TRANSFER_SUCCESS: a handoff is an escalation, not a failure.
           fillColor="var(--amber)"
           delta={kpi?.handoffDeltaPct != null ? signed(kpi.handoffDeltaPct, "%") : null}
           deltaTone={(kpi?.handoffDeltaPct ?? 0) <= 0 ? "good" : "bad"}

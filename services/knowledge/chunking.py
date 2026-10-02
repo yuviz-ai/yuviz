@@ -1,15 +1,5 @@
-"""
-In-house chunking — no langchain/llama-index dependency for something this
-small. Splits on paragraph boundaries first (keeps semantically related
-sentences together), then greedily packs paragraphs into ~chunk_size-word
-windows with chunk_overlap words of trailing context repeated into the next
-chunk, so a fact split across a chunk boundary is still retrievable from
-either side.
-
-Word count is used as the token-count proxy throughout (token_count on
-kb_chunks/RetrievedContext) — close enough for policy budgeting
-(RetrievalPolicy.max_tokens) without pulling in a real tokenizer.
-"""
+"""Paragraph-first chunking into ~chunk_size-word windows with chunk_overlap words of overlap.
+Word count is the token-count proxy throughout."""
 
 from __future__ import annotations
 

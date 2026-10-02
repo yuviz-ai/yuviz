@@ -1,12 +1,5 @@
-"""
-CallContextStore — services/cloudonix/handoff.py's HandoffStore, moved
-here as-is (server-minted `secrets.token_urlsafe(32)`, claim-once, TTL,
-capacity bound — see design Risks for why the WS admission token is
-deliberately NOT `call.provider_call_id`), generalized with `provider`,
-`account_ref` and `provider_call_id` on `CallRoute` so a multi-provider,
-multi-account process can still route a claimed WS connection to the right
-bridge parameters.
-"""
+"""CallContextStore — server-minted, claim-once, TTL'd WS admission tokens mapping to a CallRoute.
+The token is deliberately independent of provider_call_id."""
 
 from __future__ import annotations
 
@@ -16,9 +9,7 @@ from dataclasses import dataclass
 
 
 class HandoffCapacityError(Exception):
-    """Raised by issue() at _MAX_PENDING — resource exhaustion is not
-    laundered through the routing fallback; the webhook turns this into a
-    503 with no answer XML."""
+    """Store at capacity; the webhook returns 503 rather than falling back."""
 
 
 @dataclass(frozen=True)
@@ -56,11 +47,7 @@ class CallContextStore:
         return token
 
     def claim(self, token: str) -> CallRoute | None:
-        """Single-use pop; None if unknown or expired. The token is never
-        derivable from provider_call_id — it is generated independently by
-        issue() and is the only key this dict is ever looked up by, so a
-        WS client presenting a provider's own call id in the token's place
-        cannot admit any connection."""
+        """Single-use pop; None if unknown or expired."""
         route = self._pending.pop(token, None)
         if route is None:
             return None
@@ -81,24 +68,8 @@ class OutboundRouteInfo:
 
 
 class OutboundIdentityStore:
-    """The outbound-leg analogue of CallContextStore: `place_call()` calls
-    `remember()` with the identity it already validated (via
-    ownership.resolve_outbound_identity), keyed on the SAME
-    `(provider, account_ref, idempotency_key)` that `answer_url`/`hangup_url`/
-    `ring_url` carry back as `?idem=`. When the vendor calls the answer
-    webhook for a call this service itself placed, `orchestrator` looks the
-    identity up here and skips DID-based route resolution entirely — that
-    resolution is for a genuinely inbound call, and running it against an
-    outbound leg's callee number was two real bugs: it silently downgraded
-    the answering agent to "default" (the outbound `agent_slug` was never
-    consulted), and it 403'd with dead air whenever the dialled number
-    happened to be provisioned as another tenant's DID.
-
-    Not single-use (unlike CallContextStore's token claim): a vendor may
-    retry a slow-to-ack answer webhook, and a second, identical lookup must
-    still succeed rather than falling back to DID resolution on the retry.
-    TTL matches the idempotency claim window so ringing has an equivalent
-    grace period."""
+    """Validated (tenant, agent) for calls we placed, keyed like the `?idem=` on answer/hangup/ring URLs,
+    so the answer webhook skips DID resolution. Not single-use: vendors retry answer webhooks."""
 
     _TTL_S = 120.0
     _MAX_PENDING = 10_000

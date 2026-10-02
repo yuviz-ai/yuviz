@@ -1,10 +1,5 @@
-// Phase 5A of AI-to-human transfer: EslEventListener's CHANNEL_BRIDGE/
-// CHANNEL_HANGUP subscription and its wiring into TransferCorrelator.
-//
-// Same rationale as esl_client_test.cpp: no mockable ESL library exists, so
-// this runs a minimal real ESL server on loopback that completes the auth +
-// event-subscribe handshake and then lets the test push scripted event-plain
-// frames on demand.
+// EslEventListener event subscription and TransferCorrelator wiring, against a minimal
+// loopback ESL server that pushes scripted event-plain frames.
 
 #include <gtest/gtest.h>
 
@@ -44,9 +39,7 @@ void send_all(int fd, const std::string& data) {
     ::send(fd, data.data(), data.size(), 0);
 }
 
-// Completes the auth + "event plain ..." subscribe handshake, then holds
-// the connection open so the test can push event-plain frames on demand via
-// send_event(). One client only — that's all EslEventListener ever opens.
+// Completes auth + subscribe, then holds one client connection open for send_event().
 struct FakeEslEventServer {
     int               listen_fd{-1};
     uint16_t          port{0};
@@ -93,9 +86,7 @@ struct FakeEslEventServer {
         while (!stop.load()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    // Waits (bounded) for the client to finish the handshake before the
-    // test starts pushing events — otherwise send_event() would race the
-    // server thread's own handshake completion.
+    // Bounded wait for the handshake so send_event() doesn't race it.
     bool wait_for_client(std::chrono::milliseconds timeout = 2s) {
         const auto deadline = std::chrono::steady_clock::now() + timeout;
         while (client_fd.load() < 0) {
@@ -121,9 +112,7 @@ struct FakeEslEventServer {
         if (fd >= 0) send_all(fd, frame);
     }
 
-    // BACKGROUND_JOB's real doubly-framed shape (no Unique-ID header, an
-    // inner header block of its own, then the job's result text) — see
-    // EslEventListener.cpp's parse_background_job_result() doc comment.
+    // BACKGROUND_JOB is doubly framed: no Unique-ID, an inner header block, then result text.
     void send_background_job(const std::string& job_uuid, const std::string& result_text) {
         const std::string inner_headers =
             "Event-Name: BACKGROUND_JOB\nJob-UUID: " + job_uuid + "\n";
@@ -156,10 +145,7 @@ EslConfig make_cfg(uint16_t port) {
     return cfg;
 }
 
-// Polls `pred` until it returns true or `timeout` elapses. Used to wait for
-// the listener's background thread to process an event and invoke a
-// test-side callback — avoids a fixed sleep that's either flaky (too short)
-// or slow (too long) on every test run.
+// Polls `pred` until true or `timeout` elapses (avoids fixed sleeps).
 template <typename Pred>
 bool wait_until(Pred pred, std::chrono::milliseconds timeout = 2s) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -253,8 +239,7 @@ TEST(EslEventListenerTest, ChannelHangupResolvesPendingTransferAsFailureAndSkips
         std::lock_guard lock{detail_mutex};
         EXPECT_EQ(detail, "hangup_before_bridge");
     }
-    // The transfer-resolution path consumed this hangup — the generic,
-    // unrelated caller-hangup callback must not also fire for it.
+    // Consumed by transfer resolution; the generic hangup callback must not fire.
     EXPECT_FALSE(hangup_fired.load());
 
     listener.stop();
@@ -279,8 +264,7 @@ TEST(EslEventListenerTest, ChannelHangupWithNoPendingTransferFiresGenericHangupH
     ASSERT_TRUE(listener.start());
     ASSERT_TRUE(server.wait_for_client());
 
-    // No watch registered for this uuid at all — an ordinary caller hangup,
-    // unrelated to any transfer.
+    // No watch registered: an ordinary caller hangup.
     server.send_event("CHANNEL_HANGUP", "ordinary-call-uuid");
 
     ASSERT_TRUE(wait_until([&] { return hangup_fired.load(); }));
@@ -307,20 +291,14 @@ TEST(EslEventListenerTest, ChannelBridgeWithNoPendingTransferIsIgnored) {
     ASSERT_TRUE(server.wait_for_client());
 
     server.send_event("CHANNEL_BRIDGE", "unrelated-uuid");
-    // Follow with a CHANNEL_HANGUP for a *different* known uuid to get a
-    // synchronization point — proves the listener processed (and ignored)
-    // the CHANNEL_BRIDGE above without crashing or misfiring, rather than
-    // just racing an arbitrary sleep.
+    // Sync marker: proves the BRIDGE above was processed and ignored.
     server.send_event("CHANNEL_HANGUP", "sync-marker-uuid");
 
     ASSERT_TRUE(wait_until([&] { return hangup_fired.load(); }));
     listener.stop();
 }
 
-// ── BACKGROUND_JOB — confirmed live on the first real warm-transfer call
-// that FreeSWITCH's success result text is "+OK <uuid>", not a bare uuid
-// (see parse_background_job_result()'s doc comment); these lock in the
-// fix so a regression here can't silently corrupt agent_uuid_ again.
+// ── BACKGROUND_JOB: success result text is "+OK <uuid>", not a bare uuid ──
 
 TEST(EslEventListenerTest, BackgroundJobSuccessStripsOkPrefixToBareUuid) {
     FakeEslEventServer server;

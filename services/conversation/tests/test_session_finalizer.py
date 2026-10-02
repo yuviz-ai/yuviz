@@ -1,10 +1,4 @@
-"""
-Tests for SessionFinalizer (Phase 5D of AI-to-human transfer — graceful
-session finalization). See session_finalizer.py's module docstring for why
-several of its steps are honest no-ops rather than calls to components
-this codebase hasn't built (ToolExecutor, a distinct MemoryManager,
-tracing).
-"""
+"""Tests for SessionFinalizer (graceful session finalization)."""
 
 from __future__ import annotations
 
@@ -143,8 +137,7 @@ async def test_finalize_tolerates_missing_cancel_event():
 
 
 # ---------------------------------------------------------------------------
-# Summary timeout (Review Comments 3 + 5): LLM latency must never hold up
-# cleanup/the ConversationFinalized ack.
+# Summary timeout: LLM latency must never hold up cleanup or the ConversationFinalized ack.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -367,7 +360,7 @@ async def test_forget_clears_idempotency_cache():
 
 
 # ---------------------------------------------------------------------------
-# Status tracking (Review Comment 4)
+# Status tracking
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -414,9 +407,7 @@ async def test_forget_clears_status_too():
 
 @pytest.mark.asyncio
 async def test_finalize_completes_with_no_transcripts_and_no_metrics_configured():
-    """Every optional dependency absent — must still run to completion
-    without raising (provider shutdown, tracing, and tool-executor steps
-    are all honest no-ops — see module docstring)."""
+    """With every optional dependency absent, finalize still completes without raising."""
     llm = _make_llm(["fine"])
     finalizer = SessionFinalizer(transcripts=None, metrics=None)
 
@@ -426,14 +417,12 @@ async def test_finalize_completes_with_no_transcripts_and_no_metrics_configured(
 
 
 # ---------------------------------------------------------------------------
-# Step-pipeline extensibility (Review Comment 1)
+# Step-pipeline extensibility
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_custom_steps_list_replaces_defaults():
-    """Extensibility check: a caller can supply an entirely custom step
-    list (e.g. adding a future CRM-sync/S3-upload/Kafka-event step) without
-    touching SessionFinalizer itself."""
+    """A custom steps list replaces the defaults."""
     calls: list[str] = []
 
     class RecordingStep:
@@ -473,9 +462,7 @@ async def test_one_custom_step_failing_does_not_stop_later_custom_steps():
 
 
 # ---------------------------------------------------------------------------
-# Speculative summary generation (warm transfer §7 — start_summary_early()
-# lets finalize() overlap the summary LLM call with the gateway's own
-# ring/answer/bridge sequence instead of waiting for TransferCompleted).
+# Speculative summary: start_summary_early() overlaps the summary LLM call with the transfer.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -503,9 +490,7 @@ async def test_finalize_uses_precomputed_summary_started_early():
 
 @pytest.mark.asyncio
 async def test_finalize_awaits_precomputed_summary_still_in_flight():
-    """The gateway's ring/answer/bridge normally takes far longer than the
-    summary call, but finalize() must still work correctly if TransferCompleted
-    arrives before the speculative task has finished."""
+    """finalize() awaits a speculative summary that's still in flight."""
     async def slow_gen(messages):
         await asyncio.sleep(0.02)
         yield "eventually ready"

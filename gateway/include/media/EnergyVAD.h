@@ -9,12 +9,7 @@
 
 namespace voiceai {
 
-// Energy-based VAD behind IVAD.
-// Implements a simple two-threshold hysteresis: speech starts when energy
-// exceeds speech_threshold_db and ends when energy stays below
-// silence_threshold_db for hold_ms milliseconds.
-//
-// Hot path: zero allocation, no system calls, no exceptions.
+// Energy-based VAD with two-threshold hysteresis. Hot path: no allocation or syscalls.
 class EnergyVAD final : public IVAD, private NonCopyable {
 public:
     explicit EnergyVAD(EnergyVADConfig cfg = {}) noexcept;

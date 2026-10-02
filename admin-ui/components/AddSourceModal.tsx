@@ -5,10 +5,7 @@ import { ApiError, Tenant } from "@/lib/api";
 import { createKnowledgeBase, deleteKnowledgeBase, KnowledgeBase, uploadDocument } from "@/lib/knowledgeApi";
 import { Modal } from "@/components/Modal";
 
-// Only "Upload files" is wired up (AC5-AC7) — the other three cards exist so
-// the picker reads as the eventual full set, matching every other SaaS KB
-// import screen, but each of them just explains what's coming rather than
-// doing anything yet.
+// Only "Upload files" is wired up; the other cards are placeholders.
 const SOURCE_CARDS = [
   { key: "upload", label: "Upload files", hint: ".txt or .md", enabled: true },
   { key: "website", label: "Sync a website", hint: "coming soon", enabled: false },
@@ -19,11 +16,8 @@ const SOURCE_CARDS = [
 export const ACCEPTED_DOC_EXTENSIONS = [".txt", ".md"];
 export const ACCEPTED_DOC_ACCEPT = ".txt,.md,text/plain,text/markdown";
 
-// Extension-lowercased check plus, when the browser supplies one, the MIME
-// type — matches services/knowledge/ingestion_worker.py's
-// _SUPPORTED_CONTENT_TYPES exactly, never widening beyond it. Extension
-// alone is already enforced by the <input accept> attribute; this exists
-// because drag-and-drop bypasses `accept` (AC7).
+// Must match _SUPPORTED_CONTENT_TYPES in services/knowledge/ingestion_worker.py.
+// Needed because drag-and-drop bypasses <input accept>.
 const ACCEPTED_MIME_TYPES = ["text/plain", "text/markdown"];
 
 export function rejectionReasonFor(file: File): string | null {
@@ -97,11 +91,7 @@ export function AddSourceModal({
     if (!file) return;
     setSubmitting(true);
     setSubmitError(null);
-    // A knowledge base has to exist before a document can be uploaded into
-    // it, so "new" creates the container first. If the upload then fails,
-    // roll that container back — otherwise every failed upload leaves an
-    // empty knowledge base behind that nothing points at and nobody asked
-    // for (this is exactly how stray empty KBs were appearing).
+    // A newly created KB is rolled back if the upload fails, so no empty KB is left behind.
     let createdKbId: string | null = null;
     try {
       const kb =

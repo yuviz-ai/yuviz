@@ -10,15 +10,10 @@ import {
 } from "@/lib/api";
 import { useActiveTenant } from "@/lib/useActiveTenant";
 
-// Enough history to cover the running cycle plus the one before it, which
-// is the only comparison this page draws. usage-trend is day-grained, so
-// 62 days always spans both months whatever today's date is.
+// Day-grained trend; 62 days always spans this month and the previous one.
 const TREND_DAYS = 62;
 
-// What a voice minute costs. Nothing in this platform's schema stores a
-// price, a plan or an invoice (see the design note in the cycle panel), so
-// the rate is the operator's own input rather than a number invented here —
-// persisted per browser so the estimate survives a reload.
+// No price is stored server-side; the per-minute rate is operator input, persisted per browser.
 const RATE_STORAGE_KEY = "yuviz.billing.ratePerMinute";
 const DEFAULT_RATE = 0.42;
 
@@ -76,32 +71,23 @@ interface Cycle {
 export default function BillingPage() {
   const { tenant, allTenants, isPlatformScoped, isAllTenants, loading: tenantLoading } = useActiveTenant();
   const [cycle, setCycle] = useState<Cycle | null>(null);
-  /** Calls in progress right now, summed over the selected accounts.
-   *  Only this one figure is read off dashboard-stats — keeping the whole
-   *  payload would leave every other field holding one arbitrary account's
-   *  numbers under a heading that reads as a total. */
+  /** Calls in progress right now, summed over the selected accounts. */
   const [liveCalls, setLiveCalls] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [rate, setRate] = useState<number>(DEFAULT_RATE);
 
-  // Which accounts this page is reporting on — derived, never stored: the
-  // header switcher is the single source of truth and a copy in state would
-  // lag it by a render.
+  // Derived from the header switcher, not stored, so it never lags a render.
   const targets = useMemo(
     () => (isAllTenants ? allTenants : tenant ? [tenant] : []),
     [isAllTenants, allTenants, tenant],
   );
 
-  // Read after mount, not in a lazy initialiser: this component is
-  // prerendered on the server, where localStorage does not exist, and a
-  // first client render that already used the stored rate would not match
-  // the prerendered default.
+  // Read after mount (not a lazy initialiser) to avoid a hydration mismatch with the SSR default.
   useEffect(() => {
     try {
       const stored = window.localStorage.getItem(RATE_STORAGE_KEY);
-      // Number("") is 0, not NaN — an empty or blank entry has to be
-      // rejected explicitly or it reads back as a free minute.
+      // Number("") is 0, not NaN, so blank must be rejected explicitly.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       if (stored !== null && stored.trim() !== "" && Number.isFinite(Number(stored))) setRate(Number(stored));
     } catch {
@@ -136,9 +122,7 @@ export default function BillingPage() {
         picked.map(async (t) => {
           const [trend, dash] = await Promise.all([
             getUsageTrend(t.slug, TREND_DAYS),
-            // live_calls filters on ended_at IS NULL and ignores this window
-            // on purpose (services/config/calls.py), and it is the only field
-            // read — so ask for the cheapest window, not a month of rollups.
+            // live_calls ignores the window, so request the cheapest one.
             getDashboardStats(t.slug, 24),
           ]);
           return { trend, dash };
@@ -158,10 +142,7 @@ export default function BillingPage() {
           errs.push(`${picked[i].name}: ${r.reason instanceof ApiError ? r.reason.detail : String(r.reason)}`);
           return;
         }
-        // A trend point's date is a plain YYYY-MM-DD string, so the month is
-        // its first seven characters — parsing it into a Date would re-read
-        // it in the browser's timezone and move a month-boundary day into
-        // the wrong cycle.
+        // Slice YYYY-MM rather than parse a Date, which would shift boundary days by timezone.
         const inMonth = (p: UsageTrendPoint, m: string) => p.date.slice(0, 7) === m;
         for (const p of r.value.trend) {
           if (inMonth(p, thisMonth)) {
@@ -185,9 +166,7 @@ export default function BillingPage() {
     };
   }, [targets, tenantLoading]);
 
-  // A cap is per-account and nullable (max_concurrent_calls IS NULL means
-  // "not configured", never "unlimited" — see live-calls/page.tsx). Summing
-  // across accounts is only meaningful when every selected account has one.
+  // NULL cap means "not configured", not unlimited; only sum when every account has one.
   const channelCap = useMemo(() => {
     if (targets.length === 0) return null;
     if (targets.some((t) => t.max_concurrent_calls == null)) return null;

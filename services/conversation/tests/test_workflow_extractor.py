@@ -1,8 +1,4 @@
-"""
-The two background LLM passes. Both are allowed to do nothing; neither is
-ever allowed to break the call, so most of what's asserted here is what
-happens when things go wrong.
-"""
+"""The two background LLM passes: both may do nothing, neither may ever break the call."""
 
 from __future__ import annotations
 

@@ -1,8 +1,4 @@
-"""
-campaign_contacts CRUD — the per-contact call queue a campaign works
-through. CSV upload is parsed here (not in the router) so the parsing
-logic is unit-testable without an HTTP layer.
-"""
+"""campaign_contacts CRUD and CSV parsing — the per-contact call queue."""
 
 from __future__ import annotations
 
@@ -18,20 +14,14 @@ _PHONE_SEPARATORS = str.maketrans("", "", " -().")
 
 
 def parse_contacts_csv(content: bytes) -> list[dict[str, str]]:
-    """Expects a header row with at least a 'phone_number' column and an
-    optional 'name' column — column order doesn't matter, extra columns
-    are ignored. Blank phone_number rows are skipped rather than raising,
-    since a hand-edited CSV exported from a spreadsheet often has trailing
-    blank rows. Common separators are stripped; any other non-digit makes
-    the whole upload fail, naming the offending spreadsheet rows (header =
-    row 1; a quoted multi-line cell is still one row)."""
+    """Parse a CSV with a 'phone_number' (and optional 'name') column; blank rows skipped.
+
+    Any invalid number fails the whole upload, naming spreadsheet rows (header = row 1)."""
     text = content.decode("utf-8-sig")  # -sig: strips a BOM Excel-exported CSVs commonly carry
     reader = csv.DictReader(io.StringIO(text))
     if reader.fieldnames is None or "phone_number" not in [f.strip().lower() for f in reader.fieldnames]:
         raise ValueError("CSV must have a 'phone_number' column")
 
-    # Normalize header casing once rather than assuming the file used
-    # exactly "phone_number"/"name" verbatim.
     field_map = {f.strip().lower(): f for f in reader.fieldnames}
     phone_col = field_map["phone_number"]
     name_col = field_map.get("name")
@@ -113,8 +103,7 @@ async def claim_next_pending(campaign_id: Any, *, platform_scoped: bool = False)
 
 
 async def release_claim(contact_id: Any, *, platform_scoped: bool = False) -> None:
-    """Undoes claim_next_pending for a dial that never happened: back to
-    pending, and the attempt it counted is given back."""
+    """Undo claim_next_pending for a dial that never happened, refunding the attempt."""
     pool = await db.get_pool()
     conn_cm = platform_conn(pool, reason="campaign-by-id") if platform_scoped else tenant_conn(pool)
     async with conn_cm as conn:

@@ -1,11 +1,6 @@
 "use client";
 
-// Publish history and rollback. Rollback republishes an old version as a
-// new one, so the log stays append-only and "what was live at 3pm
-// yesterday" stays answerable.
-//
-// No structural diff view (docs/workflow.md §6.3): the need this actually
-// serves is undoing a bad publish, not auditing a graph line by line.
+// Publish history and rollback. Rollback republishes as a new version (append-only log).
 
 import { useEffect, useState } from "react";
 import { ApiError } from "@/lib/api";

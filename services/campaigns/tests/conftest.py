@@ -47,10 +47,7 @@ async def test_agent(pool, test_tenant):
 
 @pytest_asyncio.fixture
 async def scoped(test_tenant):
-    """Sets the ambient RLS tenant scope for tests that call services/campaigns
-    functions directly, bypassing the HTTP layer — without this, tenant_conn()
-    raises TenantUnresolved. Mirrors services/config/tests/conftest.py's fixture
-    of the same name."""
+    """Set the ambient RLS tenant scope for direct (non-HTTP) service calls."""
     set_target_tenant(str(test_tenant["id"]))
     yield
     set_target_tenant(None)

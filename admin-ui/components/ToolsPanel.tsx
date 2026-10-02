@@ -18,10 +18,7 @@ import {
 import { SecretRefInput, secretPayload } from "./SecretRefInput";
 import { Modal } from "@/components/Modal";
 
-// String and boolean extra-field values share one state bag — the number/
-// text inputs read/write strings, the boolean ones (checkboxes) read/write
-// actual booleans, converted to real JSON types only when building the
-// save payload.
+// Converted to real JSON types only when building the save payload.
 type ExtraValue = string | boolean;
 
 export function ToolsPanel({ tenantId, agentId }: { tenantId: string; agentId: string }) {

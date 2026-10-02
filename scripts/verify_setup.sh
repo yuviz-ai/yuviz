@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# verify_setup.sh — checks that the web-testing-path stack (started via
-# scripts/start_web_test.sh) actually came up healthy, not just that its
-# ports are open. Run after starting the services described in
-# docs/setup.md.
+# verify_setup.sh — checks the start_web_test.sh stack is healthy, not just listening.
 #
 # Usage: ./scripts/verify_setup.sh
 

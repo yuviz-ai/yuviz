@@ -1,14 +1,6 @@
-"""
-FIX 2 — TOOLEXEC_ARGS_HMAC_KEY_REF must resolve EAGERLY, at service
-startup, the same fail-loud posture JWT_SECRET already has: a
-misconfigured deploy must not pass /health and then fail on the first
-real chain's side-effect claim.
+"""TOOLEXEC_ARGS_HMAC_KEY_REF must resolve at startup so a misconfigured deploy fails loudly.
 
-db.get_pool()/close_pool() are monkeypatched to no-ops here — this test's
-subject is the HMAC key resolution specifically, not the DB pool
-lifecycle (already covered elsewhere), and the pool is a process-wide
-singleton shared with every other test in this session; actually closing
-it mid-suite would be a real side effect on unrelated tests.
+The DB pool is stubbed: it's a session-wide singleton other tests share.
 """
 
 from __future__ import annotations

@@ -1,9 +1,4 @@
-"""
-Full pipeline test: upload (text/plain) -> process_one_job() (chunk, embed
-via real Ollama, insert kb_chunks) -> document/job land in their terminal
-states. Real Ollama + real Postgres, matching this project's testing
-convention for infra that's fast/available locally.
-"""
+"""Full ingestion pipeline tests against real Ollama + Postgres."""
 
 from __future__ import annotations
 
@@ -26,9 +21,7 @@ async def test_process_one_job_success_produces_ready_document_and_chunks(tenant
     kb = await kb_service.create_knowledge_base(
         tenant_id=tenant["id"], slug="policies", name="Policies", embedding_config_id=embedding_cfg["id"],
     )
-    # Content well over AUTO_INLINE_THRESHOLD_BYTES (500) so this exercises
-    # the normal chunk+embed path, not the auto-inline one — see
-    # test_tiny_document_auto_inlines_and_skips_embedding below for that.
+    # Over AUTO_INLINE_THRESHOLD_BYTES so this takes the chunk+embed path.
     content = (
         b"Refunds are processed within 30 days of the original purchase date, "
         b"provided the item is returned in its original packaging with proof "

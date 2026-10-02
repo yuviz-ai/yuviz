@@ -1,14 +1,6 @@
-"""
-Provider credentials entered in the Admin UI, encrypted at rest.
+"""Fernet encryption for `enc:` provider credentials stored at rest.
 
-env:/k8s: point at a secret provisioned elsewhere, which makes adding
-a provider an ops task. `enc:` carries the credential instead: Config Service
-encrypts here before it reaches Postgres, Conversation Service decrypts at
-provider-construction time (secret_resolver.py's EncryptedResolver).
-
-Fernet rather than anything hand-rolled — authenticated and versioned, and
-this is exactly the place not to be clever. Lives in config_sdk because both
-planes need the identical encoding.
+Config Service encrypts before Postgres; consumers decrypt at provider construction.
 """
 
 from __future__ import annotations

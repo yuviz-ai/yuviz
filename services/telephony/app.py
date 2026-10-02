@@ -1,12 +1,5 @@
-"""
-FastAPI app tying the inbound webhook/WS pipeline and the outbound
-trigger routes together. Routes are thin per CURSOR.md — each one resolves
-the provider then calls into orchestrator/auth/ownership/outbound/
-idempotency/callctx; none of the actual logic lives here. `/health` stays
-undepended so the docker-compose healthcheck still passes (lesson 1); the
-WS route also takes no Depends (Latency section: zero new work on the
-connected-call path).
-"""
+"""Telephony FastAPI app: inbound webhook/WS pipeline and outbound trigger routes (thin; logic lives elsewhere).
+`/health` and the WS route take no Depends (healthcheck; zero work on the connected-call path)."""
 
 from __future__ import annotations
 
@@ -229,9 +222,7 @@ async def read_idempotency(
         return PlainTextResponse("not found", status_code=404)
     if entry.get("state") == "in_flight":
         return _json_response(200, {"status": "pending"})
-    # Same {"ok": ..., "call_uuid"/"error": ...} shape place_call's own
-    # response uses — a poller must not learn a second, differently-shaped
-    # body depending on whether it asked at claim-time or via this replay.
+    # Same body shape as place_call's own response.
     status_code, body = outbound.result_from_outcome(entry)
     return _json_response(status_code, body)
 

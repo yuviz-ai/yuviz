@@ -1,14 +1,8 @@
 """
-Live Calls Monitoring — the poll query and its writer live in one module
-(calls.py's own docstring commits it to read-only reporting, and the
-intervention writer here would falsify that).
+Live Calls Monitoring — poll query and intervention writer.
 
-get_live_calls() is two statements on one pool.acquire(): a KPI aggregate
-over every live row (never LIMITed, so `truncated` reflects the true count),
-then the row list itself, LIMITed to MAX_LIVE_ROWS. Both statements carry
-`tenant_id = $1` in their own WHERE — never relying on a JOIN's incidental
-exclusion (lesson 12) — and `ended_at IS NULL` is the single definition of
-live, reused from calls.py::_status_of.
+The KPI aggregate is never LIMITed (so `truncated` is accurate); every
+statement filters `tenant_id` in its own WHERE, not via a JOIN.
 """
 
 from __future__ import annotations
@@ -29,23 +23,16 @@ from .auth import CurrentUser
 LIVE_STAGES = ("ai", "waiting_for_human", "human_connected")
 MAX_LIVE_ROWS = 200
 
-# The 5s poll's whole connection budget (AC5) — an acquire that can't get a
-# connection within this window fails loudly (pool exhaustion surfaces as an
-# error the client can retry) rather than queuing indefinitely behind
-# whatever else is holding the shared 10-connection pool.
+# Fail loudly on pool exhaustion rather than queue past the 5s poll.
 ACQUIRE_TIMEOUT_S = 5.0
 
-# No masking convention exists elsewhere in this repo (the only "mask"
-# references are provider_configs.py's secret notes) — this is the one
-# definition, applied server-side so the raw MSISDN never leaves the API.
+# Masked server-side so the raw MSISDN never leaves the API.
 _MASK_PREFIX_LEN = 5
 _MASK_SUFFIX_LEN = 4
 
 
 def _mask_msisdn(number: str | None) -> str | None:
-    """'+14155557788' -> '+1415•••7788' (country/area prefix + last 4). A
-    number too short to carry both a prefix and a suffix without overlap is
-    returned unmasked (there is nothing between them to hide)."""
+    """'+14155557788' -> '+1415•••7788'; numbers too short to mask are returned as-is."""
     if number is None:
         return None
     if len(number) <= _MASK_PREFIX_LEN + _MASK_SUFFIX_LEN:
@@ -67,12 +54,7 @@ _KPI_SQL = """
     WHERE c.tenant_id = $1 AND c.ended_at IS NULL
 """
 
-# Latest-turn snippet: caller_text when the caller most recently spoke,
-# falling back to ai_response — either way, "what's happening on this call
-# right now". Extension point for a future sentiment indicator (see design's
-# Scope decisions): when Conversation begins writing metadata->>'sentiment',
-# that's a one-line addition to this SELECT and one column on the row below —
-# nothing sentiment-like is read or returned today.
+# Latest-turn snippet: caller_text, else ai_response.
 _TRANSCRIPT_LATERAL = """
     LEFT JOIN LATERAL (
         SELECT COALESCE(te.caller_text, te.ai_response) AS snippet
@@ -83,10 +65,7 @@ _TRANSCRIPT_LATERAL = """
     ) ts ON true
 """
 
-# Mirrors libs/tenancy/session.py's own one-statement resolver exactly.
-# Duplicated (rather than routed through tenant_conn()) only because this
-# one call site needs a bounded pool.acquire(timeout=...) for the 5s poll's
-# connection budget (AC5) — tenant_conn()'s acquire has no timeout param.
+# Copy of libs/tenancy/session.py's resolver; tenant_conn() has no acquire timeout.
 _RESOLVE_SCOPE_SQL = """
     SELECT set_config('app.tenant_id',   t.id::text, true),
            set_config('app.tenant_slug', t.slug,     true)
@@ -147,24 +126,14 @@ def _row_to_item(row: dict[str, Any], *, include_transcript: bool) -> dict[str, 
 async def get_live_calls(
     tenant_slug: str, *, include_transcript: bool, acquire_timeout_s: float = ACQUIRE_TIMEOUT_S,
 ) -> dict[str, Any]:
-    """include_transcript is the caller's decision, made by the router from
-    `effective_user.role in deps.TRANSCRIPT_ROLES` — never from the JWT role
-    (AC15). When it's False the transcript LATERAL is omitted from the SQL
-    entirely, so the text is never fetched, not merely dropped before
-    serialization.
-
-    acquire_timeout_s defaults to the shipped ACQUIRE_TIMEOUT_S; the override
-    exists only so tests can prove the acquire actually times out (rather
-    than hangs) without waiting out the real 5s budget."""
+    """include_transcript comes from the row role, not the JWT; when False the
+    transcript is never fetched. acquire_timeout_s is overridable for tests."""
     tenant = await tenants_service.get_tenant(tenant_slug)
     if tenant is None:
         raise LookupError(f"tenant {tenant_slug!r} not found")
     max_concurrent_calls = tenant["max_concurrent_calls"]
 
-    # current_tenant() (not the tenant_slug argument) is the independent
-    # check: it's always a UUID here (the caller's own JWT tenant_id, or the
-    # target _resolve_scope set from the same fresh tenant row) — never a
-    # slug — so it fills the resolver's UUID slot directly.
+    # current_tenant() is the independent check, and always a UUID here.
     tenant_scope = current_tenant()
     if tenant_scope is None:
         raise TenantUnresolved("could not resolve a tenant for the live-calls poll")
@@ -211,17 +180,10 @@ class InterventionRequest(BaseModel):
     tenant_slug: str | None = None
 
 
-# A module constant today — no audio join exists yet (see design's Scope
-# decisions), so every successful request is "unavailable", never a
-# fabricated "granted"/"human connected". When the telephony join lands,
-# this becomes 'granted'/'denied' with no change to this function, the
-# table, or the audit shape.
+# No audio join exists yet, so never claim "granted".
 INTERVENTION_OUTCOME = "unavailable"
 
-# live_call_interventions.session_id has a `length(session_id) <= 200` CHECK
-# (database/schema.sql) — this path never inserts into that table, but the
-# audit row's session_id is truncated to the same bound for consistency and
-# so a 300-char probe can't grow an unbounded string into audit_log either.
+# Same bound as live_call_interventions.session_id's CHECK; caps probe strings.
 _AUDITED_SESSION_ID_MAX_LEN = 200
 
 
@@ -229,16 +191,7 @@ async def request_intervention(
     *, tenant_slug: str, tenant_id: uuid.UUID, session_id: str, action: str,
     user: CurrentUser, ip_address: str | None,
 ) -> dict[str, Any] | None:
-    """Returns None when `SELECT 1 FROM calls WHERE session_id=$1 AND
-    tenant_id=$2 AND ended_at IS NULL` finds nothing — tenant_id binds the
-    TEXT slug (matching calls.tenant_id's own type), never the tenant UUID,
-    so a foreign-tenant or nonexistent session_id can never accidentally
-    match (closes security finding #2's type-mismatch predicate). The
-    router turns None into the 404 + denial audit (record_denied_intervention
-    below). Otherwise one transaction: INSERT live_call_interventions
-    (outcome='unavailable') + audit.write_audit(...) — a write_audit failure
-    rolls back the INSERT too, so there is never an intervention row with no
-    audit trail."""
+    """None if no live call matches (calls.tenant_id is the slug); else insert + audit in one transaction."""
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         exists = await conn.fetchval(
@@ -278,21 +231,8 @@ async def request_intervention(
     }
 
 
-# Per-(user, tenant) aggregation window for denial audits (finding #7): a
-# scripted prober hammering this route with foreign/nonexistent session ids
-# would otherwise grow audit_log by one row per attempt at effectively zero
-# cost. Repeated denials from the SAME user against the SAME tenant inside
-# this window bump one row's count/last-seen instead of inserting a new one.
-# Keyed on (user_id, tenant_id), NOT user_id alone — a superadmin who probes
-# tenant A and then, within the window, probes tenant B must get tenant B's
-# OWN row: folding it into tenant A's would silently drop the one audit
-# trail AC11 requires for tenant B's refused request, defeating finding #5's
-# cross-tenant-probe accountability with the very control meant to bound
-# finding #7 (closes the security-review regression on this exact tension).
-# Module-level (not app.state): T14's own scope is this file, and this
-# bookkeeping — unlike fresh_authority's memo — never holds an authorization
-# decision, only a denial-audit row id and count, so it carries no risk of
-# granting anything the database didn't confirm (lesson 16).
+# Denials aggregate into one audit row per (user, tenant) window so probes
+# can't flood audit_log; per-tenant so each probed tenant keeps its own trail.
 _DENIAL_AUDIT_WINDOW_S = 60.0
 _DenialAuditKey = tuple[str, str]  # (user_id, tenant_id)
 _denial_audit_windows: dict[_DenialAuditKey, tuple[float, int, int]] = {}  # key -> (window_start, audit_log_id, count)
@@ -302,11 +242,7 @@ async def record_denied_intervention(
     *, tenant_id: uuid.UUID, session_id: str, user: CurrentUser, ip_address: str | None,
     detail: str = "not_found_or_out_of_scope",
 ) -> None:
-    """Writes (or aggregates into) the one audit_log row for a refused
-    Listen/Barge request — no live_call_interventions row on this path: that
-    table drives in-tenant badges, and letting an arbitrary/out-of-scope
-    session_id insert into it would make it a growth vector of its own
-    (lesson 30)."""
+    """Audit (or aggregate) a refused intervention; never inserts into live_call_interventions."""
     truncated_session_id = session_id[:_AUDITED_SESSION_ID_MAX_LEN]
     now = time.monotonic()
     pool = await db.get_pool()

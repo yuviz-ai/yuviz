@@ -1,12 +1,5 @@
-"""
-health_loop() — probes every loaded account on its own asyncio task, never
-inline on a request (AC25-28, Latency section: "no vendor I/O on a request
-path"). Status is derived from the single most recent probe: healthy on an
-ok probe, degraded on a failed one. Absence of the key is standby, which is
-both the pre-first-probe state and what a dead loop's last write decays to
-after the EX 900 TTL — one code path for both (no probe ever writes
-"standby" itself).
-"""
+"""health_loop() — background probes of every account (never on a request path).
+Latest probe sets healthy/degraded; a missing key (pre-probe or expired TTL) means standby."""
 
 from __future__ import annotations
 

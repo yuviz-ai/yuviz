@@ -1,10 +1,4 @@
-"""
-Tests the actual HTTP layer (routing, request validation, status codes,
-error mapping) in-process via httpx's ASGITransport — same convention as
-services/config/tests/test_api.py. get_provider_manager is overridden with
-a fake IDidProvider registry so this never needs real carrier credentials
-(none exist yet — see provider_manager.py's docstring).
-"""
+"""DID HTTP layer tests via ASGITransport, with a fake IDidProvider registry."""
 
 from __future__ import annotations
 
@@ -131,10 +125,7 @@ async def test_purchase_number_creates_purchased_numbers_row(client, test_tenant
 async def test_purchase_into_foreign_tenant_is_refused_before_any_carrier_call(
     client, foreign_client, test_tenant, test_carrier,
 ):
-    """Design Q6 / test plan 4d: an admin of one tenant hitting
-    `/tenants/{other}/numbers/purchase` must be refused, and refused
-    before the billable carrier call — RLS cannot undo a purchase already
-    placed with the carrier, so the check has to happen first."""
+    """Cross-tenant purchase is refused before the (irreversible, billable) carrier call."""
     fake = _FakeProvider()
     _override_provider_manager(fake)
 

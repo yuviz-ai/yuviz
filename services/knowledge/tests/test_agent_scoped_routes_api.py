@@ -1,15 +1,4 @@
-"""
-HTTP-layer regression tests for two routers found with no tenant check at
-all while auditing RLS Tier 3 coverage (T21/T36's coverage tripwire
-surfaced both as entirely absent from the design's own Tier 3 table):
-
-- GET/PUT /agents/{agent_id}/retrieval-policy (retrieval_policies.py)
-- GET /agents/{agent_id}/knowledge-bases (agent_kb.py's list route —
-  PATCH/DELETE on this router already had the check; GET did not)
-
-Same convention as test_kb_agents_api.py: exercised through the real ASGI
-app, not the service layer directly, since the bug was in the router.
-"""
+"""Tenant checks on agent_id-keyed routes (retrieval-policy GET/PUT, knowledge-bases GET) via the ASGI app."""
 
 from __future__ import annotations
 
@@ -35,10 +24,7 @@ async def _make_agent(pool, tenant):
 async def test_retrieval_policy_get_cross_tenant_is_403_unknown_agent_is_404(
     client, pool, test_tenant, test_admin, other_tenant_admin,
 ):
-    # assert_tenant_access's standard convention (not knowledge_bases.py's
-    # deliberate 404-only anti-oracle exception): a genuine cross-tenant
-    # UUID mismatch is 403, an unresolvable/unknown id is 404 — matching
-    # agent_kb.py's already-shipped PATCH/DELETE on the same _authorize_agent.
+    # Standard convention here (unlike knowledge_bases.py): cross-tenant 403, unknown 404.
     agent = await _make_agent(pool, test_tenant)
 
     cross_resp = await client.get(

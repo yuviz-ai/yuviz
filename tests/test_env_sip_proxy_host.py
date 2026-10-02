@@ -1,11 +1,6 @@
-"""SIP_PROXY_HOST must reach the Gateway and Campaigns blank until
-scripts/update_kamailio_ip.sh writes Kamailio's real IP. A shipped default
-(it used to be 127.0.0.1) overrides gateway.yaml's "" and defeats the
-Gateway's sip_proxy_host_unset refusal: transfers then dial a host Kamailio
-is not listening on and the caller hears ~32 s of silence.
-
-Drives the real scripts/lib/env.sh in bash and zsh (start_local.sh is
-sourced into either), against a scratch copy of the repo's .env.example.
+"""SIP_PROXY_HOST stays blank until update_kamailio_ip.sh writes Kamailio's IP;
+a shipped default would defeat the Gateway's sip_proxy_host_unset refusal.
+Drives scripts/lib/env.sh in bash and zsh against a scratch .env.example.
 """
 
 from __future__ import annotations

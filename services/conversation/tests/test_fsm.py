@@ -1,8 +1,4 @@
-"""
-Tests for ConversationFSM — mirrors the C++ call_fsm_test.cpp coverage.
-
-Run with: pytest services/conversation/tests/test_fsm.py -v
-"""
+"""Tests for ConversationFSM; mirrors the C++ call_fsm_test.cpp coverage."""
 
 import pytest
 from dataclasses import dataclass, field
@@ -213,8 +209,7 @@ class TestTransfer:
         assert cap.last_transfer_queue == "billing"
 
     def test_transfer_completed_success_moves_to_finalizing(self):
-        """Phase 5D: success no longer goes straight to CLOSING — it waits
-        in FINALIZING for SessionFinalizer (see TestSessionFinalization)."""
+        """Success waits in FINALIZING for SessionFinalizer instead of going straight to CLOSING."""
         fsm, cap = make_fsm()
         drive_to_listening(fsm)
         fsm.on_transfer_requested("billing", "escalation")
@@ -276,9 +271,7 @@ class TestTransferRecovery:
         assert fsm.state == CallFsmState.SPEAKING
 
     def test_recovery_speaking_returns_to_listening_via_existing_playback_finished(self):
-        """SPEAKING -> LISTENING after recovery reuses the *existing*
-        on_playback_finished transition — no new mechanism needed once the
-        gateway acks the apology's own TTS playback."""
+        """SPEAKING -> LISTENING after recovery reuses the existing on_playback_finished transition."""
         fsm, cap = make_fsm()
         drive_to_listening(fsm)
         fsm.on_transfer_requested("billing", "escalation")
@@ -292,10 +285,7 @@ class TestTransferRecovery:
         assert cap.last_playback_int is False
 
     def test_full_recovery_cycle_from_speaking_state(self):
-        """Exercises the full diagram: Transferring -> [TransferFailed] ->
-        Recovering -> Speaking -> Listening, starting from a call already
-        mid-turn (Speaking) when the transfer was requested — the realistic
-        case, since a transfer is requested while the agent is talking."""
+        """Full cycle: Transferring -> TransferFailed -> Recovering -> Speaking -> Listening, starting mid-turn."""
         fsm, _ = make_fsm()
         drive_to_speaking(fsm)
         assert fsm.state == CallFsmState.SPEAKING
@@ -325,11 +315,7 @@ class TestTransferRecovery:
         assert fsm.state == CallFsmState.LISTENING
 
     def test_transfer_still_supports_terminal_failure_path(self):
-        """The raw on_transfer_completed(False, ...) -> CLOSING path (no
-        recovery) still exists and still works — session.py simply no
-        longer calls it for TransferFailed, but the FSM primitive itself
-        is unchanged, matching the C++ mirror for genuinely terminal
-        failures."""
+        """The terminal on_transfer_completed(False, ...) -> CLOSING path (no recovery) still works."""
         fsm, cap = make_fsm()
         drive_to_listening(fsm)
         fsm.on_transfer_requested("billing", "escalation")

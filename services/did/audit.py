@@ -1,10 +1,4 @@
-"""
-audit_log writer for DID Service — writes to the same platform-wide
-audit_log table Config Service uses (same Postgres database, shared table,
-entity_type='purchased_number' for rows this service owns). Duplicated
-from services/config/audit.py rather than imported cross-service — same
-reasoning as services/knowledge/audit.py.
-"""
+"""audit_log writer for DID Service (shared platform table); duplicated, not cross-imported from services/config."""
 
 from __future__ import annotations
 

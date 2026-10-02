@@ -1,14 +1,6 @@
-"""
-A Redis outage must never propagate out of get_json/set_json/invalidate —
-callers (tenants.py, agents.py, provider_configs.py) rely on this to degrade
-to "every read hits Postgres" rather than fail the request outright. See
-cache.py's module docstring.
+"""A Redis outage must never propagate out of the cache helpers; reads degrade to Postgres.
 
-cache._client is a lazily-created module-level singleton shared across the
-whole test session (asyncio_default_fixture_loop_scope=session) — these
-tests swap it out for a client pointing at an unreachable port, then restore
-whatever was there before, rather than touching the real shared client other
-tests depend on.
+Tests temporarily swap the shared cache._client for an unreachable one and restore it.
 """
 
 from __future__ import annotations

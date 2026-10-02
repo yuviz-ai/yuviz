@@ -36,35 +36,14 @@ const STATUS_BADGE: Record<DerivedInviteStatus, string> = {
   accepted: "green",
 };
 
-// `expired` is derived, never stored (services/config/user_invites.status
-// only ever holds pending/accepted/revoked) — matches the design's "the
-// table is the state machine" and lets a resend on an expired invite still
-// go through server-side (it only checks status = 'pending').
+// `expired` is derived, never stored; the server only stores pending/accepted/revoked.
 function deriveStatus(invite: Invite): DerivedInviteStatus {
   if (invite.status === "pending" && new Date(invite.expires_at) < new Date()) return "expired";
   return invite.status;
 }
 
-// A read-only reference, not an editable ACL — this system's roles are
-// fixed in code (services/config/deps.py's require_role() call sites,
-// CONSOLE_ROLES, LIVE_CALLS_ROLES, TRANSCRIPT_ROLES), not a per-tenant
-// configurable permission set, so there is nothing here for a click to
-// grant or revoke. Every ✓/— below traces to a real gate, not a guess:
-//   - dashboards: CONSOLE_ROLES (deps.py) — supervisor isn't a member,
-//     and AppShell's own nav restricts a supervisor to the Live Calls
-//     item alone, so it never reaches the dashboard route at all.
-//   - live calls / transcripts: LIVE_CALLS_ROLES / TRANSCRIPT_ROLES
-//     (deps.py) — the two sets this feature's own security rounds fixed.
-//   - agents/IVR, phone numbers/telephony, invites: require_role(
-//     "superadmin","admin") on agents.py / phone_numbers.py /
-//     telephony_configs.py / carriers.py / invites.py.
-//   - tenants (create/delete) and the audit log: require_role(
-//     "superadmin") alone (tenants.py, audit_log.py) — the one row where
-//     "admin" is genuinely narrower than tenant management as a whole
-//     (an admin CAN update their own tenant's settings, just not create
-//     or delete a tenant, or read another tenant's).
-// `agent` isn't a column: it has zero console reach (CONSOLE_ROLES
-// excludes it), landing on /no-access on any console URL.
+// Read-only reference; roles are fixed in code. Keep in sync with services/config/deps.py
+// (CONSOLE_ROLES, LIVE_CALLS_ROLES, TRANSCRIPT_ROLES) and router require_role() gates.
 type Reach = "yes" | "no";
 const CAPABILITY_MATRIX: { label: string; superadmin: Reach; admin: Reach; supervisor: Reach; viewer: Reach }[] = [
   { label: "View dashboards & analytics", superadmin: "yes", admin: "yes", supervisor: "no", viewer: "yes" },
@@ -100,10 +79,7 @@ export function TeamMembers({ embedded = false }: { embedded?: boolean }) {
   const [invites, setInvites] = useState<Invite[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // Page-level, not modal-level: AC12's "email failed to send" warning has
-  // to survive the modal closing — the modal is gone by the time the
-  // operator would otherwise see it (same "banner near the top of the page"
-  // pattern the error banner below already uses, just amber instead of red).
+  // Page-level so the "email failed to send" warning survives the modal closing.
   const [notice, setNotice] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
 
@@ -126,28 +102,16 @@ export function TeamMembers({ embedded = false }: { embedded?: boolean }) {
   }, []);
 
   const isSuperadmin = currentUser?.role === "superadmin";
-  // Mirrors require_role("superadmin", "admin") on the invite-create route
-  // (services/config/routers/invites.py) — the server enforces this either
-  // way, this just keeps the button from being offered to a role it always
-  // 403s for.
+  // Mirrors the server's require_role("superadmin", "admin") on invites.
   const canManageUsers = isSuperadmin || currentUser?.role === "admin";
 
-  // A tenant-scoped viewer's own `?tenant_id=` would be a no-op (the server
-  // already narrows to their tenant regardless), so only a platform-scoped
-  // viewer (superadmin) who picked one specific tenant in the header
-  // switcher passes it explicitly — "All tenants" (the default) keeps the
-  // unfiltered, every-tenant fetch this page always did.
+  // Only a superadmin with a specific tenant selected filters; the server scopes everyone else.
   const scopeTenantId = isPlatformScoped && !isAllTenants ? tenant?.id : undefined;
 
   const refresh = () => {
     setLoading(true);
     setError(null);
-    // GET /invites is superadmin/admin-only, so it 403s for a viewer — never
-    // request it for a role that can't have invites. And each fetch below is
-    // independently caught (allSettled, not Promise.all) so one forbidden or
-    // failing sub-request can't blank out data the others already returned;
-    // a real failure still surfaces via `error` below, it just doesn't wipe
-    // the page.
+    // Viewers can't GET /invites. allSettled so one failing request doesn't blank the rest.
     getCurrentUser()
       .then(async (me) => {
         setCurrentUser(me);
@@ -202,9 +166,7 @@ export function TeamMembers({ embedded = false }: { embedded?: boolean }) {
       });
       setModalOpen(false);
       if (invite.email_sent === false) {
-        // Non-fatal (AC12): the row is already pending and resendable —
-        // the modal is about to close, so this has to live at the page
-        // level to be seen at all.
+        // Non-fatal: the invite exists and can be resent.
         setNotice(`Invite created for ${invite.email}, but the email failed to send. Use Resend once the SMTP issue is fixed.`);
       }
       refresh();
@@ -369,13 +331,7 @@ export function TeamMembers({ embedded = false }: { embedded?: boolean }) {
             <tbody>
               {invites.map((inv) => {
                 const status = deriveStatus(inv);
-                // Product decision: an accepted (or already revoked) invite
-                // offers neither action — not disabled-with-a-tooltip,
-                // simply absent. The server would 409 "invite is not
-                // pending" on either, but that path must be unreachable
-                // through this UI. Resend now extends expires_at (PR #19
-                // finding 2), so it's offered on an expired invite too —
-                // same predicate as revoke.
+                // Actions only for pending invites (incl. expired: resend extends expires_at).
                 const revocable = inv.status === "pending";
                 const cooldown = resendCooldownRemaining(inv);
                 return (

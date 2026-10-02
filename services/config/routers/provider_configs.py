@@ -33,9 +33,7 @@ _secret_resolver = CompositeSecretResolver()
 
 
 async def _resolve_tenant_id(tenant_id: str) -> None:
-    """Raises a clean 400/404 for a malformed or nonexistent tenant_id,
-    instead of letting the INSERT's FK constraint violation reach the
-    client as an unhandled 500 with a Postgres constraint name in it."""
+    """Clean 400/404 instead of an FK violation surfacing as a 500."""
     await validate_id_exists(tenant_id, tenants_service.get_tenant_by_id, "tenant")
 
 
@@ -46,10 +44,7 @@ async def list_provider_configs(
     environment: Literal["prod", "staging", "dev"] | None = Query(default=None),
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    # Same scoping the by-id routes get via _authorize_provider, and for the
-    # same reason — more so now that api_key_ref can be an enc: ref carrying
-    # the credential itself rather than a pointer to one. Without this any
-    # authenticated user could list another tenant's provider rows by id.
+    # api_key_ref may carry a sealed credential, so listing is tenant-checked too.
     await assert_tenant_access(tenant_id, current_user)
     return await provider_configs_service.list_provider_configs(
         tenant_id, role=role, environment=environment,
@@ -82,27 +77,8 @@ async def create_provider_config(
 
 
 async def _authorize_provider(provider_id: str, current_user: CurrentUser) -> dict:
-    """404 if the provider doesn't exist; 403 if it exists but belongs to a
-    different tenant than the caller.
-
-    Exemption predicate is `deps.is_platform_scoped` (tenant_id IS NULL,
-    lesson 24) — a real superadmin account can have a non-null tenant_id
-    set (a leftover default from account creation, unrelated to their
-    actual unrestricted access), so `role == "superadmin"` alone would
-    over-grant; and the Conversation Service's own internal service
-    account (conversation-service@internal.yuviz.ai, role=viewer,
-    tenant_id=NULL) legitimately reads provider configs across every
-    tenant it serves calls for, one process handling all tenants — a
-    role=="superadmin"-only check broke this and made every live call
-    silently fall back to agent_config.py's hardcoded legacy default,
-    confirmed live as the "Hello! How can I help you today?" greeting
-    instead of the real configured one.
-
-    Without this authorization at all, any authenticated tenant-scoped
-    admin/viewer could read, edit, or delete another tenant's
-    provider_config by id, and list_provider_voices would resolve *that*
-    tenant's real api_key_ref and burn its ElevenLabs quota using their
-    key."""
+    """404 if missing; 403 if it belongs to a different tenant.
+    Exemption is by scope (tenant_id NULL), not role: the Conversation service account is a viewer."""
     platform_scoped = is_platform_scoped(current_user)
     cfg = await get_or_404(
         provider_configs_service.get_provider_config(provider_id, platform_scoped=platform_scoped),
@@ -127,9 +103,7 @@ async def update_provider_config(
     fields = body.model_dump(exclude_unset=True)
     if not fields:
         raise HTTPException(status_code=400, detail="request body has no fields to update")
-    # A cleared key fails silently until the next real call to this
-    # provider — allowed only when paired with a real replacement in the
-    # same request (a rotation, not a clear).
+    # A cleared key fails silently at call time; blank is allowed only alongside a replacement.
     if "api_key_ref" in fields and not (fields["api_key_ref"] or "").strip() and not (fields.get("api_key") or "").strip():
         raise HTTPException(status_code=400, detail="api_key_ref must not be blank")
     set_target_tenant(cfg["tenant_id"])
@@ -164,9 +138,7 @@ async def preview_provider_voice(
     body: VoicePreview,
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    """Speak the caller's own text in this voice. Same Tier 3 authorization
-    and same one-place-resolves-the-secret rule as /voices above — the key is
-    used for one outbound call and never reaches the admin UI."""
+    """Speak the caller's text in this voice; the resolved key never reaches the admin UI."""
     cfg = await _authorize_provider(provider_id, current_user)
     set_target_tenant(cfg["tenant_id"])
     try:
@@ -178,8 +150,6 @@ async def preview_provider_voice(
     return Response(
         content=wav,
         media_type="audio/wav",
-        # A preview is regenerated whenever the text changes, and the text is
-        # in the request body rather than the URL, so caching it would serve
-        # the previous line for a changed prompt.
+        # The text is in the body, not the URL, so a cached response would replay the old line.
         headers={"Cache-Control": "no-store"},
     )

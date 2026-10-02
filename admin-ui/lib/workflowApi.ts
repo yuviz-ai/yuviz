@@ -1,18 +1,9 @@
-// Workflow draft/publish/versions — mirrors services/config/routers/agents.py's
-// workflow routes. Kept out of lib/api.ts only because that file is already
-// 1000 lines of unrelated CRUD; the request()/ApiError conventions are the
-// same, reused rather than re-implemented.
+// Agent workflow draft/publish/versions client (services/config/routers/agents.py).
 
 import { ApiError, request } from "./api";
 
-// The React Flow save format, stored verbatim so canvas positions
-// round-trip (docs/workflow.md §4.1). The shape is defined once, in
-// libs/config_sdk/workflow.py — this is the editor's view of it, not a
-// second source of truth: anything the server rejects, it rejects with a
-// structured error pointing at the node or edge.
-// "global" is not a step in the call: it carries the always-on instruction
-// prepended to every step's prompt, and is wired to nothing. At most one per
-// flow (the server rejects a second).
+// React Flow save format; libs/config_sdk/workflow.py is the source of truth.
+// "global" is unwired and holds the instruction prepended to every step (max one per flow).
 export type WorkflowNodeType = "start" | "agent" | "transfer" | "end" | "global";
 
 export interface ExtractionVariable {
@@ -63,8 +54,6 @@ export interface WorkflowGraph {
   }[];
 }
 
-// {kind, id, field} is what lets the canvas paint the offending node or
-// edge, instead of one toast the operator has to go hunting from.
 export interface WorkflowError {
   kind: "node" | "edge" | "workflow";
   id: string | null;
@@ -149,8 +138,7 @@ export const rollbackWorkflow = (tenantSlug: string, agentId: string, version: n
     method: "POST",
   });
 
-/** A failed publish returns its per-node/per-edge errors under `errors`,
- *  the same field /validate uses — one shape to read either way. */
+/** Extract per-node/per-edge errors from a failed publish. */
 export function publishErrors(e: unknown): { message: string; errors: WorkflowError[] } {
   if (e instanceof ApiError) {
     return { message: e.detail, errors: (e.body?.errors as WorkflowError[]) ?? [] };
@@ -158,9 +146,7 @@ export function publishErrors(e: unknown): { message: string; errors: WorkflowEr
   return { message: String(e), errors: [] };
 }
 
-/** Client fallback matching libs/config_sdk/workflow.starter_graph — only
- *  used when both draft and live are missing (legacy rows). create_agent
- *  already seeds the server-side graph for new agents. */
+/** Mirrors libs/config_sdk/workflow.starter_graph; used only when draft and live are both missing. */
 export function starterGraph(greeting = "", systemPrompt = ""): WorkflowGraph {
   return {
     version: 1,

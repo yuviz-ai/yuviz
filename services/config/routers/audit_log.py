@@ -19,9 +19,7 @@ async def list_audit_log(
     offset: int = Query(default=0, ge=0),
     current_user: CurrentUser = Depends(require_role("superadmin")),
 ):
-    # lesson 24: role alone (`require_role("superadmin")` above) answers
-    # "is this actor privileged", not "which tenant is it scoped to" — a
-    # tenant-scoped superadmin must only ever see its own tenant's rows.
+    # Role isn't scope: a tenant-scoped superadmin only sees its own tenant's rows.
     platform_scoped = is_platform_scoped(current_user)
     return await audit.list_audit_log(
         tenant_id=None if platform_scoped else current_user.tenant_id,

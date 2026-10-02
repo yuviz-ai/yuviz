@@ -1,20 +1,10 @@
 #!/usr/bin/env python3
 """
-Gateway smoke test — pipeline path verification.
-
-Connects to the gateway WebSocket, sends a real synthesized speech clip
-(not a synthetic tone — SileroVAD is a neural model and does not classify a
-sine wave as speech), and verifies that the pipeline (VAD -> STT -> LLM ->
-TTS) responds with at least one TTS chunk after the greeting.
-
-Expected FSM path:
-  Listening → Recognizing (speech start) → Thinking (STT result) →
-  Synthesizing (TTS started) → Speaking (first TTS chunk received)
+Gateway smoke test: send synthesized speech, expect a post-greeting TTS chunk.
 
 Prerequisites:
   pip install websockets soundfile scipy
-  macOS `say` command (used to synthesize the test phrase; same approach as
-  services/conversation/providers/tts/macos.py)
+  macOS `say` command
   Build gateway:  cmake -B build && cmake --build build -j
   Run gateway:    ./build/gateway/voiceai_gateway config/gateway.yaml
 
@@ -63,14 +53,7 @@ _SILENCE_FRAME: bytes = bytes(FRAME_BYTES)
 
 
 def _synthesize_test_speech(text: str, sample_rate: int) -> bytes:
-    """
-    Synthesize `text` via macOS `say` and return raw L16 PCM at sample_rate.
-
-    A synthetic sine tone doesn't fool SileroVAD (it's a real speech-detection
-    model, not an energy threshold), so the smoke test needs actual speech
-    audio to exercise the VAD -> STT -> LLM -> TTS chain end-to-end.  Reuses
-    the same say -> AIFF -> resample_poly -> PCM approach as MacOSTTS.
-    """
+    """Synthesize `text` via macOS `say` as L16 PCM; SileroVAD ignores sine tones."""
     fd, tmp_path = tempfile.mkstemp(suffix=".aiff")
     os.close(fd)
     try:
@@ -111,18 +94,7 @@ _GREETING_DEADLINE_S = 10.0  # max time to wait for the greeting to arrive+finis
 
 
 async def _drain_greeting(ws) -> int:
-    """
-    Drain the agent's opening line, which servicer.py streams immediately on
-    connect (session.greet()) -- independent of any audio we send.  Without
-    this, the first binary frame we see is the greeting, not a response to
-    our audio, and a smoke test would falsely PASS on it (a short greeting
-    like "Hello! How can I help you today?" synthesizes in ~1-2s, long before
-    the VAD could plausibly have detected speech_ended on our sent audio).
-
-    Waits for a gap of _GREETING_GAP_S with no new binary frame, which marks
-    the end of the greeting's playback.  Returns the number of chunks drained
-    (0 if no greeting is configured for this agent).
-    """
+    """Drain the greeting so it isn't mistaken for a reply; returns chunks drained."""
     deadline = time.monotonic() + _GREETING_DEADLINE_S
     chunks = 0
     seen_any = False
@@ -166,12 +138,7 @@ async def smoke_test(host: str, port: int, timeout_s: float) -> bool:
             print("Sending real speech L16 PCM frames ...")
             t0 = time.monotonic()
 
-            # Phase 1 — send the synthesized speech clip so SileroVAD fires
-            #           speech_start and the ConvService accumulates real audio.
-            # Phase 2 — send 1.5s of silence so VAD fires speech_ended, which
-            #           triggers STT → LLM → TTS in the ConvService pipeline.
-            # Echo mode (--mode echo) responds during Phase 1.
-            # Pipeline mode responds after Phase 2 completes (expect 10-30s total).
+            # Speech, then 1.5s of silence so VAD fires speech_ended.
             silence_frames = 1_500 // FRAME_MS   # 1.5 s of silence
             received_chunks = 0
 
@@ -196,10 +163,7 @@ async def smoke_test(host: str, port: int, timeout_s: float) -> bool:
             send_task = asyncio.create_task(_send_loop())
             recv_task = asyncio.create_task(_recv_loop())
             try:
-                # Always wait the full timeout for a TTS chunk.
-                # send_task completes after 3.5s (2s speech + 1.5s silence);
-                # the WebSocket must stay open after that so the pipeline
-                # (STT→LLM→TTS, 10-30s) has time to respond.
+                # Keep the socket open past send_task; the pipeline takes 10-30s.
                 await asyncio.wait_for(asyncio.shield(recv_task), timeout=timeout_s)
             except asyncio.TimeoutError:
                 pass

@@ -1,27 +1,8 @@
 """
-SessionFinalizer — post-call cleanup after a successful transfer, run
-before the gateway is told it may destroy its own CallSession (Phase 5D of
-AI-to-human transfer — see fsm.py's FINALIZING state and session.py's
-on_transfer_completed()).
+SessionFinalizer — post-transfer cleanup as a pipeline of IFinalizationSteps,
+run before the gateway tears down its CallSession.
 
-Structured as a step pipeline (IFinalizationStep), the same extensibility
-model this project already uses for providers (AI Provider Manager) and
-telephony (IDidProvider) — adding a future cleanup action (CRM sync, S3
-recording upload, a Kafka event, analytics, billing, audit) means writing
-one new step and adding it to the list, never touching SessionFinalizer
-itself.
-
-Where a step names a component this project hasn't built (a ToolExecutor —
-no tool orchestrator exists yet, Phase 6b per project memory; a distinct
-MemoryManager or tracing system), that step is an honest, logged no-op —
-not a stub call to an imaginary class. This matches the project's
-established "honest empty, not a fake stub" precedent (see
-libs.knowledge_sdk's get_tools()).
-
-Idempotent per session_id: calling finalize() twice for the same session
-runs the pipeline once and returns the cached result the second time —
-necessary because the gateway may (rarely) end up calling this path more
-than once for the same call (e.g. a retried notification).
+Idempotent per session_id: the gateway may retry the notification.
 """
 
 from __future__ import annotations
@@ -48,11 +29,7 @@ _SUMMARY_PROMPT = (
 
 
 class FinalizationStatus(Enum):
-    """Overall outcome of one finalize() run — distinct from individual
-    step failures, which are always tolerated and logged (see
-    SessionFinalizer._run_step). TIMED_OUT specifically means the summary
-    step exceeded its own budget and a fallback was used; cleanup itself
-    still completed."""
+    """Outcome of one finalize() run; TIMED_OUT means the summary used its fallback."""
     RUNNING   = "running"
     COMPLETED = "completed"
     TIMED_OUT = "timed_out"
@@ -61,24 +38,15 @@ class FinalizationStatus(Enum):
 
 @dataclass
 class FinalizationContext:
-    """Mutable state threaded through the step pipeline. Each step reads
-    what it needs and writes what it produces — e.g. SummaryStep writes
-    `summary`/`summary_generated`, PersistSummaryStep reads `summary` and
-    writes `transcript_written`."""
+    """Mutable state threaded through the step pipeline."""
     session_id:   str
     history:      list[ChatMessage]
     llm:          ILLM | None
-    cancel_event: object  # asyncio.Event | None — kept untyped to avoid a
-                          # hard asyncio.Event import requirement for callers
-                          # that pass None in tests
+    cancel_event: object  # asyncio.Event | None
     transcripts:  TranscriptBuilder | None
     metrics:      IMetrics
     started_at:   float = field(default_factory=time.monotonic)
-    # Set by SessionFinalizer.finalize() when start_summary_early() was
-    # called for this session_id — SummaryStep awaits this instead of
-    # starting a fresh generation (see SessionFinalizer's own docstring on
-    # why: this is what actually saves the latency, since the task has
-    # normally already completed by the time finalize() runs).
+    # From start_summary_early(); SummaryStep awaits it instead of generating afresh.
     precomputed_summary_task: "asyncio.Task[str] | None" = None
 
     summary:            str  = ""
@@ -89,9 +57,7 @@ class FinalizationContext:
 
 @dataclass(frozen=True)
 class FinalizationResult:
-    """Immutable, public-facing outcome — what callers outside this module
-    (pipeline.py, session.py) actually see. Deliberately narrower than
-    FinalizationContext (which is this module's own working state)."""
+    """Public outcome of finalize()."""
     summary:            str
     summary_generated:  bool
     transcript_written:  bool
@@ -99,10 +65,7 @@ class FinalizationResult:
 
 
 class IFinalizationStep(Protocol):
-    """One cleanup action. `name` is used for logging/error attribution
-    only (see SessionFinalizer._run_step) — implementations should be
-    stateless or session-agnostic; all per-session state lives on the
-    FinalizationContext passed to run()."""
+    """One stateless cleanup action; per-session state lives on the context."""
     name: str
 
     async def run(self, ctx: FinalizationContext) -> None: ...
@@ -111,8 +74,7 @@ class IFinalizationStep(Protocol):
 # ── Steps ─────────────────────────────────────────────────────────────────────
 
 class StopRuntimeStep:
-    """Stops AgentRuntime — signals any in-flight LLM generation for this
-    session to stop before SummaryStep starts its own call."""
+    """Stop in-flight LLM generation before SummaryStep runs."""
     name = "stop_agent_runtime"
 
     async def run(self, ctx: FinalizationContext) -> None:
@@ -121,8 +83,7 @@ class StopRuntimeStep:
 
 
 class StopToolExecutorStep:
-    """No tool orchestrator exists yet (Phase 6b, not built — see project
-    memory's AI-to-human transfer review). Honest no-op."""
+    """No-op placeholder."""
     name = "stop_tool_executor"
 
     async def run(self, ctx: FinalizationContext) -> None:
@@ -130,10 +91,7 @@ class StopToolExecutorStep:
 
 
 class CancelTimersStep:
-    """This pipeline owns no timers of its own; the only per-session
-    timer-like state (the cancel event) is handled by StopRuntimeStep.
-    Kept as its own named step for parity with the requirement list and
-    its own log line if it ever needs one."""
+    """No-op: no timers are owned here."""
     name = "cancel_timers"
 
     async def run(self, ctx: FinalizationContext) -> None:
@@ -141,9 +99,7 @@ class CancelTimersStep:
 
 
 class MemoryFlushStep:
-    """No separate long-term memory store exists; "flushing" here means
-    the in-memory history is finalized and ready to summarize (the next
-    step) — nothing to await."""
+    """No-op: there is no separate memory store."""
     name = "flush_memory_manager"
 
     async def run(self, ctx: FinalizationContext) -> None:
@@ -151,15 +107,7 @@ class MemoryFlushStep:
 
 
 class SummaryStep:
-    """
-    Generates the conversation summary via a real LLM call — bounded by
-    timeout_s so a slow/hung LLM can never hold up finalization (and,
-    transitively, the gateway's own teardown, which is waiting on
-    ConversationFinalized). On timeout, uses a fixed fallback string and
-    increments conversation_finalize_timeout_total; cleanup still
-    completes promptly either way — LLM latency never holds the media
-    lifecycle hostage.
-    """
+    """LLM summary bounded by timeout_s (the gateway's teardown waits on it); falls back on timeout."""
     name = "generate_summary"
 
     _FALLBACK = "Conversation summary unavailable (generation timed out)."
@@ -169,12 +117,7 @@ class SummaryStep:
 
     async def run(self, ctx: FinalizationContext) -> None:
         if ctx.precomputed_summary_task is not None:
-            # Speculative generation kicked off by start_summary_early() —
-            # see SessionFinalizer's docstring. Normally already done by
-            # now (TransferInitiated -> ring/answer/bridge takes far longer
-            # than a summary LLM call), so this await is near-instant; if
-            # it isn't, the same timeout budget as the cold-start path
-            # still applies rather than blocking finalize() indefinitely.
+            # Usually already done; the same timeout still applies.
             try:
                 ctx.summary = await asyncio.wait_for(
                     asyncio.shield(ctx.precomputed_summary_task), timeout=self._timeout_s,
@@ -225,9 +168,7 @@ class SummaryStep:
 
 
 class PersistSummaryStep:
-    """Persists the summary (real or fallback) via the existing
-    transcript_entries table — no separate long-term-memory schema exists
-    to migrate to for this."""
+    """Persist the summary as a transcript_entries row."""
     name = "persist_session_summary"
 
     async def run(self, ctx: FinalizationContext) -> None:
@@ -238,9 +179,7 @@ class PersistSummaryStep:
 
 
 class MetricsStep:
-    """Emits the final, always-run metrics for this finalize() call.
-    conversation_finalize_timeout_total (see SummaryStep) is emitted
-    separately, at the point of the timeout itself, not here."""
+    """Emit finalize success/latency metrics."""
     name = "emit_metrics"
 
     async def run(self, ctx: FinalizationContext) -> None:
@@ -251,7 +190,7 @@ class MetricsStep:
 
 
 class TracingStep:
-    """No tracing infrastructure exists in this codebase yet. Honest no-op."""
+    """No-op placeholder."""
     name = "finish_tracing"
 
     async def run(self, ctx: FinalizationContext) -> None:
@@ -259,9 +198,7 @@ class TracingStep:
 
 
 class ProviderCleanupStep:
-    """ISTT/ILLM/ITTS (see providers/interfaces.py) have no
-    close()/shutdown method: they are stateless, shared, per-process
-    instances (ProviderBundle), not per-session resources. Honest no-op."""
+    """No-op: providers are shared per-process, not per-session."""
     name = "close_provider_sessions"
 
     async def run(self, ctx: FinalizationContext) -> None:
@@ -285,24 +222,9 @@ def _default_steps() -> list[IFinalizationStep]:
 # ── Orchestrator ──────────────────────────────────────────────────────────────
 
 class SessionFinalizer:
-    """One instance shared across sessions — stateless except for the
-    idempotency/status caches below; every finalize() call carries
-    whatever session-specific state it needs (history, the LLM instance,
-    the session's cancel event) rather than this class keeping its own
-    per-session dicts of that state, since PipelineConversationHandler
-    already owns it.
+    """Shared across sessions; keeps only idempotency caches and pending early summaries.
 
-    start_summary_early()/discard_pending_summary() are the one exception:
-    they DO keep a small per-session dict (_pending_summary_tasks), because
-    that task has to survive between the TransferInitiated call (which
-    starts it) and either the eventual TransferCompleted call to finalize()
-    (which consumes it) or a TransferFailed/TransferCancelled call to
-    discard_pending_summary() (which throws it away) — see
-    docs/warm_transfer_architecture.md §7. Only the summary generation is
-    started early, not the whole finalize() pipeline: running
-    StopRuntimeStep/PersistSummaryStep/MetricsStep before the call has
-    actually ended would tear down in-flight state and poison the
-    idempotency cache below for a transfer that hasn't succeeded yet.
+    Only the summary starts early: running the full pipeline before success would tear down live state.
     """
 
     def __init__(
@@ -321,20 +243,9 @@ class SessionFinalizer:
     def start_summary_early(
         self, session_id: str, history: list[ChatMessage], llm: ILLM | None,
     ) -> None:
-        """Called on TransferInitiated (see session.py/pipeline.py) — kicks
-        off the summary LLM call speculatively, in parallel with the
-        gateway's ring/answer/bridge sequence, instead of waiting for
-        finalize() to be called on TransferCompleted. The task always
-        resolves to a string (never raises) so it's safe to leave
-        un-awaited if the transfer ends up failing/cancelling — see
-        discard_pending_summary().
+        """Start the summary speculatively on TransferInitiated; the task never raises.
 
-        A pre-existing task for this session_id (e.g. a second
-        TransferInitiated after a failed-then-retried transfer) is left in
-        place rather than replaced: discard_pending_summary() is
-        responsible for clearing it first on that path (see pipeline.py's
-        on_transfer_failed/on_transfer_cancelled).
-        """
+        An existing task is kept; discard_pending_summary() must clear it first."""
         if session_id in self._pending_summary_tasks or not history or llm is None:
             return
 
@@ -351,11 +262,7 @@ class SessionFinalizer:
         self._pending_summary_tasks[session_id] = asyncio.ensure_future(_generate_safe())
 
     def discard_pending_summary(self, session_id: str) -> None:
-        """Called when a speculatively-started summary will never be used —
-        the transfer it was started for failed or was cancelled before
-        dispatch (see pipeline.py's on_transfer_failed/on_transfer_cancelled).
-        Cancels the task if it's still running rather than letting it
-        finish unattended."""
+        """Cancel the speculative summary when its transfer failed or was cancelled."""
         task = self._pending_summary_tasks.pop(session_id, None)
         if task is not None and not task.done():
             task.cancel()
@@ -392,14 +299,11 @@ class SessionFinalizer:
         return result
 
     def status(self, session_id: str) -> FinalizationStatus | None:
-        """Returns None if finalize() was never called (or has been
-        forget()-ten) for this session_id."""
+        """None if finalize() was never called or was forgotten."""
         return self._statuses.get(session_id)
 
     def forget(self, session_id: str) -> None:
-        """Drops the idempotency cache entry for session_id — call once the
-        gateway has actually torn the call down, so a (very unlikely)
-        future session_id reuse doesn't return a stale cached result."""
+        """Drop the idempotency cache entry once the gateway has torn the call down."""
         self._results.pop(session_id, None)
         self._statuses.pop(session_id, None)
 

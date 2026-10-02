@@ -1,15 +1,7 @@
 "use client";
 
-// One edge renderer, for the label.
-//
-// React Flow's built-in `label` draws SVG text with an opaque white box
-// behind it, which on a dark canvas reads as a sticker stuck over the wire.
-// This renders the label as HTML through EdgeLabelRenderer instead — a
-// pill that can be coloured by state, which is what the label needs to do
-// here: an amber "unfinished" pill is the editor's loudest warning.
-//
-// Smooth-step rather than bezier — elbows read as a state machine, curves
-// read as a mind map.
+// Label rendered as HTML via EdgeLabelRenderer so it can be coloured by state;
+// React Flow's built-in SVG label has an opaque white box.
 
 import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath, type EdgeProps } from "@xyflow/react";
 import type { WorkflowEdgeData } from "@/lib/workflowApi";

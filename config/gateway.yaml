@@ -30,32 +30,21 @@ gateway:
     path: "/metrics"
 
   esl:
-    # FreeSWITCH Event Socket — lets the gateway hang up the SIP leg when the
-    # agent ends the call (marker-driven, see PipelineConversationHandler).
-    # Disabled by default: leaving it off just means the SIP call lingers
-    # until the caller hangs up manually (today's behavior), not a crash.
+    # FreeSWITCH Event Socket: lets the gateway hang up the SIP leg when the agent ends the call.
+    # Off means the SIP call lingers until the caller hangs up.
     enabled: true
     host: "127.0.0.1"
     port: 8022    # FreeSWITCH event_socket.conf.xml uses 8022, not the ESL default 8021
     # password: from FREESWITCH_ESL_PASSWORD in .env — never committed here
     connect_timeout_ms: 2000
-    # Every number the Gateway dials — cold transfer AND warm transfer's
-    # agent leg — goes out through this SIP proxy/registrar (Kamailio), never
-    # a FreeSWITCH dialplan context. The setting is SIP_PROXY_HOST /
-    # SIP_PROXY_PORT in .env, which scripts/update_kamailio_ip.sh writes with
-    # Kamailio's IP; a non-blank .env value overrides these. This yaml value
-    # is only the fallback, and stays empty: with no SIP_PROXY_HOST the
-    # Gateway logs an error at startup and refuses transfers to numbers
-    # (sip_proxy_host_unset) instead of sending the INVITE to a wrong host.
+    # Kamailio proxy for all transfer dials. Set via SIP_PROXY_HOST/PORT in .env; keep empty
+    # here so a missing value refuses transfers instead of dialing a wrong host.
     sip_proxy_host: ""
     sip_proxy_port: 5060
 
   redis:
-    # Phase 5 config-plane cache — same Redis + key shape services/config/
-    # writes to (tenant:{tenant_id}). Disabled by default: TenantConfig::
-    # from_redis() degrades to from_default() on any failure, so leaving
-    # this off just means every session uses process-level defaults, not a
-    # crash or rejected call.
+    # Tenant config cache written by services/config (tenant:{tenant_id}).
+    # Off or unreachable falls back to process-level defaults.
     enabled: true
     host: "127.0.0.1"
     port: 6379

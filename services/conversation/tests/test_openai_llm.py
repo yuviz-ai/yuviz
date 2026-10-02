@@ -1,7 +1,4 @@
-"""
-OpenAILLM tests use httpx.MockTransport — no real network call, no cost.
-See test_deepgram.py's docstring for why cloud engines are tested this way.
-"""
+"""OpenAILLM tests via httpx.MockTransport; no real network calls."""
 
 from __future__ import annotations
 
@@ -86,10 +83,7 @@ async def test_generate_ignores_malformed_json_lines():
 
 
 async def test_generate_ignores_reasoning_only_deltas():
-    """Same real shape as generate_with_tools' own version of this test
-    (see its docstring) — a reasoning-model delta with no "content" key at
-    all must never surface as a yielded token, on this plain (no-tools)
-    path too."""
+    """Reasoning-only deltas (no "content" key) never surface as tokens on the plain path."""
     body = (
         b'data: {"choices":[{"delta":{"reasoning":"Thinking...","channel":"analysis"}}]}\n'
         b'data: {"choices":[{"delta":{"content":"Hello"}}]}\n'
@@ -105,8 +99,7 @@ async def test_generate_ignores_reasoning_only_deltas():
     assert tokens == ["Hello"]
 
 
-# ── generate_with_tools() — also exercised live via Groq (OpenAI-compatible,
-# confirmed live, see module docstring) ────────────────────────────────────
+# ── generate_with_tools() (also used via Groq, OpenAI-compatible) ─────────────
 
 def _tool_call_chunk_sse(*chunks: str) -> bytes:
     lines = [c if c.startswith("data: ") else f"data: {c}" for c in chunks]
@@ -115,8 +108,7 @@ def _tool_call_chunk_sse(*chunks: str) -> bytes:
 
 
 async def test_generate_with_tools_single_complete_chunk_shape():
-    """Groq's real behavior, confirmed live: the whole tool_call arrives in
-    one chunk, not built up incrementally."""
+    """Groq sends the whole tool_call in one chunk, not built up incrementally."""
     import json as _json
     from services.conversation.tools.llm_adapter import ToolCallEvent
 
@@ -177,12 +169,7 @@ async def test_generate_with_tools_incrementally_streamed_arguments():
 
 
 async def test_generate_with_tools_forwards_tool_choice_when_given():
-    """tool_choice defaults to unset (API default "auto", full model
-    discretion) — confirmed live, repeatedly, that this is a real
-    contributing factor to fabricated booking claims. When the caller
-    (pipeline.py, on the one narrow condition where forcing a specific
-    tool call is unambiguous) passes one, it must reach the real payload
-    verbatim."""
+    """A caller-supplied tool_choice reaches the request payload verbatim."""
     seen_payload = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -215,17 +202,7 @@ async def test_generate_with_tools_omits_tool_choice_by_default():
 
 
 async def test_generate_with_tools_ignores_reasoning_only_deltas():
-    """Real shape captured live against Groq's openai/gpt-oss-120b
-    (a reasoning model): dozens of delta chunks carrying only {"reasoning":
-    "...", "channel": "analysis"} — no "content" key at all — stream before
-    the model's actual tool call or answer. These are the model's internal
-    chain-of-thought, never meant to be spoken; delta.get("content") or ""
-    already silently no-ops on them since there's no content key to find,
-    but that safety property deserves its own explicit test — a future
-    change that stops defaulting missing content to "" would otherwise
-    start speaking the model's reasoning aloud via TTS with nothing here to
-    catch it. Exactly one ToolCallEvent must still come through once the
-    real tool_calls chunk arrives."""
+    """Reasoning-only deltas (Groq gpt-oss shape) are never spoken; the real tool call still comes through."""
     import json as _json
     from services.conversation.tools.llm_adapter import ToolCallEvent
 

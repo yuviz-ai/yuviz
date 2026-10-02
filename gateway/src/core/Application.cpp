@@ -29,8 +29,7 @@ Application* Application::s_active_ = nullptr;
 // ── Signal handler ────────────────────────────────────────────────────────────
 
 void Application::signal_handler(int /*sig*/) noexcept {
-    // Only touch the atomic — cv::notify_all() is not async-signal-safe (POSIX).
-    // run() uses wait_for() with a 1s timeout so it wakes within 1 second.
+    // notify_all() isn't async-signal-safe; run() polls this flag every 1s.
     if (s_active_)
         s_active_->shutdown_requested_.store(true, std::memory_order_relaxed);
 }
@@ -62,9 +61,7 @@ int Application::run() {
 
     {
         std::unique_lock lock{shutdown_mutex_};
-        // Use wait_for so that a signal-handler-only store (no notify_all) wakes
-        // within 1 s.  Programmatic shutdown() still calls notify_all() for
-        // immediate wakeup in tests and controlled teardowns.
+        // Timed wait: the signal handler sets the flag without notifying.
         while (!shutdown_requested_.load(std::memory_order_relaxed))
             shutdown_cv_.wait_for(lock, std::chrono::seconds{1});
     }
@@ -115,37 +112,24 @@ void Application::initialize() {
         throw std::runtime_error("TimerService failed to start");
 
     // ── Telephony control ────────────────────────────────────────────────────
-    // Connects lazily on first hangup() call, not here — no-op entirely when
-    // config_data_->esl.enabled is false (the default).
+    // Connects lazily.
     esl_client_ = std::make_unique<EslClient>(config_data_->esl, *logger_);
 
     // ── Config-plane cache ────────────────────────────────────────────────────
-    // Connects lazily on first get() call, not here — no-op entirely when
-    // config_data_->redis.enabled is false (the default).
+    // Connects lazily.
     redis_client_ = std::make_unique<RedisClient>(config_data_->redis, *logger_);
 
-    // 2 threads: this only ever does one blocking Redis GET per new call
-    // setup, not sustained work — sized for "never let a burst of new calls
-    // queue behind one slow lookup", not for throughput.
     config_resolver_pool_ = std::make_unique<ThreadPool>(2, "config-resolver");
 
-    // 2 threads: session teardown is normally near-instant; sized for "a
-    // couple of calls hanging up/transferring at once" not sustained load.
     session_cleanup_pool_ = std::make_unique<ThreadPool>(2, "session-cleanup");
 
     // ── Transport factory ────────────────────────────────────────────────────
-    // Register built-in providers.  "grpc" is registered by main.cpp after
-    // construction (see transport_factory() accessor) so that GrpcConversation-
-    // Transport does not need to be linked into gateway_lib (which is also
-    // linked by the test binary that has no gRPC symbols).
+    // "grpc" is registered by main.cpp.
     transport_factory_.register_provider("null", [](Logger& lg) {
         return std::make_unique<NullConversationTransport>(lg);
     });
 
     // ── Session manager ──────────────────────────────────────────────────────
-    // ConversationTransportFactory is injected by reference; it must outlive
-    // session_manager_ (guaranteed: transport_factory_ is a member of Application
-    // and outlives session_manager_).
     auto call_session_factory = std::make_unique<CallSessionFactory>(
         transport_factory_,
         *audio_worker_pool_,
@@ -163,12 +147,7 @@ void Application::initialize() {
     if (!session_manager_->initialize() || !session_manager_->start())
         throw std::runtime_error("SessionManager failed to start");
 
-    // Real-time caller-hangup detection — closes the gap between a caller
-    // actually hanging up and the Gateway noticing (previously only
-    // no_speech_timeout, up to a minute-plus later, or a WebSocket close
-    // mod_audio_fork may send late). Started after session_manager_ since
-    // its callback calls straight into it; degrades to a no-op when
-    // esl.enabled is false, same as esl_client_.
+    // Started after session_manager_, which its callbacks call into.
     esl_event_listener_ = std::make_unique<EslEventListener>(
         config_data_->esl, *logger_,
         [this](const std::string& call_id) {
@@ -200,23 +179,15 @@ void Application::wire_websocket_handlers() {
         }
 
         const std::string sid  = conn->id();
-        const std::string& wsp = conn->path();  // always "/voice/<uuid>" now
+        const std::string& wsp = conn->path();  // "/voice/<uuid>"
 
-        // call_id is the FreeSWITCH channel UUID: the Lua dialplan script
-        // passes it verbatim as the URL segment mod_audio_fork connects to
-        // (see start_voice_ai.lua), so it is known and correct from the
-        // first byte of the connection — unlike DID/ANI/direction, which
-        // arrive in the metadata text frame below, call_id never needs to
-        // wait for anything.
+        // The URL segment is the FreeSWITCH channel UUID (set by start_voice_ai.lua).
         static constexpr std::string_view kPrefix = "/voice/";
         std::string call_id;
         if (wsp.size() > kPrefix.size() && wsp.compare(0, kPrefix.size(), kPrefix) == 0)
             call_id = wsp.substr(kPrefix.size());
 
-        // Rendezvous with the metadata text frame mod_audio_fork sends
-        // before any audio (see CallMetadata's doc comment in Config.h).
-        // Both handlers below run on this same lws thread whenever a frame
-        // arrives for this connection — neither may block.
+        // These handlers run on the lws thread and must not block.
         auto pending = std::make_shared<PendingMetadata>();
 
         conn->set_on_text([pending](const std::string& msg) {
@@ -227,23 +198,13 @@ void Application::wire_websocket_handlers() {
             pending->fulfill_with_close();
         });
 
-        // The bounded wait below, PhoneRoute::from_redis(), and
-        // TenantConfig::from_redis() all either block or take bounded time
-        // off this thread. Resolving them and creating the session happens
-        // on config_resolver_pool_, never on this thread — this is the
-        // *shared* libwebsockets service thread that also pumps I/O for
-        // every other live call, so blocking here would stall their audio,
-        // not just delay this one connection's setup. See
-        // config_resolver_pool_'s declaration in Application.h.
+        // Blocking setup runs off the shared lws thread so other calls' audio never stalls.
         config_resolver_pool_->submit(
             [this, sid, call_id, pending, conn = std::move(conn)]() mutable {
                 const auto meta_json = pending->wait_for(
                     std::chrono::milliseconds{config_data_->websocket.metadata_wait_ms});
 
-                // Re-check after the wait: the connection may have closed
-                // while we were waiting (on_close already fulfilled
-                // pending, or the timeout raced it) — never construct a
-                // session on a dead connection.
+                // The connection may have closed during the wait.
                 if (!conn->is_open()) {
                     logger_->info("Connection closed before session setup sid={}", sid);
                     return;
@@ -255,31 +216,14 @@ void Application::wire_websocket_handlers() {
                         "Metadata frame resolved sid={} did={} ani={} direction={}",
                         sid, md.did, md.ani, md.direction);
 
-                    // DID → tenant/agent routing (see database/schema.sql's
-                    // phone_numbers table and services/config/phone_numbers.py).
-                    // An unknown/empty DID or a Redis miss both resolve to
-                    // {"default","default"} — the same tenant/agent every
-                    // call used before this routing existed, never a
-                    // rejected call.
                     const auto route = PhoneRoute::from_redis(*redis_client_, md.did);
                     logger_->info(
                         "Route resolved sid={} tenant={} agent={} version={}",
                         sid, route.tenant_slug, route.agent_slug, route.version);
 
                     SessionContext ctx;
-                    // sid (WebSocketServer's connection handle) is a
-                    // process-lifetime monotonic counter — unique only
-                    // within one Gateway process's uptime, not across
-                    // restarts. Using it as the persisted session_id (calls
-                    // table PK) meant two calls landing on the same counter
-                    // value after a Gateway restart collided: the second
-                    // call's transcript rows silently appended onto the
-                    // first's, and calls.turn_count/started_at went stale
-                    // for good. call_id — the real FreeSWITCH channel
-                    // UUID, already parsed above — is genuinely unique
-                    // forever, so it's what session_id should actually be.
-                    // sid remains in use purely as SessionManager's
-                    // internal connection-map key (never persisted).
+                    // sid is a per-process counter that repeats across restarts, so the
+                    // persisted session_id must be the channel UUID.
                     ctx.obs.session_id = call_id.empty() ? sid : call_id;
                     ctx.obs.tenant_id  = route.tenant_slug;
                     ctx.obs.call_id    = call_id;
@@ -296,9 +240,7 @@ void Application::wire_websocket_handlers() {
                     metrics_->gauge("sessions.active",
                                      static_cast<double>(session_manager_->active_count()));
                 } catch (const std::exception& e) {
-                    // A discarded std::future would otherwise swallow this
-                    // silently — surface it and drop the connection cleanly
-                    // instead of leaving it half-set-up with no session.
+                    // The discarded future would swallow this silently.
                     logger_->error("Session setup failed sid={} err={}", sid, e.what());
                     conn->close();
                 }
@@ -306,11 +248,7 @@ void Application::wire_websocket_handlers() {
     });
 
     ws_server_->set_on_disconnect([this](const std::string& sid) {
-        // ~CallSession() runs on session_cleanup_pool_, not this lws
-        // event-loop thread — see that pool's own declaration comment.
-        // teardown() drains this pool before session_manager_/metrics_ are
-        // destroyed, so a task still running at shutdown always finds
-        // valid targets to call into.
+        // ~CallSession() can block, so keep it off the lws thread.
         session_cleanup_pool_->submit([this, sid] {
             session_manager_->remove(sid);
             metrics_->increment("sessions.closed");
@@ -325,36 +263,25 @@ void Application::teardown() {
     // 1. Stop accepting new connections so no new sessions can be created.
     if (ws_server_) { ws_server_->stop(); ws_server_->shutdown(); }
 
-    // 1a. Stop before session_manager_ is torn down below — its callback
-    //     calls straight into session_manager_, so it must not still be
-    //     running once that pointer's target starts being destroyed.
+    // 1a. Its callbacks call into session_manager_.
     if (esl_event_listener_) esl_event_listener_->stop();
 
-    // 1b. Drain any in-flight/queued session setup (see config_resolver_pool_'s
-    //     declaration in Application.h) before touching anything its tasks
-    //     reference — ws_server_ is already stopped, so no new tasks can be
-    //     submitted past this point; shutdown() joins after the queue empties.
+    // 1b. Drain pools whose tasks reference session_manager_/metrics_; no new
+    //     tasks can arrive now that ws_server_ is stopped.
     if (config_resolver_pool_) config_resolver_pool_->shutdown();
-
-    // 1c. Same reasoning, for session_cleanup_pool_ — ws_server_ being
-    //     stopped above means set_on_disconnect can no longer submit new
-    //     removal tasks, so this drains whatever's already in flight
-    //     before session_manager_/metrics_ below are destroyed.
     if (session_cleanup_pool_) session_cleanup_pool_->shutdown();
 
-    // 2. Destroy all live sessions via SessionManager.
-    //    ~CallSession: stops control thread, unassigns from pool, cancels timers.
-    //    Must happen before stopping the services those destructors call into.
+    // 2. Before stopping the services ~CallSession calls into.
     if (session_manager_) {
         session_manager_->stop();
         session_manager_->shutdown();
     }
 
-    // 3. Stop data-plane services (all sessions have released their resources).
+    // 3. Data-plane services.
     if (timer_service_)    timer_service_->stop();
     if (audio_worker_pool_) audio_worker_pool_->stop();
 
-    // 4. Stop control-plane components.
+    // 4. Control-plane components.
     if (dispatcher_) { dispatcher_->stop(); dispatcher_->shutdown(); }
     if (metrics_)    { metrics_->stop();    metrics_->shutdown();    }
 

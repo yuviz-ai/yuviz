@@ -86,41 +86,22 @@ class SessionEnded(Event):
 
 @dataclass(frozen=True)
 class TransferRequested(Event):
-    """
-    Published when pipeline.py detects a [[TRANSFER]] directive or an
-    escalation-threshold breach (see directives.py's TransferRequest and
-    PipelineConversationHandler.record_guardrail_violation). Observability
-    only, same posture as every other event on this bus — the transfer
-    itself is executed via the TransferRequest gRPC message servicer.py
-    sends to the gateway, not by any subscriber here.
-    """
+    """A transfer was requested (observability only; execution goes via gRPC)."""
     session_id:    str
     tenant_id:     str
     call_id:       str
-    transfer_type: str   # TransferType.value — plain str at this boundary,
-                          # same "enum internally, .value for observability/
-                          # logging" convention as ConversationFSM's
-                          # from_state/to_state on SessionStateChanged above
+    transfer_type: str   # TransferType.value
     destination:   str
     reason:        str
     trigger:       str = "llm_directive"
-    transfer_id:   str = ""   # observability-only correlation id (Phase 5F)
+    transfer_id:   str = ""   # observability-only correlation id
 
 
-# Phase 5B of AI-to-human transfer: the Gateway notifying the Conversation
-# Service about what the telephony layer is actually doing with a transfer
-# it's executing — the opposite direction from TransferRequested above
-# (which is *this* service telling the world it wants a transfer). These
-# three drive ConversationSession's own ConversationFSM.TRANSFERRING state
-# (see fsm.py) and are otherwise observability-only: no LLM/prompt change,
-# no fallback speech, no workflow change results from receiving them.
+# Gateway -> Conversation transfer progress; drives ConversationFSM.TRANSFERRING.
 
 @dataclass(frozen=True)
 class TransferInitiated(Event):
-    """The gateway has issued uuid_transfer and is now waiting for
-    FreeSWITCH to confirm the outcome. The AI session may be closed by the
-    gateway at any point after this — this is the one guaranteed chance to
-    react before that happens."""
+    """Gateway issued uuid_transfer; the last guaranteed chance to react before the session may close."""
     session_id:    str
     transfer_type: str
     destination:   str
@@ -138,27 +119,15 @@ class TransferCompleted(Event):
 
 @dataclass(frozen=True)
 class TransferFailed(Event):
-    """Confirmed or presumed failed: hung up before bridging, the command
-    was never accepted, or CallFSM's own TransferTimeout elapsed with no
-    confirming event ever arriving (reason="transfer_timeout" in that
-    case)."""
+    """Transfer failed or timed out (reason="transfer_timeout")."""
     session_id:  str
     destination: str
     reason:      str
     transfer_id: str = ""
 
 
-# Phase 5D of AI-to-human transfer: graceful session finalization after a
-# successful transfer — see session_finalizer.py and fsm.py's FINALIZING
-# state. SessionFinalizing brackets the start of cleanup;
-# ConversationFinalized marks it done (and is also sent to the gateway as a
-# gRPC message — see servicer.py — so it can safely tear its own side down).
-#
-# Named ConversationFinalized, not SessionFinalized: "session" means a
-# telephony/media session in the gateway and a per-call AI/business state
-# container here — this event only means "the Conversation Service's own
-# cleanup is done," not "the gateway's resources are released" (that's a
-# separate concern, entirely the gateway's own once it receives this).
+# Post-transfer finalization. ConversationFinalized (also sent to the gateway) means
+# this service's cleanup is done, not that gateway resources are released.
 
 @dataclass(frozen=True)
 class SessionFinalizing(Event):

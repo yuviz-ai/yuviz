@@ -104,9 +104,7 @@ protected:
                        CallFsmTimerConfig{}, metrics_, clock_, logger_};
     }
 
-    // Drives an existing FSM to Speaking via the normal happy path, so
-    // WaitingForHangup tests can start from a realistic pre-state.  Takes a
-    // reference (not returned by value) because CallFSM is non-movable.
+    // Drives an FSM to Speaking via the happy path; by reference since CallFSM is non-movable.
     static void drive_to_speaking(CallFSM& fsm) {
         fsm.on_session_start();
         fsm.on_service_ready();
@@ -206,16 +204,12 @@ TEST_F(CallFsmTest, EndCallPending_EntersWaitingForHangup) {
     fsm.on_playback_finished(/*interrupted=*/false, /*end_call_pending=*/true);
     EXPECT_EQ(fsm.state(), CallFsmState::WaitingForHangup);
     EXPECT_TRUE(has_timer(FsmTimerType::GoodbyeTimeout));
-    // Python only needs to know playback ended — handlers_.on_playback_finished
-    // still fires with interrupted=false even though the FSM took a different
-    // branch than the plain Speaking→Listening path.
+    // on_playback_finished still fires with interrupted=false on this branch.
     EXPECT_FALSE(last_playback_interrupted_);
 }
 
 TEST_F(CallFsmTest, WaitingForHangup_SpeechStartedAwaitsConfirmBeforeCancelling) {
-    // A bare VAD onset must not immediately cancel the goodbye — see
-    // CallFsmTimerConfig::goodbye_confirm. State stays WaitingForHangup
-    // until the confirm timer actually fires.
+    // A bare VAD onset doesn't cancel the goodbye until the confirm timer fires.
     auto fsm = make_fsm();
     drive_to_speaking(fsm);
     fsm.on_playback_finished(false, true);
@@ -224,9 +218,7 @@ TEST_F(CallFsmTest, WaitingForHangup_SpeechStartedAwaitsConfirmBeforeCancelling)
     fsm.on_speech_started(0.5f);
     EXPECT_EQ(fsm.state(), CallFsmState::WaitingForHangup);
     EXPECT_EQ(scheduled_timers_.back(), FsmTimerType::GoodbyeConfirm);
-    // handlers_.on_speech_started must NOT have fired for this onset yet —
-    // last_energy_db_ still holds drive_to_speaking()'s earlier value, not
-    // the 0.5 just passed in.
+    // on_speech_started hasn't fired yet: last_energy_db_ is still the earlier value.
     EXPECT_NE(last_energy_db_, 0.5f);
 }
 
@@ -238,20 +230,14 @@ TEST_F(CallFsmTest, WaitingForHangup_GoodbyeConfirmFiring_CancelsHangup) {
     ASSERT_EQ(fsm.state(), CallFsmState::WaitingForHangup);
 
     fsm.on_timer_fired(FsmTimerType::GoodbyeConfirm);
-    // Must land in Recognizing, not Listening: VAD is edge-triggered and
-    // will not fire a second SpeechStart for this same continuous utterance
-    // (see the long comment in CallFSM::on_speech_started). Landing in
-    // Listening would strand the caller's actual words in the preroll_ ring
-    // buffer, which only flushes on entering Recognizing.
+    // Recognizing, not Listening: VAD is edge-triggered, and preroll_ only flushes on Recognizing.
     EXPECT_EQ(fsm.state(), CallFsmState::Recognizing);
     EXPECT_EQ(transitions_.back().trigger, "goodbye_cancelled");
     EXPECT_EQ(last_energy_db_, 0.5f);  // handlers_.on_speech_started fired now
 }
 
 TEST_F(CallFsmTest, WaitingForHangup_BlipEndsBeforeConfirm_RestoresGoodbyeTimeout) {
-    // notify_speech_ended() arriving before the confirm window elapses means
-    // the onset was a blip (noise, breath) — the hangup must NOT be
-    // cancelled; a fresh full goodbye grace window is armed instead.
+    // Speech ending before confirm means a blip: keep the hangup, re-arm the grace window.
     auto fsm = make_fsm();
     drive_to_speaking(fsm);
     fsm.on_playback_finished(false, true);
@@ -263,8 +249,7 @@ TEST_F(CallFsmTest, WaitingForHangup_BlipEndsBeforeConfirm_RestoresGoodbyeTimeou
     EXPECT_EQ(scheduled_timers_.back(), FsmTimerType::GoodbyeTimeout);
     EXPECT_NE(last_energy_db_, 0.5f);  // handlers_.on_speech_started never fired
 
-    // The stale GoodbyeConfirm timer firing late must now be a no-op —
-    // awaiting_goodbye_confirm_ was cleared by notify_speech_ended().
+    // Stale GoodbyeConfirm is a no-op now.
     fsm.on_timer_fired(FsmTimerType::GoodbyeConfirm);
     EXPECT_EQ(fsm.state(), CallFsmState::WaitingForHangup);
 }
@@ -292,8 +277,7 @@ TEST_F(CallFsmTest, EndCallPending_IgnoredWhenInterrupted) {
 }
 
 TEST_F(CallFsmTest, WaitingForHangup_CanAcceptAudio) {
-    // The caller must be able to speak during the grace window for
-    // WaitingForHangup_SpeechCancelsHangup's mechanism to work at all.
+    // Caller audio must be accepted during the grace window.
     auto fsm = make_fsm();
     drive_to_speaking(fsm);
     fsm.on_playback_finished(false, true);
@@ -302,10 +286,7 @@ TEST_F(CallFsmTest, WaitingForHangup_CanAcceptAudio) {
 }
 
 TEST_F(CallFsmTest, WaitingForHangup_UsesGoodbyeTimeoutOverride) {
-    // EndCall.grace_period_ms (threaded through CallSession as
-    // goodbye_timeout_override) must actually change the armed timer's
-    // duration, not just its type — this is the per-agent-configurable
-    // grace period, not the fixed gateway.yaml default.
+    // Per-agent EndCall.grace_period_ms overrides the armed timer's duration.
     auto fsm = make_fsm();
     drive_to_speaking(fsm);
 
@@ -318,10 +299,7 @@ TEST_F(CallFsmTest, WaitingForHangup_UsesGoodbyeTimeoutOverride) {
 }
 
 TEST_F(CallFsmTest, WaitingForHangup_ZeroOverrideFallsBackToConfigDefault) {
-    // grace_period_ms == 0 (proto3 default, or an old client that predates
-    // this field) must NOT arm a zero-duration timer — that would hang up
-    // instantly with no grace period at all.  It falls back to
-    // CallFsmTimerConfig::goodbye_timeout.
+    // grace_period_ms == 0 (proto3 default) falls back to goodbye_timeout, not an instant hangup.
     auto fsm = make_fsm();
     drive_to_speaking(fsm);
 
@@ -383,11 +361,7 @@ TEST_F(CallFsmTest, Transfer_FromListening) {
     EXPECT_TRUE(has_timer(FsmTimerType::TransferTimeout));
 }
 
-// Phase 4 of AI-to-human transfer: the gateway receives a TransferRequest
-// from the ConversationService mid-turn (see GrpcConversationTransport's
-// kTransferRequest case and CallSession::wire_transport_callbacks), i.e.
-// while the agent's response is still being played out — Speaking is the
-// state that call actually arrives in, not Listening.
+// TransferRequest arrives mid-turn, so Speaking (not Listening) is the realistic pre-state.
 TEST_F(CallFsmTest, Transfer_FromSpeaking) {
     auto fsm = make_fsm();
     drive_to_speaking(fsm);
@@ -401,9 +375,7 @@ TEST_F(CallFsmTest, Transfer_FromSpeaking) {
 }
 
 TEST_F(CallFsmTest, Transfer_CompletedSuccess_MovesToFinalizing) {
-    // Phase 5D: success no longer goes straight to Closing — it waits in
-    // Finalizing for the Conversation Service's own post-call cleanup
-    // (ConversationFinalized) — see Transfer_ConversationFinalized_MovesToClosing.
+    // Success waits in Finalizing for ConversationFinalized before Closing.
     auto fsm = make_fsm();
     fsm.on_session_start();
     fsm.on_service_ready();
@@ -417,14 +389,7 @@ TEST_F(CallFsmTest, Transfer_CompletedSuccess_MovesToFinalizing) {
 }
 
 TEST_F(CallFsmTest, Transfer_CompletedFailure_MovesToThinkingNotClosing) {
-    // A failed transfer is NOT terminal — the Conversation Service's
-    // on_transfer_failed() generates a real apology through the normal
-    // LLM→TTS pipeline and the call continues (confirmed live: an earlier
-    // Closing-bound version raced close_session() against the apology's
-    // own generation and silently killed it). Thinking is the correct
-    // landing state, not Listening, so the apology's own TtsStarted/first
-    // TtsChunk correctly drive Thinking→Synthesizing→Speaking exactly like
-    // any other turn — see do_transfer_completed_'s own comment.
+    // Failure isn't terminal: land in Thinking so the apology turn drives Synthesizing→Speaking.
     auto fsm = make_fsm();
     fsm.on_session_start();
     fsm.on_service_ready();
@@ -432,15 +397,12 @@ TEST_F(CallFsmTest, Transfer_CompletedFailure_MovesToThinkingNotClosing) {
     fsm.on_transfer_completed(false, "");
     EXPECT_EQ(fsm.state(), CallFsmState::Thinking);
     EXPECT_EQ(last_transition().trigger, "transfer_failed");
-    // Reuses the ordinary LlmTimeout safety net if the apology hangs —
-    // no bespoke timer needed for this path.
+    // LlmTimeout covers a hung apology.
     EXPECT_TRUE(has_timer(FsmTimerType::LlmTimeout));
 }
 
 TEST_F(CallFsmTest, Transfer_Timeout_MovesToThinking) {
-    // CallFSM's own TransferTimeout (no BACKGROUND_JOB/CHANNEL_BRIDGE ever
-    // arrived) resolves exactly like an explicit failure — same landing
-    // state, same apology-and-continue behavior.
+    // TransferTimeout resolves like an explicit failure.
     auto fsm = make_fsm();
     fsm.on_session_start();
     fsm.on_service_ready();
@@ -453,11 +415,7 @@ TEST_F(CallFsmTest, Transfer_Timeout_MovesToThinking) {
 }
 
 TEST_F(CallFsmTest, Transfer_SessionCloseDuringTransferring_MovesToClosing) {
-    // A caller/generic hangup mid-transfer must still be able to tear the
-    // session down immediately — unlike a failed *outcome*, this is not a
-    // "continue the conversation" case at all, so it keeps the direct
-    // Transferring→Closing path (distinct from transfer_completed(false)'s
-    // own Transferring→Thinking transition added above).
+    // Hangup mid-transfer still tears down directly (unlike a failed outcome).
     auto fsm = make_fsm();
     fsm.on_session_start();
     fsm.on_service_ready();
@@ -509,9 +467,7 @@ TEST_F(CallFsmTest, Transfer_FinalizingTimeout_ForcesClosing) {
 }
 
 TEST_F(CallFsmTest, Transfer_SessionCloseDuringFinalizing_MovesToClosing) {
-    // A caller/generic hangup mid-finalization must still be able to tear
-    // the session down — Finalizing is not exempt from the generic
-    // "teardown from any active state" path.
+    // Hangup mid-finalization still tears down.
     auto fsm = make_fsm();
     fsm.on_session_start();
     fsm.on_service_ready();
@@ -565,8 +521,7 @@ TEST_F(CallFsmTest, DoubleClose_IsIdempotent) {
 // ── Timer expirations ─────────────────────────────────────────────────────────
 
 TEST_F(CallFsmTest, MaxUtteranceTimeout_ReturnsToListening) {
-    // Fires while the caller is still talking (before notify_speech_ended) —
-    // the pathological-case safety net, not the STT-response budget.
+    // Fires while the caller is still talking: safety net, not the STT budget.
     auto fsm = make_fsm();
     fsm.on_session_start();
     fsm.on_service_ready();
@@ -591,9 +546,7 @@ TEST_F(CallFsmTest, SttTimeout_ReturnsToListening) {
 }
 
 TEST_F(CallFsmTest, NotifySpeechEnded_SwapsMaxUtteranceTimeoutForSttTimeout) {
-    // A stale MaxUtteranceTimeout firing after speech_ended must not affect
-    // the FSM (it was cancelled and swapped for SttTimeout); only the fresh
-    // SttTimeout should be live.
+    // After speech_ended only SttTimeout is live; MaxUtteranceTimeout was swapped out.
     auto fsm = make_fsm();
     fsm.on_session_start();
     fsm.on_service_ready();
@@ -606,11 +559,7 @@ TEST_F(CallFsmTest, NotifySpeechEnded_SwapsMaxUtteranceTimeoutForSttTimeout) {
     EXPECT_TRUE(std::find(cancelled_timers_.begin(), cancelled_timers_.end(),
                           max_utterance_timer_id) != cancelled_timers_.end());
 
-    // A stale MaxUtteranceTimeout firing now (already cancelled/consumed at
-    // the timer-service level in production) would be a no-op here regardless,
-    // since on_timer_fired only checks state — the real protection is that the
-    // timer service itself won't deliver a cancelled timer.  What we can
-    // directly verify at the FSM level is that STT now gets its own budget:
+    // The timer service drops cancelled timers; at FSM level, verify STT gets its own budget.
     fsm.on_timer_fired(FsmTimerType::SttTimeout);
     EXPECT_EQ(fsm.state(), CallFsmState::Listening);
     EXPECT_TRUE(metrics_.has_increment("fsm.stt_timeout"));

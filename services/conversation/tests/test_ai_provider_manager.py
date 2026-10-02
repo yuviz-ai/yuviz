@@ -1,14 +1,6 @@
 """
-Logic tests for AIProviderManager use an injected fake registry — caching,
-concurrency, and secret-resolution-timing are properties of the manager
-itself, independent of which real engine is behind it. Real-engine tests
-(faster_whisper/ollama/macos/kokoro actually instantiating) are run manually,
-not committed here — faster_whisper's model load alone takes ~13s even for
-the "tiny" model, which would make every `pytest` run pay that cost.
-
-The two exceptions below (Ollama, macOS TTS) ARE committed: neither one's
-constructor makes a network call or loads a model file, so they're as fast
-as the fakes and worth proving end-to-end against real code.
+AIProviderManager logic tests via a fake registry. Real engines are only tested
+where construction is cheap (Ollama, macOS TTS); model-loading engines are too slow.
 """
 
 from __future__ import annotations
@@ -107,8 +99,7 @@ class TestSecretResolution:
         assert resolver.resolved_refs == []
 
     async def test_secret_resolved_exactly_once_across_repeated_get_calls(self):
-        """The non-negotiable rule: secrets resolve at instantiation, never
-        per-call — a cached provider must not re-trigger resolution."""
+        """Secrets resolve at instantiation only, never per get()."""
         resolver = FakeSecretResolver()
         manager = AIProviderManager(resolver, registry=FAKE_REGISTRY)
         cfg = ProviderConfig(
@@ -141,8 +132,7 @@ class TestConcurrency:
         assert all(r is results[0] for r in results)
 
     async def test_concurrent_get_for_different_configs_does_not_serialize(self):
-        """Per-config-id locking: instantiating config A must not block a
-        concurrent request for already-cached config B."""
+        """Instantiating config A must not block a get() for cached config B."""
         async def slow_factory(cfg, api_key):
             await asyncio.sleep(0.2)
             return FakeProviderInstance(cfg, api_key)
@@ -349,10 +339,7 @@ class TestOllamaThinkResolution:
         assert any("extra.think" in record.message for record in caplog.records)
 
     async def test_thinking_capable_model_defaults_think_false_not_omitted(self):
-        """gemma4:e2b's own Ollama default is thinking ON — the admin-ui catalog
-        makes it selectable with no way to set extra.think (ProvidersPanel has no
-        extra.* fields today), so absent think on this model must resolve to an
-        explicit False, not the omit-the-key default every other engine gets."""
+        """Thinking-capable models get think=False when unset (the UI can't set extra.think)."""
         from ..providers.interfaces import ChatMessage
 
         seen_payload = {}
@@ -388,10 +375,7 @@ class TestOllamaThinkResolution:
 
     @pytest.mark.parametrize("string_value,expected", [("true", True), ("false", False), ("True", True), (" False ", False)])
     async def test_string_true_false_is_parsed_not_treated_as_malformed(self, string_value, expected, caplog):
-        """A form-driven or hand-edited config plausibly writes booleans as
-        strings (see admin-ui/components/ToolsPanel.tsx's String(raw) coercion
-        for non-boolean/non-number extra fields) — "false" must mean False,
-        not fall through to the malformed-value warning path."""
+        """String booleans from form-edited configs parse rather than warn as malformed."""
         from ..providers.interfaces import ChatMessage
 
         seen_payload = {}
@@ -422,9 +406,7 @@ class TestRealMacosTtsFactory:
         assert len(audio) > 0
 
 
-# ── Cloud engine registry — construction only, no network (see
-# test_deepgram.py/test_openai_llm.py/test_elevenlabs.py for behavior tests
-# against a mocked transport) ────────────────────────────────────────────────
+# ── Cloud engine registry — construction only, no network ─────────────────────
 
 class TestCloudEngineRegistry:
     async def test_get_stt_creates_deepgram_instance(self):
@@ -458,9 +440,7 @@ class TestCloudEngineRegistry:
         instance = await manager.get_llm(cfg)
         assert type(instance).__name__ == "AnthropicLLM"
 
-    # All three are OpenAILLM at a different base_url, so the endpoint is
-    # what's worth asserting — a class-name check would pass even if a
-    # factory sent Cohere's traffic to OpenAI.
+    # All are OpenAILLM, so assert the endpoint, not the class name.
     async def test_openai_compatible_engines_get_their_own_base_url(self):
         manager = AIProviderManager(FakeSecretResolver())
         expected = {

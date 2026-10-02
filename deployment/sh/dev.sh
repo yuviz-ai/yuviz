@@ -23,17 +23,11 @@ TOTAL_PHASES=7
 
 TIMEOUT=300
 VERBOSE=0
-# Everything on by default; --no-llm/--no-stt/--no-tts turn a leg off. Local
-# inference is what makes this stack heavy — llama3.2 alone will saturate a
-# laptop CPU — and not every kind of work needs all three running. Turning
-# one off skips its model download, keeps its container/model out of the
-# run, and drops it from the verification.
+# --no-llm/--no-stt/--no-tts skip that leg's model download, startup and verification.
 WANT_LLM=1
 WANT_STT=1
 WANT_TTS=1
-# Which Ollama model to pull, seed and verify with. Any tag from
-# ollama.com/library works; the Admin UI can point an agent at a different
-# one afterwards, but only this one is downloaded here.
+# Ollama model to pull, seed and verify with.
 OLLAMA_MODEL="llama3.2"
 ACTION="up"
 CURRENT_PHASE="startup"
@@ -180,9 +174,7 @@ run_steps() {
     done
 }
 
-# Distro packages, not `curl https://get.docker.com | sudo sh`. Piping a remote
-# response straight into a root shell means a compromised endpoint owns the
-# machine; these paths verify signatures through the package manager instead.
+# Distro packages (signature-verified), not `curl get.docker.com | sudo sh`.
 install_docker_linux() {
     local id; id=$(. /etc/os-release 2>/dev/null && echo "${ID:-}")
     if command -v pacman >/dev/null 2>&1; then
@@ -294,9 +286,7 @@ version_ge "$DOCKER_VER"  "$MIN_DOCKER"  || { fail "Docker $DOCKER_VER is too ol
 version_ge "$COMPOSE_VER" "$MIN_COMPOSE" || { fail "Compose $COMPOSE_VER is too old (need >= $MIN_COMPOSE)"; exit 1; }
 
 if [ "$WANT_LLM" = "0" ]; then
-    # No local model at all. The URL still gets written so the seeded
-    # provider row stays valid — point an agent at a cloud provider in the
-    # Admin UI (AI & Voice) and nothing here has to change.
+    # URL still written so the seeded provider row stays valid.
     OLLAMA_MODE="off"
     OLLAMA_URL="http://ollama:11434"
     COMPOSE_PROFILE=()
@@ -377,8 +367,7 @@ rand() { head -c "$(( ${1:-32} * 3 ))" /dev/urandom | base64 | LC_ALL=C tr -cd '
 
 if [ -f "$ENV_FILE" ]; then
     ok "deployment/.env exists (left untouched)"
-    # Backfill keys added to .env.example since this .env was generated,
-    # otherwise compose warns about unset variables after an update.
+    # Backfill keys added to .env.example since this .env was generated.
     while IFS='=' read -r key _; do
         case "$key" in ''|\#*) continue ;; esac
         grep -q "^${key}=" "$ENV_FILE" || {
@@ -431,12 +420,7 @@ if [ "$(grep "^POSTGRES_PASSWORD=" "$ENV_FILE" | cut -d= -f2-)" = "voiceai" ]; t
     info "    2. set POSTGRES_PASSWORD=<new> in deployment/.env and the same password in its POSTGRES_DSN"
 fi
 
-# SECRET_ENCRYPTION_KEY can't go through the loop above: it is a Fernet key,
-# which must be exactly 32 raw bytes in url-safe base64 (44 chars, trailing
-# '='), and `rand` strips every non-alphanumeric character — so it would
-# produce a string Fernet rejects. Without this, pasting a provider API key
-# in the Admin UI raises SecretEncryptionUnavailable and the operator gets an
-# opaque 500 on the headline setup step.
+# Fernet key (32 bytes url-safe base64, 44 chars); `rand` would strip the required symbols.
 if [ -z "$(grep "^SECRET_ENCRYPTION_KEY=" "$ENV_FILE" | cut -d= -f2-)" ]; then
     fernet_key=$(head -c 32 /dev/urandom | base64 | LC_ALL=C tr '+/' '-_')
     if [ "${#fernet_key}" -ne 44 ]; then
@@ -459,10 +443,7 @@ fi
 rm -f "$ENV_FILE.bak"
 ok "ollama URL: ${OLLAMA_URL}"
 
-# Conversation Service loads whisper and kokoro at boot (see _prewarm_agents)
-# — downloading hundreds of MB and holding them in memory. Skipping the
-# download here without telling it would just move the download to container
-# start, so the choice has to reach the service itself.
+# Pass the toggles to the service, or it downloads the skipped models at boot anyway.
 set_env() {
     if grep -q "^$1=" "$ENV_FILE"; then
         sed -i.bak "s|^$1=.*|$1=$2|" "$ENV_FILE" || { fail "could not write $1 to ${ENV_FILE}"; exit 1; }
@@ -487,10 +468,7 @@ phase 3 "Building containers..."
 STARTED_WORK=1
 dim "first run installs Python deps — several minutes"
 if [ "$OLLAMA_MODE" = "off" ]; then
-    # Leaving the profile out only means "don't start it" — an ollama left
-    # over from an earlier run without --no-llm keeps running, and burning
-    # the CPU this flag exists to give back. Its model volume is untouched,
-    # so dropping the flag later costs nothing.
+    # Omitting the profile doesn't stop an ollama left from an earlier run; models are kept.
     if [ -n "$(compose --profile ollama-container ps -aq ollama 2>/dev/null)" ]; then
         run_quiet compose --profile ollama-container rm -f -s ollama
         ok "ollama stopped (models kept)"
@@ -529,9 +507,7 @@ else
     fi
 fi
 
-# Test for the weight files, not the directory: an interrupted download leaves
-# the folder behind with only metadata in it, and treating that as "cached"
-# skips the real download and fails later with IncompleteSnapshotError.
+# Check weight files, not the directory: interrupted downloads leave metadata-only folders.
 cached() { compose "${COMPOSE_PROFILE[@]}" exec -T conversation sh -c "ls $1 >/dev/null 2>&1" 2>/dev/null; }
 
 if [ "$WANT_TTS" = "0" ]; then
@@ -542,9 +518,7 @@ else
     dim "kokoro weights (~313 MB) download during startup"
 fi
 
-# Pull whisper here rather than letting it happen lazily at first transcribe:
-# a flaky network then surfaces as a confusing verification failure, and
-# huggingface_hub reports connection errors as "outgoing traffic disabled".
+# Pull eagerly so network failures surface here, not as a confusing verification error.
 if [ "$WANT_STT" = "0" ]; then
     ok "STT disabled — skipping whisper (~500 MB)"
 elif cached '/root/.cache/huggingface/hub/models--*faster-whisper*/snapshots/*/model.bin'; then
@@ -600,10 +574,7 @@ done
 # ── [6/7] ─────────────────────────────────────────────────────────────────────
 phase 6 "Running verification..."
 
-# Health endpoints only prove a process is listening. Exercise the legs that
-# are actually running: TTS makes audio, STT reads that same audio back, the
-# LLM answers a prompt. A disabled leg is skipped rather than failed — and
-# STT rides on TTS's output, so it needs both.
+# End-to-end check: TTS makes audio, STT transcribes it back, LLM answers. Disabled legs are skipped.
 VERIFY_OUT=$(compose "${COMPOSE_PROFILE[@]}" exec -T \
     -e WANT_LLM="$WANT_LLM" -e WANT_STT="$WANT_STT" -e WANT_TTS="$WANT_TTS" \
     -e OLLAMA_MODEL="$OLLAMA_MODEL" \
@@ -611,8 +582,7 @@ VERIFY_OUT=$(compose "${COMPOSE_PROFILE[@]}" exec -T \
 import asyncio, os, sys
 
 async def main():
-    # Imported lazily: importing kokoro/faster_whisper pulls in torch and
-    # ctranslate2, which is exactly the cost --no-tts / --no-stt is avoiding.
+    # Lazy imports: kokoro/faster_whisper pull in torch, which --no-tts/--no-stt avoid.
     import httpx
 
     want = lambda leg: os.environ.get(f"WANT_{leg}", "1") == "1"
@@ -621,8 +591,7 @@ async def main():
 
     if want("TTS"):
         from services.conversation.providers.tts.kokoro import KokoroTTS
-        # Use the configured voice, not a hardcoded one: a voice the engine cannot
-        # load leaves the agent permanently silent, and hardcoding hides exactly that.
+        # Configured voice, so an unloadable voice fails here instead of silencing the agent.
         tts = KokoroTTS(voice=os.environ.get("VOICEAI_TTS_VOICE", "af_heart"), speed=1.0)
         pcm = b"".join([c async for c in tts.synthesize_stream(phrase, 16000)])
         if not pcm:
@@ -634,8 +603,6 @@ async def main():
     if not want("STT"):
         print("SKIP stt disabled")
     elif not pcm:
-        # Nothing to transcribe: the sample this check reads back is the one
-        # TTS just made.
         print("SKIP stt no sample audio (TTS is disabled)")
     else:
         from services.conversation.providers.stt.faster_whisper import FasterWhisperSTT
@@ -676,8 +643,6 @@ printf '%s\n' "$VERIFY_OUT" | grep -E '^(OK|SKIP) ' | while read -r verdict leg 
     if [ "$verdict" = "OK" ]; then ok "${label}: ${rest}"; else dim "${label}: ${rest}"; fi
 done
 
-# With no LLM there is no url to cross-check, so the seed check is just
-# whether the row is there.
 if [ "$OLLAMA_MODE" = "off" ]; then
     ok "database seeded"
 else

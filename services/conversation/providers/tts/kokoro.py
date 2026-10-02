@@ -1,20 +1,7 @@
 """
-KokoroTTS — local neural TTS using the kokoro package.
+KokoroTTS — local neural TTS (24 kHz output, resampled to the requested rate).
 
-Kokoro outputs 24 kHz mono float32 audio; this class resamples to the
-requested sample_rate before returning raw L16 PCM bytes.
-
-Dependencies:
-  pip install kokoro soundfile scipy
-
-Python version:
-  Requires Python ≤ 3.12.  kokoro → spacy → blis does not build on
-  Python 3.13+ (no pre-compiled wheels; C extension fails on 3.14).
-  Use a Python 3.11 venv:  brew install python@3.11 && python3.11 -m venv venv
-
-Engine selection:
-  Set VOICEAI_TTS_ENGINE=macos (default) to use the zero-dependency
-  MacOSTTS backend on any macOS machine without this restriction.
+Requires Python <= 3.12: kokoro's spacy/blis dependency doesn't build on 3.13+.
 """
 
 from __future__ import annotations
@@ -61,9 +48,6 @@ class KokoroTTS:
             return await loop.run_in_executor(None, self._synthesize_sync, text, sample_rate)
 
     async def synthesize_stream(self, text: str, sample_rate: int):
-        # No genuine incremental synthesis here — yield the one complete
-        # result once. See ITTS.synthesize_stream's docstring: only
-        # DeepgramTTS does real chunk-by-chunk streaming today.
         audio = await self.synthesize(text, sample_rate)
         if audio:
             yield audio

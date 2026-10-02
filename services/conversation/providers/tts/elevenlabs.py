@@ -1,13 +1,7 @@
 """
 ElevenLabsTTS — cloud synthesis via ElevenLabs' text-to-speech endpoint.
 
-ElevenLabs only serves a fixed set of PCM sample rates (8000/16000/22050/
-24000/44100), not arbitrary ones — request the nearest rate that's >= the
-caller's requested rate, then resample down if it doesn't match exactly
-(same resample_poly approach as MacOSTTS, needed there for the same reason:
-the source audio's native rate rarely equals the gateway's requested rate).
-
-pip install httpx (already a dependency via OllamaLLM)
+Only fixed PCM rates are served, so request the nearest rate >= target and downsample.
 """
 
 from __future__ import annotations
@@ -21,9 +15,7 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_BASE_URL = "https://api.elevenlabs.io"
 
-# ElevenLabs' supported PCM output rates, ascending — pick the smallest one
-# >= the requested rate so we only ever downsample, never upsample (upsampling
-# can't recover detail the source never had).
+# Ascending; pick the smallest >= requested so we only ever downsample.
 _SUPPORTED_PCM_RATES = (8000, 16000, 22050, 24000, 44100)
 
 
@@ -35,23 +27,9 @@ def _nearest_supported_rate(requested: int) -> int:
 
 
 class ElevenLabsTTS:
-    """
-    ITTS implementation backed by ElevenLabs' /v1/text-to-speech/{voice_id}.
+    """ITTS backed by ElevenLabs' /v1/text-to-speech/{voice_id}.
 
-    api_key       — resolved once at construction by AIProviderManager via
-                    SecretResolver, never re-resolved per call.
-    voice_id      — ElevenLabs voice id (not a display name — see
-                    https://elevenlabs.io/app/voice-library for ids).
-    model_id      — e.g. "eleven_turbo_v2_5" (lower latency) or "eleven_multilingual_v2"
-    language_code — ISO 639-1 code (e.g. "hi", "fr") forcing the output
-                    language on a multilingual voice/model, independent of
-                    the voice's own "native" language/accent. None = let
-                    ElevenLabs auto-detect from the input text, its
-                    default behavior. Only meaningful with a multilingual
-                    model_id (eleven_turbo_v2_5/eleven_multilingual_v2/
-                    eleven_flash_v2_5, all default-capable); ElevenLabs
-                    silently ignores it on non-multilingual models rather
-                    than erroring, so no validation against model_id here.
+    language_code forces output language on multilingual models; None = auto-detect.
     """
 
     def __init__(
@@ -91,8 +69,6 @@ class ElevenLabsTTS:
                 json={
                     "text": text,
                     "model_id": self._model_id,
-                    # voice_settings only when non-default — identical request
-                    # to before for speed=1.0 (ElevenLabs' own default).
                     **(
                         {"voice_settings": {"speed": self._speed}}
                         if self._speed != 1.0 else {}
@@ -112,9 +88,6 @@ class ElevenLabsTTS:
         return self._resample(pcm, output_rate, sample_rate)
 
     async def synthesize_stream(self, text: str, sample_rate: int):
-        # No genuine incremental synthesis here — yield the one complete
-        # result once. See ITTS.synthesize_stream's docstring: only
-        # DeepgramTTS does real chunk-by-chunk streaming today.
         audio = await self.synthesize(text, sample_rate)
         if audio:
             yield audio

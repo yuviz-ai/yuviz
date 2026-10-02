@@ -1,25 +1,7 @@
 """
-OpenAILLM — streaming text generation via OpenAI's /v1/chat/completions.
+OpenAILLM — streaming text generation via OpenAI's /v1/chat/completions (SSE).
 
-Streaming is Server-Sent Events (SSE): lines prefixed "data: ", terminated by
-a literal "data: [DONE]" line — different wire format from OllamaLLM's
-newline-delimited JSON, same token-yielding contract.
-
-Also backs Groq: Groq's API is OpenAI-compatible by design —
-same request/response shape, same SSE framing — confirmed live against the
-real API before this was assumed. The only difference is base_url and
-which models exist; see ai_provider_manager.py's _make_groq_llm, which
-constructs this same class pointed at Groq's endpoint rather than a
-separate GroqLLM file.
-
-generate_with_tools() accumulates delta.tool_calls by their "index" field
-across chunks rather than assuming either "one complete chunk" or "streamed
-incrementally" — confirmed live that Groq sends a tool call as a single
-complete chunk, but real OpenAI is documented to stream tool_call.function.
-arguments incrementally across many chunks; accumulating by index handles
-both without caring which one a given vendor/request does.
-
-pip install httpx (already a dependency via OllamaLLM)
+Also backs Groq (OpenAI-compatible; only base_url differs).
 """
 
 from __future__ import annotations
@@ -40,17 +22,7 @@ _DEFAULT_BASE_URL = "https://api.openai.com"
 
 
 def _to_openai_message(m: dict[str, Any]) -> dict[str, Any]:
-    """build_chat_messages() yields a generic {role, content, tool_calls?,
-    tool_call_id?} shape — bridge it to OpenAI's actual wire format here.
-    Confirmed live (Groq, OpenAI-compatible): passing the
-    generic flat tool_calls dicts straight through 400s with 'tool_calls.0.
-    type is missing' — OpenAI requires each entry nested under
-    {"id", "type": "function", "function": {"name", "arguments"}}, and
-    critically "arguments" must be a JSON *string*, not the parsed dict our
-    ToolCallEvent/ChatMessage carry internally. A "tool"-role message passes
-    through content as-is (a real "tool" role + tool_call_id, same as
-    Ollama's bridge — OpenAI has no Gemini-style structured functionResponse
-    requirement)."""
+    """Convert a generic message to OpenAI's wire format ("arguments" must be a JSON string)."""
     if not m.get("tool_calls"):
         return {"role": m["role"], "content": m["content"], **({"tool_call_id": m["tool_call_id"]} if m.get("tool_call_id") else {})}
     return {
@@ -67,16 +39,7 @@ def _to_openai_message(m: dict[str, Any]) -> dict[str, Any]:
 
 
 class OpenAILLM:
-    """
-    ILLM implementation backed by OpenAI's chat completions endpoint.
-
-    api_key     — resolved once at construction by AIProviderManager via
-                  SecretResolver, never re-resolved per call.
-    model       — e.g. "gpt-4o", "gpt-4o-mini"
-    system      — system prompt prepended when the caller hasn't already
-                  injected one (same precedent as OllamaLLM.generate()).
-    temperature — sampling temperature (0.0 = deterministic)
-    """
+    """ILLM backed by OpenAI's chat completions endpoint."""
 
     def __init__(
         self,
@@ -86,12 +49,7 @@ class OpenAILLM:
                           "Keep responses concise and natural for speech.",
         temperature: float = 0.7,
         base_url:    str = _DEFAULT_BASE_URL,
-        # 30s (the old default) left a caller in dead air that long when
-        # Groq's stream opened (200 OK logged) but then stalled with no
-        # token for a long stretch — a real, live-observed failure distinct
-        # from the fast-failing 429 rate-limit case, and far longer than
-        # the gateway's own ~19-20s patience. Matches GeminiLLM's own
-        # timeout_s=10.0, fixed there for the identical reason.
+        # Short: streams can stall after 200 OK, and the gateway gives up at ~20s.
         timeout_s:   float = 10.0,
     ) -> None:
         self._model       = model
@@ -105,11 +63,7 @@ class OpenAILLM:
         log.info("OpenAILLM model=%s", model)
 
     async def generate(self, messages: list[ChatMessage]) -> AsyncGenerator[str, None]:
-        # _to_openai_message: history may still carry prior tool_calls/
-        # tool-role messages here even though this plain path offers no
-        # tools this turn — e.g. ToolCallOrchestrator's max_tool_iterations
-        # forced-final-generation case (see orchestrator.py) — so the same
-        # bridge is needed here, not just in generate_with_tools().
+        # History can still carry tool messages (orchestrator's forced final generation).
         all_messages = [_to_openai_message(m) for m in build_chat_messages(self._system, messages)]
 
         payload = {
@@ -155,24 +109,10 @@ class OpenAILLM:
             "temperature": self._temperature,
             "tools":       tools,
         }
-        # Every call leaves tool_choice unset (API default: "auto"), giving
-        # the model full discretion on every turn — confirmed live,
-        # repeatedly, that this is a real contributing factor to fabricated
-        # booking claims: the model sometimes just declines to call the
-        # tool even on the exact turn it obviously should. tool_choice is
-        # the caller's lever to force it on that one specific turn (e.g.
-        # {"type": "function", "function": {"name": "execute_api"}}), passed
-        # through ToolCallOrchestrator.run_turn(force_tool_name=...). No
-        # caller sets it today — the phone-confirmation trigger that used
-        # to went away with the calendar built-ins — so every turn is
-        # currently "auto". This class only forwards whatever it is given.
         if tool_choice is not None:
             payload["tool_choice"] = tool_choice
 
-        # Keyed by delta.tool_calls[].index — handles a vendor sending the
-        # whole call in one chunk (index always 0, one iteration) or
-        # streaming .function.arguments incrementally across many chunks
-        # (same index, concatenated) uniformly (see module docstring).
+        # Keyed by index: Groq sends a call whole, OpenAI streams arguments across chunks.
         accumulating: dict[int, dict[str, Any]] = {}
 
         async with self._client.stream(

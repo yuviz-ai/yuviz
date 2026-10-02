@@ -1,8 +1,4 @@
-// TransferCorrelator — pure uuid -> pending-transfer-resolution logic, no
-// sockets involved (see gateway/include/telephony/TransferCorrelator.h).
-// EslEventListenerTest (esl_event_listener_test.cpp) covers the real
-// CHANNEL_BRIDGE/CHANNEL_HANGUP-driven wiring end-to-end; this file is
-// about the registry's own contract in isolation.
+// TransferCorrelator registry contract in isolation; ESL wiring is in esl_event_listener_test.cpp.
 
 #include <gtest/gtest.h>
 
@@ -34,8 +30,7 @@ TEST(TransferCorrelatorTest, ResolveFiresTheWatchedHandlerExactlyOnce) {
     EXPECT_TRUE(last_success);
     EXPECT_EQ(last_detail, "bridged");
 
-    // Resolving again for the same uuid must not re-fire — it was removed
-    // on first resolution.
+    // Removed on first resolution, so it must not re-fire.
     EXPECT_FALSE(correlator.resolve("uuid-1", false, "hangup_before_bridge"));
     EXPECT_EQ(fire_count, 1);
 }
@@ -101,10 +96,7 @@ TEST(TransferCorrelatorTest, IndependentUuidsDoNotInterfere) {
 }
 
 TEST(TransferCorrelatorTest, HandlerCanReenterCorrelatorWithoutDeadlock) {
-    // resolve() must call the handler outside its internal lock — otherwise
-    // a handler that itself calls watch()/cancel()/resolve() (plausible:
-    // CallSession's real handler posts back to a control thread, but a
-    // synchronous variant could legitimately re-enter) would deadlock.
+    // resolve() must invoke the handler outside its lock, or re-entry deadlocks.
     TransferCorrelator correlator;
     bool reentrant_call_succeeded = false;
 

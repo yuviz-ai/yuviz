@@ -1,21 +1,6 @@
-"""
-CacheAsideKnowledgeProvider — the production IKnowledgeProvider. Composes an
-availability repository (Redis, cheap boolean) and a retrieval repository
-(HTTP, the real vector search) — never constructs a redis-py or httpx client
-itself, matching Config SDK's CacheAsideConfigProvider composition pattern.
+"""Production IKnowledgeProvider: Redis "any KB?" check, then HTTP vector search.
 
-retrieve() is the exactly-one-call contract Conversation Service depends on:
-  1. Redis boolean check (fast path for the common "no KB attached" case —
-     zero HTTP round trips, zero added latency for non-RAG agents).
-  2. On a Redis miss (unknown, not "false"), ask the HTTP repository's own
-     has_enabled_kb — this is the one place a miss costs an extra round
-     trip, and only on a cold cache.
-  3. If enabled, call the HTTP repository's retrieve() (the one real vector
-     search this whole call performs) and map the raw dict into
-     RetrievedContext.
-Any RepositoryUnavailableError from either repository is caught here and
-turned into None — a retrieval-plane outage degrades to "no context
-injected", never a failed turn.
+The Redis check keeps non-RAG agents at zero HTTP round trips; outages degrade to None.
 """
 
 from __future__ import annotations
@@ -51,11 +36,7 @@ class CacheAsideKnowledgeProvider:
         policy: RetrievalPolicy | None = None,
     ) -> RetrievedContext | None:
         start = time.monotonic()
-        # An all-None RetrievalPolicy() (every field defaults to None) is
-        # exactly "no per-call override" — it's what gets sent through to
-        # Knowledge Service either way, which resolves the effective values
-        # itself (see services/knowledge/retrieval.py's _resolve_policy()).
-        # This provider never substitutes its own hardcoded numbers.
+        # All-None = no override; Knowledge Service resolves effective values.
         policy = policy or RetrievalPolicy()
 
         try:

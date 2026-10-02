@@ -18,11 +18,7 @@ def test_llm_directive_transfer_dropped_on_barge_in():
 
 
 def test_escalation_transfer_survives_barge_in():
-    """Confirmed live: a caller saying "Thank you" right after
-    a fabricated "booked!" claim silently cancelled the safety-net
-    transfer meant to catch exactly that — a system-initiated escalation
-    must not be droppable just because the caller said something in
-    between."""
+    """A system-initiated escalation transfer isn't cancelled by caller speech (barge-in)."""
     tr = _make_request("escalation_threshold")
     out = _consume_pending_transfer(tr, interrupted=True, sid="s1")
     assert out is not None

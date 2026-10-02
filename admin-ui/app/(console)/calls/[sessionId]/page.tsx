@@ -1,8 +1,6 @@
 "use client";
 
-// One call, on its own page rather than in a modal. A call is a record
-// people link to, keep open next to something else, and scroll a long
-// transcript inside — none of which a dialog does well.
+// Single call detail page.
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
@@ -38,13 +36,8 @@ export default function CallDetailPage() {
   }, [sessionId]);
 
   useEffect(() => {
-    // Fetched independently of the call itself: a transcript that is missing
-    // or fails to load should leave the rest of the page usable, which is
-    // exactly the case turn_count = 0 does not reliably predict.
-    //
-    // Reset on sessionId change, not just at mount: Next keeps this component
-    // mounted when navigating between two calls, so without this the second
-    // call would show the first one's transcript until its fetch resolved.
+    // Fetched separately so a transcript failure leaves the page usable. Reset on sessionId
+    // change: Next keeps this mounted between calls, which would show a stale transcript.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setTranscriptLoading(true);
     getTranscript(sessionId)

@@ -1,22 +1,6 @@
-"""
-Knowledge SDK — the only component allowed to know where retrieved context
-comes from (Redis availability flag vs. Knowledge Service's internal REST
-API vs. pgvector). Conversation Service, and any future service, should
-depend only on IKnowledgeProvider and the models below — never on
-services.knowledge directly, never on redis-py/httpx directly.
+"""Knowledge SDK: the only component that knows where retrieved context comes from.
 
-Typical construction (see services/conversation/__main__.py):
-
-    availability_repo = RedisKnowledgeRepository(os.environ["REDIS_URL"])
-    retrieval_repo = HttpKnowledgeRepository(
-        base_url=os.environ["KNOWLEDGE_SERVICE_URL"],
-        auth_base_url=os.environ["CONFIG_SERVICE_URL"],  # JWTs are minted by Config Service only
-        service_email=os.environ["CONFIG_SERVICE_EMAIL"],
-        service_password=os.environ["CONFIG_SERVICE_PASSWORD"],
-    )
-    knowledge: IKnowledgeProvider = CacheAsideKnowledgeProvider(availability_repo, retrieval_repo)
-
-    context = await knowledge.retrieve(tenant_slug, agent_slug, query)
+Consumers depend on IKnowledgeProvider and these models, never on Redis/HTTP directly.
 """
 
 from .interfaces import IKnowledgeAvailabilityRepository, IKnowledgeProvider, IRetrievalRepository

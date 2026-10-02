@@ -1,11 +1,4 @@
-"""
-RedisConfigRepository — read-only, raw-dict, same key formats Config
-Service's own tenants.py/agents.py/provider_configs.py already write
-(tenant:{slug}, agent:{tenant_slug}:{agent_slug}, provider:{id}). This
-repository never writes to Redis — see providers/cache_aside.py's docstring
-for why the write-back on a miss is deliberately left to Config Service's
-existing REST handlers rather than duplicated here.
-"""
+"""Read-only Redis repository over the keys Config Service writes; never writes."""
 
 from __future__ import annotations
 
@@ -26,10 +19,7 @@ class RedisConfigRepository:
         await self._client.aclose()
 
     async def _get_json(self, key: str) -> dict[str, Any] | None:
-        # Same degrade-on-any-failure contract as services/config/cache.py's
-        # get_json() — a Redis outage here is just a permanent miss, not an
-        # error the caller needs to handle specially; CacheAsideConfigProvider
-        # falls through to HTTP either way.
+        # A Redis outage is just a miss; the caller falls through to HTTP.
         try:
             raw = await self._client.get(key)
         except redis.RedisError:

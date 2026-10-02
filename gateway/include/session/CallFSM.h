@@ -33,21 +33,9 @@ namespace voiceai {
 //   Closing      —  SessionManager             (exits on CloseAcknowledged)
 //   Closed       —  no owner (terminal)
 //
-// WaitingForHangup is Gateway-only: a grace window for the caller to speak up
-// after the agent's goodbye before ESL tears down the SIP leg.  The Python
-// ConversationFSM does not mirror it — pure telephony control with no analog
-// in the conversation pipeline.
-//
-// Finalizing (Phase 5D of AI-to-human transfer) is entered only after a
-// *successful* transfer (Transferring → Finalizing, not on failure — a
-// failed transfer goes straight to Closing, same as before; the
-// Conversation Service recovers on its own side instead, see TransferFailed/
-// RECOVERING in fsm.py). It exists so the gateway doesn't close the gRPC
-// stream to the Conversation Service before that service has finished its
-// own post-call cleanup (summary generation, transcript persistence, final
-// metrics — see session_finalizer.py) — closing early would cut that work
-// off mid-flight. FinalizingTimeout is the safety net if the
-// ConversationFinalized acknowledgement never arrives.
+// WaitingForHangup is Gateway-only (no Python ConversationFSM mirror).
+// Finalizing follows only a successful transfer, so the gRPC stream stays open
+// until the Conversation Service finishes post-call cleanup.
 
 enum class CallFsmState : uint8_t {
     Idle,
@@ -77,7 +65,7 @@ enum class FsmTimerType : uint8_t {
     TtsTimeout,          // Synthesizing
     PlaybackTimeout,     // Speaking
     GoodbyeTimeout,      // WaitingForHangup
-    GoodbyeConfirm,      // WaitingForHangup, after a SpeechStarted onset — see CallFsmTimerConfig::goodbye_confirm
+    GoodbyeConfirm,      // WaitingForHangup, after a SpeechStarted onset
     BargeInWindow,       // BargeIn
     TransferTimeout,     // Transferring
     FinalizingTimeout,   // Finalizing
@@ -88,30 +76,23 @@ enum class FsmTimerType : uint8_t {
 using FsmTimerId = uint64_t;
 static constexpr FsmTimerId kNoTimer = 0;
 
-// Injected by CallSession at construction — bridges the FSM to ITimerService
-// and IDispatcher without it depending on those interfaces directly.
+// Decouples the FSM from ITimerService and IDispatcher.
 struct CallFsmHandlers {
-    // Timer management
     std::function<FsmTimerId(FsmTimerType, std::chrono::milliseconds)> schedule_timer;
     std::function<void(FsmTimerId)>                                     cancel_timer;
 
-    // Fired on every state transition — post SessionStateChanged to Dispatcher
     std::function<void(CallFsmState from,
                        CallFsmState to,
                        std::string_view trigger,
                        double duration_ms)>                              on_state_changed;
 
-    // Semantic event callbacks — fired at specific trigger methods
     std::function<void(float energy_db)>                             on_speech_started;
     std::function<void(uint32_t duration_ms, float energy_db)>      on_speech_ended;
     std::function<void(std::string text, float confidence)>         on_stt_final;
     std::function<void(bool interrupted)>                            on_playback_finished;
     std::function<void(std::string queue_id, std::string reason)>   on_transfer_requested;
     std::function<void(bool success, std::string transfer_id)>      on_transfer_completed;
-    // Fired once, when Finalizing exits (either a real ConversationFinalized
-    // ack or FinalizingTimeout) — see do_conversation_finalized_(). This is
-    // where CallSession now moves the close_session() call that used to
-    // fire immediately in on_transfer_completed(true, ...) (Phase 5A/5B).
+    // Fired once when Finalizing exits (ack or FinalizingTimeout).
     std::function<void()>                                            on_conversation_finalized;
     std::function<void(std::string reason)>                         on_session_close;
 };
@@ -131,20 +112,13 @@ public:
     void on_session_start();                                      // Idle       → Connecting
     void on_service_ready();                                      // Connecting → Listening
     void on_speech_started(float energy_db);                      // Listening  → Recognizing
-    // notify_ prefix (not on_) signals this does NOT drive a state transition.
-    // The FSM stays in Recognizing; STTFinal drives the exit.  The method
-    // fires handlers_.on_speech_ended so the transport can relay the event to
-    // the ConversationService without triggering FSM logic.
+    // Not a transition (stays in Recognizing); only relays on_speech_ended.
     void notify_speech_ended(uint32_t duration_ms, float energy_db);
     void on_stt_final(std::string text, float confidence);        // Recognizing→ Thinking
     void on_text_ready();                                         // Thinking   → Synthesizing
     void on_first_audio_chunk();                                  // Synthesizing→ Speaking
-    // end_call_pending: agent's response ended the call (see EndCall in the
-    // gRPC wire protocol).  When true and interrupted is false, transitions
-    // to WaitingForHangup instead of Listening.
-    // goodbye_timeout_override: {} (zero) = use timer_cfg_.goodbye_timeout;
-    // otherwise overrides it for this entry only (sourced from
-    // EndCall.grace_period_ms, so the agent config controls it per-call).
+    // end_call_pending && !interrupted → WaitingForHangup. A zero
+    // goodbye_timeout_override means use timer_cfg_.goodbye_timeout.
     void on_playback_finished(
         bool interrupted,
         bool end_call_pending = false,
@@ -159,7 +133,6 @@ public:
     void on_session_close(std::string reason);                    // Any active → Closing
     void on_close_acknowledged();                                 // Closing    → Closed
 
-    // Called by TimerService when a scheduled timer fires
     void on_timer_fired(FsmTimerType type);
 
     // ── Query ─────────────────────────────────────────────────────────────────
@@ -176,7 +149,6 @@ private:
     [[nodiscard]] static bool is_valid(CallFsmState from, CallFsmState to) noexcept;
     [[nodiscard]] bool        is_active() const noexcept;
 
-    // Helpers called by on_timer_fired(); split so the switch body stays readable.
     void do_session_close_(std::string_view reason);
     void do_cancel_complete_();
     void do_transfer_completed_(bool success, std::string transfer_id);
@@ -189,26 +161,16 @@ private:
     IClock&             clock_;
     Logger&             logger_;
 
-    // THREADING INVARIANT: every trigger method is called exclusively from
-    // CallSession's control thread.  No mutex is needed for mutable fields
-    // (state_entered_at_, active_timer_, handlers_) because only the control
-    // thread writes them.  state_ is std::atomic<> for lock-free reads from
-    // other threads (e.g. can_accept_audio() called from the lws thread).
+    // All triggers run on CallSession's control thread, so no mutex; state_ is
+    // atomic only for lock-free reads from other threads.
     std::atomic<CallFsmState>  state_{CallFsmState::Idle};
     IClock::TimePoint          state_entered_at_;
     FsmTimerId                 active_timer_{kNoTimer};
 
-    // Set by on_playback_finished() immediately before transitioning to
-    // WaitingForHangup; consumed by on_enter(WaitingForHangup) in the same
-    // synchronous call stack.  {} (zero) means "no override, use
-    // timer_cfg_.goodbye_timeout".
+    // Handed from on_playback_finished() to on_enter(WaitingForHangup); zero = default.
     std::chrono::milliseconds pending_goodbye_timeout_override_{};
 
-    // Set by on_speech_started() while in WaitingForHangup, while the
-    // GoodbyeConfirm timer is pending; cleared either when that timer
-    // fires (real cancellation) or notify_speech_ended() arrives first
-    // (a blip — the goodbye grace period is restored instead). See
-    // CallFsmTimerConfig::goodbye_confirm.
+    // True while GoodbyeConfirm is pending after a WaitingForHangup speech onset.
     bool  awaiting_goodbye_confirm_{false};
     float pending_goodbye_energy_db_{0.0f};
 };

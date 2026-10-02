@@ -52,11 +52,7 @@ async def test_update_provider_config_invalidates_cache(test_tenant, scoped):
 
 
 async def test_update_provider_config_publishes_change_notification(test_tenant, scoped):
-    """The other half of instant cache invalidation (see cache.py's
-    publish() docstring): Conversation Service subscribes to this exact
-    channel/message shape to evict its own cached provider client. Uses a
-    real Redis Pub/Sub subscription against the real dev Redis, not a
-    mock — this is the actual cross-process contract."""
+    """Conversation Service relies on this channel/message shape to evict cached clients (real Redis)."""
     created = await provider_configs.create_provider_config(
         tenant_id=test_tenant["id"], name="Deepgram", role="stt", engine="deepgram",
     )

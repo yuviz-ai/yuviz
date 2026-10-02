@@ -1,7 +1,4 @@
-"""
-DB-backed tests for services/toolexec/custom_apis.py create/update/
-soft-delete (T7).
-"""
+"""DB-backed tests for custom_apis.py create/update/soft-delete."""
 
 from __future__ import annotations
 
@@ -111,9 +108,7 @@ async def test_five_level_chain_and_mid_graph_edit_rejected(pool, tenant_agent):
             "SELECT id FROM custom_apis WHERE tenant_id = $1 AND name = 'level5'", tenant["id"],
         ) is None
 
-        # Mid-graph edit: pushing api1's OWN chain from a leaf (height 1) to
-        # height 3 must be rejected because it pushes api4 (a transitive
-        # dependent, never itself directly edited) from height 4 to height 6.
+        # Deepening api1 to height 3 pushes transitive dependent api4 to 6.
         new_leaf_a = await custom_apis.create_custom_api(**_api_kwargs(tenant["id"], "new_leaf_a"))
         new_leaf_b = await custom_apis.create_custom_api(
             **_api_kwargs(tenant["id"], "new_leaf_b", params=[_upstream_param("a", new_leaf_a["id"])]),
@@ -189,9 +184,7 @@ async def test_literal_secret_rejected(pool, tenant_agent):
 
 @pytest.mark.asyncio
 async def test_string_literal_value_round_trips_get_patch_delete(pool, tenant_agent):
-    """Defect 2 / lesson 34: a plain string literal_value is an ordinary
-    JSONB scalar, not double-encoded JSON — get/patch/delete on the row
-    that holds one must not 500."""
+    """A plain string literal_value survives get/patch/delete without a 500."""
     tenant, _agent = tenant_agent
     try:
         api = await custom_apis.create_custom_api(**_api_kwargs(
@@ -288,9 +281,7 @@ async def test_success_template_patch_after_the_fact_revalidation(pool, tenant_a
                 api["id"], sensitive_response_paths=["$.customer.email"],
             )
 
-        # Rolled back: sensitive_response_paths is still empty — the PATCH
-        # that would have made the ALREADY-STORED template reference a
-        # now-sensitive path never committed.
+        # Rolled back: sensitive_response_paths is still empty.
         unchanged = await custom_apis.get_custom_api(api["id"])
         assert unchanged["sensitive_response_paths"] == []
     finally:
@@ -299,12 +290,7 @@ async def test_success_template_patch_after_the_fact_revalidation(pool, tenant_a
 
 @pytest.mark.asyncio
 async def test_list_custom_apis_includes_params_lesson_33(pool, tenant_agent):
-    """Defect 3 / lesson 33: list_custom_apis is CustomApisPanel's Edit
-    form's only source. If it omits `params`, the form has nothing to
-    populate the form with but an empty array, and update_custom_api only
-    preserves existing params when the caller sends None — an explicit []
-    from the form is treated as 'replace with nothing', destroying the
-    dependency edges. The list response itself must carry the real params."""
+    """List carries params so an edit-form round trip doesn't wipe them."""
     tenant, _agent = tenant_agent
     try:
         api = await custom_apis.create_custom_api(**_api_kwargs(
@@ -321,10 +307,7 @@ async def test_list_custom_apis_includes_params_lesson_33(pool, tenant_agent):
         assert len(listed_api["params"]) == 1
         assert listed_api["params"][0]["name"] == "ref"
 
-        # Simulate the Edit form round-tripping exactly what the list gave
-        # it (no params key omission this time) and saving with the SAME
-        # method/side_effecting/timeout_ms it was shown — nothing declared
-        # by this API should be lost.
+        # Edit form saves back exactly what the list returned.
         saved = await custom_apis.update_custom_api(
             api["id"],
             method=listed_api["method"], side_effecting=listed_api["side_effecting"],
@@ -340,14 +323,7 @@ async def test_list_custom_apis_includes_params_lesson_33(pool, tenant_agent):
 
 @pytest.mark.asyncio
 async def test_sensitive_literal_survives_list_edit_save_round_trip(pool, tenant_agent):
-    """Round-trip data-destruction check for the new
-    _redact_sensitive_literals(): list_custom_apis is the Edit form's only
-    source (lesson 33), and it now returns "[redacted]" in place of a
-    sensitive literal's real value. If the form (or anything driving it
-    through this same function signature) PATCHes back exactly what the
-    list gave it, update_custom_api must not let the redaction placeholder
-    overwrite the real secret in storage — that would be the same class of
-    destructive round-trip defect 3 already fixed, one layer down."""
+    """Saving back a redacted sensitive literal keeps the stored secret."""
     tenant, _agent = tenant_agent
     secret_value = "sk-live-do-not-leak-me"
     try:
@@ -366,8 +342,7 @@ async def test_sensitive_literal_survives_list_edit_save_round_trip(pool, tenant
         listed_param = listed_api["params"][0]
         assert listed_param["literal_value"] != secret_value  # redacted, as intended
 
-        # Simulate the edit form saving back exactly what it was shown,
-        # having changed only an unrelated field.
+        # Edit form saves back what it was shown, changing an unrelated field.
         await custom_apis.update_custom_api(
             api["id"], description="edited", params=listed_api["params"],
         )
@@ -385,10 +360,7 @@ async def test_sensitive_literal_survives_list_edit_save_round_trip(pool, tenant
 
 @pytest.mark.asyncio
 async def test_sensitive_literal_can_be_deliberately_changed(pool, tenant_agent):
-    """The merge in update_custom_api must only PRESERVE on absence
-    (None), never make a sensitive literal permanently unwritable: a
-    caller who supplies a genuine new value — exactly what happens when
-    an admin actually retypes the field — must have it land for real."""
+    """A genuinely new sensitive literal value overwrites the stored one."""
     tenant, _agent = tenant_agent
     old_value = "sk-live-old-value"
     new_value = "sk-live-brand-new-value"
@@ -423,12 +395,7 @@ async def test_sensitive_literal_can_be_deliberately_changed(pool, tenant_agent)
 
 @pytest.mark.asyncio
 async def test_write_audit_redacts_auth_config(pool, tenant_agent):
-    """FIX 4d (security finding 8): a tenant admin who pastes a raw key
-    into a *_ref field must never have that plaintext land in the
-    platform-wide audit_log. Here the ref is a legitimate enc: token
-    (this API's own registration succeeds), which is the concrete case
-    the finding names: enc:<fernet-token> IS the credential sealed at
-    rest, not merely a pointer to one."""
+    """auth_config (refs and their values) is redacted in audit_log."""
     tenant, _agent = tenant_agent
     tenant_hex = uuid.UUID(str(tenant["id"])).hex.upper()
     ref = f"env:TENANT_{tenant_hex}_TOKEN"

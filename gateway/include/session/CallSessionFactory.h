@@ -19,12 +19,8 @@
 
 namespace voiceai {
 
-// Encapsulates the many-parameter construction of CallSession.
-// Injected into SessionManager so session construction is testable and the
-// parameter list does not leak into Application::wire_websocket_handlers().
-//
-// TODO: replace transport_factory_.create() with a per-tenant gRPC channel
-// lookup (per-tenant VAD/timer overrides already come via TenantConfig).
+// Encapsulates CallSession's many-parameter construction.
+// TODO: replace transport_factory_.create() with a per-tenant gRPC channel lookup.
 class CallSessionFactory : private NonCopyable, private NonMovable {
 public:
     CallSessionFactory(ConversationTransportFactory& transport_factory,

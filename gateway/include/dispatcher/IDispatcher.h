@@ -8,12 +8,8 @@
 
 namespace voiceai {
 
-// Pure event bus.  Producers call dispatch(); consumers subscribe().
-// All SessionEvent variants are delivered to every subscriber on a
-// dedicated worker thread — NOT on the caller's thread.
-//
-// Raw PCM (AudioFrame payload) never passes through here; it stays on
-// the SPSC RingBuffer hot path owned by MediaSession / AudioWorkerPool.
+// Event bus; subscribers run on a dedicated worker thread, not the caller's.
+// Raw PCM never passes through here.
 class IDispatcher : public IComponent {
 public:
     using Subscriber   = std::function<void(const SessionEvent&)>;
@@ -24,8 +20,6 @@ public:
     // Post an event to the queue.  Thread-safe; never blocks the caller.
     virtual void dispatch(SessionEvent event) = 0;
 
-    // Register a handler delivered on the Dispatcher's worker thread.
-    // Returns an ID that can be passed to unsubscribe().
     virtual SubscriberId subscribe(Subscriber handler)     = 0;
     virtual void         unsubscribe(SubscriberId id)      = 0;
 };

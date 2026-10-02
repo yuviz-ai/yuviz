@@ -1,9 +1,4 @@
-"""Places an outbound call via services.telephony's POST /{provider}/call
-(HTTP, not ESL) — replaces vobiz_originate.py now that Vobiz/Cloudonix are
-served by the unified telephony service. Every request carries
-`Authorization: Bearer <service-account JWT>`; a 401 is retried once with a
-fresh token and then raises (not a transient condition worth a backoff
-loop)."""
+"""Place outbound calls via services.telephony's POST /{provider}/call (service-account JWT)."""
 
 from __future__ import annotations
 
@@ -30,9 +25,7 @@ class TelephonyOriginateError(Exception):
 
 
 class TelephonyOriginatePending(Exception):
-    """Raised on a 202 — the vendor accepted but hasn't confirmed yet.
-    Carries the idempotency_key so the caller can poll it later instead of
-    treating this attempt as failed."""
+    """Raised on a 202 (vendor not yet confirmed); carries the idempotency_key to poll."""
 
     def __init__(self, idempotency_key: str) -> None:
         super().__init__(f"telephony call pending, idempotency_key={idempotency_key}")
@@ -72,12 +65,7 @@ async def originate_call(
     *, provider: str, phone_number: str, caller_id: str,
     tenant_slug: str, agent_slug: str, idempotency_key: str,
 ) -> str:
-    """Returns the vendor's call id. Retries the HTTP hop up to 3 times
-    with 0.5/1/2s backoff on httpx.HTTPError or a 5xx, reusing the SAME
-    idempotency_key every attempt (AC20) — the telephony service's own
-    idempotency claim is what makes a retried POST safe, not a fresh key.
-    A 202 raises TelephonyOriginatePending immediately (not a retry
-    condition)."""
+    """Return the vendor call id; retries transport errors/5xx with the SAME idempotency_key."""
     body = {
         "tenant_slug": tenant_slug, "agent_slug": agent_slug,
         "to": phone_number, "from": caller_id, "idempotency_key": idempotency_key,
@@ -120,9 +108,7 @@ async def originate_call(
 
 
 async def poll_idempotency(*, provider: str, tenant_slug: str, idempotency_key: str) -> str | None:
-    """Returns the vendor call id once the pending attempt resolves to
-    'done', None while still pending/unfinalized (caller ticks again
-    later), raises on a resolved 'failed' outcome."""
+    """Vendor call id once resolved, None while pending; raises on a failed outcome."""
     global _jwt_token
     if _jwt_token is None:
         _jwt_token = await _login()

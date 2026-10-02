@@ -1,14 +1,7 @@
 "use client";
 
-// New call flow: where it starts from → which legs it runs on → which steps
-// it should contain → name it. Replaces a two-field modal that always
-// produced the same three-node starter, which meant every flow began by
-// deleting the parts you didn't want.
-//
-// The step picker builds the scaffold client-side (lib/callFlowScaffold.ts)
-// and posts it as `graph`; cloning posts `clone_from_id` instead and is
-// resolved server-side, so a clone can never read a flow the caller couldn't
-// open, and can never cross an account boundary.
+// New call flow wizard. Scaffolds are built client-side; clones are resolved server-side
+// (clone_from_id) so a clone can't read a flow the caller can't open or cross tenants.
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -92,9 +85,7 @@ export default function NewCallFlowPage() {
   const stepIndex = STEPS.findIndex((s) => s.key === step);
   const cloning = source === "clone";
   const canLeaveSource = !!tenantSlug && (!cloning || !!cloneFromId);
-  // Cloning takes the source flow's graph wholesale, so the step picker has
-  // nothing to contribute — skip it rather than showing picks that are
-  // silently discarded.
+  // A clone copies the whole graph, so the step picker is skipped.
   const visibleSteps = cloning ? STEPS.filter((s) => s.key !== "steps") : STEPS;
   const goNext = () => {
     const order = visibleSteps.map((s) => s.key);

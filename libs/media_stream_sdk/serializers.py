@@ -1,17 +1,4 @@
-"""
-The one seam that knows event names, `streamId`/`streamSid`, or frame
-JSON shapes for a Media Streams-style provider. `MediaStreamBridge`
-(bridge.py) never touches raw JSON keys itself — it calls through a
-`MediaStreamSerializer` so a new provider is a new class here and
-nothing else.
-
-`VobizSerializer` freezes today's exact Vobiz wire bytes
-(services/vobiz/bridge.py before the extraction). `CloudonixSerializer`
-speaks Twilio Media Streams' shape, which Cloudonix's wire protocol
-clones. Field lookups are case-tolerant, mirroring the Vobiz provider's
-`form.get("CallUUID") or form.get("call_uuid")` habit — exact casing is
-unverified until the trial call (OQ2/OQ3).
-"""
+"""Per-provider Media Streams wire shapes; a new provider is a new class here."""
 
 from __future__ import annotations
 
@@ -46,9 +33,7 @@ class MediaStreamSerializer(Protocol):
 
 
 class VobizSerializer:
-    """Exactly today's Vobiz literals — see bridge.py's module docstring
-    for why pacing/barge-in depend on these shapes staying byte-for-byte
-    identical."""
+    """Vobiz wire shapes; keep byte-for-byte stable."""
 
     def event_kind(self, event: dict) -> str:
         kind = event.get("event")

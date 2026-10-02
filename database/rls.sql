@@ -1,21 +1,9 @@
--- database/rls.sql — Row-Level Security for tenant isolation.
---
--- Applied as the 4th schema file, after schema.sql, knowledge_schema.sql and
--- telephony_schema.sql. Run as the current superuser (whichever role applies
--- the other three files) — this file does not change table ownership.
---
--- psql -f has no ON_ERROR_STOP (lesson 13/14), so every block that must be
--- atomic is its own `DO $$ ... END $$`. A failed statement inside a block
--- rolls that whole block back; it does not stop the rest of the file. The
--- ordering inside each policy block matters: CREATE POLICY runs before
--- ENABLE/FORCE, so a table only ever ends up with no RLS (today's behaviour)
--- or RLS-with-a-correct-policy — never RLS with no policy, which would deny
--- everything to yuviz_app.
---
--- The app password is supplied by the operator, never committed:
+-- Row-Level Security for tenant isolation. Apply last, after the other schema files.
+-- Each atomic step is its own DO block; CREATE POLICY precedes ENABLE/FORCE so a table
+-- never ends up with RLS but no policy.
 --   psql -v yuviz_app_password='...' -f database/rls.sql
 
--- ── Roles and grants (T1) ─────────────────────────────────────────────────
+-- ── Roles and grants ─────────────────────────────────────────────────────
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'yuviz_platform') THEN
@@ -23,20 +11,14 @@ BEGIN
     END IF;
 END $$;
 
--- yuviz_app's CREATE ROLE carries the operator-supplied password, which
--- psql's `:'var'` substitution cannot reach inside a dollar-quoted DO block
--- (verified empirically — it is a bare `:` there, a syntax error). \gexec
--- is psql's own mechanism for a conditional DDL statement built from a
--- variable: the SELECT below is plain top-level SQL, where substitution
--- does work, and \gexec runs whatever it returns (zero rows when the role
--- already exists, i.e. a no-op).
+-- \gexec, not a DO block: psql `:'var'` substitution doesn't work inside dollar quotes.
 SELECT format(
     'CREATE ROLE yuviz_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD %L',
     :'yuviz_app_password')
  WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'yuviz_app')
 \gexec
 
--- Idempotent re-assertion: AC 1 must hold even if the role pre-existed.
+-- Re-assert attributes in case the roles pre-existed.
 ALTER ROLE yuviz_app      NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
 ALTER ROLE yuviz_platform NOSUPERUSER BYPASSRLS   NOCREATEDB NOCREATEROLE NOLOGIN;
 
@@ -47,22 +29,15 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES    IN SCHEMA public TO yuviz_
 GRANT USAGE, SELECT                  ON ALL SEQUENCES IN SCHEMA public TO yuviz_app, yuviz_platform;
 REVOKE CREATE ON SCHEMA public FROM yuviz_app, yuviz_platform;
 
--- New tables created by the schema-applying role get grants automatically;
--- this is the mitigation for "someone adds a table and forgets to GRANT",
--- which fails closed.
+-- Future tables created by the schema-applying role get these grants automatically.
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO yuviz_app, yuviz_platform;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
     GRANT USAGE, SELECT ON SEQUENCES TO yuviz_app, yuviz_platform;
 
--- ── audit_log backfill (T2) ─────────────────────────────────────────────────
--- audit_log.tenant_id itself is added in database/schema.sql, beside the
--- table's own definition, so the table keeps one home. This block only
--- backfills the rows that predate the column. Guarded by
--- `a.tenant_id IS NULL` so re-running is a no-op the second time (idempotent,
--- lesson 12/13), and runs BEFORE the audit_log policy block below — a
--- backfill failure leaves rows NULL, which is fail-closed (platform-readable
--- only), never a leak.
+-- ── audit_log backfill ──────────────────────────────────────────────────────
+-- Fills tenant_id on old rows. Must run before the audit_log policy; unmatched rows
+-- stay NULL (platform-only), which fails closed.
 DO $$
 DECLARE m RECORD;
 BEGIN
@@ -80,11 +55,7 @@ BEGIN
         USING m.entity_type;
     END LOOP;
 
-    -- entity_id IS the tenant for 'tenant' rows. Joined through tenants
-    -- (rather than a bare assignment) so a hard-deleted tenant's audit
-    -- rows fail the join and stay NULL instead of violating audit_log's
-    -- new tenant_id FK — the same "stays NULL" fail-closed outcome the
-    -- other backfill arms already get from their own joins.
+    -- Joined through tenants so hard-deleted tenants stay NULL instead of violating the FK.
     UPDATE audit_log a SET tenant_id = t.id
       FROM tenants t
      WHERE a.entity_type = 'tenant' AND a.entity_id = t.id AND a.tenant_id IS NULL;
@@ -93,8 +64,7 @@ BEGIN
     UPDATE audit_log a SET tenant_id = ag.tenant_id
       FROM agent_tool_policies p JOIN agents ag ON ag.id = p.agent_id
      WHERE p.id = a.entity_id AND a.entity_type = 'agent_tool_policy' AND a.tenant_id IS NULL;
-    -- agent_retrieval_policies has no id column of its own — agent_id IS
-    -- its primary key.
+    -- agent_retrieval_policies is keyed by agent_id.
     UPDATE audit_log a SET tenant_id = ag.tenant_id
       FROM agent_retrieval_policies p JOIN agents ag ON ag.id = p.agent_id
      WHERE p.agent_id = a.entity_id AND a.entity_type = 'agent_retrieval_policy' AND a.tenant_id IS NULL;
@@ -108,9 +78,7 @@ BEGIN
      WHERE i.id = a.entity_id AND a.entity_type = 'live_call_intervention' AND a.tenant_id IS NULL;
 END $$;
 
--- ── Wave A — UUID-keyed tenant column (18 tables) (T3) ──────────────────────
--- Rows whose entity was hard-deleted, or that predate a join key above,
--- match nothing and stay NULL — platform-readable only via yuviz_platform.
+-- ── UUID tenant column ──────────────────────────────────────────────────────
 
 DO $$
 BEGIN
@@ -147,8 +115,7 @@ END $$;
 
 DO $$
 BEGIN
-    -- users.tenant_id is nullable: NULL = platform-scoped account, invisible
-    -- to yuviz_app by construction, reachable only through platform_conn().
+    -- NULL tenant_id = platform account, reachable only via platform_conn().
     DROP POLICY IF EXISTS users_tenant_isolation ON users;
     CREATE POLICY users_tenant_isolation ON users
         FOR ALL TO yuviz_app
@@ -172,8 +139,7 @@ END $$;
 
 DO $$
 BEGIN
-    -- No policy on purpose: yuviz_app sees nothing; only platform_conn()
-    -- (verification.py) reads or writes these pre-auth / own-row tables.
+    -- No policy on purpose: only platform_conn() may touch these pre-auth tables.
     ALTER TABLE pending_registrations ENABLE ROW LEVEL SECURITY;
     ALTER TABLE pending_registrations FORCE  ROW LEVEL SECURITY;
     ALTER TABLE email_change_requests ENABLE ROW LEVEL SECURITY;
@@ -316,10 +282,7 @@ END $$;
 
 DO $$
 BEGIN
-    -- audit_log.tenant_id is nullable: NULL = a mutation performed under
-    -- platform_conn() with no target tenant. Must run after the backfill
-    -- block above so re-running this file never enables RLS ahead of the
-    -- backfill it depends on.
+    -- NULL tenant_id = platform mutation with no target tenant. Must follow the backfill.
     DROP POLICY IF EXISTS audit_log_tenant_isolation ON audit_log;
     CREATE POLICY audit_log_tenant_isolation ON audit_log
         FOR ALL TO yuviz_app
@@ -329,7 +292,7 @@ BEGIN
     ALTER TABLE audit_log FORCE  ROW LEVEL SECURITY;
 END $$;
 
--- ── Wave A — TEXT-slug tenant column (2 tables) (T4) ────────────────────────
+-- ── TEXT-slug tenant column ─────────────────────────────────────────────────
 
 DO $$
 BEGIN
@@ -353,9 +316,8 @@ BEGIN
     ALTER TABLE live_call_interventions FORCE  ROW LEVEL SECURITY;
 END $$;
 
--- ── Wave B — child tables, no tenant column, scoped via parent join (10) (T5)
--- The parent's own policy already applies inside the subquery, so these need
--- no GUC of their own and cannot drift from the parent.
+-- ── Child tables scoped via parent join ─────────────────────────────────────
+-- The parent's policy applies inside the subquery, so these can't drift from it.
 
 DO $$
 BEGIN
@@ -468,10 +430,6 @@ BEGIN
 END $$;
 
 -- ── Call flows (IVR/OBD) ────────────────────────────────────────────────────
--- call_flows carries its own tenant_id (Wave A shape); call_flow_versions has
--- none and is scoped through its parent (Wave B shape), exactly like
--- agent_workflow_versions is through agents.
-
 DO $$
 BEGIN
     DROP POLICY IF EXISTS call_flows_tenant_isolation ON call_flows;
@@ -494,7 +452,7 @@ BEGIN
     ALTER TABLE call_flow_versions FORCE  ROW LEVEL SECURITY;
 END $$;
 
--- ── Out of scope, stated so it is not re-litigated ──────────────────────────
+-- ── Intentionally without RLS ───────────────────────────────────────────────
 -- tenants: it IS the tenant, and tenant_conn()'s own resolver reads it.
 -- conversation_node_heartbeats: infrastructure, not tenant-owned.
 -- kamailio_cdr: written by Kamailio directly, not by any of these services.

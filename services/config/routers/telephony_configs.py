@@ -83,22 +83,14 @@ async def create_telephony_config(
 async def list_telephony_configs_by_provider(
     provider: str = Query(...), current_user: CurrentUser = Depends(get_current_user),
 ):
-    """The Cloudonix service's cold-path account preload — platform-scoped
-    only (`tenant_id is None`, never `role == "superadmin"`, lesson 24),
-    same shape as Conversation's prewarm. `credentials.api_keys` comes back
-    as sealed `enc:` Fernet tokens, worthless without
-    SECRET_ENCRYPTION_KEY (same stance as provider_configs.py's note)."""
+    """Platform-scoped account preload for telephony services; api_keys stay sealed `enc:` tokens."""
     if not is_platform_scoped(current_user):
         raise HTTPException(status_code=403, detail="platform-scoped access required")
     return await telephony_configs_service.list_configs_by_provider(provider)
 
 
 async def _authorize_telephony_config(config_id: str, current_user: CurrentUser) -> dict:
-    """Same shape as provider_configs._authorize_provider: 404 if missing,
-    403 if it belongs to a different tenant. This is also the cached-read
-    control (see design's "Caches and RLS") — telephony_configs.get_telephony_config
-    can be satisfied entirely from Redis, so this app-layer check, not RLS,
-    is what closes the by-id routes on a cache hit."""
+    """404 if missing, 403 if another tenant's. Reads can hit Redis, so this check, not RLS, is the guard."""
     platform_scoped = is_platform_scoped(current_user)
     cfg = await get_or_404(
         telephony_configs_service.get_telephony_config(config_id, platform_scoped=platform_scoped),
@@ -198,7 +190,5 @@ async def delete_telephony_config(
 
 @providers_router.get("/telephony-providers")
 async def list_supported_providers(current_user: CurrentUser = Depends(get_current_user)):
-    """Discovery endpoint — name -> required credential fields, so an admin
-    UI can render the right form per provider without hardcoding field
-    lists."""
+    """Provider name -> required credential fields, for rendering per-provider forms."""
     return telephony_configs_service.list_supported_providers()

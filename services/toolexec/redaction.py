@@ -1,19 +1,6 @@
-"""
-services/toolexec/redaction.py — the AC 14 redaction control.
+"""Single redaction control for step arguments and responses before persistence or return.
 
-redact(payload, paths) is applied to step arguments (against
-custom_api_params.sensitive param NAMES) and to step responses (against
-custom_apis.sensitive_response_paths JSON PATHS) before persistence,
-before success_template interpolation, and before a response ever leaves
-this service — the same function for all three, so there is exactly one
-place that decides what "[redacted]" means.
-
-Paths use the same tiny JSONPath subset graph.extract() consumes
-('$.a.b[0].c'); a bare name with no leading '$' (a sensitive param name,
-which indexes a flat arguments dict) is shorthand for '$.<name>'. A path
-absent from a given payload is a no-op, not an error: sensitive_response_paths
-is declared once for the whole API, not guaranteed present on every
-response shape.
+Paths use graph.extract()'s JSONPath subset; a bare name means '$.<name>'; absent paths are no-ops.
 """
 
 from __future__ import annotations
@@ -66,10 +53,7 @@ def _redact_one(payload: Any, path_or_key: str) -> None:
 
 
 def redact(payload: Any, paths: list[str]) -> Any:
-    """Returns a deep copy of payload with the value at each path in
-    `paths` replaced by "[redacted]" at whatever nesting depth it sits,
-    leaving every sibling field and the rest of the structure untouched.
-    """
+    """Return a deep copy with each path's value replaced by REDACTED."""
     result = copy.deepcopy(payload)
     for path in paths:
         _redact_one(result, path)

@@ -3,9 +3,6 @@
 namespace voiceai {
 
 // Inherit privately to make a class non-copyable.
-//
-//   class Foo : private NonCopyable { ... };
-//
 class NonCopyable {
 protected:
     NonCopyable()  = default;

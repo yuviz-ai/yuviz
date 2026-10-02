@@ -1,11 +1,5 @@
-// Phase 5 of AI-to-human transfer: EslClient::transfer() (uuid_transfer).
-//
-// EslClient speaks ESL's plain-text protocol over a raw TCP socket (see
-// gateway/src/telephony/EslClient.cpp) — there is no fake/mock ESL server
-// library to inject, so this test runs a minimal real one on 127.0.0.1 (a
-// background thread speaking just enough of the protocol: auth/request,
-// auth accept/reject, and api command/response framing) and asserts against
-// the exact commands EslClient sends and how it interprets replies.
+// EslClient command tests against a minimal real ESL server on loopback
+// (auth, api command/response framing); asserts exact commands and reply handling.
 
 #include <gtest/gtest.h>
 
@@ -45,10 +39,7 @@ void send_all(int fd, const std::string& data) {
     ::send(fd, data.data(), data.size(), 0);
 }
 
-// A single scripted exchange: after auth succeeds, the server expects one
-// command and sends back the given api/response body (wrapped with the
-// correct Content-Length framing) — or, if `reject_auth` is set on the
-// fixture, never gets this far at all.
+// One scripted exchange: after auth (unless `reject_auth`), one command and a framed reply.
 struct FakeEslServer {
     int listen_fd{-1};
     uint16_t port{0};
@@ -260,9 +251,8 @@ TEST(EslClientTransferTest, SipUriElsewhereStillAllowedWhenHostOnlyLooksLocal) {
     }
 }
 
-// Without a proxy address a number has nowhere correct to go: refuse it with
-// a clear error rather than INVITE a wrong host and leave the caller in ~32 s
-// of silence (SIP Timer B). A SIP URI does not need the proxy.
+// Without a proxy host, refuse numbers rather than INVITE a wrong host (~32 s of silence).
+// A SIP URI does not need the proxy.
 TEST(EslClientTransferTest, NumberRefusedWhenSipProxyHostUnset) {
     FakeEslServer server;
     server.start();
@@ -495,8 +485,7 @@ TEST(EslClientUuidGuardTest, EveryUuidCommandRefusesNonUuidInput) {
 // ── Connection failure ───────────────────────────────────────────────────────
 
 TEST(EslClientTransferTest, UnreachableEslReturnsFalse) {
-    // Nothing listens on this port; connect() itself fails/times out fast
-    // via EslClient's own non-blocking-connect-with-timeout path.
+    // Nothing listens on this port; connect() fails fast.
     EslConfig cfg = make_cfg(1);
     cfg.connect_timeout_ms = 100;
     Logger logger = Logger::make_null();
@@ -541,7 +530,7 @@ TEST(EslClientTransferTest, ConnectionDroppedMidCommandReturnsFalse) {
     ASSERT_EQ(server.received_commands.size(), 1u);  // command was sent before the drop
 }
 
-// ── hangup() — same request/reply shape, previously untested ────────────────
+// ── hangup() ────────────────────────────────────────────────────────────────
 
 TEST(EslClientHangupTest, SuccessfulHangupIssuesUuidKill) {
     FakeEslServer server;
@@ -567,11 +556,7 @@ TEST(EslClientHangupTest, EmptyUuidSkipsConnectionEntirely) {
 }
 
 // ── originate_async() / bridge() / stop_audio_fork() / hold() / unhold() ───
-// Warm transfer's 5 new commands (see docs/warm_transfer_architecture.md
-// §6). bgapi's own immediate reply carries no Content-Length body — the
-// Job-UUID is a header line — so FakeEslServer's next_reply_body here is
-// itself header text, matching send_command_locked's content_length==0
-// ("command/reply carries its result in Reply-Text") branch.
+// bgapi replies carry Job-UUID as a header (no body), so next_reply_body here is header text.
 
 TEST(EslClientOriginateAsyncTest, PlainExtensionDialsThroughSipProxyDirectly) {
     FakeEslServer server;

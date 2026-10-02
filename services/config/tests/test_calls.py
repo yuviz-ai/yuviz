@@ -260,10 +260,7 @@ async def test_get_todays_activity_buckets_by_hour_and_direction(test_tenant, sc
 
 
 async def test_get_dashboard_stats_aht_denominator_skips_null_durations(test_tenant, scoped, pool):
-    """AHT must divide by calls that REPORTED a duration, not by every ended
-    call — duration_ms is NULL on reconciled/dead-node calls, and counting
-    those in the denominator would drag the average toward zero in exact
-    proportion to how broken duration reporting is."""
+    """AHT divides only by calls with a reported duration_ms, not every ended call."""
     timed_id, untimed_id = (f"test-call-{uuid.uuid4().hex[:8]}" for _ in range(2))
     await pool.execute(
         "INSERT INTO calls (session_id, tenant_id, direction, duration_ms, close_reason, ended_at) "
@@ -287,9 +284,7 @@ async def test_get_dashboard_stats_aht_denominator_skips_null_durations(test_ten
 
 
 async def test_get_dashboard_stats_counts_handoffs_apart_from_escalations(test_tenant, scoped, pool):
-    """A handoff is a transfer that REACHED a human (TRANSFER_SUCCESS); an
-    escalation is any attempt. Containment is the complement of the latter,
-    so the two counts must not collapse into one."""
+    """Handoffs (TRANSFER_SUCCESS) are counted apart from escalations (any transfer attempt)."""
     ok_id, failed_id, plain_id = (f"test-call-{uuid.uuid4().hex[:8]}" for _ in range(3))
     for sid, reason in ((ok_id, "TRANSFER_SUCCESS"), (failed_id, "TRANSFER_FAILED"), (plain_id, "caller_hangup")):
         await pool.execute(

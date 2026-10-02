@@ -1,15 +1,7 @@
-"""
-Invite lifecycle — thin HTTP wrapper over invites.py, same split as
-routers/users.py over users.py (CURSOR.md: routers translate HTTP <-> the
-sibling module and nothing else).
+"""Invite lifecycle routes over invites.py.
 
-The admin routes (create/list/resend/revoke) require superadmin/admin, same
-as routers/users.py's write routes. The accept routes are public by
-construction — no `Depends(get_current_user)` or `Depends(get_authenticated_
-user)` at all — so they bypass the console gate without needing an
-exemption list, and the invite token travels only in the `X-Invite-Token`
-header, never a path or query segment (see invites.py / design doc's "Token
-placement").
+Admin routes require superadmin/admin. Accept routes are public (no identity dependency);
+the token travels only in the `X-Invite-Token` header, never the URL.
 """
 
 from __future__ import annotations
@@ -29,12 +21,7 @@ router = APIRouter(prefix="/invites", tags=["invites"])
 
 
 def _client_host(request: Request) -> str:
-    # request.client is None on some transports (e.g. a Unix domain socket
-    # in front of this service) — falling through to request.client.host
-    # unguarded is an AttributeError -> 500, and worse, skips the throttle
-    # entirely on these public, unauthenticated routes. A fixed sentinel
-    # key means such requests still share one (real) rate-limit bucket
-    # instead of bypassing the limiter altogether.
+    # request.client can be None (e.g. Unix socket); share one throttle bucket rather than bypass it.
     return request.client.host if request.client is not None else "unknown-client"
 
 
@@ -44,17 +31,11 @@ async def create_invite(
     request: Request,
     current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
 ):
-    # Probe cap first, outcome-blind: incremented before create_invite's own
-    # users-table lookup runs, so a 409 this raises costs the actor exactly
-    # what a 201 would (design doc's "Probe rate limit"). Mail-bomb cap is
-    # peeked here too but only incremented after a real send below.
+    # Probe cap counts before the lookup so a 409 costs the same as a 201; send cap counts only real sends.
     request.app.state.invite_throttle.check_probe(current_user.id)
     request.app.state.invite_throttle.check_send_cap(current_user.id)
 
-    # Tier 4: the tenant is in the request body, not a path segment. The
-    # existing may_invite/_same_tenant privilege check inside create_invite
-    # is kept unchanged — this runs beside it, not instead of it (lesson 24:
-    # the exemption predicate is is_platform_scoped, not role=="superadmin").
+    # Tenant comes from the body; create_invite still runs its own privilege check.
     await assert_tenant_access(body.tenant_id, current_user)
     set_target_tenant(body.tenant_id)
 
@@ -68,8 +49,7 @@ async def create_invite(
     try:
         await email.send_invite_email(to_email=row["email"], raw_token=raw_token)
     except Exception:
-        # Non-fatal (AC12): the invite row is already committed pending and
-        # stays resendable — a broken SMTP config must not 500 the request.
+        # Non-fatal: the invite is committed and stays resendable.
         email_sent = False
 
     result = invites_service.to_public_dict(row)
@@ -82,16 +62,8 @@ async def list_invites(
     tenant_id: str | None = None,
     current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
 ):
-    # Same conflation routers/users.py had (PR #19 security finding 1):
-    # is_platform_scoped (lesson 24 — tenant_id is None) answers *which
-    # tenant*, not *how privileged*. require_role above keeps a NULL-tenant
-    # viewer service account off this route entirely today, but a NULL-
-    # tenant *admin* (not superadmin) would otherwise still fall into the
-    # unscoped, cross-tenant branch on scope alone. `?tenant_id=` is
-    # honored, and is_superadmin=True is passed to the service, only when
-    # the actor is platform-scoped *and* actually superadmin; anyone else
-    # is forced to their own tenant_id, not merely validated (AC11,
-    # CURSOR.md).
+    # `?tenant_id=` is honored only for a platform-scoped superadmin; a NULL-tenant admin
+    # must not get the cross-tenant branch. Everyone else is forced to their own tenant.
     platform_scoped = is_platform_scoped(current_user) and current_user.role == "superadmin"
     scoped_tenant_id = tenant_id if platform_scoped else current_user.tenant_id
     if scoped_tenant_id is not None:
@@ -103,8 +75,7 @@ async def list_invites(
 
 
 async def _authorize_invite(invite_id: str, current_user: CurrentUser) -> dict:
-    """Tier 3 by-id: 404 if missing, 403 if it belongs to a different
-    tenant — same shared predicate as every other by-id resolver."""
+    """404 if missing, 403 if it belongs to a different tenant."""
     platform_scoped = is_platform_scoped(current_user)
     invite = await get_or_404(
         invites_service.get_invite_by_id(invite_id, platform_scoped=platform_scoped),
@@ -152,8 +123,6 @@ async def revoke_invite(
 async def get_invite_to_accept(
     request: Request, x_invite_token: str | None = Header(default=None),
 ):
-    # Public — no identity dependency at all, so this bypasses the console
-    # gate by construction rather than needing an exemption.
     request.app.state.accept_throttle.check(_client_host(request))
     if not x_invite_token:
         raise HTTPException(status_code=404, detail="invite not found")

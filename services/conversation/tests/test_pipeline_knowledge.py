@@ -1,18 +1,5 @@
-"""
-Knowledge retrieval integration in PipelineConversationHandler.
-
-REWRITTEN. Retrieval used to be unconditional: exactly one
-retrieve() call per turn, folded into that turn's user message. It is now
-the `search_knowledge` local tool, offered to the model alongside
-execute_api and called only when the model decides the question needs the
-business's own documents (see registry.py's two-tool docstring and
-pipeline.py's _local_tools).
-
-So the contract these tests pin down changed shape:
-  - a turn where the model does not ask for documents costs ZERO retrievals
-  - the caller's message is never rewritten with retrieved context
-  - the tool is offered only when this node actually has knowledge enabled
-  - a retrieval failure is reported as a failure, never as "nothing found"
+"""Knowledge retrieval via the `search_knowledge` local tool: zero retrievals unless the model
+asks, no message rewriting, offered only when the node has knowledge, failures reported as failures.
 """
 
 from __future__ import annotations
@@ -64,9 +51,7 @@ async def test_agent_with_no_eligible_kb_leaves_llm_messages_unchanged():
 
 
 async def test_no_retrieval_happens_unless_the_model_asks_for_it():
-    """The core behaviour change: an eligible KB is no longer enough to
-    trigger a lookup. This handler has no tool orchestrator, so the model
-    never calls search_knowledge — and retrieval must not happen anyway."""
+    """An eligible KB alone doesn't trigger retrieval; the model must call search_knowledge."""
     stt = _make_stt("What is your refund policy?")
     llm, calls = _capturing_llm(["We", " have", " a", " policy."])
     tts = _make_tts()

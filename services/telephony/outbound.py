@@ -1,13 +1,5 @@
-"""
-place_call() / send_sms() — resolve ownership (already done by the caller,
-via OutboundIdentity) -> claim -> vendor -> finalize, with the
-timeout-reconciliation branch (AC13-17, AC19, findings #1-3).
-
-Neither function takes a raw tenant_slug/agent_slug/from_number: only the
-`OutboundIdentity` ownership.resolve_outbound_identity() returns, and it is
-the sole source of tenant_id for every idempotency.* call inside them
-(lesson 31/32).
-"""
+"""place_call() / send_sms(): idempotency claim -> vendor -> finalize, with timeout reconciliation.
+Identity comes only from a server-resolved OutboundIdentity, never raw caller input."""
 
 from __future__ import annotations
 
@@ -56,11 +48,7 @@ async def place_call(
             return 202, {"status": "pending", "idempotency_key": idempotency_key}
         return result_from_outcome(cached)
 
-    # Remembered BEFORE dialling: the vendor's answer_url callback re-enters
-    # this same process's inbound webhook handler (it is the identical
-    # /{provider}/voice/{account_ref} route), which must find this outbound
-    # leg's real agent_slug/tenant_slug waiting for it rather than resolving
-    # a route via DID lookup against the callee's number (findings #2/#3).
+    # Before dialling: the answer webhook may arrive before initiate_call() returns.
     if identity.agent_slug is not None:
         outbound_identities.remember(
             provider, account.account_ref, idempotency_key,
@@ -74,9 +62,7 @@ async def place_call(
             hangup_url=f"{_public_base_url()}/{provider}/status/{account.account_ref}?idem={idempotency_key}&event=hangup",
             ring_url=f"{_public_base_url()}/{provider}/status/{account.account_ref}?idem={idempotency_key}&event=ring",
         )
-        # Remember under the vendor's returned call_id immediately — Cloudonix's
-        # fixed answer_url can't carry our ?idem= param, so this is the only way
-        # to match the answer webhook if it fires before this function returns.
+        # Also key by vendor call_id: Cloudonix's fixed answer_url can't carry ?idem=.
         if identity.agent_slug is not None:
             outbound_identities.remember(
                 provider, account.account_ref, call_id,

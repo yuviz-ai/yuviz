@@ -38,9 +38,7 @@ log = logging.getLogger(__name__)
 
 
 async def _resolve_tenant_id(tenant_id: str) -> None:
-    """Same shape as provider_configs router's _resolve_tenant_id — a clean
-    400/404 instead of an INSERT's FK violation reaching the client as a
-    raw 500."""
+    """Clean 400/404 instead of an FK violation surfacing as a 500."""
     await validate_id_exists(tenant_id, tenants_service.get_tenant_by_id, "tenant")
 
 
@@ -90,10 +88,8 @@ def _is_local_address(did: str) -> bool:
 async def _require_superadmin_for_local_number(
     current_user: CurrentUser, did: str, telephony_config_id: str | None, carrier_id: str | None,
 ) -> None:
-    """A local extension, a number under a Native config, or one under no
-    provider is a local SIP number on the platform's shared Kamailio/
-    FreeSWITCH. Only the platform assigns those: a tenant choosing its own
-    local extension could claim one that routes to another tenant's phones."""
+    """Local SIP numbers live on the shared Kamailio/FreeSWITCH; a tenant picking one
+    could claim another tenant's extension, so only the platform assigns them."""
     if current_user.role == "superadmin":
         return
     local = _is_local_address(did) or (telephony_config_id is None and carrier_id is None)
@@ -172,9 +168,7 @@ async def update_phone_number(
         f"phone_number {phone_number_id!r} not found",
     )
     await assert_tenant_access(phone_number["tenant_id"], current_user)
-    # Resolvers below use tenant_conn() (RLS-scoped), so the tenant must be
-    # bound before they run — otherwise the very first one raises
-    # TenantUnresolved regardless of which tenant owns the referenced row.
+    # The resolvers below use RLS-scoped tenant_conn(), so bind the tenant first.
     set_target_tenant(phone_number["tenant_id"])
     if "agent_id" in fields:
         await _resolve_agent_id(fields["agent_id"])

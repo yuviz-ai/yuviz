@@ -1,21 +1,7 @@
-"""
-CloudonixProvider — the credential-shape and answer-response half of the
-Cloudonix integration. Outbound call control is out of scope: this
-provider only exists so Cloudonix's per-account credentials fit the same
-`telephony_configs` convention the Vobiz provider adapter uses
-(libs/telephony_sdk/providers/vobiz.py), which gives the Admin UI a
-credential form for free.
+"""Cloudonix credentials, webhook auth, and answer markup.
 
-No `app_id` field: R2-3 found that a tenant-writable free-form account
-identifier could shadow another tenant's. The account's identity is its
-`telephony_configs` row id, not anything in `credentials`.
-
-`api_keys` entries must be `enc:` tokens ONLY — never `env:`/`k8s:`, never
-a raw key. `telephony_configs.credentials` is tenant-writable JSONB, and
-`CompositeSecretResolver`'s `env:`/`k8s:` schemes were built for
-admin-entered infra config, not tenant input — see the design's "Account
-key material" section for the arbitrary env-var/file-read this would
-otherwise open.
+Account identity is the telephony_configs row id, never a tenant-writable field.
+api_keys must be `enc:` only: env:/k8s: from tenant input would allow arbitrary env/file reads.
 """
 
 from __future__ import annotations
@@ -52,9 +38,7 @@ class CloudonixProvider(ITelephonyProvider):
 
     @classmethod
     def validate_credentials(cls, credentials: dict[str, Any]) -> None:
-        """Runs at telephony_configs creation/update time only, never at
-        call time. Rejects any api_keys entry that is not an `enc:`
-        token — `env:` and `k8s:` included."""
+        """Rejects any api_keys entry that is not an `enc:` token."""
         domain = credentials.get("domain")
         if not domain or not isinstance(domain, str):
             raise TelephonyProviderError("cloudonix credentials missing required field: domain")
@@ -75,8 +59,7 @@ class CloudonixProvider(ITelephonyProvider):
         self, *, from_number: str, to_number: str,
         answer_url: str, hangup_url: str | None = None, ring_url: str | None = None,
     ) -> str:
-        """answer_url/hangup_url/ring_url unused — Cloudonix's webhook target
-        is fixed per-application. Returns the token echoed back as CallSid."""
+        """URLs unused (fixed per application). Returns the token echoed back as CallSid."""
         if not self._account_api_key or not self._application_id:
             raise TelephonyProviderError(
                 "cloudonix: outbound calling requires account_api_key and application_id credentials"
@@ -102,13 +85,8 @@ class CloudonixProvider(ITelephonyProvider):
         raise TelephonyProviderError("cloudonix: outbound call control out of scope")
 
     def verify_webhook_signature(self, url: str, headers: dict[str, str]) -> bool:
-        """Cloudonix sends a static X-CX-APIKey header rather than a
-        signature. Compares the presented header against every entry of
-        this account's api_keys, without short-circuit, skipping any entry
-        that is still an is_encrypted() token (the instance was built from
-        sealed or empty credentials, which must match nothing rather than
-        raise). headers must already be lower-cased keys, per the abstract
-        method's contract."""
+        """Constant-time match of X-CX-APIKey against every key, no short-circuit.
+        Still-encrypted entries match nothing."""
         presented = headers.get("x-cx-apikey", "")
         matched = False
         for entry in self._api_keys:
@@ -122,11 +100,7 @@ class CloudonixProvider(ITelephonyProvider):
         self, *, url: str, headers: dict[str, str], fields: dict[str, Any],
         account_tenant_slug: str,
     ) -> NormalizedInboundCall:
-        """query ∪ JSON-or-form body, CallSid/To/From. known_tenant_slug is
-        always the account's own tenant — a Cloudonix account binds a
-        tenant by construction. A Domain field that disagrees with this
-        account's own domain is a vendor-specific rejection (WebhookRejected),
-        not a routing decision the orchestrator makes."""
+        """The account binds the tenant; a mismatched Domain raises WebhookRejected."""
         lowered = {k.lower(): v for k, v in fields.items()}
         domain = lowered.get("domain")
         if domain and str(domain).lower() != self._domain.lower():

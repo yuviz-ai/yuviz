@@ -1,13 +1,6 @@
 """
-MockConfigProvider, zero I/O — resolve_handler_deps()'s own logic (calling
-IConfigProvider.get_runtime_config() then ProviderRegistry.resolve(), and
-the all-or-nothing fallback contract) is what this file tests, not config
-resolution itself (that's the Config SDK's own job now — see
-libs/config_sdk/tests/test_cache_aside.py, which covers the agent-override-
-vs-tenant-default and all-or-nothing cases this file used to prove against
-real Postgres). Provider instantiation still uses an injected fake registry
-(same pattern as test_ai_provider_manager.py) so these tests don't pay real
-model-load cost.
+resolve_handler_deps(): all-or-nothing fallback contract, with a mock config provider
+and fake provider registry (no I/O).
 """
 
 from __future__ import annotations
@@ -85,8 +78,7 @@ async def test_full_resolution_returns_runtime_config_and_provider_bundle():
     assert result is not None
     runtime_config, bundle = result
     assert isinstance(bundle.stt, FakeProviderInstance) and bundle.stt.cfg.engine == "fake_stt"
-    # bundle.llm is always RetryOnceLLM-wrapped (see provider_bundle.py) —
-    # unwrap to reach the real instance this test is actually checking.
+    # bundle.llm is RetryOnceLLM-wrapped.
     assert isinstance(bundle.llm._llm, FakeProviderInstance) and bundle.llm._llm.cfg.engine == "fake_llm"
     assert isinstance(bundle.tts, FakeProviderInstance) and bundle.tts.cfg.engine == "fake_tts"
     assert runtime_config.conversation.greeting == "Hi there"
@@ -107,8 +99,7 @@ async def test_extra_jsonb_dict_passes_through_to_provider_config():
 
 
 async def test_missing_provider_config_role_returns_none():
-    # Tenant has stt+llm defaults but no tts default at all — incomplete
-    # config is treated as unavailable, not partially applied.
+    # No tts default: incomplete config is unavailable, not partially applied.
     mock = MockConfigProvider()
     mock.add_tenant(slug="acme", name="Acme", default_stt_config_id="stt1", default_llm_config_id="llm1")
     mock.add_agent("acme", slug="sup", name="Sup")
@@ -120,10 +111,6 @@ async def test_missing_provider_config_role_returns_none():
 
 
 async def test_inactive_agent_returns_none_falls_back_to_legacy():
-    # Deactivated (status='inactive') is reversible and distinct from
-    # deleted_at — the row/config stays intact — but must still resolve as
-    # unavailable for a live call, same "degrade to legacy" contract as a
-    # missing provider config.
     mock = _fully_configured_mock()
     mock.agents[("acme", "sup")] = dataclasses.replace(mock.agents[("acme", "sup")], status="inactive")
 

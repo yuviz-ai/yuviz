@@ -6,31 +6,17 @@ import { Modal } from "@/components/Modal";
 const WEBCALL_URL = process.env.NEXT_PUBLIC_WEBCALL_URL || "ws://localhost:8300";
 const SAMPLE_RATE = 16000;
 
-// --- VAD tuning ---
-// Energy-based (RMS in dB), adaptive to the room's noise floor rather than
-// a fixed absolute threshold — a quiet home office and a noisy open-plan
-// office need very different absolute cutoffs, but both have a "quiet
-// baseline" the mic settles into that speech reliably rises above.
+// VAD: energy-based (RMS dB) relative to an adaptive noise floor, not a fixed threshold.
 const ONSET_FRAMES_REQUIRED = 4; // consecutive worklet callbacks of sustained speech to confirm onset
 const SILENCE_MS_TO_END = 700; // hangover before declaring end-of-utterance
 const NOISE_FLOOR_ADAPT_RATE = 0.02;
 const ONSET_MARGIN_DB = 9;
-// Without headphones, the agent's own TTS leaks from the speakers back into
-// the mic and can be misread as a barge-in — found live testing a
-// standalone version of this same logic: the agent's farewell kept
-// "interrupting itself" the instant it started talking, so the call never
-// actually disconnected. A real barge-in from a person at the mic is much
-// louder/closer than reflected speaker output, so demand a stricter bar
-// specifically while the agent is speaking.
+// Stricter while the agent speaks: speaker echo into the mic would otherwise trigger barge-in.
 const ONSET_MARGIN_DB_WHILE_AGENT_SPEAKING = 22;
 const ONSET_FRAMES_REQUIRED_WHILE_AGENT_SPEAKING = 10;
-// How long to measure the room's real ambient level before trusting any
-// onset/offset decision at all — replaces a hardcoded starting guess that
-// was wrong often enough to matter (see noiseFloorDbRef's comment).
+// Ambient-level calibration window before any onset/offset decision.
 const CALIBRATION_MS = 600;
-// Hard backstop: no real caller utterance runs this long uninterrupted. If
-// the VAD's own silence detection somehow fails to release, force the
-// utterance to end anyway rather than letting audio accumulate forever.
+// Hard backstop in case silence detection never releases.
 const MAX_UTTERANCE_MS = 15_000;
 // Backstop for the end_call teardown delay (below), in case the playhead
 // math is ever off for some reason — never wait longer than this.
@@ -55,10 +41,7 @@ export function TestAgentPanel({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [micLevelPct, setMicLevelPct] = useState(0);
 
-  // Incremented on every handleStart(); the end_call teardown delay
-  // captures the value at schedule time and checks it before firing, so a
-  // quick "Start New Test" click during that delay can't let a stale timer
-  // tear down the new call's live resources instead of the old one's.
+  // Bumped per handleStart() so a delayed end_call teardown can't kill a newer call.
   const sessionGenRef = useRef<number>(0);
   const wsRef = useRef<WebSocket | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -66,26 +49,16 @@ export function TestAgentPanel({
   const workletRef = useRef<AudioWorkletNode | null>(null);
   const talkStartRef = useRef<number>(0);
   const playheadRef = useRef<number>(0);
-  // Every currently-scheduled/playing agent audio chunk — tracked so a
-  // barge-in can stop them all instantly instead of letting old audio keep
-  // playing over the caller's new speech.
+  // Scheduled/playing agent audio, so barge-in can stop it all instantly.
   const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]);
-  // The worklet's onmessage callback is assigned once (in handleStart) and
-  // never re-created, so it can't see updates to React state — plain refs
-  // avoid the stale-closure trap for everything the VAD loop needs live.
+  // Refs, not state: the worklet onmessage closure is created once and would see stale state.
   const recordingRef = useRef<boolean>(false);
   const agentSpeakingRef = useRef<boolean>(false);
   const anyAudioSentRef = useRef<boolean>(false);
   const noiseFloorDbRef = useRef<number>(-50);
   const onsetStreakRef = useRef<number>(0);
   const silenceMsAccumRef = useRef<number>(0);
-  // A hardcoded -50dB starting guess for the ambient noise floor was found
-  // live to be badly wrong for a typical laptop mic/room (fan
-  // noise, room tone) — every frame, including real silence, read as
-  // "speech," so recording never released and a single utterance ran for
-  // 57 seconds straight before anything happened. Calibrate against the
-  // actual room for the first CALIBRATION_MS instead of assuming a fixed
-  // floor, and cap any single utterance as a hard backstop regardless.
+  // Noise floor is calibrated per room; a fixed guess made real silence read as speech.
   const calibratingUntilRef = useRef<number>(0);
   const calibrationSamplesRef = useRef<number[]>([]);
   const recordingStartedAtRef = useRef<number>(0);
@@ -118,9 +91,7 @@ export function TestAgentPanel({
     audioCtxRef.current = null;
   };
 
-  // Reset everything whenever the modal closes, and tear down on unmount —
-  // a stray open mic or WS connection after closing the modal would be a
-  // real privacy/resource bug, not just an untidy one.
+  // Tear down on close/unmount: a lingering open mic is a privacy bug.
   useEffect(() => {
     if (!open) {
       teardown();
@@ -138,10 +109,7 @@ export function TestAgentPanel({
     const ctx = audioCtxRef.current;
     if (!ctx) return;
     const int16 = new Int16Array(buf);
-    // Web Audio's createBuffer() throws NotSupportedError for 0 frames — a
-    // TTS chunk can legitimately arrive empty (seen live: a chunk right
-    // before is_final), which isn't an error condition on its own, just
-    // nothing to actually play.
+    // createBuffer() throws for 0 frames; empty TTS chunks are legitimate.
     if (int16.length === 0) return;
     const float32 = new Float32Array(int16.length);
     for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / (int16[i] < 0 ? 0x8000 : 0x7fff);
@@ -174,10 +142,7 @@ export function TestAgentPanel({
     recordingStartedAtRef.current = talkStartRef.current;
     setErrorMsg(null);
     if (agentSpeakingRef.current) {
-      // Barge-in: the caller started talking while the agent's own audio
-      // was still playing. Stop it immediately (both locally and on the
-      // conversation service, which is otherwise mid-generation) rather
-      // than letting it talk over them.
+      // Barge-in: stop playback locally and on the conversation service.
       stopAgentPlayback();
       wsRef.current?.send(JSON.stringify({ type: "cancel" }));
       wsRef.current?.send(JSON.stringify({ type: "playback_finished", interrupted: true }));
@@ -263,15 +228,8 @@ export function TestAgentPanel({
             setState((s) => (s === "talking" ? s : "ready"));
             break;
           case "end_call": {
-            // Found live: this only updated the status label — the mic
-            // and WebSocket stayed open indefinitely after the server had
-            // already tried to hang up. Fixed by tearing down here — but
-            // then found live that the server sends end_call
-            // right after the final tts_chunk, not after it's actually
-            // played, so an immediate teardown() cut the farewell audio
-            // off mid-sentence (stopAgentPlayback() kills queued Web Audio
-            // sources synchronously). Wait for the scheduled audio to
-            // actually finish playing before tearing down.
+            // end_call arrives right after the last tts_chunk is sent, not played; wait for
+            // scheduled audio to finish before tearing down or the farewell gets cut off.
             const ctx = audioCtxRef.current;
             const remainingMs = ctx ? Math.max(0, (playheadRef.current - ctx.currentTime) * 1000) : 0;
             const gen = sessionGenRef.current;
@@ -282,9 +240,7 @@ export function TestAgentPanel({
             break;
           }
           case "no_response":
-            // The agent heard nothing recognizable (silence/noise/unclear
-            // audio) and never replied at all — without this, the UI would
-            // otherwise wait forever for a message that's never coming.
+            // No reply is coming; surface it instead of waiting forever.
             setErrorMsg(msg.message);
             setState("ready");
             break;
@@ -295,10 +251,7 @@ export function TestAgentPanel({
         }
       };
 
-      // Fully hands-free: every worklet callback runs the VAD — no button,
-      // no manual start/stop. Onset auto-arms recording (and barges in on
-      // the agent if it's mid-response); sustained silence auto-ends the
-      // utterance and sends speech_ended, exactly like a real phone call.
+      // Hands-free VAD: onset starts recording (and barges in); sustained silence sends speech_ended.
       worklet.port.onmessage = (ev: MessageEvent<ArrayBuffer>) => {
         const pcm16 = new Int16Array(ev.data);
         if (pcm16.length === 0) return;
@@ -314,9 +267,7 @@ export function TestAgentPanel({
 
         const now = performance.now();
         if (now < calibratingUntilRef.current) {
-          // Still measuring the room — collect samples, don't make any
-          // onset/offset decisions yet (a false onset mid-calibration would
-          // just get stuck the same way the old hardcoded guess did).
+          // Calibrating: collect samples only, no onset/offset decisions.
           calibrationSamplesRef.current.push(db);
           return;
         }
@@ -334,9 +285,7 @@ export function TestAgentPanel({
         const isSpeechFrame = db > noiseFloorDbRef.current + onsetMargin;
 
         if (!recordingRef.current) {
-          // Slowly adapt the noise floor only while quiet AND the agent
-          // isn't talking (its own audio would otherwise drag the
-          // baseline up while it plays).
+          // Adapt only while quiet and the agent is silent, so its audio doesn't raise the floor.
           if (!isSpeechFrame && !speaking) {
             noiseFloorDbRef.current =
               noiseFloorDbRef.current * (1 - NOISE_FLOOR_ADAPT_RATE) + db * NOISE_FLOOR_ADAPT_RATE;

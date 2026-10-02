@@ -1,8 +1,4 @@
-"""
-Unit tests for services/toolexec/graph.py (T6) — no DB, no network. Nodes
-are the plain-dict shape graph.resolve_order() expects:
-{"id", "name", "upstream_apis": [...]}.
-"""
+"""Unit tests for graph.py ordering and extraction."""
 
 from __future__ import annotations
 
@@ -61,22 +57,7 @@ def test_depth_limit_exceeded_at_per_agent_override_of_two():
 
 
 def test_depth_limit_enforced_through_a_shared_upstream_on_unequal_branches():
-    """DEFECT REPRODUCTION (security audit finding 3): the
-    `if node_id in resolved_ids: return` dedupe fires before the walk into
-    that node's own subtree, so a node first resolved on a SHALLOW branch is
-    never re-examined — nor is anything beneath it — when reached again via
-    a DEEPER branch.
-
-    Construction: R -> [A -> B -> C]  and  R -> D -> E -> B
-    B is shared. Reached via A at depth 3 (fully resolved there first, since
-    A is visited before D in upstream_apis order), then reached again via D/E
-    at depth 5. The longest path R->D->E->B->C is 5 levels, so
-    resolve_order(root, max_levels=4) must raise depth_limit_exceeded — but
-    the dedupe short-circuits the second, deeper visit to B before C's own
-    depth (5) is ever checked, so this currently returns an order instead.
-
-    This test is EXPECTED TO FAIL against the shipped code. Do not weaken
-    the assertion to make it pass — report it as the defect it is."""
+    """R->A->B->C and R->D->E->B: B resolved shallow first, but the deep path (5) must still fail."""
     c = _node("C", "c")
     b = _node("B", "b", [c])
     a = _node("A", "a", [b])
@@ -111,16 +92,7 @@ def test_extract_miss_is_not_an_exception():
     assert graph.extract([], "$.items[5]") is graph.MISSING
 
 
-# ── extract_with_reason: telling "found nothing" from "wrong path" ────────
-#
-# These two used to be indistinguishable, so a product the tenant does not
-# stock reached the caller as the same failure as a misconfigured
-# upstream_json_path. See executor.py's _resolve_arguments.
-
-
 def test_empty_collection_is_no_match_not_a_path_error():
-    # A search that ran and found nothing: the path resolves, the list is
-    # simply empty. This is an ANSWER, not a misconfiguration.
     value, reason = graph.extract_with_reason({"products": [], "total": 0}, "$.products[0].id")
     assert value is graph.MISSING
     assert reason == graph.NO_MATCH
@@ -133,9 +105,6 @@ def test_absent_key_is_a_path_error():
 
 
 def test_index_past_a_non_empty_list_is_a_path_error():
-    # The list has results, the path just asks for one that isn't there —
-    # a real mismatch between the path and the response shape, and no
-    # rephrasing by the caller would fix it.
     value, reason = graph.extract_with_reason({"products": [{"id": 1}]}, "$.products[3].id")
     assert value is graph.MISSING
     assert reason == graph.PATH_ABSENT
@@ -157,7 +126,5 @@ def test_malformed_path_is_a_path_error():
 
 
 def test_extract_still_returns_bare_missing():
-    # The original single-return API is unchanged for every existing caller
-    # (sensitive_response_paths, success_template interpolation).
     assert graph.extract({"products": []}, "$.products[0].id") is graph.MISSING
     assert graph.extract({"products": [{"id": 6}]}, "$.products[0].id") == 6

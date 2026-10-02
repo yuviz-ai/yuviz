@@ -1,9 +1,4 @@
-"""libs/tenancy — the shared RLS scope reader and connection helpers.
-
-Framework-free: no FastAPI, no service-specific import, so all six services
-(and Conversation, which has no request scope at all) can depend on it
-without importing each other's db.py.
-"""
+"""Shared, framework-free RLS scope reader and connection helpers."""
 from .session import (
     TenantScope,
     TenantScopeConflict,

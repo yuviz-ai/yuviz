@@ -1,21 +1,5 @@
-"""Caller keypresses must never reach a log line.
-
-A `collect` node is how an IVR takes a PIN or a card number, so the digit
-value is caller-entered secret material. This rule was established — and
-tripwired — in services/vobiz/bridge.py; that service was replaced by
-services/telephony/ and libs/media_stream_sdk/, the tripwire went with it,
-and the webhook DTMF path (c906145) then logged `digit=%s` at INFO with
-nothing left to catch it. This restores the tripwire over every place a
-digit now enters the platform.
-
-Presence-only is fine ("dtmf received call=…"); the digit is not, in any
-form — not a last digit, not a length.
-
-The scan parses each module rather than matching lines: a regex over single
-lines misses the multi-line call style most of these modules use, a digit
-passed under another label (`key=%s`), and plurals (`digits=%s`) — exactly
-the ways the leak would come back.
-"""
+"""Caller keypresses (PINs, card numbers) must never reach a log line, in any form.
+Parses modules via AST so multi-line calls, other labels (`key=`) and plurals are caught."""
 from __future__ import annotations
 
 import ast
@@ -26,12 +10,7 @@ from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[3]
 
-# Every module a keypress passes through, from the carrier to where a
-# `collect` node assembles the PIN: the webhook parsers (telephony_sdk), the
-# media-stream and telephony services that receive it, and the conversation
-# service that turns it into IVR input (servicer -> session.push_dtmf ->
-# callflow/runner). If DTMF gains a new entry point, add it here — an entry
-# point this list omits is one this test cannot see.
+# Every module a keypress passes through. Add new DTMF entry points here or this test can't see them.
 _DTMF_ENTRY_POINTS = [
     _REPO / "libs" / "telephony_sdk",
     _REPO / "libs" / "media_stream_sdk",
@@ -84,8 +63,7 @@ def _modules(root: Path) -> list[Path]:
 
 
 def test_the_entry_points_exist_and_contain_log_calls():
-    # Guard against the vacuous pass: if a directory is renamed or moved,
-    # the scan below finds nothing and "no leaks" means nothing.
+    # Guard against a vacuous pass if a directory moves.
     for root in _DTMF_ENTRY_POINTS:
         assert root.is_dir(), f"{root} is gone — update _DTMF_ENTRY_POINTS"
         scanned = sum(len(_log_calls(p)) for p in _modules(root))

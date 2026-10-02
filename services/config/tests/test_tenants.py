@@ -60,14 +60,7 @@ async def test_update_tenant_rejects_unknown_field(test_tenant):
 
 
 async def test_concurrent_updates_do_not_produce_stale_audit_old_value(test_tenant, pool):
-    """Regression test: update_tenant() used to read the 'old' row with a
-    plain SELECT — under real concurrency, two updates racing on the same
-    field could both read the pre-either-update baseline, so whichever
-    committed second would write an audit row claiming a stale old_value
-    (the update that actually happened between them would be invisible in
-    the trail). SELECT ... FOR UPDATE makes the second transaction block
-    until the first commits, then read its actual result — deterministic
-    regardless of scheduling, so this test doesn't need to force timing."""
+    """Racing updates: the second audit row's old_value equals the first's new_value."""
     await asyncio.gather(
         tenants.update_tenant(test_tenant["id"], vad_hold_ms=100),
         tenants.update_tenant(test_tenant["id"], vad_hold_ms=200),
@@ -99,8 +92,5 @@ async def test_update_tenant_writes_audit_row(test_tenant, pool):
 
 
 async def test_update_tenant_accepts_max_concurrent_calls(test_tenant):
-    # T16: the Live Calls Monitoring utilization KPI's only source column —
-    # must be updatable through the same audited/cache-invalidated path as
-    # every other tenant field, not a special case.
     updated = await tenants.update_tenant(test_tenant["id"], max_concurrent_calls=5)
     assert updated["max_concurrent_calls"] == 5

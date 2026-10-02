@@ -1,20 +1,6 @@
-"""
-CacheAsideConfigProvider — the production IConfigProvider implementation.
-Composes two injected IConfigRepository instances (Redis-first, HTTP-
-fallback) and maps their raw dicts into this package's typed, immutable
-models. This is the only class in the SDK that knows both "there are two
-repositories" and "here's how a raw dict becomes a Tenant/Agent/
-ProviderConfig" — everything above it (agent_resolver.py) only ever sees
-IConfigProvider's business-level methods.
+"""Production IConfigProvider: Redis first, HTTP fallback, raw dicts mapped to models.
 
-Deliberate non-duplication: on an HTTP fallback hit, this class does NOT
-write the result back into Redis itself. Config Service's own GET handlers
-(services/config/{tenants,agents,provider_configs}.py) already do that as
-part of their own existing cache-aside — see http_repository.py's docstring.
-Writing it again here would be a second, independently-maintained
-implementation of the exact same "populate Redis" logic, which is exactly
-the kind of drift that caused the DID-routing cache bugs fixed earlier this
-project (see project memory) — one writer per key, always.
+Never writes back to Redis: Config Service's GET handlers own that (one writer per key).
 """
 
 from __future__ import annotations
@@ -55,10 +41,6 @@ def _parse_dt(value: Any) -> datetime | None:
 
 
 def _parse_extra(value: Any) -> dict[str, Any]:
-    # JSONB columns come back from asyncpg (and therefore from both Redis's
-    # cached JSON and Config Service's REST responses, which both trace back
-    # to the same raw row) as a JSON *string*, not a parsed dict — see
-    # agent_resolver.py's identical historical handling of this.
     parsed = _parse_json(value)
     return parsed if isinstance(parsed, dict) else {}
 
@@ -235,10 +217,6 @@ class CacheAsideConfigProvider:
             ),
             media=MediaInfo(
                 voice=providers["tts"].voice,
-                # agent.language is an explicit per-agent override; when
-                # unset (the pre-existing behavior), still falls back to
-                # whatever the STT/TTS providers themselves are configured
-                # with.
                 language=agent.language or providers["stt"].language or providers["tts"].language,
             ),
             policies=Policies(
@@ -282,17 +260,9 @@ class CacheAsideConfigProvider:
         return runtime_config.media.voice if runtime_config is not None else None
 
     async def get_tools(self, tenant_slug: str, agent_slug: str) -> list[ToolSpec]:
-        # Tool Orchestrator is Phase 6b, not built — no tools table/column
-        # exists yet to source this from. Real, empty, not a stub exception:
-        # a caller asking "what tools does this agent have" today correctly
-        # gets "none," not an error.
+        # No tools source exists yet.
         return []
 
     async def close(self) -> None:
-        # Delegates to whatever the two injected repositories need closed
-        # (a redis-py client, an httpx.AsyncClient) — the caller (e.g.
-        # services/conversation/__main__.py's shutdown path) closes the
-        # provider, never the repositories directly; that would leak the
-        # transport detail this whole abstraction exists to hide.
         await self._redis_repo.close()
         await self._http_repo.close()

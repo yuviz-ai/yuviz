@@ -1,22 +1,6 @@
-"""
-LLMAdapter — the seam that keeps ILLM.generate() completely untouched while
-still supporting tool-calling.
+"""LLMAdapter: tool-calling support without changing ILLM.generate().
 
-ILLM's formal contract never changes: generate(messages) -> AsyncGenerator[str].
-A concrete provider MAY additionally implement IToolAwareLLM — a narrow,
-optional companion interface with its own generate_with_tools() method on
-the same class, reusing whatever client/auth that class already
-constructed for ILLM.generate(). LLMAdapter feature-detects this via
-hasattr() and falls back to plain generate() (wrapped in TokenEvents) when
-it's absent, so an ILLM implementation that never supports tool-calling
-needs zero new code.
-
-Each provider's generate_with_tools() parses its own wire format directly
-and yields already-normalized TurnEvents — no separate per-vendor parser
-class. This mirrors how OllamaLLM/GeminiLLM already parse their own token
-streams inside generate() today; a parallel "parser" abstraction would be
-indirection with no real use, since the parsing logic is only ever called
-from inside that one provider's own method anyway.
+Providers may implement IToolAwareLLM.generate_with_tools(); otherwise plain generate() is wrapped in TokenEvents.
 """
 
 from __future__ import annotations
@@ -41,38 +25,22 @@ class ToolCallEvent(TurnEvent):
     tool_call_id: str
     tool_name:    str
     arguments:    dict[str, Any] = field(default_factory=dict)
-    # Opaque per-provider passthrough (e.g. Gemini's thoughtSignature, which
-    # must be echoed back verbatim on this exact call when it's replayed
-    # into history for a later turn — see gemini.py). Orchestrator/executor
-    # code never reads this; only the same provider that set it does.
+    # Opaque per-provider passthrough (e.g. Gemini's thoughtSignature) that must be echoed back
+    # verbatim when replayed into history; only the provider that set it reads it.
     provider_metadata: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
 class ToolCallStartedEvent(TurnEvent):
-    """Yielded the instant a tool call is about to execute (before its
-    round-trip, which can be a slow external API call) — lets the caller
-    speak a short acknowledgment filler instead of leaving dead air for
-    the whole tool duration. Automatic, no per-tool setup needed."""
+    """Yielded just before a tool executes so the caller can speak a filler instead of dead air."""
     tool_name: str
 
 
 @dataclass(frozen=True)
 class DeterministicSpokenEvent(TurnEvent):
-    """Text that must reach the caller verbatim, with zero LLM discretion
-    over its wording — see ToolCallOrchestrator.run_turn()'s own comment
-    for why a real, successful booking is spoken this way instead of
-    handing the tool result back to the LLM for a free-text follow-up
-    generate() call. Confirmed live, repeatedly: an LLM asked to narrate
-    "what just happened" will sometimes narrate a false "booked!" instead
-    of actually calling the tool, no matter how the prompt is worded —
-    this event exists so a genuine success can never be confused with
-    that failure mode, because the words the caller hears were never the
-    LLM's to choose in the first place."""
+    """Text spoken verbatim with no LLM discretion, so a real tool success can't be confused with a hallucinated one."""
     text: str
-    # Mirrors ToolResult.confirmed_datetime — see that field's own
-    # docstring for why pipeline.py needs the real confirmed slot, not
-    # just a boolean "a booking succeeded at some point this session."
+    # The real confirmed slot, not just a "booked at some point" flag (see ToolResult.confirmed_datetime).
     confirmed_datetime: str | None = None
 
 
@@ -95,10 +63,7 @@ class IToolAwareLLM(Protocol):
 
 
 class LLMAdapter:
-    """Wraps one ILLM instance. Call generate() exactly like ILLM.generate()
-    but with an extra `schemas` argument — always yields TurnEvent, never a
-    bare string, regardless of whether the underlying provider actually
-    supports tool-calling."""
+    """Wraps one ILLM; generate() always yields TurnEvents, whether or not the provider supports tools."""
 
     def __init__(self, llm: Any) -> None:
         self._llm = llm
@@ -112,8 +77,6 @@ class LLMAdapter:
                 yield event
             return
 
-        # No tools offered this turn, or the provider doesn't support
-        # tool-calling at all — plain generate(), wrapped uniformly so
-        # ToolCallOrchestrator never has to know which case this is.
+        # No tools this turn, or no provider tool support: wrap plain generate() uniformly.
         async for token in self._llm.generate(messages):
             yield TokenEvent(text=token)

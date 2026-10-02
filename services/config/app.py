@@ -1,9 +1,4 @@
-"""
-Config Service — FastAPI app. A thin HTTP wrapper around tenants.py/agents.py/
-provider_configs.py: routers translate HTTP <-> those functions and nothing
-else. All business logic (caching, audit, config versioning) already lives
-in those modules and in the database triggers — this file has none of its
-own.
+"""Config Service — FastAPI app; routers only translate HTTP to the service modules.
 
 Run: uvicorn services.config.app:app --reload
 """
@@ -40,16 +35,8 @@ log = logging.getLogger(__name__)
 
 
 class InviteThrottle:
-    """The two counters from the design's "Probe rate limit" section, both
-    keyed on the acting admin's JWT subject (`invited_by`) and both checked
-    before invites.create_invite's users lookup runs.
-
-    - probe: 30 create attempts/hour, outcome-blind — incremented
-      unconditionally by the caller regardless of what create_invite does
-      with the request, so a 409 costs exactly what a 201 costs.
-    - send: 20 successful sends/hour across create+resend (the mail-bomb
-      cap) — only incremented after a create/resend actually succeeds.
-    """
+    """Per-admin invite limits: probe (30 attempts/h, outcome-blind so a 409
+    costs the same as a 201) and send (20 successful sends/h, mail-bomb cap)."""
 
     def __init__(self) -> None:
         self.probe = FixedWindowCounter(limit=30, window_seconds=3600)
@@ -71,15 +58,8 @@ class InviteThrottle:
 
 
 class AcceptThrottle:
-    """The accept-route IP throttle (design's "Throttle key" section): 10/
-    minute and 50/hour, covering GET+POST together, keyed on
-    `request.client.host` — **never** `X-Forwarded-For`, which is entirely
-    attacker-controlled here (no reverse proxy sits in front of this
-    service in deployment/docker/docker-compose.yml; the Admin UI calls
-    http://localhost:8000 directly). If a proxy is introduced later, key on
-    the right-most untrusted hop of X-Forwarded-For behind an explicit
-    trusted_hosts list — never the left-most, and never the header
-    unvalidated."""
+    """Per-IP throttle (10/min, 50/h) keyed on request.client.host — never
+    X-Forwarded-For, which is attacker-controlled with no proxy in front."""
 
     def __init__(self) -> None:
         self.minute = FixedWindowCounter(limit=10, window_seconds=60)
@@ -96,25 +76,8 @@ class AcceptThrottle:
 
 
 class LiveCallsThrottle:
-    """Per-user token bucket for GET /live-calls, sized to the 5s poll
-    interval (live_calls.py's REFRESH_MS budget), same FixedWindowCounter
-    precedent as InviteThrottle/AcceptThrottle above.
-
-    limit=4, not 1: one operator's own legitimate traffic in a single 5s
-    window is not always exactly one request. A second browser tab polling
-    its own unsynchronized 5s cadence, a superadmin's tenant switch (which
-    fires an immediate re-fetch on top of whatever the old interval still
-    had in flight), and pause-then-immediate-resume (same — an immediate
-    fetch layered on the interval boundary) can all legitimately land 2-3
-    requests from the SAME user in one window without any hammering at all.
-    limit=1 rejected exactly this traffic (found live via review, not by any
-    of this file's own tests — every one of them called _reset_throttle(),
-    which is why nothing caught it; see TestRateLimitAndAcquireTimeout's
-    dedicated non-reset test for the fix's own proof). 4 gives roughly 3-4x
-    the single-tab steady-state rate — enough for 2-3 tabs plus one
-    switch/resume on top — while still bounding a client that is actually
-    hammering the route to a small constant multiple of its intended cadence,
-    not an unbounded one."""
+    """Per-user limit for GET /live-calls per 5s poll window. limit=4, not 1:
+    extra tabs, tenant switches and resume legitimately add 2-3 requests."""
 
     def __init__(self) -> None:
         self._counter = FixedWindowCounter(limit=4, window_seconds=5)
@@ -132,13 +95,9 @@ def _too_many_requests(detail: str, retry_after: int) -> HTTPException:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Connect eagerly, not lazily, so a broken POSTGRES_DSN/REDIS_URL fails at
-    # startup — the same "fail fast, not on the first request" reasoning as
-    # AIProviderManager.prewarm().
+    # Connect eagerly so a broken POSTGRES_DSN/REDIS_URL fails at startup.
     await db.get_pool()
     cache.get_client()
-    # Populate did:{did} for every active DID now — see
-    # phone_numbers.py's top-of-file comment for the full design.
     warmed = await phone_numbers_service.prewarm()
     log.info("Prewarmed %d active phone number(s) into Redis", warmed)
     yield
@@ -149,10 +108,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Voice AI Platform — Config Service", lifespan=lifespan)
 
-# Admin UI (admin-ui/, Next.js dev server) is the only browser client — this
-# is a local-only dev tool, so the origin list stays narrow rather than a
-# wildcard. Real request-scoped auth (JWT, see auth.py/deps.py) is enforced
-# per-route now, not by CORS.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
@@ -160,10 +115,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-process throttle state for the invite routers — see InviteThrottle/
-# AcceptThrottle above. Attached to app.state (not module-level singletons
-# imported by routers/invites.py) so this file stays the one place that
-# constructs them, with no import cycle back from the router it mounts.
+# On app.state so routers needn't import this module (avoids an import cycle).
 app.state.invite_throttle = InviteThrottle()
 app.state.accept_throttle = AcceptThrottle()
 # Unauthenticated signup and code verify/resend: same per-IP limits, own counters.
@@ -204,8 +156,7 @@ async def not_found_handler(request: Request, exc: LookupError) -> JSONResponse:
 
 @app.exception_handler(SecretEncryptionUnavailable)
 async def _secret_encryption_unavailable(_request, exc: SecretEncryptionUnavailable):
-    # A server misconfiguration, not a bad request — but the message says
-    # exactly what to set, so it has to reach the caller rather than 500.
+    # Misconfiguration, but the message says what to set, so surface it.
     return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
@@ -218,11 +169,7 @@ async def bad_request_handler(request: Request, exc: ValueError) -> JSONResponse
 async def fk_violation_handler(
     request: Request, exc: asyncpg.ForeignKeyViolationError,
 ) -> JSONResponse:
-    # Defense in depth: routers should validate referenced ids exist before
-    # inserting (see provider_configs router's _resolve_tenant_id) — this
-    # catches whatever a future route forgets to, so a bad foreign key is
-    # always a clean 400, never a raw Postgres constraint name reaching the
-    # client.
+    # Backstop for routes that forget to validate ids; never leak constraint names.
     return JSONResponse(
         status_code=400,
         content={"detail": "request references an id that does not exist"},
@@ -300,9 +247,7 @@ async def _invite_permission_denied(request: Request, exc: invites.PermissionDen
 
 @app.exception_handler(invites.EmailConflict)
 async def _invite_email_conflict(request: Request, exc: invites.EmailConflict) -> JSONResponse:
-    # Byte-identical for every tenant_admin case (round-1 CRITICAL, see
-    # design doc's "Conflict responses") — tenant_name is None unless the
-    # actor was a super_admin, checked by invites._conflict_tenant_name.
+    # Byte-identical for tenant admins; tenant_name is set only for superadmins.
     if exc.tenant_name is not None:
         detail = f"email already belongs to tenant '{exc.tenant_name}'"
     else:
@@ -312,11 +257,7 @@ async def _invite_email_conflict(request: Request, exc: invites.EmailConflict) -
 
 @app.exception_handler(invites.PendingInviteConflict)
 async def _invite_pending_conflict(request: Request, exc: invites.PendingInviteConflict) -> JSONResponse:
-    # Distinct from EmailConflict (PR #19 finding 1) — no account exists,
-    # only a still-live pending invite; the actionable remedy is different
-    # so the message is too. Never names a tenant (see the exception's own
-    # docstring for why that's safe for both a tenant_admin and superadmin
-    # actor).
+    # No account exists, only a pending invite; never names a tenant.
     return JSONResponse(
         status_code=409,
         content={"detail": "a pending invite already exists for this email; revoke it first"},
@@ -325,10 +266,8 @@ async def _invite_pending_conflict(request: Request, exc: invites.PendingInviteC
 
 @app.exception_handler(invites.InviteNotPending)
 async def _invite_not_pending(request: Request, exc: invites.InviteNotPending) -> JSONResponse:
-    # Covers resend/revoke of an already-accepted or already-revoked invite.
-    # Known gap (see design doc + PR notes): an already-*accepted* invite
-    # hits this same branch — revoking it is refused rather than having any
-    # effect on the user it already created. Reported, not fixed, here.
+    # Resend/revoke of an accepted or revoked invite; revoking an accepted one
+    # doesn't affect the created user.
     return JSONResponse(status_code=409, content={"detail": "invite is not pending"})
 
 
@@ -358,16 +297,13 @@ async def _invite_used(request: Request, exc: invites.InviteUsed) -> JSONRespons
 
 @app.exception_handler(invites.InviteContextGone)
 async def _invite_context_gone(request: Request, exc: invites.InviteContextGone) -> JSONResponse:
-    # Tenant-blind by construction (see invites.InviteContextGone docstring)
-    # — the accepter learns only that the invite is no longer valid.
+    # Tenant-blind: the accepter learns only that the invite is invalid.
     return JSONResponse(status_code=410, content={"detail": "invite is no longer valid"})
 
 
 @app.exception_handler(invites.EmailTaken)
 async def _invite_email_taken(request: Request, exc: invites.EmailTaken) -> JSONResponse:
-    # Same tenant-blind wording as the create-path conflict — the accepting
-    # party is unauthenticated and must learn nothing about the other
-    # tenant (design doc's "Step 3's own conflict").
+    # Tenant-blind: the accepter is unauthenticated.
     return JSONResponse(status_code=409, content={"detail": "an account already exists for this email"})
 
 

@@ -1,19 +1,5 @@
-"""
-Live Calls Monitoring — T2 (fresh_authority/assert_current_authority), T4
-(get_live_calls query shape), T5b (the permanent stale-token-read tripwire),
-T6 (tenant isolation / no existence oracle / platform scope / re-tenanted
-superadmin), T7 (AC15 snippet authority), T8 (KPI split), T9 (rate limit +
-acquire timeout), T10-T12 (POST /interventions: type-safe scope predicate,
-ip_address sourcing, denial auditing), T13 (AC9 stale-token + audit
-completeness for interventions), T14 (denial-audit aggregation), T15
-(bounded/selective fresh_authority memo).
-
-Real Postgres + Redis, same convention as test_calls.py/test_console_gate.py
-— fixtures test_tenant/test_admin/test_viewer/pool from conftest.py, plus
-local helpers below for rows this feature reads/writes that conftest has no
-fixture for (calls, agents, transcript_entries, live_call_interventions,
-and users at roles/tenant-shapes conftest doesn't already mint).
-"""
+"""Live Calls monitoring: authority re-validation, tenant isolation, KPIs,
+throttling and intervention auditing. Runs against real Postgres + Redis."""
 
 from __future__ import annotations
 
@@ -56,8 +42,7 @@ async def _create_user(*, role: str, tenant_id=None, email: str | None = None) -
 
 
 async def _create_service_account_viewer(pool) -> dict:
-    # scripts/create_service_account.py's exact shape: viewer role, NULL
-    # tenant, is_service_account=true.
+    # Same shape as scripts/create_service_account.py.
     email = f"test-svc-{uuid.uuid4().hex[:8]}@internal.yuviz.ai"
     row = await pool.fetchrow(
         "INSERT INTO users (email, password_hash, role, tenant_id, is_service_account) "
@@ -138,9 +123,6 @@ class TestFreshAuthority:
                 calls["count"] += 1
                 return await original(user_id)
 
-            # deps.py does `from . import users as users_service`, so
-            # deps.users_service IS the services.config.users module — patch
-            # it there so fresh_authority's own call is counted.
             monkeypatch.setattr(deps.users_service, "get_user_by_id", _counting_get_user_by_id)
 
             first = await deps.fresh_authority(app_state, token_user, "self", ttl_s=60)
@@ -148,14 +130,12 @@ class TestFreshAuthority:
             assert calls["count"] == 1
             assert first.role == second.role == "supervisor"
 
-            # Role changes in the DB; within the TTL the memo still wins.
+            # Within the TTL the memo still wins.
             await users_service.update_user(user_row["id"], role="admin")
             still_memoized = await deps.fresh_authority(app_state, token_user, "self", ttl_s=60)
             assert still_memoized.role == "supervisor"
             assert calls["count"] == 1
 
-            # Force expiry with a ttl_s of 0 rather than sleeping — same
-            # code path, deterministic.
             third = await deps.fresh_authority(app_state, token_user, "self", ttl_s=0)
             assert third.role == "admin"
             assert calls["count"] == 2
@@ -231,10 +211,7 @@ class TestGetLiveCallsQuery:
             "Other Tenant", f"test-other-{uuid.uuid4().hex[:8]}",
         )
         foreign_agent_id = await _insert_agent(pool, tenant_id=other_tenant["id"], name="Foreign Agent")
-        # A call in test_tenant whose agent_id points at an agent that
-        # belongs to a DIFFERENT tenant (the collision finding #9 closes) —
-        # without the explicit `AND a.tenant_id = $1` predicate, the LEFT
-        # JOIN would resolve to and leak the foreign tenant's agent name.
+        # Without `AND a.tenant_id = $1` the LEFT JOIN would leak the foreign agent's name.
         session_id = await _insert_call(pool, tenant_slug=test_tenant["slug"], agent_id=foreign_agent_id)
         try:
             result = await live_calls.get_live_calls(test_tenant["slug"], include_transcript=False)
@@ -274,10 +251,7 @@ def _stale_token_reads_after(tree: ast.AST, after_line: int) -> list[str]:
 
 
 def test_no_stale_token_read_after_fresh_authority():
-    """Structural enforcement of the design's central invariant: after
-    fresh_authority() is called, `user` (the token) must never be read for
-    `.tenant_id`/`.role` again anywhere in this file — see T5's
-    _resolve_scope docstring. AST-based so it survives reformatting."""
+    """After fresh_authority() the token `user` must never be read for `.tenant_id`/`.role`."""
     source = inspect.getsource(live_calls_router)
     tree = ast.parse(source)
     fresh_authority_line = _fresh_authority_call_line(tree)
@@ -286,12 +260,9 @@ def test_no_stale_token_read_after_fresh_authority():
 
 
 def test_no_stale_token_read_invariant_actually_catches_a_regression():
-    """Mutation proof: a temporarily-inserted stale read after the
-    fresh_authority( call must fail the invariant above."""
+    """Mutation proof: an inserted stale read after fresh_authority( fails the invariant."""
     source = inspect.getsource(live_calls_router)
-    # AST-based line lookup, not a text search — the module docstring also
-    # mentions "fresh_authority()", which a naive `"fresh_authority(" in
-    # line` search would match first and mutate the wrong (non-code) line.
+    # AST lookup, not text search: the module docstring also mentions "fresh_authority(".
     real_call_line = _fresh_authority_call_line(ast.parse(source))
     lines = source.splitlines()
     mutated_lines = lines[:real_call_line] + ["    _ = user.tenant_id"] + lines[real_call_line:]
@@ -318,18 +289,13 @@ async def _cleanup_tenant(pool, tenant: dict) -> None:
 
 
 def _clear_authority_memo() -> None:
-    # Deleting the attribute (not assigning `{}`) so fresh_authority()
-    # recreates it as the OrderedDict it expects (T15's bounded LRU memo).
+    # Delete rather than assign `{}` so fresh_authority() recreates its OrderedDict.
     if hasattr(app.state, "_live_calls_authority_memo"):
         del app.state._live_calls_authority_memo
 
 
 def _reset_throttle() -> None:
-    # T9's per-user token bucket is sized to the real 5s poll interval, so
-    # tests that deliberately poll the same user faster than that (to
-    # exercise fresh_authority/_resolve_scope, not the throttle itself) must
-    # reset it between requests — see TestRateLimitAndAcquireTimeout below
-    # for the throttle's own dedicated test.
+    # The per-user bucket is sized to the 5s poll interval; tests polling faster must reset it.
     app.state.live_calls_throttle._counter._buckets.clear()
 
 
@@ -418,20 +384,17 @@ class TestTenantIsolationAndScope:
 
                 await _soft_delete_user(pool, superadmin["id"])
 
-                # Same (already-validated) scope_key, still inside the 60s
-                # memo — the documented, bounded window.
+                # Same scope_key, still inside the 60s memo window.
                 _reset_throttle()
                 still_ok = await client.get("/live-calls", params={"tenant_slug": test_tenant["slug"]})
                 assert still_ok.status_code == 200
 
-                # A DIFFERENT scope_key (tenant B) has never been validated,
-                # so it re-reads immediately and 403s.
+                # A never-validated scope_key re-reads immediately.
                 _reset_throttle()
                 other = await client.get("/live-calls", params={"tenant_slug": other_tenant["slug"]})
                 assert other.status_code == 403
 
-                # Clearing the memo (equivalent to advancing past the shipped
-                # 60s TTL) forces a re-read for tenant A too.
+                # Equivalent to the TTL expiring.
                 _clear_authority_memo()
                 _reset_throttle()
                 now_denied = await client.get("/live-calls", params={"tenant_slug": test_tenant["slug"]})
@@ -459,8 +422,7 @@ class TestTenantIsolationAndScope:
 
     async def test_retenanted_superadmin_is_confined_to_the_fresh_row_tenant(self, pool, test_tenant):
         other_tenant = await _create_tenant(pool)
-        # Minted while tenant_id is still NULL — the token keeps claiming
-        # NULL for its whole life; only the DB row changes below.
+        # Token keeps claiming NULL tenant; only the DB row changes below.
         superadmin = await _create_user(role="superadmin", tenant_id=None)
         try:
             await users_service.update_user(superadmin["id"], tenant_id=test_tenant["id"])
@@ -488,17 +450,12 @@ class TestTenantIsolationAndScope:
     async def test_inverse_retenanted_superadmin_token_claims_tenant_row_is_now_null(
         self, pool, test_tenant,
     ):
-        # Token claims test_tenant's id; the row is now NULL-tenant
-        # superadmin (e.g. detached from its tenant) — must be treated as
-        # platform-scoped from the fresh row, not tenant-scoped from the
-        # stale claim.
+        # Fresh row (NULL-tenant superadmin) must win over the stale tenant claim.
         admin_row = await _create_user(role="admin", tenant_id=test_tenant["id"])
         try:
             await users_service.update_user(admin_row["id"], role="superadmin", tenant_id=None)
             _clear_authority_memo()
             async with _client_as(admin_row) as client:
-                # httpx client built from admin_row's own (stale) token is
-                # fine here — it's the same token minted above.
                 resp = await client.get("/live-calls")
             assert resp.status_code == 400
             assert resp.json() == {"detail": "tenant_slug is required"}
@@ -549,9 +506,7 @@ class TestSnippetAuthority:
 
                 await users_service.update_user(test_admin["user"]["id"], role="supervisor")
 
-                # Still inside the shipped 60s memo TTL — the documented,
-                # bounded exposure window (lesson 25: never a shortened one
-                # for this assertion).
+                # Still inside the real 60s memo TTL (deliberately not shortened).
                 _reset_throttle()
                 still_admin_view = await client.get("/live-calls")
                 assert still_admin_view.status_code == 200
@@ -633,9 +588,7 @@ class TestKpis:
         call_b1 = await _insert_call(pool, tenant_slug=other_tenant["slug"])
         call_b2 = await _insert_call(pool, tenant_slug=other_tenant["slug"])
         try:
-            # get_live_calls reads current_tenant() as its own authority
-            # check (not just the tenant_slug argument) — set/reset it
-            # around each call, switching tenants in between.
+            # get_live_calls also checks current_tenant(), not just the slug argument.
             set_target_tenant(str(test_tenant["id"]))
             try:
                 result_a = await live_calls.get_live_calls(test_tenant["slug"], include_transcript=False)
@@ -656,7 +609,7 @@ class TestKpis:
             await _cleanup_tenant(pool, other_tenant)
 
     async def test_nullable_cap_has_no_numeric_fallback(self, scoped, pool, test_tenant):
-        # test_tenant's cap is NULL by default — no default per T1's schema.
+        # test_tenant's cap is NULL by default.
         session_id = await _insert_call(pool, tenant_slug=test_tenant["slug"])
         try:
             result = await live_calls.get_live_calls(test_tenant["slug"], include_transcript=False)
@@ -685,8 +638,7 @@ class TestKpis:
 
 class TestRateLimitAndAcquireTimeout:
     async def test_rate_limit_429s_after_bucket_exhausted(self, pool, test_tenant, test_admin):
-        # limit=4 (see LiveCallsThrottle's own docstring for the multiplier
-        # and why) — drive exactly the bucket's capacity, then one more.
+        # Bucket capacity is 4: drive exactly that, then one more.
         _clear_authority_memo()
         _reset_throttle()
         async with _client_as(test_admin["user"]) as client:
@@ -697,8 +649,6 @@ class TestRateLimitAndAcquireTimeout:
         _reset_throttle()
 
     async def test_granted_request_is_never_throttled_below_the_bucket_cap(self, test_tenant, test_admin):
-        # Sanity check on the other side of the same control: a single poll
-        # (the normal 5s cadence) is never itself throttled.
         _clear_authority_memo()
         _reset_throttle()
         async with _client_as(test_admin["user"]) as client:
@@ -709,22 +659,8 @@ class TestRateLimitAndAcquireTimeout:
     async def test_throttle_tolerates_realistic_multi_tab_traffic_without_any_reset(
         self, pool, test_tenant, test_admin,
     ):
-        """Lesson 25's own shape: no _reset_throttle() call anywhere in this
-        test, and no fixture/fresh-instance sleight of hand either — this
-        drives the REAL shared app.state.live_calls_throttle exactly as
-        production traffic would hit it. test_admin is a brand-new user
-        (fresh per test), so its bucket key has no pre-existing entries;
-        nothing here is reset or pre-cleared.
-
-        Simulates one operator's SAME window legitimately containing more
-        than one request: tab 1's poll tick, tab 2's own (unsynchronized)
-        poll tick, a tenant switch's immediate re-fetch, and a resume's
-        immediate re-fetch — four ordinary, non-hammering requests from one
-        user landing in one 5s window. This is the review's finding #3
-        regression test: limit=1 rejected this exact traffic (every other
-        test only passed because it called _reset_throttle() between
-        requests); limit=4 tolerates it, while a genuine 5th request in the
-        same window still 429s, so the bound still exists."""
+        """Four requests in one 5s window (multiple tabs, re-fetches) pass on the real
+        shared throttle with no reset; a fifth still 429s."""
         _clear_authority_memo()
         async with _client_as(test_admin["user"]) as client:
             responses = [await client.get("/live-calls") for _ in range(4)]
@@ -734,10 +670,7 @@ class TestRateLimitAndAcquireTimeout:
             assert fifth.status_code == 429
 
     async def test_acquire_times_out_when_pool_is_saturated_rather_than_hangs(self, scoped, test_tenant):
-        # Pre-warm the Redis-cached tenant lookup so the saturated-pool
-        # assertion below exercises the acquire timeout itself, not an
-        # unrelated (uncapped) wait on tenants_service.get_tenant()'s own
-        # cold-cache Postgres read.
+        # Warm the tenant cache so the test hits the acquire timeout, not a cold-cache read.
         await tenants_service.get_tenant(test_tenant["slug"])
 
         pool = await db.get_pool()
@@ -774,9 +707,7 @@ async def _count_audit_rows(pool, entity_id, outcome: str) -> int:
 class TestRequestInterventionServiceFunction:
     async def test_cross_tenant_session_id_binds_the_slug_and_returns_none(self, scoped, pool, test_tenant):
         other_tenant = await _create_tenant(pool)
-        # Agent and call both belong to tenant B; the "caller" (tenant A) is
-        # simulated by resolving against test_tenant's own slug/id while the
-        # session actually lives under other_tenant.
+        # Session lives under other_tenant; caller resolves against test_tenant.
         session_id = await _insert_call(pool, tenant_slug=other_tenant["slug"])
         user = auth.decode_access_token(auth.create_access_token(
             await _create_user(role="admin", tenant_id=test_tenant["id"]),
@@ -879,7 +810,7 @@ class TestInterventionDenialAuditing:
             assert all(r.json() == {"detail": "call not found"} for r in bodies)
 
             denied_count = await _count_audit_rows(pool, test_tenant["id"], "denied")
-            assert denied_count == 1  # T14 aggregates all three denials from one user
+            assert denied_count == 1  # denials from one user are aggregated
         finally:
             await _cleanup_call(pool, foreign_session)
             await _cleanup_tenant(pool, other_tenant)
@@ -893,11 +824,7 @@ class TestInterventionDenialAuditing:
                 resp = await _post_intervention(
                     client, f"test-live-{uuid.uuid4().hex[:8]}", tenant_slug=other_tenant["slug"],
                 )
-            # This is _resolve_scope's OWN 404 (a tenant-slug mismatch),
-            # distinct from get_live_calls's/request_intervention's query
-            # miss — its body is unchanged ("tenant not found"); what T12
-            # closes is that it is now AUDITED as a denial too (finding #5),
-            # not that its wording changes to match the query-miss case.
+            # _resolve_scope's own slug-mismatch 404 keeps its wording but is still audited.
             assert resp.status_code == 404
             assert resp.json() == {"detail": "tenant not found"}
             assert await _count_audit_rows(pool, test_tenant["id"], "denied") == 1
@@ -1011,10 +938,7 @@ class TestDenialAuditAggregation:
             live_calls._denial_audit_windows.pop(key, None)
 
     async def test_cross_tenant_denials_within_the_window_get_separate_rows(self, pool, test_tenant):
-        # The load-bearing regression test for the security-review finding:
-        # a superadmin probing tenant A then tenant B within the same 60s
-        # window must NOT have tenant B's denial folded into tenant A's row
-        # — each tenant gets its own audit trail (AC11 / finding #5).
+        # Each tenant gets its own denial row even within one aggregation window.
         other_tenant = await _create_tenant(pool)
         superadmin = await _create_user(role="superadmin", tenant_id=None)
         key_a = (str(superadmin["id"]), str(test_tenant["id"]))
@@ -1055,7 +979,7 @@ class TestDenialAuditAggregation:
                     assert resp.status_code == 202
 
             unavailable_count = await _count_audit_rows(pool, test_tenant["id"], "unavailable")
-            assert unavailable_count == 3  # one row per successful request, never aggregated
+            assert unavailable_count == 3
         finally:
             for session_id in session_ids:
                 await _cleanup_call(pool, session_id)
@@ -1093,17 +1017,8 @@ class TestAuthorityMemoBounds:
     async def test_post_intervention_404_should_not_recache_the_evicted_scope_key(
         self, pool, test_tenant, test_admin,
     ):
-        """KNOWN BUG — security finding, left unfixed by decision (low
-        severity). _resolve_scope evicts the memo entry for a scope_key that
-        fails to resolve (forget_authority), but
-        routers.live_calls.request_intervention's 404 except-handler calls
-        deps.fresh_authority() again with that SAME scope_key (to attribute
-        the denial-audit row), which re-reads the row and re-inserts exactly
-        the entry _resolve_scope just evicted — undoing the eviction bound
-        on the POST path, unlike the GET path proven clean above. This pins
-        the INTENDED behavior (a 404'd slug must not be cached) and is
-        expected to FAIL until the implementer removes the re-insertion —
-        do not weaken this assertion to make it pass."""
+        """KNOWN BUG (expected to fail): the POST 404 handler re-caches the evicted scope_key.
+        Do not weaken this assertion."""
         other_tenant = await _create_tenant(pool)
         try:
             _clear_authority_memo()
@@ -1158,11 +1073,8 @@ class TestAuthorityMemoBounds:
     async def test_post_intervention_never_executes_in_a_stale_memo_tenant(
         self, pool, test_tenant, test_admin, scope,
     ):
-        """The write itself, not just its denial audit, must ignore a memo
-        entry that predates a re-tenant. The memo is primed the way another
-        Config process would still hold it after PATCH /users moved this admin
-        from previous_tenant to test_tenant (forget_user only evicts locally).
-        On the old code this 202'd against previous_tenant's live call."""
+        """The write itself must ignore a memo entry that predates a re-tenant
+        (another process may still hold it; forget_user only evicts locally)."""
         previous_tenant = await _create_tenant(pool, name="Previous Tenant")
         foreign_session = await _insert_call(pool, tenant_slug=previous_tenant["slug"])
         user_id = str(test_admin["user"]["id"])
@@ -1205,10 +1117,7 @@ class TestAuthorityMemoBounds:
     async def test_patch_user_tenant_or_role_evicts_the_live_calls_memo(
         self, pool, test_tenant, test_superadmin,
     ):
-        """PATCH /users/{id} must drop the moved user's memoized authority in
-        this process, for a tenant move as well as a role change, not only on
-        a password change. On the old code the (uid, "self") entry survived
-        the move for the full memo TTL."""
+        """PATCH /users/{id} evicts the user's memoized authority on tenant or role change."""
         previous_tenant = await _create_tenant(pool, name="Previous Tenant")
         moved = await _create_user(role="admin", tenant_id=previous_tenant["id"])
         moved_id = str(moved["id"])
@@ -1259,8 +1168,7 @@ class TestSoftDeletedOwnTenant:
             await pool.execute("UPDATE tenants SET deleted_at = NULL WHERE id = $1", test_tenant["id"])
 
 
-# ── AC16 — PATCH /tenants/{tenant_id}/concurrency (design test plan item 8) ──
-# No test for this route existed anywhere in the suite before this file.
+# ── PATCH /tenants/{tenant_id}/concurrency ──────────────────────────────
 
 class TestConcurrencyEndpoint:
     async def test_admin_can_update_own_tenant_concurrency_and_next_poll_reflects_it(
@@ -1280,7 +1188,7 @@ class TestConcurrencyEndpoint:
                 _reset_throttle()
                 poll = await client.get("/live-calls")
             assert poll.status_code == 200
-            assert poll.json()["kpis"]["utilization_pct"] == 25.0  # 1 / 4 * 100 — proves cache invalidation
+            assert poll.json()["kpis"]["utilization_pct"] == 25.0  # proves cache invalidation
         finally:
             await _cleanup_call(pool, session_id)
             await _set_max_concurrent_calls(pool, test_tenant["slug"], None)
@@ -1306,16 +1214,8 @@ class TestConcurrencyEndpoint:
     async def test_patch_concurrency_on_soft_deleted_tenant_should_404(
         self, pool, test_tenant, test_superadmin,
     ):
-        """KNOWN BUG — security finding, left unfixed by decision (medium
-        severity). update_tenant_concurrency's own-tenant check re-reads the
-        ACTOR's row but never checks whether the TARGET tenant is
-        soft-deleted; tenants_service.update_tenant()'s
-        `SELECT * FROM tenants WHERE id=$1 FOR UPDATE` carries no
-        `deleted_at IS NULL` predicate, disagreeing with _resolve_scope's
-        own 403 for exactly this shape elsewhere in this same feature
-        (TestSoftDeletedOwnTenant above). Pins the intended behavior
-        (403/404, never 200) and is expected to FAIL until the implementer
-        adds the predicate — do not weaken this assertion to make it pass."""
+        """KNOWN BUG (expected to fail): update_tenant() lacks a `deleted_at IS NULL` check.
+        Do not weaken this assertion."""
         await tenants_service.soft_delete_tenant(test_tenant["id"])
         try:
             async with _client_as(test_superadmin["user"]) as client:

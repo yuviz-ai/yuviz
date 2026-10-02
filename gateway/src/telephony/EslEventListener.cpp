@@ -17,23 +17,12 @@ namespace voiceai {
 
 namespace {
 
-// Shared with EslClient.cpp (ESL's plain-text protocol framing) — see
-// EslFraming.h. wait_for_frame_header below stays local: this class's main
-// read loop needs a genuinely different waiting discipline (wait
-// indefinitely for the next event, rechecking a running_ flag, rather than
-// a fixed per-command timeout) that doesn't fit the shared helpers'
-// signatures.
 using esl_framing::parse_content_length;
 using esl_framing::read_exact;
 using esl_framing::read_until_blank_line;
 
-// Blocks until a full header block (up to the blank-line terminator) is
-// available, the connection is lost, or `running` flips false — whichever
-// comes first. Unlike a fixed-timeout read, this waits indefinitely for
-// the next event (events are naturally sparse — most calls produce zero
-// CHANNEL_HANGUP events for minutes at a time), rechecking `running` every
-// poll_interval so stop() takes effect promptly without forcing a
-// reconnect on every quiet period.
+// Waits indefinitely for a full header block (events are sparse), rechecking
+// `running` every poll_interval so stop() takes effect promptly.
 bool wait_for_frame_header(int fd, std::string& carry, std::string& out,
                            const std::atomic<bool>& running) {
     constexpr auto poll_interval = std::chrono::milliseconds{500};
@@ -58,9 +47,7 @@ bool wait_for_frame_header(int fd, std::string& carry, std::string& out,
     }
 }
 
-// event-plain bodies are newline-separated "Key: value" lines — a
-// different shape from the Content-Length-bearing outer headers above,
-// hence a separate small parser rather than reusing parse_content_length.
+// event-plain bodies are newline-separated "Key: value" lines.
 std::string parse_header_value(const std::string& body, const std::string& key) {
     const std::string search = key + ": ";
     size_t pos = 0;
@@ -77,25 +64,8 @@ std::string parse_header_value(const std::string& body, const std::string& key) 
     return {};
 }
 
-// BACKGROUND_JOB is doubly-framed (confirmed live against this deployment
-// — see docs/warm_transfer_architecture.md §6): the outer event-plain
-// Content-Length (already stripped by run_loop before `body` reaches this
-// function) wraps a set of "Key: value" header lines — Event-Name,
-// Job-UUID, Job-Command, ... — terminated by their OWN blank line and
-// their OWN inner Content-Length, followed by the job's actual result
-// text — on success, "+OK <channel-uuid>" (NOT a bare uuid — confirmed
-// live against this deployment on the first real warm-transfer call,
-// correcting the original assumption in the doc comment that used to be
-// here); on failure, an "-ERR <cause>" string (e.g. "-ERR NO_ANSWER",
-// "-ERR USER_BUSY"). Strips a leading "+OK" (and the whitespace after it)
-// so callers always get the bare uuid on success — WarmTransferCoordinator
-// uses this value directly as the agent leg's channel uuid in uuid_bridge/
-// uuid_kill, and a stray "+OK " prefix there silently breaks both (an
-// extra space-separated token, not an invalid uuid, so FreeSWITCH doesn't
-// even reject it outright). "-ERR ..." failure text is left untouched.
-// Returns the result text with any trailing whitespace/newline trimmed;
-// empty string if the inner blank-line separator is missing (malformed/
-// unexpected frame).
+// BACKGROUND_JOB bodies are doubly framed: inner headers, blank line, then
+// "+OK <uuid>" or "-ERR <cause>". Strips "+OK " so callers get a bare uuid.
 std::string parse_background_job_result(const std::string& body) {
     const auto sep = body.find("\n\n");
     if (sep == std::string::npos) return {};
@@ -198,12 +168,6 @@ bool EslEventListener::connect_and_subscribe() {
         return false;
     }
 
-    // "plain" (not JSON) matches the framing this class already parses for
-    // the auth handshake and the outer Content-Length header block.
-    // CHANNEL_ANSWER and BACKGROUND_JOB added for warm transfer (see class
-    // doc comment) — one subscription command can list multiple event
-    // names space-separated. DTMF added for DTMF key collection (menu
-    // navigation in call flows).
     const std::string sub_cmd =
         "event plain CHANNEL_HANGUP CHANNEL_BRIDGE CHANNEL_ANSWER BACKGROUND_JOB DTMF\n\n";
     if (::send(fd, sub_cmd.data(), sub_cmd.size(), 0) < 0) {
@@ -262,11 +226,7 @@ void EslEventListener::run_loop() {
 
         const std::string event_name = parse_header_value(body, "Event-Name");
 
-        // BACKGROUND_JOB carries no Unique-ID header at all (confirmed live
-        // against this deployment — see docs/warm_transfer_architecture.md
-        // §6) — its identifying field is Job-UUID instead. Handled as its
-        // own branch, before the Unique-ID-based empty check below would
-        // otherwise silently discard every BACKGROUND_JOB event.
+        // BACKGROUND_JOB has no Unique-ID; it must be handled before that check.
         if (event_name == "BACKGROUND_JOB") {
             const std::string job_uuid = parse_header_value(body, "Job-UUID");
             if (job_uuid.empty()) continue;
@@ -282,32 +242,14 @@ void EslEventListener::run_loop() {
         if (uuid.empty()) continue;
 
         if (event_name == "CHANNEL_BRIDGE") {
-            // A transfer's destination answered and bridged — the only
-            // signal that actually confirms uuid_transfer's "+OK" turned
-            // into a real, successful hand-off (see EslClient::transfer()
-            // and TransferCorrelator's doc comments).
             if (transfer_correlator_.resolve(uuid, /*success=*/true, "bridged"))
                 logger_.info("EslEventListener: CHANNEL_BRIDGE uuid={} — transfer succeeded", uuid);
-            // Not a transfer outcome in progress for this uuid — CHANNEL_BRIDGE
-            // is otherwise not acted on (e.g. a normal non-transfer call leg).
         } else if (event_name == "CHANNEL_ANSWER") {
-            // Warm transfer's agent leg answering — see class doc comment.
-            // No watch registered for the vast majority of ANSWER events
-            // (every ordinary call answer fires this too) — resolve() is a
-            // safe, silent no-op in that case, same filtering discipline as
-            // CHANNEL_BRIDGE above; only log when it actually meant
-            // something.
             if (transfer_correlator_.resolve(uuid, /*success=*/true, "answered"))
                 logger_.info("EslEventListener: CHANNEL_ANSWER uuid={} — agent leg answered", uuid);
         } else if (event_name == "CHANNEL_HANGUP") {
-            // If a transfer is pending for this uuid, this event is its
-            // failure outcome (dropped before ever bridging/answering —
-            // busy, rejected, no answer, invalid destination, ...) —
-            // resolve that instead of the generic caller-hangup path below,
-            // since CallFSM's own Transferring→Closing handling (triggered
-            // by on_transfer_completed) already tears the session down; a
-            // second, unrelated on_hangup_ firing for the same uuid would
-            // be redundant, not incorrect, but there's no reason to fire it.
+            // A pending transfer's failure outcome; the transfer path already
+            // tears the session down, so on_hangup_ is skipped.
             if (transfer_correlator_.resolve(uuid, /*success=*/false, "hangup_before_bridge")) {
                 logger_.info("EslEventListener: CHANNEL_HANGUP uuid={} — transfer failed "
                              "(hung up before bridging)", uuid);
@@ -322,10 +264,6 @@ void EslEventListener::run_loop() {
                 on_dtmf_(uuid, digit);
             }
         }
-        // Defensive — the subscription already filters to these event
-        // names, but FreeSWITCH's background jsonrpc/heartbeat traffic on
-        // the same socket makes an explicit else-nothing here cheap
-        // insurance against acting on an unexpected event type.
     }
 }
 

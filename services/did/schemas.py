@@ -1,8 +1,4 @@
-"""
-Pydantic request models for DID Service's REST API — same "responses are
-the plain dicts the service modules already return" convention as
-services/config/schemas.py.
-"""
+"""Pydantic request models for DID Service; responses are plain dicts."""
 
 from __future__ import annotations
 

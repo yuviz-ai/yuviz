@@ -1,25 +1,6 @@
-"""
-Energy-based VAD — a faithful Python port of the Gateway's own
-EnergyVAD/EnergyVADConfig (gateway/include/media/EnergyVAD.{h,cpp}), not a
-fresh invention.
+"""Python port of the Gateway's EnergyVAD (amplitude threshold), kept as a fallback.
 
-Moved here from services/vobiz/ — this class has no
-Vobiz-specific knowledge at all, it only ever consumed raw PCM16 and
-returned VADEvent, so it belongs in a shared package any future telephony
-bridge can import directly. See libs/vad_sdk's own __init__.py for why.
-
-webcall's push-to-talk model (the browser UI decides when an utterance
-ends and sends a "speech_ended" control message) doesn't apply to a real
-telephony bridge: a provider like Vobiz streams continuous audio with no
-such signal, so the bridge needs the same real-time speech-start/
-speech-end detection real telephony already gets from the C++ Gateway,
-just running in this Python process instead.
-
-Same defaults as EnergyVADConfig: speech starts once energy exceeds
--35dB for a sustained 100ms (onset_ms) — a single loud frame is
-indistinguishable from an echo blip — and ends once energy stays below
--40dB for 500ms (hold_ms). Frame size is 20ms, matching the Gateway's own
-frame_ms and this bridge's own send cadence.
+onset_ms requires sustained energy so a single loud frame (echo blip) doesn't count.
 """
 
 from __future__ import annotations
@@ -58,8 +39,7 @@ class EnergyVAD:
         self.last_energy_db = -96.0
 
     def process(self, pcm16_frame: bytes) -> VADEvent:
-        """pcm16_frame must be one frame_ms-worth of 16-bit signed PCM,
-        mono (320 samples / 640 bytes at 16kHz for the default 20ms)."""
+        """One frame_ms of mono 16-bit PCM (640 bytes at 16kHz/20ms)."""
         sample_count = len(pcm16_frame) // 2
         if sample_count == 0:
             return VADEvent.NONE
@@ -79,7 +59,6 @@ class EnergyVAD:
                 self._onset_frames = 0
             return VADEvent.NONE
 
-        # Currently in speech.
         if self.last_energy_db < self._cfg.silence_threshold_db:
             self._silence_frames += 1
             if self._silence_frames >= self._hold_frames:

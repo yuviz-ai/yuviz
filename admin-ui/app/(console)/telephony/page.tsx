@@ -53,11 +53,7 @@ const TELEPHONY_PROVIDERS = ["cloudonix", "vobiz"] as const;
 const NATIVE = "native" as const;
 type NewConfigProvider = CarrierProvider | (typeof TELEPHONY_PROVIDERS)[number] | typeof NATIVE;
 
-// How many calls per account the recent-activity columns are computed over.
-// There is no per-DID aggregate endpoint (services/config/calls.py exposes a
-// paged list and the dashboard rollups, neither keyed by called_number), so
-// the counts below are a window over the most recent calls — labelled as
-// such everywhere they are shown rather than presented as an all-time total.
+// Recent calls per account used for activity columns; there's no per-DID aggregate endpoint.
 const CALL_WINDOW = 200;
 
 const fmtInt = (n: number) => n.toLocaleString("en-IN");
@@ -207,10 +203,7 @@ export default function TelephonyPage() {
   const [configs, setConfigs] = useState<ConfigRow[]>([]);
   const [numbers, setNumbers] = useState<NumberRow[]>([]);
   const [agentsByTenant, setAgentsByTenant] = useState<Record<string, { agents: Agent[]; ok: boolean }>>({});
-  /** Calls fetched per account id — the denominator behind each config's
-   *  share. Derived from the same window the per-DID counts come from, so
-   *  the two can be compared; summing the DID counts instead would silently
-   *  exclude every call whose numbers match no DID on file. */
+  /** Calls fetched per account id; denominator for each config's share (same window as DID counts). */
   const [callsByTenant, setCallsByTenant] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -229,10 +222,7 @@ export default function TelephonyPage() {
     getCurrentUser().then((me) => setIsSuperadmin(me.role === "superadmin")).catch(() => setIsSuperadmin(false));
   }, []);
 
-  // Scoped to whatever the header switcher has selected, same as Agents and
-  // IVR Flows — one account by default, every account under "All tenants".
-  // Each account's fetch settles independently so one failing tenant leaves
-  // the rest of the page intact (lesson 21).
+  // Each account's fetch settles independently so one failing tenant doesn't blank the page.
   useEffect(() => {
     if (tenantLoading) return;
     const targets = isAllTenants ? allTenants : tenant ? [tenant] : [];
@@ -252,9 +242,7 @@ export default function TelephonyPage() {
             listCarriers(t.id),
             listTelephonyConfigs(t.id),
             listPhoneNumbers(t.id),
-            // Routing and recent activity are conveniences on this page, not
-            // its subject: either failing degrades a column to "—" rather
-            // than losing the configuration and DID inventory with it.
+            // Routing/activity failures degrade to "—" instead of failing the page.
             listAgents(t.slug).then((a) => ({ ok: true, agents: a })).catch(() => ({ ok: false, agents: [] as Agent[] })),
             listCalls(t.slug, { limit: CALL_WINDOW }).then((r) => r.items).catch((): Call[] => []),
           ]);
@@ -279,11 +267,7 @@ export default function TelephonyPage() {
         agentsMap[t.id] = { agents, ok: agentsOk };
         const agentName = (id: string | null) => (id ? agents.find((a) => a.id === id)?.name ?? null : null);
 
-        // A DID's traffic: inbound calls are the ones dialled TO it,
-        // outbound the ones placed FROM it as caller id. Both numbers are
-        // free-text columns written by the gateway, so they are compared
-        // on their digits only — "+91 22 6844 0100" and "912268440100"
-        // are the same DID and must not split into two rows of counts.
+        // Numbers are free-text from the gateway; compare digits only.
         const inboundByDid = new Map<string, number>();
         const outboundByDid = new Map<string, number>();
         for (const c of calls) {
@@ -305,9 +289,7 @@ export default function TelephonyPage() {
             configKind: carrier ? "carrier" : telephonyConfig ? "telephony_config" : null,
             configId: carrier?.id ?? telephonyConfig?.id ?? null,
             configName: carrier?.name ?? telephonyConfig?.name ?? null,
-            // With the agent list unavailable, an assigned agent_id is a
-            // name this page cannot resolve — "—", never "Account default
-            // agent", which would assert routing that isn't configured.
+            // Unresolvable agent_id shows "—", never "Account default agent".
             routesTo: !agentsOk && (n.agent_id || n.fallback_agent_id)
               ? "—"
               : primary ?? (fallback ? `${fallback} (fallback)` : "Account default agent"),
@@ -328,10 +310,7 @@ export default function TelephonyPage() {
             tenantId: t.id, tenantName: t.name, accountRef, isDefaultOutbound,
             dids: dids.length, activeDids: active, suspendedDids: suspended,
             calls: dids.reduce((sum, d) => sum + d.inbound + d.outbound, 0),
-            // telephony_configs (Vobiz/Cloudonix, served by services/telephony)
-            // carry a real, Redis-backed health status (T20/T24) — the
-            // DID-count heuristic below stays only for carriers, which have
-            // no such probe reporting to Config Service.
+            // telephony_configs have real health status; carriers fall back to the DID-count heuristic.
             health: telephonyConfig
               ? (telephonyConfig.health?.status ?? "standby")
               : dids.length === 0 ? "standby" : suspended > 0 ? "degraded" : active > 0 ? "healthy" : "standby",
@@ -855,12 +834,7 @@ function webhookUrlFor(config: ConfigRow): string | null {
     return `${base}/cloudonix/voice/${config.id}`;
   }
   if (config.provider === "vobiz") {
-    // Per-account, same unified-telephony route shape as Cloudonix above
-    // (docs/telephony.md's route table: /{provider}/voice/{account_ref}).
-    // The old standalone services/vobiz/app.py's fixed /vobiz/answer path
-    // is gone along with that service — this was left pointing at it after
-    // the unification and needs the same base URL wiring as Cloudonix once
-    // one exists for Vobiz.
+    // Route shape: /{provider}/voice/{account_ref} (docs/telephony.md).
     const base = process.env.NEXT_PUBLIC_VOBIZ_SERVICE_URL || "";
     return `${base}/vobiz/voice/${config.id}`;
   }

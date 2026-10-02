@@ -4,10 +4,8 @@
 
 _rand() { head -c "$(( ${1:-32} * 3 ))" /dev/urandom | base64 | LC_ALL=C tr -cd 'A-Za-z0-9' | cut -c "1-${1:-32}"; }
 
-# Replaces KEY's line in .env with the value written literally: awk reads both
-# from ENVIRON, which (unlike sed's replacement or awk -v) interprets no `&`,
-# `\` or delimiter, so a secret exported in the shell lands byte for byte.
-# Returns 1 on failure; callers test it with `if`, so `set -e` never fires.
+# Replaces KEY's line in .env literally: ENVIRON (unlike sed or awk -v) doesn't
+# interpret `&` or `\`. Returns 1 on failure; callers test it with `if`.
 _env_set() {
   local tmp="$REPO/.env.tmp.$$"
   if (umask 077; _ENV_SET_KEY="$1" _ENV_SET_VALUE="$2" awk '
@@ -22,10 +20,8 @@ _env_set() {
 
 _env_get() { grep "^$1=" "$REPO/.env" | cut -d= -f2-; }
 
-# Warns when the shell already exports KEY with a value other than .env's.
-# _load_env never replaces a variable the shell has (on purpose), so after
-# .env changes, a tab that sourced start_local.sh earlier keeps the old value
-# and whatever it starts uses that. Always returns 0: it only prints a hint.
+# Warns when the shell exports KEY with a value other than .env's (_load_env
+# never overrides shell vars, so stale tabs keep old values). Always returns 0.
 _warn_env_drift() {
   local shell_value file_value
   shell_value=$(printenv "$1" || true)
@@ -69,8 +65,7 @@ _env_init() {
   for spec in JWT_SECRET:48 CONFIG_SERVICE_PASSWORD:32 YUVIZ_APP_PASSWORD:32 TOOLEXEC_ARGS_HMAC_KEY:48 SECRET_ENCRYPTION_KEY:fernet; do
     name=${spec%:*}; len=${spec#*:}
     [ -z "$(_env_get "$name")" ] || continue
-    # A value already exported in this shell is the one in use: keep it, or
-    # tabs sourced later would get a different key.
+    # Keep a value already exported in this shell, or later tabs get a different key.
     current=$(printenv "$name" || true)
     if [ -n "$current" ]; then
       if _env_set "$name" "$current"; then echo "✓ saved $name from your shell to .env"; fi

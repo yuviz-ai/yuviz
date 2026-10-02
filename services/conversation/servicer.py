@@ -34,24 +34,10 @@ PROTOCOL_VERSION = "1.0"
 
 
 def _consume_pending_transfer(tr, interrupted: bool, sid: str):
-    """Resolve a held TransferRequest at playback completion (both the
-    outer-loop and in-pipeline playback_finished paths): returns the
-    ServiceMessage to send, or None when it must not go out — barge-in
-    dropped it (the LLM re-emits the directive if the caller still wants a
-    human), or the destination is empty (defense in depth; pipeline.py's
-    session-setup validation normally prevents that config from ever
-    producing a directive).
+    """Return the held TransferRequest message to send at playback end, or None to drop it.
 
-    The barge-in-drops-it reasoning only holds for tr.trigger=="llm_directive":
-    that's the caller's own request, so if they still want a human they'll
-    just ask again. An "escalation_threshold" transfer is the SYSTEM's own
-    decision (caller frustration, or a fabricated booking claim the caller
-    has no way to know was false) — nothing prompts it to recur just
-    because the caller says something unrelated in between. Confirmed live:
-    a caller saying "Thank you" right after a fabricated
-    "booked!" claim silently cancelled the safety-net transfer meant to
-    catch exactly that — the correction was lost with no way to retrigger
-    it. An escalation transfer must always go out once accepted."""
+    Barge-in drops LLM-directive transfers (the caller can ask again) but never
+    escalation_threshold ones, which nothing would retrigger."""
     if interrupted and tr.trigger != "escalation_threshold":
         log.info(
             "Converse: pending TransferRequest dropped "
@@ -84,15 +70,7 @@ def _consume_pending_transfer(tr, interrupted: bool, sid: str):
 
 
 class ConversationServicer(pb_grpc.ConversationServiceServicer):
-    """
-    Stateless servicer: creates a fresh ConversationSession per Converse() call.
-
-    ``handler_factory`` receives the per-call SessionContext and returns a fresh
-    IConversationHandler configured for that agent/tenant. Async because
-    resolving that config may hit the Config Service (Postgres/Redis) — see
-    services/conversation/agent_resolver.py.
-    Example: ``async def factory(ctx): return PipelineConversationHandler(...)``
-    """
+    """Stateless servicer: a fresh ConversationSession and handler per Converse() call."""
 
     def __init__(
         self, handler_factory: Callable[[SessionContext], Awaitable[IConversationHandler]],
@@ -161,11 +139,8 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
         tts_seq = 0
 
         # ── 3. Start reader before greeting ────────────────────────────────────
-        # The reader task must be running BEFORE greeting synthesis so the gateway
-        # can keep writing AudioChunk messages while TTS is being prepared.
-        # Without this, the gRPC send buffer fills up during ~5 s of TTS synthesis
-        # and the gateway write fails.  The queue is unbounded so audio arriving
-        # during greeting is buffered and processed after greeting finishes.
+        # Read during greeting synthesis, or the gateway's gRPC send buffer fills and
+        # its write fails. Unbounded so greeting-time audio is buffered.
         msg_q: asyncio.Queue[pb.GatewayMessage | None] = asyncio.Queue()
 
         async def _reader() -> None:
@@ -179,20 +154,12 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
 
         reader_task = asyncio.create_task(_reader())
 
-        # Transfer waiting for its turn's spoken acknowledgment to finish
-        # playing. The gateway executes uuid_transfer the moment it receives
-        # TransferRequest (no playback-drain hold like EndCall's), so sending
-        # it before playback_finished would cut off "connecting you now"
-        # mid-sentence. Dropped on barge-in — the LLM re-emits the directive
-        # if the caller still wants a human.
+        # Held until playback_finished: the gateway transfers immediately on
+        # TransferRequest and would cut off the spoken acknowledgment.
         pending_transfer = None
-        # Set when TransferInitiated arrives; used to log duration_ms on the
-        # eventual TransferCompleted/TransferFailed. Observability only.
         transfer_started_at: float | None = None
 
         # ── 2b. Greeting ───────────────────────────────────────────────────────
-        # Synthesize the agent's opening line and stream it to the caller.
-        # Audio arriving from the gateway during synthesis accumulates in msg_q.
         async for response in session.greet():
             if response.tts_payloads:
                 yield pb.ServiceMessage(
@@ -212,17 +179,9 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
                     )
 
         async def _emit_response(response) -> AsyncIterator[pb.ServiceMessage]:
-            """Out-of-band egress for a HandlerResponse with no inbound
-            message driving it (a call-flow menu timeout — see
-            callflow/handler.py's out_responses queue). Reproduces the
-            speech_ended branch's exact order — TtsStarted -> TtsChunks ->
-            terminal empty is_final=True chunk -> EndCall / held
-            TransferRequest — but unconditionally, not gated on whether this
-            turn had any tts_payloads: a hangup node with no prompt must
-            still emit the terminal empty chunk before EndCall, or the
-            gateway (which only consumes a pending end-call once that turn's
-            TTS finishes playing) never gets the signal and the call hangs
-            open until its own timeout."""
+            """Emit an out-of-band HandlerResponse (e.g. call-flow timeout).
+
+            Always sends the terminal empty chunk, even with no TTS, or the gateway never consumes EndCall."""
             nonlocal tts_seq, pending_transfer
 
             yield pb.ServiceMessage(tts_started=pb.TtsStarted(session_id=sid))
@@ -261,10 +220,7 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
 
             if response.transfer_request:
                 tr = response.transfer_request
-                # Out-of-band responses always sent TTS above (unconditionally,
-                # unlike the in-turn branch), so a transfer here always waits
-                # for that playback to finish — same reasoning as the
-                # speech_ended branch's pending_transfer.
+                # TTS was always sent above, so always wait for its playback.
                 pending_transfer = tr
                 log.info(
                     "Converse: TransferRequest held until playback finishes "
@@ -411,14 +367,8 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
                             elif pcase in (
                                 "transfer_initiated", "transfer_completed", "transfer_failed",
                             ):
-                                # Deferred to the outer loop rather than handled here, for
-                                # two reasons: transfer_completed/transfer_initiated don't
-                                # need special in-pipeline timing, and transfer_failed
-                                # (Phase 5C) streams its own TTS apology — interleaving that
-                                # with this turn's still-in-flight TTS would produce
-                                # overlapping/out-of-order audio for the gateway. Same
-                                # "re-enqueue for the outer loop" pattern already used for
-                                # speech_ended above.
+                                # Defer: transfer_failed streams its own TTS, which would
+                                # interleave with this turn's audio.
                                 await msg_q.put(pending)
                                 break
                             else:
@@ -431,8 +381,6 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
                             if response.end_call:
                                 end_call_requested    = True
                                 end_call_grace_period = response.end_call_grace_period_ms
-                            # Recorded now, sent to the gateway at end of turn
-                            # (or held until playback_finished — see below).
                             if response.transfer_request:
                                 tr = response.transfer_request
                                 log.info(
@@ -483,11 +431,7 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
                                             is_final=False,
                                         )
                                     )
-                            # The assistant's complete spoken-turn text — sent
-                            # alongside, never instead of, the tts_chunk audio
-                            # already streamed above. Today's only consumer is
-                            # the browser test-call panel (services/webcall),
-                            # which has no other way to show what the agent said.
+                            # Text alongside the audio, for the browser test-call panel.
                             if response.response_text:
                                 yield pb.ServiceMessage(
                                     assistant_response=pb.AssistantResponse(
@@ -520,22 +464,8 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
                             )
                         )
 
-                    # Agent decided this turn ends the call.  Sent after the
-                    # final TtsChunk so the gateway holds this until the
-                    # goodbye audio has actually drained (see CallSession's
-                    # on_playback_finished handler) — a caller barge-in
-                    # during that playback overrides this on the gateway side.
-                    #
-                    # Gated on tts_started_sent: the gateway only consumes its
-                    # pending-end-call flag when that turn's TTS finishes
-                    # playing (Speaking→WaitingForHangup).  If this turn had
-                    # no TTS at all (e.g. the LLM emitted only the [[END_CALL]]
-                    # marker with no spoken text before it — a model not
-                    # following the "after your spoken words" instruction),
-                    # the gateway's FSM never enters Speaking for this turn,
-                    # so the flag would never be consumed here and would
-                    # instead leak into a later, unrelated turn's playback
-                    # completion, ending the call at the wrong moment.
+                    # Sent after the final TtsChunk so the gateway waits for the goodbye to drain.
+                    # Requires TTS this turn, else the flag leaks into a later turn's playback.
                     if end_call_requested and not cancelled and tts_started_sent:
                         log.info(
                             "Converse: sending EndCall grace_period_ms=%d session=%s",
@@ -555,11 +485,7 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
                             "turn on the gateway side) session=%s", sid,
                         )
 
-                    # Transfer directive this turn: if the agent spoke an
-                    # acknowledgment, hold the TransferRequest until that audio
-                    # finishes playing (the gateway acts on it immediately —
-                    # see pending_transfer's init comment); if the turn had no
-                    # TTS there is no playback_finished coming, so send now.
+                    # Without TTS no playback_finished will come, so send immediately.
                     if turn_transfer is not None and not cancelled:
                         if tts_started_sent:
                             pending_transfer = turn_transfer
@@ -578,8 +504,7 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
                                 yield out
 
                 elif payload_case == "dtmf":
-                    # Never log the digit value (see the SDK's "digit values
-                    # are never logged" rule) — arm name and session_id only.
+                    # Never log the digit value.
                     log.info("Converse: dtmf session=%s", sid)
                     await session.push_dtmf(msg.dtmf.digit)
 
@@ -605,9 +530,6 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
                         elif pf.interrupted:
                             session.on_transfer_cancelled(tr.transfer_id)
 
-                # Phase 5B of AI-to-human transfer: purely reactive — drives
-                # ConversationSession's own FSM/EventBus (see session.py).
-                # No LLM/prompt change, no workflow change results from this one.
                 elif payload_case == "transfer_initiated":
                     ti = msg.transfer_initiated
                     transfer_started_at = time.monotonic()
@@ -617,12 +539,7 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
                     session.on_transfer_initiated(ti.transfer_type, ti.destination, ti.reason,
                                                   ti.transfer_id)
 
-                # Phase 5D of AI-to-human transfer: runs SessionFinalizer's
-                # post-call cleanup (summary generation, transcript, final
-                # metrics — see session_finalizer.py) before telling the
-                # gateway it may tear its own side down. The gateway is
-                # actually waiting on ConversationFinalized (see CallFSM's
-                # Finalizing state) — this is not just observability.
+                # The gateway's Finalizing state waits on ConversationFinalized.
                 elif payload_case == "transfer_completed":
                     tc = msg.transfer_completed
                     duration_ms = (
@@ -648,11 +565,7 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
                         )
                     )
 
-                # Phase 5C of AI-to-human transfer: unlike the two above,
-                # this one owns workflow/TTS/memory/metrics — it streams a
-                # generated apology back to the gateway (same tts_started/
-                # tts_chunk/is_final sequencing as the speech_ended branch
-                # above) instead of just reacting silently.
+                # Streams a spoken apology, same TTS sequencing as speech_ended.
                 elif payload_case == "transfer_failed":
                     tf = msg.transfer_failed
                     duration_ms = (

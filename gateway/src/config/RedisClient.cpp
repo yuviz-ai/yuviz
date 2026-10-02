@@ -76,11 +76,7 @@ std::optional<std::string> RedisClient::get(const std::string& key) {
         idle_.pop_front();
     }
 
-    // Guarantees conn returns to idle_ even if something below throws
-    // (allocation failure building the result string, a formatting
-    // exception in logger_.warn) — without this, an exception mid-command
-    // would drop conn from the pool permanently instead of just failing
-    // this one call.
+    // Returns conn to the pool even if something below throws.
     struct ConnReturner {
         RedisClient* self;
         Connection*  conn;

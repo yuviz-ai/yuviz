@@ -1,15 +1,6 @@
 """
-provider_config_subscriber.py — subscribes to Config Service's Redis
-Pub/Sub channel (services/config/provider_configs.py's
-PROVIDER_CONFIG_CHANGED_CHANNEL) so editing a provider_config evicts that
-one cached instance in THIS process's AIProviderManager instantly, instead
-of needing a full process restart (which drops every live call on that
-instance — see project history).
-
-Runs as its own background asyncio task (see __main__.py) — shares no
-lock/state with the per-call pipeline, so a slow or unreachable Redis can
-never add latency to a live call. Same reconnect-with-backoff discipline
-as services/campaigns/originate.py's EslJobEventListener.
+Evicts cached provider instances when Config Service publishes a provider_config change.
+Runs as its own task with no shared locks, so a slow Redis never adds call latency.
 """
 
 from __future__ import annotations

@@ -1,7 +1,4 @@
-"""
-ElevenLabsTTS tests use httpx.MockTransport — no real network call, no cost.
-See test_deepgram.py's docstring for why cloud engines are tested this way.
-"""
+"""ElevenLabsTTS tests via httpx.MockTransport — no network, no cost."""
 
 from __future__ import annotations
 
@@ -62,9 +59,7 @@ async def test_synthesize_returns_pcm_unchanged_when_rate_already_supported():
 
 
 async def test_synthesize_resamples_when_rate_unsupported():
-    # 12000 Hz isn't directly supported — ElevenLabs is asked for 16000 (the
-    # nearest supported rate >= 12000), and the result must come back
-    # resampled to the caller's actual requested 12000.
+    # 12 kHz is unsupported: request 16 kHz and resample down.
     pcm_at_16k = _silence_pcm(1600)
 
     def handler(request: httpx.Request) -> httpx.Response:

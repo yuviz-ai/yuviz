@@ -1,8 +1,4 @@
-"""
-One end-to-end pass through the real pipeline: handler + orchestrator,
-scripted tool-aware LLM. Covers mid-turn prompt swap, tool scoping, end node,
-transition speech, and workflow transfer.
-"""
+"""End-to-end pipeline pass: mid-turn prompt swap, tool scoping, end node, transition speech, workflow transfer."""
 
 from __future__ import annotations
 

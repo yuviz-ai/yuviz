@@ -1,34 +1,7 @@
-"""
-Static tool catalog for the Admin UI's "Tools" tab — what tools exist and
-what an admin needs to fill in to configure one. No database, no auth
-required beyond being logged in; this is metadata, not tenant data.
+"""Static tool catalog for the Admin UI's Tools tab (metadata, not tenant data).
 
-KNOWN DUPLICATION, flagged rather than silently done: this list's
-tool_name/display shape overlaps services/conversation/tools/registry.py's
-ToolRegistry (the actual LLM-facing schema catalog). They aren't unified
-because Config Service and Conversation Service are deliberately separate
-deployables with no shared import today (see architecture_decisions:
-Gateway/ConvSvc/Config Service responsibility boundaries).
-
-ONE ENTRY, and that is the design. The agent has exactly two
-tools — search_knowledge and execute_api — and only execute_api is
-configured here:
-
-  search_knowledge  is not admin-configurable at all. It needs no
-                    credential and is already enabled per agent by linking
-                    a knowledge base to it on the Knowledge tab, so a
-                    second enablement switch here would be a redundant
-                    gate that can only ever disagree with the first.
-
-  execute_api       is configured once per agent, then every individual
-                    integration is a row in custom_apis (the APIs tab) —
-                    NOT a new entry in this file. Adding a capability must
-                    never mean shipping conversation-service code.
-
-The Cal.com "book_appointment" and Twilio "send_sms" entries were removed
-here along with the built-ins themselves. Appointment booking is now an
-ordinary custom API chain like any other integration; an outbound SMS is
-a side-effecting custom API.
+Only execute_api is listed: search_knowledge is enabled by linking a knowledge base, and
+each integration is a custom_apis row, not a new entry here.
 """
 
 from __future__ import annotations
@@ -55,11 +28,7 @@ _CATALOG = [
             {
                 "engine": "toolexec",
                 "display_name": "Tool Execution Service",
-                # engine='toolexec' is internal infrastructure, not a tenant
-                # credential — each API carries its own auth on the APIs tab,
-                # which is why there is no API key field here (see
-                # provider_manager.py's _make_toolexec and configs.py's
-                # exemption from the usual api_key_ref requirement).
+                # No API key field: toolexec is internal and each API carries its own auth.
                 "extra_fields": [
                     {
                         "key": "max_chain_depth",

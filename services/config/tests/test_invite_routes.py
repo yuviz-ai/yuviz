@@ -1,16 +1,6 @@
-"""
-Phase 3 — the HTTP layer over invites.py (routers/invites.py) plus the
-in-process throttles in app.py. test_invites.py exercises invites.py's
-functions directly; this file is the end-to-end path test_invites.py's own
-header comment says belongs here: real HTTP requests through the app,
-asserting status codes, response bodies and the throttle counters that only
-exist at this layer.
+"""HTTP-level invite routes and their in-process throttles.
 
-Every fixture that hits the accept routes uses its own fake client IP
-(ASGITransport's `client=` param) so the in-process, per-key throttle
-buckets in app.state don't leak state between unrelated tests in this
-module — the counters are real dicts on the single shared `app` object,
-not reset between tests.
+Throttle buckets live on the shared app and aren't reset, so tests use fresh fake client IPs.
 """
 
 from __future__ import annotations
@@ -35,9 +25,6 @@ def _client(token: str | None = None, *, host: str = "127.0.0.1"):
 
 
 def _actor(user: dict) -> CurrentUser:
-    # Same helper as test_invites.py's — builds the CurrentUser
-    # invites.create_invite needs when a test bypasses the router to seed
-    # or compare against a raw token the HTTP response never carries.
     return CurrentUser(
         id=str(user["id"]), email=user["email"], role=user["role"],
         tenant_id=str(user["tenant_id"]) if user["tenant_id"] is not None else None,
@@ -45,8 +32,6 @@ def _actor(user: dict) -> CurrentUser:
 
 
 def _fake_host() -> str:
-    # A fresh-looking fake IP per call, so throttle-sensitive tests don't
-    # share a bucket with each other or with the module's other tests.
     return f"10.{uuid.uuid4().int % 250}.{uuid.uuid4().int % 250}.{uuid.uuid4().int % 250}"
 
 
@@ -78,9 +63,7 @@ async def _create_invite(client, *, email=None, role="viewer", tenant_id=None, t
 
 @pytest.fixture(autouse=True)
 def _smtp_succeeds():
-    # Every test in this file that doesn't explicitly patch SMTP to fail
-    # gets a no-op "it sent fine" so `email_sent` is deterministic and no
-    # test tries a real network connection.
+    # No real SMTP; tests that need a failure patch it themselves.
     with patch("services.config.email.send_invite_email", return_value=None):
         yield
 
@@ -96,9 +79,7 @@ class TestScoping:
             assert resp.status_code == 201
             invite_id = resp.json()["id"]
 
-            # A tenant_admin's own list, and the same request with a
-            # foreign ?tenant_id=, must be identical — the query param is
-            # ignored/forced to the JWT's tenant, not merely validated.
+            # A foreign ?tenant_id= is ignored, so both lists match.
             own = await admin_client.get("/invites")
             forced = await admin_client.get(f"/invites?tenant_id={other['id']}")
             assert {row["id"] for row in own.json()} == {row["id"] for row in forced.json()}
@@ -118,9 +99,6 @@ class TestScoping:
         resp = await _create_invite(admin_client, tenant_id=test_tenant["id"])
         assert resp.status_code == 201
         own_invite_id = resp.json()["id"]
-        # Direct service-layer call, no ambient RLS scope from a real
-        # request — set/reset it here, matching every other test that
-        # calls services/config functions directly.
         set_target_tenant(str(other["id"]))
         try:
             other_row, _ = await invites_service.create_invite(
@@ -134,8 +112,6 @@ class TestScoping:
             resp = await superadmin_client.get("/invites")
             assert resp.status_code == 200
             ids = {row["id"] for row in resp.json()}
-            # Both tenants' invites are present in one unfiltered call — the
-            # thing a tenant-scoped actor's own list can never show.
             assert own_invite_id in ids
             assert str(other_row["id"]) in ids
         finally:
@@ -171,9 +147,7 @@ class TestScoping:
                 assert revoke_resp.status_code == 403
         finally:
             await pool.execute("DELETE FROM user_invites WHERE id = $1", row["id"])
-            # Soft-delete, not hard: other_admin is the actor on create_invite's
-            # own audit_log row (audit_log_user_id_fkey), same constraint
-            # conftest.py's test_admin/test_superadmin fixtures document.
+            # Soft-delete: other_admin is an audit_log actor.
             await pool.execute("UPDATE users SET deleted_at = now() WHERE id = $1", other_admin["id"])
             await pool.execute("UPDATE users SET tenant_id = NULL WHERE tenant_id = $1", other["id"])
             await pool.execute("DELETE FROM tenants WHERE id = $1", other["id"])
@@ -198,10 +172,7 @@ class TestCreateAndDelivery:
         assert body["email_sent"] is False
         assert body["status"] == "pending"
 
-        # create's own INSERT sets last_sent_at = now(), so resend inside
-        # the 60s cooldown window would raise ResendCooldown instead of
-        # exercising the thing this test is about — back-date it first
-        # (T18's cooldown has its own dedicated test).
+        # Back-date last_sent_at past the 60s resend cooldown.
         await pool.execute(
             "UPDATE user_invites SET last_sent_at = now() - interval '61 seconds' WHERE id = $1",
             body["id"],
@@ -233,9 +204,7 @@ class TestAcceptRoutesArePublic:
         assert post_resp.status_code == 404
 
     async def test_get_accept_returns_only_invitee_shape(self, test_admin, test_tenant, scoped, pool):
-        # The HTTP response never carries the raw token (only email.py ever
-        # sees it, per design) — call invites.create_invite directly to get
-        # one, the same pattern test_invites.py uses throughout.
+        # The HTTP response never carries the raw token, so create via the service.
         email = f"accept-shape-{uuid.uuid4().hex[:8]}@example.com"
         row, raw_token = await invites_service.create_invite(
             email=email, role="viewer", tenant_id=test_tenant["id"], team=None,
@@ -254,9 +223,7 @@ class TestAcceptRoutesArePublic:
 
 class TestProbeThrottle:
     async def test_31st_create_attempt_is_429_and_outcome_blind(self, test_admin, test_tenant, scoped, pool):
-        # An already-taken email, created directly through invites.py (not
-        # through the HTTP router), so this setup call doesn't itself count
-        # against the actor's probe quota.
+        # Seeded via the service so it doesn't count against the probe quota.
         email = f"probe-{uuid.uuid4().hex[:8]}@example.com"
         seed_row, _ = await invites_service.create_invite(
             email=email, role="viewer", tenant_id=test_tenant["id"], team=None,
@@ -264,13 +231,11 @@ class TestProbeThrottle:
         )
         try:
             async with _client(test_admin["token"], host=_fake_host()) as c:
-                # 30 consecutive HTTP attempts against the same taken email —
-                # every one a 409, every one still counted (outcome-blind).
+                # 30 409s, each still counted (outcome-blind).
                 for _ in range(30):
                     resp = await _create_invite(c, email=email, tenant_id=test_tenant["id"])
                     assert resp.status_code == 409
-                # The 31st attempt — a *different*, unused email, proving
-                # the block is about the attempt count, not this email.
+                # A fresh email is still blocked: the limit is per attempt, not per email.
                 blocked = await _create_invite(
                     c, email=f"fresh-{uuid.uuid4().hex[:8]}@example.com", tenant_id=test_tenant["id"],
                 )
@@ -303,9 +268,7 @@ class TestResendCooldown:
         resp = await _create_invite(admin_client, tenant_id=test_tenant["id"])
         invite_id = resp.json()["id"]
         try:
-            # Move past create's own last_sent_at=now() so the *first*
-            # resend below succeeds — the thing under test is the *second*
-            # resend, right after the first, being blocked.
+            # Back-date so the first resend succeeds; the second is the one under test.
             await pool.execute(
                 "UPDATE user_invites SET last_sent_at = now() - interval '61 seconds' WHERE id = $1",
                 invite_id,
@@ -333,11 +296,7 @@ class TestAcceptIpThrottle:
             assert blocked_invalid.status_code == 429
             invalid_body = blocked_invalid.json()
 
-        # A *different* IP (its own, freshly-exhausted bucket), but this
-        # time with a genuinely VALID token — the property under test is
-        # that the 429 doesn't leak "was this token real", not that two
-        # invalid tokens look alike (which would pass even if the route
-        # leaked validity for every other case).
+        # Fresh IP with a valid token: the 429 must not reveal whether the token was real.
         row, raw_token = await invites_service.create_invite(
             email=f"throttle-valid-{uuid.uuid4().hex[:8]}@example.com", role="viewer",
             tenant_id=test_tenant["id"], team=None, actor=_actor(test_admin["user"]),
@@ -358,8 +317,7 @@ class TestAcceptIpThrottle:
         async with _client(host=host) as c:
             for _ in range(10):
                 await c.get("/invites/accept", headers={"X-Invite-Token": "bogus"})
-            # A forged XFF claiming a different, fresh IP must not move this
-            # request into a new (unthrottled) bucket — it's still blocked.
+            # A forged XFF must not move the request into a fresh bucket.
             resp = await c.get(
                 "/invites/accept",
                 headers={"X-Invite-Token": "bogus", "X-Forwarded-For": _fake_host()},
@@ -367,11 +325,7 @@ class TestAcceptIpThrottle:
             assert resp.status_code == 429
 
     async def test_no_client_in_scope_still_throttles_instead_of_500ing(self):
-        # request.client is None on some transports (e.g. a Unix domain
-        # socket) — review finding 5. Would fail with a 500
-        # (AttributeError on None.host) without _client_host's guard, and
-        # would also prove the throttle got skipped entirely if the 11th
-        # request weren't 429.
+        # request.client can be None (e.g. Unix socket); must neither 500 nor skip the throttle.
         transport = ASGITransport(app=app, client=None)
         async with AsyncClient(transport=transport, base_url="http://test") as c:
             for _ in range(10):

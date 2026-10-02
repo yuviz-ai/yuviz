@@ -1,7 +1,4 @@
-"""T20: provider-agnostic _normalize_credentials/validate_credentials over
-sensitive_credential_fields() (scalar and list), the native-provider
-early-return, list_supported_providers()'s {required, sensitive} shape,
-and list_telephony_configs()'s per-row health dict."""
+"""Telephony credential sealing/validation, supported-provider shape, and per-row health."""
 
 from __future__ import annotations
 

@@ -1,10 +1,6 @@
-"""
-Provider config CRUD — same cache-aside + audited-mutation pattern.
+"""Provider config CRUD with cache-aside reads and audited mutations.
 
-Returning api_key_ref is fine for the pointer schemes: it's a path, never a
-resolved secret. An `enc:` ref CARRIES the credential instead, and is still
-returned — Conversation Service reads this endpoint on a Redis miss and
-needs the sealed value. See the ponytail note on resolve_api_key_input().
+api_key_ref is returned as stored (a pointer or sealed `enc:` value, never a resolved secret).
 """
 
 from __future__ import annotations
@@ -25,22 +21,12 @@ log = logging.getLogger(__name__)
 _SECRET_SCHEMES = ("env:", "k8s:", ENCRYPTED_PREFIX)
 
 
-# ponytail: an enc: ref is returned unmasked. Fernet ciphertext is worthless
-# without SECRET_ENCRYPTION_KEY, and masking here would break Conversation
-# Service, which reads this endpoint on a Redis miss. Mask server-side once
-# a consumer exists that is neither a browser nor that service.
+# ponytail: enc: refs are returned unmasked; Conversation Service needs the sealed value on a Redis miss.
 def resolve_api_key_input(api_key: str | None, api_key_ref: str | None) -> str | None:
-    """Turns what the UI sent into what belongs in the column: a typed key is
-    encrypted, a pointer is stored verbatim, and a raw key pasted into the
-    pointer field is rejected — that mistake stored a live Gemini key in
-    plaintext. None means no credential, i.e. a NULL column."""
+    """Encrypts a typed key, stores a pointer verbatim, rejects a raw key in the pointer field.
+    None means no credential (NULL column)."""
     ref = (api_key_ref or "").strip()
     if api_key and ref:
-        # Ambiguous, not a legitimate double-write — the real "replace this
-        # ref with a typed key" case sends api_key_ref="" alongside api_key
-        # (see secretPayload() in the Admin UI), so ref is blank there.
-        # Both non-blank at once means something upstream picked the wrong
-        # field, not a real caller intent.
         raise ValueError("send either api_key or api_key_ref, not both")
     if api_key:
         return encrypt_secret(api_key.strip())
@@ -59,10 +45,7 @@ _UPDATABLE_FIELDS = {
     "api_key_ref", "extra",
 }
 
-# Conversation Service subscribes to this channel (see
-# services/conversation/provider_config_subscriber.py) so an edit here
-# evicts the corresponding cached provider client instantly, instead of
-# needing a full process restart.
+# Conversation Service evicts its cached provider client on this channel.
 PROVIDER_CONFIG_CHANGED_CHANNEL = "provider_config_changed"
 
 
@@ -93,9 +76,6 @@ async def get_provider_config(provider_id: Any, *, platform_scoped: bool = False
 async def list_provider_configs(
     tenant_id: Any, *, role: str | None = None, environment: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Used to populate the Admin UI's STT/LLM/TTS dropdowns — prod-first,
-    dev-last ordering is a presentation concern for the caller, not baked in
-    here."""
     pool = await db.get_pool()
     conditions = ["tenant_id = $1", "deleted_at IS NULL"]
     params: list[Any] = [tenant_id]
@@ -169,9 +149,7 @@ async def update_provider_config(
     user_email: str | None = None,
     **fields: Any,
 ) -> dict[str, Any]:
-    # `api_key` is a credential, not a column — popped before the
-    # unknown-field check, encrypted, and folded into api_key_ref. Absent
-    # from `fields` means untouched; present-but-empty is an explicit clear.
+    # `api_key` folds into api_key_ref. Absent means untouched; present-but-empty clears it.
     had_api_key = "api_key" in fields
     typed_key = fields.pop("api_key", None)
     if had_api_key or "api_key_ref" in fields:
@@ -189,9 +167,7 @@ async def update_provider_config(
 
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
-        # FOR UPDATE — see tenants.py's update_tenant() comment: without
-        # it, a concurrent update could make this transaction's audit
-        # entry record a stale old_value.
+        # FOR UPDATE so a concurrent update can't make the audit old_value stale.
         old_row = await conn.fetchrow(
             "SELECT * FROM provider_configs WHERE id = $1 FOR UPDATE", provider_id,
         )
@@ -213,10 +189,7 @@ async def update_provider_config(
         new = dict(new_row)
         new["extra"] = db.json_col(new["extra"])
 
-        # Scoped to the written columns, not the full row — otherwise
-        # api_key_ref (redacted either way) rides along on every update
-        # and the UI can't tell "redacted, unchanged" from "redacted,
-        # changed."
+        # Only written columns, so a redacted api_key_ref doesn't show as changed on every update.
         await audit.write_audit(
             conn,
             entity_type="provider_config",
@@ -248,17 +221,7 @@ def require_usable_tts_voice(field: str, config_id: Any, engine: str, voice: str
 
 
 class ProviderConfigInUse(Exception):
-    """Raised instead of deleting when any non-deleted agent (stt/llm/tts
-    roles) or knowledge base (embedding role), active or not, still has this
-    provider assigned — whichever one points
-    at a deleted provider fails to resolve it the next time it needs it
-    (an agent mid-call-setup; a knowledge base mid-ingest or mid-retrieval,
-    see services/knowledge/{retrieval,ingestion_worker}.py's own
-    _fetch_embedding_config, which raises outright on a missing row).
-    Resource names, not just a count, so the admin sees exactly who's
-    affected without a second lookup. `resource_type` tells the caller
-    which noun to use in copy — "agent" or "knowledge_base" — since the
-    same shape covers both dependency kinds."""
+    """Raised instead of deleting while an agent, knowledge base, or tenant default still uses the provider."""
 
     def __init__(self, resource_type: str, resource_count: int, resource_names: list[str]) -> None:
         self.resource_type = resource_type
@@ -272,12 +235,7 @@ class ProviderConfigInUse(Exception):
         super().__init__(message)
 
 
-# role -> (table to check, its tenant-scope FK column, the column pointing
-# at this provider, resource_type label). stt/llm/tts are referenced by
-# agents directly; embedding is referenced by knowledge_bases instead (see
-# database/knowledge_schema.sql's embedding_config_id) — agents never point
-# at an embedding provider directly, so checking agents for that role would
-# silently miss the real dependency.
+# role -> (table, tenant column, column referencing the provider, resource_type).
 _ROLE_TO_USAGE_CHECK = {
     "stt":       ("agents", "tenant_id", "stt_config_id", "agent"),
     "llm":       ("agents", "tenant_id", "llm_config_id", "agent"),
@@ -289,10 +247,8 @@ _ROLE_TO_USAGE_CHECK = {
 async def soft_delete_provider_config(
     provider_id: Any, *, user_id: Any | None = None, user_email: str | None = None,
 ) -> None:
-    """Refuses while it is the account default or any non-deleted agent/KB
-    references it, active or not.
-    There is no force: a deleted provider leaves its agents silently falling
-    back to the built-in default script at call time."""
+    """Refuses while it is the account default or any non-deleted agent/KB references it.
+    No force option: dependents would silently fall back to the default script."""
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         old_row = await conn.fetchrow(
@@ -344,11 +300,7 @@ _ELEVENLABS_VOICES_URL = "https://api.elevenlabs.io/v1/voices"
 
 
 async def list_elevenlabs_voices(provider_id: Any, *, secret_resolver: SecretResolver) -> list[dict[str, Any]]:
-    """Calls ElevenLabs' own Voices API server-side using provider_id's
-    api_key_ref — the resolved key is used for this one outbound call and
-    never returned to the caller (see secret_resolver.py's module
-    docstring: this is the one place Config Service resolves a secret,
-    specifically so the admin-ui never has to)."""
+    """Lists ElevenLabs voices server-side; the resolved key is never returned to the caller."""
     cfg = await get_provider_config(provider_id)
     if cfg is None:
         raise LookupError(f"provider_config {provider_id} not found")
@@ -365,15 +317,9 @@ async def list_elevenlabs_voices(provider_id: Any, *, secret_resolver: SecretRes
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(_ELEVENLABS_VOICES_URL, headers={"xi-api-key": api_key})
     except httpx.RequestError as exc:
-        # DNS failure, connect timeout, read timeout — nothing else catches
-        # this (the router doesn't either), so left unhandled it reaches the
-        # admin-ui as a bare 500 with no actionable detail.
         raise ValueError(f"could not reach the ElevenLabs Voices API: {exc.__class__.__name__}") from exc
     if resp.status_code != 200:
-        # Log the real response body (useful for debugging a bad key/rate
-        # limit) but never forward it in the ValueError: the router maps
-        # ValueError to a 400 `detail`, and the ElevenLabs response body is
-        # not ours to hand back to the admin-ui caller verbatim.
+        # Log the upstream body but don't forward it in the 400 detail.
         log.warning(
             "ElevenLabs Voices API returned %s for provider_config %s: %s",
             resp.status_code, provider_id, resp.text[:200],
@@ -387,14 +333,7 @@ async def list_elevenlabs_voices(provider_id: Any, *, secret_resolver: SecretRes
             "category": v.get("category"),
             "labels": v.get("labels") or {},
             "preview_url": v.get("preview_url"),
-            # ElevenLabs documents `labels` as arbitrary, unvalidated
-            # metadata (any string a voice's owner chose to tag it with) —
-            # `verified_languages` is the actual validated field: each entry
-            # is a real ISO 639-1 code this voice has been confirmed to
-            # speak, with its own model_id/accent/locale/preview_url. Not
-            # every voice has this populated (e.g. voices never run through
-            # ElevenLabs' verification), so callers should fall back to
-            # `labels` when it's empty, not assume it's always present.
+            # Validated ISO 639-1 languages; often empty, so callers fall back to free-form `labels`.
             "verified_languages": v.get("verified_languages") or [],
         }
         for v in resp.json().get("voices", [])

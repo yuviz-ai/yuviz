@@ -1,17 +1,5 @@
-"""
-purchased_numbers CRUD — DID Service's own record of what it has bought on
-a tenant's behalf (see project memory did-management-platform-architecture
-and phone-numbers-schema-boundaries). Deliberately separate from
-phone_numbers (Config Service's table, DID->agent routing only) — a
-purchased number may sit unassigned for a while, and "which carrier
-account/carrier-side id bought this" is purchase-lifecycle metadata, not
-routing.
-
-This module never writes to phone_numbers — assigning a purchased number
-to an agent is done by the Admin UI calling Config Service's existing
-POST /tenants/{id}/phone-numbers directly (see numbers.py router's
-docstring for the full flow).
-"""
+"""purchased_numbers CRUD — numbers bought on a tenant's behalf (purchase lifecycle, not routing).
+Never writes phone_numbers; Config Service owns DID->agent assignment."""
 
 from __future__ import annotations
 
@@ -39,8 +27,7 @@ async def get_purchased_number(
 
 
 async def list_purchased_numbers(tenant_id: Any) -> list[dict[str, Any]]:
-    """Unreleased numbers only — a released number is history, not
-    something the Admin UI's 'numbers you can assign' list should show."""
+    """Unreleased numbers only."""
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         rows = await conn.fetch(
@@ -59,9 +46,7 @@ async def record_purchase(
     user_id: Any | None = None,
     user_email: str | None = None,
 ) -> dict[str, Any]:
-    """Called after IDidProvider.purchase_number() already succeeded — this
-    only records the outcome, it never talks to the carrier itself (see
-    routers/numbers.py)."""
+    """Record a purchase that already succeeded at the carrier."""
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         row = await conn.fetchrow(
@@ -83,14 +68,8 @@ async def record_purchase(
 
 
 async def record_assignment(purchased_number_id: Any, phone_number_id: Any) -> None:
-    """Links a purchased_numbers row to the phone_numbers row an admin just
-    created for it via Config Service — called by the Admin UI/orchestrating
-    caller after that POST succeeds, not part of the assignment transaction
-    itself (the two tables are owned by two different services, so there is
-    no single transaction spanning both — see architecture principle #7).
-    Runs on the ambient scope the caller already resolved (see
-    routers/numbers.py's assign_purchased_number, which sets the target
-    tenant from the fetched row before calling this)."""
+    """Link to the phone_numbers row created via Config Service (no cross-service transaction).
+    Runs on the ambient tenant scope the caller already set."""
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         await conn.execute(
@@ -101,10 +80,7 @@ async def record_assignment(purchased_number_id: Any, phone_number_id: Any) -> N
 async def record_release(
     purchased_number_id: Any, *, user_id: Any | None = None, user_email: str | None = None,
 ) -> dict[str, Any]:
-    """Called after IDidProvider.release_number() already succeeded. Runs on
-    the ambient scope the caller already resolved (see routers/numbers.py's
-    release_number, which sets the target tenant from the fetched row before
-    calling this)."""
+    """Mark released after the carrier release succeeded; runs on the caller's ambient tenant scope."""
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         old_row = await conn.fetchrow(

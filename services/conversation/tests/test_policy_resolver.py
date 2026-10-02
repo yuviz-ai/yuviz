@@ -1,16 +1,4 @@
-"""
-ToolPolicyResolver._narrow tests — pure in-memory logic, no Postgres
-needed (it never touches self._pool). Covers workflow per-node tool
-scoping.
-
-The auto-derived-companion tests that used to live here went away with
-the mechanism itself: book_appointment silently granting
-cancel_appointment/reschedule_appointment only made sense while those
-were built-in tools sharing one Cal.com provider config. execute_api is
-now the only DB-gated tool, and one custom API never implies another —
-that relationship is an upstream edge in custom_api_params, resolved by
-services/toolexec.
-"""
+"""ToolPolicyResolver._narrow tests (in-memory, no Postgres): workflow per-node tool scoping."""
 
 from __future__ import annotations
 
@@ -63,8 +51,6 @@ def test_narrowing_no_longer_drags_companions_along():
 
 
 async def test_enabled_tools_without_a_pool_resolves_nothing():
-    # No Postgres configured (the YAML-fallback path) must degrade to "no
-    # tools", never raise — search_knowledge is unaffected either way,
-    # since it is a local tool that never comes through this resolver.
+    # No Postgres (YAML fallback) degrades to "no tools", never raises.
     resolver = _resolver()
     assert await resolver.enabled_tools("agent1", "tenant-a") == []

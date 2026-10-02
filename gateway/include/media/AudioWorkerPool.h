@@ -14,49 +14,36 @@
 
 namespace voiceai {
 
-// Fixed pool of M worker threads that drain MediaSession ring buffers.
-//
-// SPSC invariant: each MediaSession is assigned to exactly one worker at
-// creation time (round-robin) and never reassigned.
-//
-// Teardown safety: unassign() synchronises — after it returns, no worker
-// thread is executing or will execute drain_available() for that session,
-// so the caller may safely destroy the MediaSession.
+// Fixed worker pool draining MediaSession ring buffers. Each session is pinned to
+// one worker for life (SPSC invariant).
 class AudioWorkerPool : private NonCopyable, private NonMovable {
 public:
-    // frame_ms: audio frame duration from MediaConfig; the worker idle sleep
-    // is derived from it (frame_ms / 40) so latency scales with frame size.
+    // Worker idle sleep is frame_ms / 40.
     AudioWorkerPool(size_t worker_count, uint32_t frame_ms, Logger& logger);
     ~AudioWorkerPool();
 
     bool start();
     void stop();
 
-    // Assign a MediaSession to this pool.  Thread-safe; called at session creation.
-    // Returns the worker index the session was assigned to.
+    // Returns the assigned worker index. Thread-safe.
     size_t assign(MediaSession* session);
 
-    // Remove a session and WAIT until no worker is inside drain_available() for it.
-    // Thread-safe.  Must be called before the MediaSession is destroyed.
+    // Blocks until no worker is inside drain_available() for it.
+    // Must be called before the MediaSession is destroyed.
     void unassign(MediaSession* session);
 
     [[nodiscard]] size_t worker_count()  const noexcept { return workers_.size(); }
-    // O(1) atomic read — maintained by assign()/unassign().
     [[nodiscard]] size_t session_count() const noexcept {
         return session_count_.load(std::memory_order_relaxed);
     }
 
 private:
-    // Per-session bookkeeping kept alive by shared_ptr so worker snapshots can
-    // safely hold a copy while unassign() erases from the vector.
+    // shared_ptr so worker snapshots stay valid while unassign() erases.
     struct SessionEntry {
         MediaSession*       session;
-        // Set to true by unassign() under sessions_mutex, checked by worker
-        // under drain_mutex to guarantee the double-check-locking is sound.
+        // Set under sessions_mutex, checked by the worker under drain_mutex.
         std::atomic<bool>   removed{false};
-        // Held by the worker while drain_available() executes.
-        // unassign() acquires this after marking removed=true to wait for
-        // any in-progress drain to complete before returning to the caller.
+        // Held during drain_available(); unassign() takes it to wait out a drain.
         std::mutex          drain_mutex;
     };
 

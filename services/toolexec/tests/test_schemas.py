@@ -1,15 +1,4 @@
-"""
-Cross-check between services/toolexec/schemas.py's Pydantic Literal fields
-and the DDL CHECK constraints they must never drift from (security audit
-finding 10 / low #10: ChainStepReport.status omits 'claimed', which
-api_chain_steps.status permits).
-
-Parses the actual database/schema.sql CHECK constraint text rather than
-hand-copying the value list, so this genuinely trips if either side changes
-without the other (lesson 12's "a tripwire that cannot trip when a new case
-is added" — this one can, because it reads the live DDL and the live model
-instead of two independently hand-maintained lists).
-"""
+"""Cross-check schemas.py Literal fields against the live schema.sql CHECK constraints."""
 
 from __future__ import annotations
 
@@ -46,15 +35,7 @@ def _api_chain_steps_status_values() -> set[str]:
 
 
 def test_chain_step_report_status_matches_api_chain_steps_check_constraint():
-    """Verified by mutation: this test passes today ONLY if every DDL value
-    is also a Literal member. Confirmed it fails as expected against the
-    shipped code — schemas.ChainStepReport.status's Literal is missing
-    'claimed', while the DDL CHECK (database/schema.sql,
-    api_chain_steps) permits it. A chain-history read over an in-flight or
-    crash-abandoned run would serialize a 'claimed' step and raise a
-    ValidationError. This is a genuine source defect, reported as such —
-    the fix (add 'claimed' to the Literal) is the implementer's, not made
-    here."""
+    """ChainStepReport.status Literal equals the api_chain_steps.status CHECK values."""
     ddl_values = _api_chain_steps_status_values()
     model_values = set(get_args(ChainStepReport.model_fields["status"].annotation))
     assert model_values == ddl_values
@@ -71,10 +52,7 @@ def _request_kwargs(**overrides) -> dict:
 
 
 def test_max_chain_depth_rejects_a_value_above_the_platform_ceiling():
-    """FIX 4c (security finding 7): the model must not trust the caller
-    already clamped max_chain_depth — a compromised or buggy allow-listed
-    service account setting max_chain_depth=64 must be rejected at the
-    model boundary, not merely by a downstream min()."""
+    """max_chain_depth above the ceiling is rejected at the model boundary."""
     with pytest.raises(ValidationError):
         ChainExecuteRequest(**_request_kwargs(max_chain_depth=64))
 
@@ -92,9 +70,7 @@ def test_max_chain_depth_at_the_platform_ceiling_is_accepted():
 
 
 def test_resolve_order_clamps_max_levels_to_the_platform_ceiling_even_if_a_caller_forgets():
-    """FIX 4c: the ceiling lives in the pure function itself, not just in
-    a caller's comment — a 5-level chain must still be rejected even when
-    called with max_levels far above graph.MAX_CHAIN_LEVELS."""
+    """resolve_order rejects a 5-level chain even when passed max_levels=64."""
     leaf = {"id": "1", "name": "l1", "upstream_apis": []}
     node = leaf
     for i in range(2, 6):

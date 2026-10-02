@@ -1,28 +1,6 @@
-"""
-AccountStore — the generalized version of services/cloudonix/accounts.py,
-keyed `(provider, account_ref)` and additionally `tenant_slug -> default
-outbound account`, across every REST-capable provider instead of one.
-
-Cold-path preload + periodic refresh of every provider's telephony_configs
-rows from Config Service, using a service-account login with a single
-401-retry. A failed refresh keeps the last-known-good map — a Config
-Service outage must not drop live inbound calls, nor stop outbound calls
-from resolving ownership on the last memo.
-
-`_decrypt_field()` accepts an entry only if
-`libs.config_sdk.secrets.is_encrypted()` says so, then calls
-`decrypt_secret()`; a legacy plaintext value passes through with a warning
-(pre-migration Vobiz rows) rather than being dropped — this is what makes
-the reader tolerant of the state the sealing migration (T23) hasn't run on
-yet. This module imports `decrypt_secret`/`is_encrypted` and deliberately
-NOT `CompositeSecretResolver` — see cloudonix/accounts.py's identical
-rationale, "Account key material".
-
-The `(tenant_slug, agent_slug)` ownership memo is prewarmed here (not lazily
-in ownership.py) so the outbound-trigger steady state is a memo hit with no
-Config Service I/O at all (Latency section, "the agent-ownership check's
-Config Service fallback").
-"""
+"""AccountStore — telephony accounts keyed (provider, account_ref), plus tenant -> default outbound.
+Preloaded and refreshed from Config Service; a failed refresh keeps the last-known-good map.
+Also prewarms the (tenant, agent) ownership memo so outbound triggers need no Config Service I/O."""
 
 from __future__ import annotations
 
@@ -44,9 +22,7 @@ CONFIG_SERVICE_URL = os.environ.get("CONFIG_SERVICE_URL", "http://localhost:8000
 _SERVICE_EMAIL = os.environ.get("CONFIG_SERVICE_EMAIL", "conversation-service@internal.yuviz.ai")
 _SERVICE_PASSWORD = os.environ.get("CONFIG_SERVICE_PASSWORD", "")
 
-# Providers this service serves over REST — every registered provider
-# except the hidden test double. "native" is never registered here at all
-# (it has no ITelephonyProvider), so it is naturally excluded too.
+# Test double, never served over REST.
 _HIDDEN_PROVIDERS = {"fake"}
 
 
@@ -116,9 +92,7 @@ class AccountStore:
         return resp.json()
 
     def _decrypt_field(self, account_ref: str, value: Any) -> Any:
-        """Handles both a scalar sensitive field (Vobiz's auth_token) and a
-        list-valued one (Cloudonix's api_keys) — the same
-        sensitive_credential_fields() name may point at either shape."""
+        """Decrypt a scalar or list-valued sensitive field; legacy plaintext passes through with a warning."""
         if isinstance(value, list):
             usable = []
             for entry in value:
@@ -149,10 +123,7 @@ class AccountStore:
         return [a["slug"] for a in agents]
 
     async def refresh(self) -> None:
-        """One Config Service pass across every REST-capable provider. Never
-        clears the existing maps on total failure. A row that fails to
-        decrypt cleanly is skipped with a warning, same "one bad row can't
-        take the service down" posture as cloudonix/accounts.py."""
+        """Reload all accounts; keeps existing maps on failure and skips rows that fail to construct."""
         providers = [
             name for name in TelephonyProviderRegistry.all() if name not in _HIDDEN_PROVIDERS
         ]
@@ -214,27 +185,18 @@ class AccountStore:
             await self.refresh()
 
     async def auth_headers(self) -> dict[str, str]:
-        """The service-account bearer header, for a caller outside this
-        module that needs one more authenticated Config Service call (the
-        agent-ownership repair fetch) — logs in if this is the very first
-        call before refresh() has ever run."""
+        """Service-account bearer header, logging in if needed."""
         if self._jwt_token is None:
             self._jwt_token = await self._login()
         return {"Authorization": f"Bearer {self._jwt_token}"}
 
     def tenant_id_for_slug(self, tenant_slug: str) -> str | None:
-        """Every loaded account's own tenant_id, keyed by slug — used by
-        auth.resolve_caller_tenant to map a caller-supplied tenant_slug to
-        the UUID assert_tenant_access needs, without a Postgres lookup."""
+        """Map tenant_slug to tenant_id from loaded accounts (no Postgres)."""
         for account in self._accounts.values():
             if account.tenant_slug == tenant_slug:
                 return account.tenant_id
         return None
 
 
-# Process-wide singleton — the same instance app.py's lifespan preloads and
-# refreshes, and every other module in this service reads from. One
-# instance per process, same convention as services/cloudonix/app.py's
-# module-level `accounts`, just relocated so auth.py/ownership.py/health.py
-# can import it without a circular import through app.py.
+# Process-wide singleton; lives here so modules can import it without a cycle through app.py.
 accounts = AccountStore()

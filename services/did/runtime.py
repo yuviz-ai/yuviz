@@ -1,10 +1,4 @@
-"""
-Lazy module-level singleton for DidProviderManager — same convention as
-services/knowledge/runtime.py (see that module's docstring for why this
-lives outside app.py: routers depend on this getter directly, not on
-app.state, so it works the same whether the real lifespan ran or not —
-relevant since httpx.ASGITransport-based tests never trigger lifespan).
-"""
+"""Lazy DidProviderManager singleton; not on app.state because ASGITransport tests skip lifespan."""
 
 from __future__ import annotations
 

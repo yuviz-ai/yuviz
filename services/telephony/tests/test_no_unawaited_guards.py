@@ -1,8 +1,4 @@
-"""R2-1: an AST walk over every module under services/telephony/ that fails
-on any Call to assert_tenant_access/resolve_caller_tenant/
-resolve_outbound_identity not wrapped in an Await (and on any `def` —
-rather than `async def` — definition of the latter two). The walk asserts
-its own found-call count is non-zero so it cannot pass vacuously."""
+"""AST check: tenant guard calls in services/telephony must be awaited (and defined async); non-vacuous."""
 
 from __future__ import annotations
 

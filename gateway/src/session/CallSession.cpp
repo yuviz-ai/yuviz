@@ -68,8 +68,7 @@ CallSession::CallSession(SessionContext                        ctx,
     wire_media_callbacks();
     wire_connection_callbacks();
 
-    // Start control thread before assigning to the worker pool: any media
-    // callbacks that fire immediately after assign() need the control queue ready.
+    // Media callbacks can fire right after assign(), so the control thread must exist first.
     control_thread_ = std::thread([this] {
         set_thread_name("Ctrl-" + ctx_.obs.session_id.substr(0, 8));
         control_loop();
@@ -77,35 +76,17 @@ CallSession::CallSession(SessionContext                        ctx,
 
     pool_.assign(media_.get());
 
-    // Start playback drain before opening transport so TTS chunks that arrive
-    // during the session_open handshake are consumed immediately.
+    // Before the transport, so TTS chunks during the handshake are consumed.
     playback_drain_.start();
     transport_->start();
 
-    // Kick off FSM through the control queue.
     post([this] { fsm_->on_session_start(); });
     transport_->open_session(ctx_);
 }
 
 CallSession::~CallSession() {
-    // -1. Give an actively-resolving transfer coordinator a bounded chance
-    //     to finish on its own thread before anything below touches it.
-    //     Confirmed live (2026-07-20): warm transfer's stop_audio_fork()
-    //     makes mod_audio_fork close its WebSocket connection as a side
-    //     effect — well before the coordinator's own remaining steps
-    //     (unhold, bridge(), finish()) complete on EslEventListener's
-    //     thread — and that disconnect is exactly what triggers this
-    //     destructor (see SessionManager::remove()). Without this wait,
-    //     active_transfer_->shutdown() and transport_->stop() below could
-    //     both run WHILE the coordinator was still mid-flight, silently
-    //     discarding TransferCompleted before the Conversation Service
-    //     ever received it — a fully successful transfer with no summary
-    //     or transcript ever persisted, because finalize_session() never
-    //     got a chance to run. Only safe to block here because destruction
-    //     now happens on its own thread (see Application.cpp's
-    //     set_on_disconnect — this was already flagged as a TODO before
-    //     today: blocking the shared lws thread here would have stalled
-    //     every other live call for the same duration.
+    // -1. stop_audio_fork() closes the WebSocket (triggering this destructor) before a
+    //     warm transfer finishes; wait briefly so TransferCompleted still gets sent.
     if (ITransferCoordinator* t = active_transfer_.load(std::memory_order_acquire)) {
         constexpr auto kMaxWait      = std::chrono::milliseconds{3000};
         constexpr auto kPollInterval = std::chrono::milliseconds{10};
@@ -116,24 +97,8 @@ CallSession::~CallSession() {
         }
     }
 
-    // 0. Shut down any in-flight transfer coordinator (crash fix, found
-    //    live 2026-07-18, generalized — see docs/warm_transfer_
-    //    architecture.md "Coordinator lifetime"): a coordinator's
-    //    correlator/registry watch captures `this` and post()s from
-    //    EslEventListener's thread. Even after the wait above, cover the
-    //    case where the coordinator never resolves at all within the
-    //    bound (or the caller hangs up before it starts) — a
-    //    CHANNEL_HANGUP/CHANNEL_BRIDGE/CHANNEL_ANSWER that arrives later
-    //    would otherwise fire that callback against a destroyed session —
-    //    locking a destroyed mutex and aborting the whole process (libc++
-    //    "mutex lock failed: Invalid argument"). active_transfer_->
-    //    shutdown() is idempotent and guarantees no further callback fires
-    //    after this returns — the primary safety layer. Declaration order
-    //    (cold_transfer_/warm_transfer_ destroyed before esl_client_/
-    //    transfer_correlator_ below, by virtue of being declared after
-    //    them) is the second, independent layer — even a buggy/skipped
-    //    shutdown() still can't produce a use-after-free via implicit
-    //    destruction order alone.
+    // 0. Coordinator watches capture `this`; shutdown() ensures no late ESL event
+    //    calls back into a destroyed session.
     if (ITransferCoordinator* t = active_transfer_.load(std::memory_order_acquire)) {
         t->shutdown();
         active_transfer_.store(nullptr, std::memory_order_release);
@@ -142,23 +107,15 @@ CallSession::~CallSession() {
     // 1. Stop AudioWorker — no more media callbacks will be posted.
     pool_.unassign(media_.get());
 
-    // 2. Stop transport — joins gRPC reader/writer threads so no transport
-    //    callbacks can fire after this point.  Control thread is still alive
-    //    to safely process any callbacks queued before the join.
+    // 2. Joins gRPC threads; no transport callbacks after this.
     transport_->stop();
 
-    // 3. Flush and stop the control thread.
-    //    Cancel all timers AND close the FSM in a single item pushed before
-    //    setting control_stopping_.  This eliminates the UAF window that
-    //    existed when timer cancellation happened after join(): TimerService
-    //    could pop a non-cancelled timer, execute its callback (which calls
-    //    post()), and race with the control_queue_ destructor.
+    // 3. Close the FSM and cancel timers on the control thread before stopping it,
+    //    so no timer callback can post() into a destroyed queue.
     {
         std::lock_guard lock{control_mutex_};
         control_queue_.push_back([this] {
-            // Close FSM first: on_session_close() transitions to Closing and
-            // schedules a new CloseTimeout timer (via on_enter(Closing)).
-            // Cancel ALL timers afterwards so the CloseTimeout is also swept up.
+            // Close first: Closing schedules a CloseTimeout that must also be cancelled.
             if (fsm_ && !fsm_->is_terminal())
                 fsm_->on_session_close("session_destroyed");
             for (auto& [fid, tid] : timer_map_)
@@ -169,18 +126,14 @@ CallSession::~CallSession() {
     }
     control_cv_.notify_all();
     if (control_thread_.joinable()) control_thread_.join();
-    // timer_map_ is empty — cleared AFTER fsm_->on_session_close() so the
-    // CloseTimeout it schedules is also cancelled.
 
-    // 4. Stop playback drain.
     playback_drain_.stop();
 
-    // 5. Safety no-op: stop() already called close_session(); this is idempotent.
+    // Idempotent; stop() already closed the session.
     transport_->close_session(ctx_.obs.session_id);
 }
 
 void CallSession::push_inbound_audio(const uint8_t* data, size_t len) noexcept {
-    // fsm_->can_accept_audio() reads std::atomic<CallFsmState> — safe from any thread.
     if (fsm_ && fsm_->can_accept_audio())
         media_->push_inbound(data, len);
 }
@@ -275,46 +228,22 @@ void CallSession::wire_fsm_handlers() {
 
     h.on_speech_started = [](float /*energy_db*/) {};
 
-    // STT transcript arrived — log it and rotate the provider_request_id so
-    // every subsequent log line is tagged with this turn's trace context.
     h.on_stt_final = [this](std::string text, float confidence) {
         log_.info("stt_final text=\"{}\" confidence={:.2f}", text, confidence);
         log_.set_provider_request_id(ctx_.obs.trace_id + "-stt");
     };
 
-    // Playback complete — notify the ConversationService so it starts the next
-    // turn, and reset provider_request_id.  Fires identically for Speaking→
-    // Listening and Speaking→WaitingForHangup: Python only needs to know
-    // playback ended, not that a hangup grace period may now be running.
     h.on_playback_finished = [this](bool interrupted) {
         transport_->send_playback_finished(ctx_.obs.session_id, interrupted);
         log_.set_provider_request_id("");
     };
 
-    // Notify the ConversationService that the utterance has ended.  The service
-    // accumulates audio chunks and runs STT when it receives this signal, then
-    // responds with SttResult → TtsStarted → TtsChunk(s).
     h.on_speech_ended = [this](uint32_t duration_ms, float energy_db) {
         transport_->send_speech_ended(ctx_.obs.session_id, duration_ms, energy_db);
     };
 
-    // Phase 6 (warm transfer refactor — see
-    // docs/warm_transfer_architecture.md): this handler now only owns the
-    // logic genuinely shared by every transfer strategy (empty-destination
-    // defense, the TransferInitiated notification, attempt bookkeeping) and
-    // delegates the actual ESL/telephony work to active_transfer_ (selected
-    // in cbs.on_transfer_requested below, by transfer_type). Cold's uuid_
-    // transfer sequencing itself now lives in ColdTransferCoordinator —
-    // moved verbatim, not rewritten.
-    //
-    // Fires *before* CallFSM::on_transfer_requested transitions to
-    // Transferring (see that method — the handler runs, then the
-    // transition happens). post() defers this whole body to run after the
-    // current control-thread task (this FSM trigger call, transition
-    // included) finishes — by then the FSM is actually in Transferring, so
-    // fsm_->on_transfer_completed() (called from active_transfer_'s
-    // callback, or directly below for an immediately-rejected command) is
-    // safe to call.
+    // Runs before the FSM enters Transferring; post() defers the body until it has,
+    // so fsm_->on_transfer_completed() is valid.
     h.on_transfer_requested = [this](std::string queue_id, std::string reason) {
         log_.info("Transfer requested destination={} reason={} transfer_id={}",
                   queue_id, reason, active_transfer_id_);
@@ -323,12 +252,7 @@ void CallSession::wire_fsm_handlers() {
             transfer_started_at_ = clock_.now();
             sm_.increment("transfers.attempted");
 
-            // Defense in depth (the Conversation Service refuses to send an
-            // empty destination — see servicer.py): resolve the attempt as
-            // failed immediately rather than handing a coordinator a command
-            // it will reject anyway, keeping one code path for the outcome.
-            // Shared across strategies so neither coordinator needs to
-            // duplicate this check.
+            // Defense in depth; the Conversation Service shouldn't send this.
             if (destination.empty()) {
                 log_.error("Transfer requested with empty destination — failing attempt "
                           "transfer_id={} (check the agent's transfer_destination config)",
@@ -340,86 +264,37 @@ void CallSession::wire_fsm_handlers() {
                 return;
             }
 
-            // Phase 5B: tell the Conversation Service a transfer is starting
-            // *before* anything else — this is its one chance to react
-            // (drive its own FSM, log, observe — and, per
-            // docs/warm_transfer_architecture.md §7, eventually where
-            // summary generation starts) before the AI session gets closed,
-            // which may happen as soon as the outcome is confirmed (see
-            // h.on_transfer_completed below). Sent identically for both
-            // strategies, at this same earliest point — never delegated to
-            // active_transfer_, which doesn't need to know this message
-            // exists (see ITransferCoordinator.h).
+            // Sent first: the service's only chance to react before the AI session closes.
             transport_->send_transfer_initiated(ctx_.obs.session_id, active_transfer_type_,
                                                 destination, reason, active_transfer_id_);
 
-            // Default cause if nothing below ever overwrites it — i.e.
-            // CallFSM's own TransferTimeout fired with neither a real
-            // outcome nor an immediate command rejection ever having
-            // resolved things first. See h.on_transfer_completed, which
-            // reads this once.
+            // Stands if only CallFSM's TransferTimeout resolves the attempt.
             pending_transfer_detail_ = "transfer_timeout";
 
             TransferCoordinatorContext tctx{call_id, destination, reason, active_transfer_id_,
                                            active_caller_id_, active_waiting_experience_};
             TransferCoordinatorCallbacks tcbs;
-            // Set directly (not via post()) — must be visible before the
-            // WebSocket disconnect this same command can trigger has any
-            // chance to arrive; see this flag's own declaration comment and
-            // TransferCoordinatorCallbacks::on_media_handoff's.
+            // Not posted: must be visible before the WebSocket disconnect it causes.
             tcbs.on_media_handoff = [this] {
                 sip_leg_handed_off_.store(true, std::memory_order_relaxed);
             };
             tcbs.on_transfer_completed =
                 [this](bool success, std::string dest, std::string detail) {
-                    // May fire on EslEventListener's background thread (the
-                    // normal, event-driven case) or synchronously from
-                    // within active_transfer_->start() itself (an
-                    // immediately-rejected command) — post() unconditionally
-                    // so h.on_transfer_completed always runs on the control
-                    // thread, and never re-enters the coordinator's own
-                    // call stack in the synchronous case either.
+                    // May fire on the ESL thread or synchronously inside start();
+                    // post() keeps it on the control thread and avoids re-entrancy.
                     post([this, success, dest = std::move(dest), detail = std::move(detail)]() mutable {
                         pending_transfer_detail_ = std::move(detail);
                         if (fsm_) fsm_->on_transfer_completed(success, std::move(dest));
                     });
                 };
             active_transfer_.load(std::memory_order_acquire)->start(std::move(tctx), std::move(tcbs));
-            // else: pending — wait for active_transfer_'s callback
-            // (event-driven) or CallFSM's own TransferTimeout, whichever
-            // comes first; either path ends at h.on_transfer_completed below.
         });
     };
 
-    // The one place a transfer attempt (however it was resolved: a real
-    // outcome, an immediately-rejected command, or CallFSM's own
-    // TransferTimeout firing with no event ever having arrived) finishes.
-    // Sends the Phase 5B TransferCompleted/TransferFailed notification and
-    // shuts down active_transfer_ either way — see ITransferCoordinator.h's
-    // lifecycle contract and docs/warm_transfer_architecture.md's
-    // "Coordinator lifetime" section (this is the *normal-completion* call
-    // to shutdown(); ~CallSession() calls it again for the teardown-mid-
-    // transfer case — both paths are safe because shutdown() is idempotent).
-    //
-    // Phase 5D: on success, does NOT close the AI session here — CallFSM
-    // moves to Finalizing instead of Closing (see do_transfer_completed_),
-    // and close_session() is deferred to h.on_conversation_finalized
-    // below, once the Conversation Service confirms its own post-call
-    // cleanup is done (or FinalizingTimeout gives up waiting).
-    //
-    // On failure, this ALSO must not close the session: CallFSM moves to
-    // Thinking (see do_transfer_completed_'s own comment), because the
-    // Conversation Service's on_transfer_failed() is about to stream back
-    // a real apology (an actual LLM call, observed live to take several
-    // seconds) over this same stream. An earlier version called
-    // close_session() here immediately after send_transfer_failed() —
-    // confirmed live to race WritesDone()/TryCancel() against the
-    // apology's own generation, killing it before a single TTS chunk
-    // could arrive: the caller heard dead air instead of an apology.
+    // Single completion point for every transfer outcome. Must not close the AI
+    // session: success waits for ConversationFinalized, failure streams an apology.
     h.on_transfer_completed = [this](bool success, std::string destination) {
-        // CallFSM's own TransferTimeout path resolves with no destination of
-        // its own (see FsmTimerType::TransferTimeout) — fall back to the one
-        // recorded when the attempt started so the outcome log names it.
+        // TransferTimeout resolves with no destination.
         if (destination.empty()) destination = active_transfer_destination_;
         const auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             clock_.now() - transfer_started_at_).count();
@@ -443,37 +318,17 @@ void CallSession::wire_fsm_handlers() {
         }
     };
 
-    // Phase 5D: fires once, when Finalizing exits — either a real
-    // ConversationFinalized message from the Conversation Service, or
-    // FinalizingTimeout giving up on waiting for one. This is where the
-    // AI session actually closes for a successfully-transferred call.
-    // close_session() is idempotent (see GrpcConversationTransport), so
-    // it's safe even if the transport was somehow already closed.
     h.on_conversation_finalized = [this] {
         log_.info("Conversation finalized — closing AI session");
         transport_->close_session(ctx_.obs.session_id);
     };
 
-    // Fires for every path into Closing — external hangup (terminate()) and
-    // internal FSM timers alike.  connection_->close() must live here (not
-    // just in terminate()): a timer-triggered close previously only flipped
-    // internal FSM state, leaving the WebSocket/RTP session open forever —
-    // the caller stayed connected to an unresponsive line until they hung up
-    // themselves.  close() is idempotent, so it's harmless if terminate()
-    // already triggered it via this same path.  esl_client_.hangup() issues
-    // the actual SIP BYE, since closing the WebSocket only stops the audio
-    // stream; it's a safe no-op when ESL is unconfigured or ctx_.obs.call_id
-    // is still empty (not yet populated from the WS path or mod_audio_fork).
+    // Every path into Closing, including timers, must close the WebSocket and send
+    // the SIP BYE (closing the WebSocket alone only stops audio).
     h.on_session_close = [this](std::string reason) {
         log_.info("Session close reason={}", reason);
         connection_->close();
-        // A transfer attempt already handed this channel off to something
-        // outside the Gateway's control (see sip_leg_handed_off_'s own
-        // comment) — issuing uuid_kill here would disconnect a customer
-        // who may already be live with a real human, not "this call's own"
-        // SIP leg to clean up. The WebSocket closing on its own (mod_
-        // audio_fork detaching) is exactly what a successful handoff looks
-        // like, not something to react to as a hangup.
+        // Don't hang up a customer already handed off to a human.
         if (sip_leg_handed_off_.load(std::memory_order_relaxed)) {
             log_.info("Skipping esl_client_.hangup() — SIP leg already handed off reason={}",
                      reason);
@@ -495,16 +350,12 @@ void CallSession::wire_transport_callbacks() {
         post([this] { if (fsm_) fsm_->on_service_ready(); });
     };
 
-    // STT transcript ready — advance FSM Recognizing → Thinking.
     cbs.on_stt_result = [this](std::string text, float confidence) {
         post([this, t = std::move(text), confidence]() mutable {
             if (fsm_) fsm_->on_stt_final(std::move(t), confidence);
         });
     };
 
-    // TTS is about to start — advance FSM Thinking → Synthesizing.
-    // Also arm the first-chunk flag so the first on_tts_chunk transitions
-    // Synthesizing → Speaking; subsequent chunks skip the redundant post.
     cbs.on_tts_started = [this] {
         tts_first_chunk_pending_.store(true, std::memory_order_relaxed);
         post([this] { if (fsm_) fsm_->on_text_ready(); });
@@ -550,12 +401,7 @@ void CallSession::wire_transport_callbacks() {
         post([this] { if (fsm_) fsm_->on_cancel_complete(); });
     };
 
-    // Agent decided the call is over.  Don't close anything yet — the
-    // goodbye TTS for this turn is still streaming/queued; wait for it to
-    // actually finish playing (see wire_media_callbacks' cbs.on_playback_
-    // finished) so the caller hears the whole thing before the line drops,
-    // then gets a short grace window to speak up (WaitingForHangup) before
-    // the gateway actually hangs up.
+    // Applied once the goodbye TTS finishes playing (on_playback_finished).
     cbs.on_end_call = [this](const std::string& /*session_id*/, std::string reason,
                              uint32_t grace_period_ms) {
         log_.info("EndCall received reason={} grace_period_ms={}", reason, grace_period_ms);
@@ -565,11 +411,6 @@ void CallSession::wire_transport_callbacks() {
         });
     };
 
-    // ConversationService requested a hand-off to a human: drive CallFSM
-    // into Transferring, whose handler (wire_fsm_handlers()'
-    // h.on_transfer_requested above) notifies the Conversation Service and
-    // executes the transfer over ESL (uuid_transfer), then waits on
-    // CHANNEL_BRIDGE/CHANNEL_HANGUP correlation for the outcome.
     cbs.on_transfer_requested = [this](const std::string& /*session_id*/,
                                         std::string transfer_type,
                                         std::string destination,
@@ -585,29 +426,15 @@ void CallSession::wire_transport_callbacks() {
             active_transfer_id_          = std::move(transfer_id);
             active_transfer_destination_ = destination;
             active_transfer_type_        = transfer_type;
-            // Empty means the Conversation Service wants the caller's own
-            // ANI — resolved here, once, rather than in WarmTransferCoordinator
-            // (see active_caller_id_'s own declaration comment).
             active_caller_id_          = caller_id.empty() ? ctx_.caller_did : caller_id;
             active_waiting_experience_ = waiting_experience;
-            // Selects which coordinator owns this attempt — the only place
-            // in CallSession that branches on transfer type at all (see
-            // ITransferCoordinator.h: everything downstream of this line
-            // goes through active_transfer_ generically). Both value
-            // members already exist; nothing here allocates. An unknown
-            // transfer_type value falls back to cold rather than crashing
-            // or silently doing nothing — same degrade-safely posture as
-            // the rest of this codebase's config handling.
+            // Unknown transfer_type falls back to cold.
             active_transfer_ = (transfer_type == "warm") ? static_cast<ITransferCoordinator*>(&warm_transfer_)
                                                           : static_cast<ITransferCoordinator*>(&cold_transfer_);
             if (fsm_) fsm_->on_transfer_requested(std::move(destination), std::move(reason));
         });
     };
 
-    // Phase 5D: the Conversation Service confirms its own post-call cleanup
-    // is done — drives CallFSM out of Finalizing (see
-    // CallFSM::on_conversation_finalized and wire_fsm_handlers()'
-    // h.on_conversation_finalized, which actually closes the AI session).
     cbs.on_conversation_finalized = [this](const std::string& /*session_id*/) {
         log_.info("ConversationFinalized received");
         post([this] {
@@ -626,12 +453,9 @@ void CallSession::wire_transport_callbacks() {
 void CallSession::wire_media_callbacks() {
     MediaSessionCallbacks cbs;
 
-    // All callbacks run on the AudioWorker thread and post to the control queue
-    // so the FSM is only ever driven from the control thread.
+    // Callbacks run on the AudioWorker thread and post to the control thread.
 
-    // Audio routing: Recognizing → forward to STT; barge-in capture → hold in
-    // barge_in_buffer_ until the cancel completes; otherwise → pre-roll window
-    // so the next utterance keeps its first word.
+    // Recognizing → STT; barge-in → barge_in_buffer_; otherwise → pre-roll.
     cbs.on_audio_frame = [this](AudioFrame frame) {
         if (fsm_ && fsm_->can_accept_audio()) {
             post([this, f = std::move(frame)]() mutable {
@@ -650,10 +474,7 @@ void CallSession::wire_media_callbacks() {
         }
     };
 
-    // Speech onset: barge-in from Speaking (cancel playback) or from
-    // Thinking/Synthesizing (cancel pipeline before audio exists); otherwise
-    // a normal Listening→Recognizing turn start.  Barge-in branches start
-    // capture seeded with the pre-roll.
+    // Barge-in branches seed capture with the pre-roll.
     cbs.on_speech_started = [this](float energy_db) {
         post([this, energy_db] {
             if (!fsm_) return;
@@ -701,10 +522,6 @@ void CallSession::wire_media_callbacks() {
     cbs.on_playback_finished = [this] {
         post([this] {
             if (!fsm_) return;
-            // Consume pending_end_call_/pending_goodbye_timeout_ here, at the
-            // point the decision is actually made: Speaking exits to
-            // WaitingForHangup instead of Listening when the agent's goodbye
-            // played out in full.
             const bool     end_call = pending_end_call_;
             const auto     timeout  = pending_goodbye_timeout_;
             pending_end_call_        = false;
@@ -715,8 +532,7 @@ void CallSession::wire_media_callbacks() {
 
     cbs.on_playback_cancelled = [this] {
         post([this] {
-            // Caller barged in during what would have been the agent's
-            // goodbye — they're still talking, so the pending hangup is stale.
+            // Barge-in makes a pending end-call stale.
             pending_end_call_        = false;
             pending_goodbye_timeout_ = {};
             if (fsm_) fsm_->on_playback_finished(true);
@@ -727,29 +543,17 @@ void CallSession::wire_media_callbacks() {
 }
 
 void CallSession::wire_connection_callbacks() {
-    // Route inbound binary (L16 PCM) frames from the WebSocket into the
-    // MediaSession ring buffer.  push_inbound_audio() reads can_accept_audio()
-    // atomically — safe to call from the lws service thread.
     connection_->set_on_binary([this](const uint8_t* data, size_t len) {
         push_inbound_audio(data, len);
     });
 
-    // mod_audio_fork's `metadata` argument (see audio_pipe.cpp) is fixed at
-    // `uuid_audio_fork start` time and sent exactly once, before any binary
-    // frame — Application.cpp's on_connect handler already consumes that
-    // frame (see CallMetadata::parse()) to build this CallSession's
-    // SessionContext. By the time a CallSession exists, mod_audio_fork has
-    // no mechanism left to send another text frame for this connection.
+    // The only expected text frame (metadata) was consumed before this session existed.
     connection_->set_on_text([this](const std::string& msg) {
         on_text_message(msg);
     });
 }
 
 void CallSession::on_text_message(const std::string& msg) {
-    // This handler exists only to make an unexpected mid-call text frame
-    // visible (a future mod_audio_fork/Lua change, a misbehaving client)
-    // rather than silently doing nothing — nothing is expected to arrive
-    // here today.
     log_.warn("Unexpected mid-call WS text frame (ignored): {}", msg);
 }
 
@@ -768,16 +572,14 @@ void CallSession::on_fsm_state_changed(CallFsmState from, CallFsmState to,
     sm_.observe("session.state_duration_ms", duration_ms);
     sm_.increment(std::string("session.state.") + std::string(to_string(to)));
 
-    // Entering Recognizing: forward the pre-roll window first so STT sees the
-    // utterance from before the VAD onset threshold was crossed.
+    // Pre-roll first so STT gets audio from before the VAD onset.
     if (to == CallFsmState::Recognizing && !preroll_.empty()) {
         for (auto& f : preroll_)
             transport_->send_audio(std::move(f));
         preroll_.clear();
     }
 
-    // Cancel completed (CancelAck or BargeInWindow timer): re-enter Recognizing
-    // and forward the audio captured during the barge-in.
+    // Cancel completed: re-enter Recognizing and forward the barge-in audio.
     if (from == CallFsmState::BargeIn && to == CallFsmState::Listening
         && barge_in_capture_ && fsm_) {
         barge_in_capture_ = false;

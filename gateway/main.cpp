@@ -19,10 +19,7 @@ int main(int argc, char* argv[]) {
     try {
         voiceai::Application app{config_path};
 
-        // Register the gRPC transport provider before app.run() calls initialize().
-        // We load the config here solely to read the conversation endpoint; initialize()
-        // loads it again.  This keeps GrpcConversationTransport out of gateway_lib
-        // (and therefore out of gateway_tests which cannot link gRPC under ASan).
+        // Registered here to keep gRPC out of gateway_lib (gateway_tests can't link it under ASan).
         {
             voiceai::Config cfg;
             cfg.load(config_path);

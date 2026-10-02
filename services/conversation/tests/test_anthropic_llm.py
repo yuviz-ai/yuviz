@@ -1,8 +1,4 @@
-"""
-AnthropicLLM tests use httpx.MockTransport — no real network call, no cost
-(see test_openai_llm.py's docstring). Event shapes follow Anthropic's
-documented Messages API streaming format, not a guessed schema.
-"""
+"""AnthropicLLM tests via httpx.MockTransport, using documented Messages API event shapes."""
 
 from __future__ import annotations
 
@@ -31,8 +27,7 @@ def _text_body(*texts: str) -> bytes:
 
 
 def _tool_call_body(name: str, args: dict, *, split: bool = True) -> bytes:
-    """Split by default so the test exercises the accumulate-across-chunks
-    path rather than a single-chunk shortcut."""
+    """Split by default to exercise accumulation across chunks."""
     raw = json.dumps(args)
     fragments = [raw[: len(raw) // 2], raw[len(raw) // 2 :]] if split else [raw]
     events = [
@@ -124,9 +119,6 @@ async def test_generate_ignores_malformed_json_lines():
 
 
 async def test_generate_raises_on_mid_stream_error_event():
-    # An overloaded_error is a 200 SSE line, not an HTTP status. It has to
-    # raise: _llm_to_tts catches and speaks a fallback line, whereas
-    # swallowing it ends the turn in silence.
     def handler(request: httpx.Request) -> httpx.Response:
         body = (
             b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}\n'
@@ -274,9 +266,7 @@ async def test_generate_with_tools_survives_malformed_tool_input():
     assert events[0].arguments == {}
 
 
-# Sampling params are a 400 on Claude 4.7-and-later, and the admin dropdown
-# offers two such models — so every catalogued id is checked, not just the
-# factory default that the rest of this file exercises.
+# Sampling params 400 on newer models, so check every catalogued id.
 async def test_payload_matches_each_catalogued_model_capability():
     cases = {
         "claude-haiku-4-5": True,   # 4.5 still accepts temperature
@@ -296,8 +286,6 @@ async def test_payload_matches_each_catalogued_model_capability():
 
         assert seen["model"] == model
         assert ("temperature" in seen) is takes_temperature, model
-        # The thinking-capable models get effort=low instead: omitting it
-        # runs adaptive thinking, which spends the turn reasoning.
         assert ("output_config" in seen) is not takes_temperature, model
         if not takes_temperature:
             assert seen["output_config"] == {"effort": "low"}

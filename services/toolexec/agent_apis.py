@@ -1,17 +1,4 @@
-"""
-services/toolexec/agent_apis.py — per-agent custom API enablement (the
-agent_custom_apis allow-list — no row means not enabled, not a broken
-default, same posture as agent_knowledge_bases / agent_tool_policies) and
-the AC 10 write-time authorization gate protecting every route that
-touches it.
-
-Imports services.config.auth/deps directly for CurrentUser and
-is_platform_scoped, the same explicit choice services/toolexec/app.py's
-docstring already commits to (T2) — not the audit.py-style duplicated
-copy, because this is an authorization PREDICATE this service has no
-business re-implementing, not a query or model it would otherwise avoid
-depending on another service for.
-"""
+"""Per-agent custom API enablement (agent_custom_apis allow-list; no row = disabled) and its auth gate."""
 
 from __future__ import annotations
 
@@ -24,38 +11,15 @@ from services.config.deps import is_platform_scoped
 
 from . import audit, db, graph
 
-# Deliberately a single fixed string, never interpolated with the agent_id
-# or custom_api_id that was rejected — a missing agent, a missing/soft-
-# deleted/wrong-tenant custom API, and a caller from the wrong tenant must
-# all be byte-identical (lesson 2), so a tenant-A admin who guesses tenant
-# B's custom_api_id learns nothing a random UUID would not also tell them.
+# Fixed string for every rejection cause, so ids aren't a cross-tenant existence oracle.
 _NOT_FOUND_DETAIL = "agent or custom API not found"
 
 
 async def _authorize_agent_api(
     agent_id: Any, custom_api_id: Any | None, current_user: CurrentUser,
 ) -> tuple[dict, dict | None]:
-    """One query joining both sides to the same tenant:
-
-        SELECT a.id AS agent_id, a.tenant_id, ca.id AS custom_api_id, ca.chain_levels
-        FROM agents a
-        LEFT JOIN custom_apis ca
-               ON ca.id = $2 AND ca.tenant_id = a.tenant_id AND ca.deleted_at IS NULL
-        WHERE a.id = $1 AND a.deleted_at IS NULL
-
-    Raises LookupError (-> 404, identical detail text in every case) when
-    the agent does not exist or is soft-deleted, when custom_api_id was
-    given but did not join (absent, soft-deleted, or a DIFFERENT tenant's
-    API — AC 10), or when the agent's tenant is not the caller's and the
-    caller is not platform-scoped (`is_platform_scoped`, lesson 24).
-    custom_api_id=None is the list route, which checks only the agent
-    side. Runs BEFORE any INSERT/UPDATE/DELETE — every caller below calls
-    this first.
-
-    RLS (libs/tenancy): the agent's tenant is unknown until this fetch, so
-    the connection is picked from `current_user` alone — its only
-    legitimate source is `is_platform_scoped(current_user)` (lesson 24),
-    never a role comparison — via `platform_conn`/`tenant_conn`."""
+    """Authorize agent (and custom API, joined on the same tenant) before any write.
+    Raises LookupError with an identical detail for missing, soft-deleted or foreign rows."""
     pool = await db.get_pool()
     platform_scoped = is_platform_scoped(current_user)
     conn_cm = (
@@ -87,18 +51,8 @@ async def _authorize_agent_api(
 
 
 async def _effective_max_chain_depth(agent_id: Any, *, platform_scoped: bool = False) -> int:
-    """NULL agent_tool_policies.max_chain_depth = use the platform ceiling
-    (graph.MAX_CHAIN_LEVELS); a set value can only LOWER the ceiling, never
-    raise it — the same one-directional clamp chain_budget_ms gets at
-    request time, so no per-agent override can exceed the platform-wide
-    depth backstop.
-
-    Called from two different scopes: `set_enabled` below (Tier 3, a flat
-    by-id route with no ambient target — `platform_scoped` must come from
-    `is_platform_scoped(current_user)`) and `executor.execute_chain`
-    (Tier 4, where `set_target_tenant(body.tenant_id)` already resolves
-    the ambient GUC — the default `platform_scoped=False` is correct
-    there, since Tier 4 is never a `platform_conn` bypass)."""
+    """Agent's max_chain_depth, clamped to graph.MAX_CHAIN_LEVELS (NULL = platform ceiling).
+    platform_scoped must come from is_platform_scoped(current_user)."""
     pool = await db.get_pool()
     conn_cm = (
         platform_conn(pool, reason="agent-apis-admin-by-id") if platform_scoped else tenant_conn(pool)
@@ -139,10 +93,7 @@ async def set_enabled(
     user_id: Any | None = None,
     user_email: str | None = None,
 ) -> dict:
-    """Enable/disable one (agent, custom_api) pair. Authorization (and thus
-    the 404 for a cross-tenant custom_api_id) happens before this ever
-    reaches the INSERT/UPDATE — _authorize_agent_api raises first, so a
-    rejected attempt leaves agent_custom_apis's row count unchanged."""
+    """Enable/disable one (agent, custom_api) pair; authorization runs before any write."""
     platform_scoped = is_platform_scoped(current_user)
     _agent, custom_api = await _authorize_agent_api(agent_id, custom_api_id, current_user)
     assert custom_api is not None  # guaranteed once _authorize_agent_api returns for a given id
@@ -203,19 +154,12 @@ async def detach(
             )
 
 
-# Same fixed detail for "no such session" and "exists, but every run in it
-# belongs to a different tenant" — a foreign session_id must not be an
-# existence oracle either (lesson 2).
+# Same detail for missing and foreign sessions (no existence oracle).
 _CHAIN_RUNS_NOT_FOUND_DETAIL = "no chain runs found for this session"
 
 
 async def _authorize_chain_runs(session_id: Any, current_user: CurrentUser) -> list[dict]:
-    """api_chain_runs.session_id is unscoped opaque TEXT — it carries no
-    tenant of its own — so the tenant predicate has to be IN THE QUERY,
-    not a filter applied to the result afterward (finding 2). A
-    tenant-scoped caller sees only their own tenant's runs; a
-    platform-scoped caller (is_platform_scoped, lesson 24) sees the
-    session unfiltered. Indexed by idx_api_chain_runs_tenant_session."""
+    """session_id carries no tenant, so the tenant predicate must be in the query itself."""
     pool = await db.get_pool()
     tenant_filter = None if is_platform_scoped(current_user) else current_user.tenant_id
     conn_cm = (

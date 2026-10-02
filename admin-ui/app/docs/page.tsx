@@ -1,15 +1,7 @@
 "use client";
 
-// In-console configuration guide for tenant admins.
-//
-// Deliberately static: no fetches, no auth-gated content. It has to be
-// readable when something ELSE is broken — a page that needs the API to
-// explain why the API is not answering is no use to anyone. Everything
-// here is a field a user can actually see in this console, described in
-// the words the form uses, plus what happens if it is set wrong.
-//
-// Keep it in step with the forms. When a field is added to the agent
-// wizard, the APIs tab or a knowledge base, it belongs here too.
+// Configuration guide for tenant admins. Deliberately static (no fetches) so it works when the API doesn't.
+// Keep in step with the agent wizard, APIs tab and knowledge base forms.
 
 import { useState } from "react";
 

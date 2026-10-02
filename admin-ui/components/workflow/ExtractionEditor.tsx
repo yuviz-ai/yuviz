@@ -1,9 +1,6 @@
 "use client";
 
-// The variable list on an agent node — what this stage should capture from
-// what the caller said (docs/workflow.md §5.8). Extraction runs as a
-// background LLM pass when the call LEAVES this node, so what's declared
-// here is scoped to this stage's slice of the conversation.
+// Variables to extract from this node's slice of the conversation (runs when the call leaves the node).
 
 import type { Extraction, ExtractionVariable } from "@/lib/workflowApi";
 

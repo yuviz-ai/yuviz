@@ -1,10 +1,6 @@
 import { CallSentiment } from "@/lib/api";
 
-// One place deciding how each sentiment reads, so the Call Log and the call
-// detail page can never drift into using different colours for the same
-// label. `frustrated` is amber rather than red on purpose: it flags a call
-// worth listening to, not a failure — see schema.sql's calls_sentiment_check
-// for why it is tracked separately from `negative`.
+// `frustrated` is amber, not red: a call worth listening to, not a failure.
 const PRESENTATION: Record<CallSentiment, { label: string; tone: string }> = {
   positive:   { label: "Positive",   tone: "green" },
   neutral:    { label: "Neutral",    tone: "gray" },

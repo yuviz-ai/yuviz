@@ -120,16 +120,9 @@ bool is_safe_destination(const std::string& destination) {
                                            : is_dial_number(destination);
 }
 
-// bgapi's immediate reply carries no Content-Length body — the Job-UUID is
-// a header line, e.g. "Reply-Text: +OK Job-UUID: <uuid>\nJob-UUID: <uuid>"
-// (confirmed live against this deployment's FreeSWITCH — see
-// docs/warm_transfer_architecture.md §6). Parses the standalone
-// "Job-UUID:" header rather than the Reply-Text line, same
-// header-value-extraction shape as parse_content_length() above.
+// bgapi's reply has no body; the Job-UUID is its own header line.
 bool parse_job_uuid(const std::string& headers, std::string& out_uuid) {
     const std::string key = "\nJob-UUID:";
-    // Headers begin at position 0 with no leading newline — check both the
-    // start-of-string and mid-string cases.
     auto pos = headers.rfind(key);
     size_t value_start;
     if (pos != std::string::npos) {
@@ -217,8 +210,7 @@ bool EslClient::ensure_connected_locked() {
             return false;
         }
     }
-    // Back to blocking mode — the read/write helpers below bound their own
-    // timeouts via poll(), so blocking mode here just keeps send() simple.
+    // Blocking is fine: the read helpers bound their own timeouts via poll().
     const int flags = ::fcntl(fd, F_GETFL, 0);
     ::fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
 
@@ -391,9 +383,7 @@ bool EslClient::transfer(const TransferRequest& req, std::string& error_out) {
         return false;
     }
     if (reply.find("+OK") != std::string::npos) {
-        // "Accepted", not "succeeded" — see the doc comment on transfer()
-        // in EslClient.h. The real outcome is resolved later via
-        // TransferCorrelator from a CHANNEL_BRIDGE/CHANNEL_HANGUP event.
+        // Accepted, not succeeded: the outcome arrives via TransferCorrelator.
         logger_.info("EslClient: transfer command accepted uuid={} destination={} reason={} "
                      "transfer_id={} — awaiting CHANNEL_BRIDGE/CHANNEL_HANGUP to confirm outcome",
                      uuid, destination, reason, transfer_id);
@@ -469,34 +459,8 @@ bool EslClient::originate_async(const std::string& destination,
                      "length={}", caller_id_number.size());
     }
 
-    // SIP URI: dial directly. Plain extension/number: dial directly against
-    // the deployment's SIP proxy (cfg_.sip_proxy_host/port — Kamailio in
-    // this deployment, see docs/warm_transfer_architecture.md §6), which
-    // owns the real registrar and resolves/forks to the extension's actual
-    // contact(s) itself.
-    //
-    // Two rejected alternatives, in order:
-    //   1. loopback/<dest>/default (reuse the "default" dialplan context's
-    //      own extension-to-extension routing): a loopback A-leg's &park()
-    //      begins running as soon as the loopback pairing itself connects —
-    //      NOT when the real destination actually answers — so
-    //      BACKGROUND_JOB reported false "success" while the B-leg was
-    //      still independently trying (and possibly failing) to reach the
-    //      real destination. WarmTransferCoordinator was already bridging
-    //      the customer to a dead loopback leg before the real failure
-    //      surfaced.
-    //   2. FreeSWITCH's "user/<id>" channel type (resolves via FreeSWITCH's
-    //      own directory/registration): correct only when FreeSWITCH itself
-    //      is the SIP registrar. In any deployment fronted by a SIP proxy —
-    //      this one included — real phones register with the proxy, not
-    //      FreeSWITCH, so "user/<id>" fails with USER_NOT_REGISTERED even
-    //      when the destination is genuinely online (confirmed live).
-    //
-    // Dialing the proxy directly avoids both: no loopback pairing to
-    // decouple &park()'s timing from the real answer, and no dependency on
-    // FreeSWITCH's own directory knowing about the extension at all — the
-    // proxy's registrar handles that, exactly as it already does for every
-    // other call in this deployment.
+    // Numbers go via the SIP proxy, which owns the registrar. Not loopback/
+    // (parks before the real answer) nor user/ (phones don't register with FreeSWITCH).
     const std::string command =
         "bgapi originate " + caller_id_vars + dial_string_for(destination) + " &park()";
 

@@ -1,16 +1,5 @@
-"""
-tool_provider_configs CRUD — cold-path admin config only. Unlike
-provider_configs.py, this deliberately has NO Redis cache: nothing on the
-call path reads through Config Service for this table. The Conversation
-Service's ToolPolicyResolver (services/conversation/tools/policy_resolver.py)
-queries Postgres directly with its own short-lived in-process TTL cache, a
-documented v1 simplification — see that file's docstring for the known
-conflict with libs/config_sdk's unrelated ToolSpec/get_tools() stub.
-
-Same audited-mutation pattern as provider_configs.py otherwise. Returning
-api_key_ref to a caller is fine: it's a reference path (e.g.
-'env:CAL_API_KEY'), never a resolved secret.
-"""
+"""tool_provider_configs CRUD (cold-path admin config). No Redis cache: the
+Conversation Service's ToolPolicyResolver reads Postgres directly."""
 
 from __future__ import annotations
 
@@ -26,11 +15,7 @@ _UPDATABLE_FIELDS = {"name", "engine", "api_key_ref", "extra"}
 
 
 def _row_to_dict(row: Any) -> dict[str, Any]:
-    """asyncpg returns a JSONB column as a raw JSON string, not a parsed
-    object, with no codec registered on this pool — every caller (the
-    Admin UI included) expects a real object back. Same gap already
-    documented/fixed in libs/config_sdk's cache_aside.py; provider_configs.py
-    has the identical bug, not fixed here (out of scope for this change)."""
+    """Parse `extra`: no JSONB codec is registered, so asyncpg returns it as a string."""
     result = dict(row)
     extra = result.get("extra")
     if isinstance(extra, str):
@@ -112,10 +97,7 @@ async def update_tool_provider_config(
     user_email: str | None = None,
     **fields: Any,
 ) -> dict[str, Any]:
-    # api_key is a credential, not a column — popped before the unknown-
-    # field check, encrypted, and folded into api_key_ref. Absent from
-    # `fields` means untouched; present-but-empty is an explicit clear.
-    # Same pattern as provider_configs.update_provider_config.
+    # api_key is folded into api_key_ref; absent means untouched, empty means clear.
     had_api_key = "api_key" in fields
     typed_key = fields.pop("api_key", None)
     if had_api_key or "api_key_ref" in fields:
@@ -151,10 +133,7 @@ async def update_tool_provider_config(
         )
         new = _row_to_dict(new_row)
 
-        # Scoped to the written columns, not the full row — otherwise
-        # api_key_ref (redacted either way) rides along on every update
-        # and the UI can't tell "redacted, unchanged" from "redacted,
-        # changed."
+        # Only written columns, so a redacted api_key_ref doesn't appear changed on every update.
         await audit.write_audit(
             conn,
             entity_type="tool_provider_config",

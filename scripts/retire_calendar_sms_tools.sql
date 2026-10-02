@@ -1,30 +1,11 @@
 -- Retire the Cal.com / Twilio-SMS tool configuration left behind when the
--- calendar and SMS built-ins were removed.
---
--- Background: the agent now has exactly two tools — search_knowledge (RAG,
--- an in-process local tool) and execute_api (every tenant-registered custom
--- API). book_appointment, cancel_appointment, reschedule_appointment and
--- send_sms no longer exist in services/conversation/tools/registry.py, and
--- neither does the cal_com or twilio provider engine.
---
--- These rows are already INERT, not dangerous:
---   * an agent_tool_policies row naming an unknown tool is logged and
---     skipped by ToolPolicyResolver.enabled_tools() — it can never be
---     offered to a model;
---   * a cal_com tool_provider_configs row has no factory left in
---     provider_manager.py, so it can only ever raise "no tool provider
---     factory registered" — and nothing reaches it, because no policy row
---     resolves to it.
--- They are retired here so the Tools tab and the logs stop showing
--- configuration that cannot do anything.
+-- calendar and SMS built-ins were removed. The rows are inert; this just
+-- cleans up the Tools tab and logs.
 --
 --   psql "$POSTGRES_DSN" -f scripts/retire_calendar_sms_tools.sql
 --
--- This is a SOFT delete for tool_provider_configs (sets deleted_at, which
--- every read already filters on). agent_tool_policies has no deleted_at
--- column, so those rows are disabled rather than deleted — same effect,
--- still reversible, and it keeps the audit trail of what was once on.
--- The undo at the bottom restores both.
+-- Soft-deletes tool_provider_configs; disables agent_tool_policies (no
+-- deleted_at column). The undo at the bottom restores both.
 
 \set ON_ERROR_STOP on
 
@@ -75,10 +56,8 @@ ORDER BY engine;
 COMMIT;
 
 -- ── Undo ────────────────────────────────────────────────────────────────
--- Restores everything this script retired in the last hour. The window
--- keeps it from also resurrecting configs deleted earlier on purpose.
--- Note that restoring the rows does NOT restore the tools: the registry
--- entries and provider factories would have to come back in code first.
+-- Restores rows retired in the last hour (the window spares older deletes).
+-- The tools themselves would also need to come back in code.
 --
 --   UPDATE tool_provider_configs SET deleted_at = NULL
 --    WHERE deleted_at > now() - interval '1 hour';

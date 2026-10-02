@@ -1,8 +1,4 @@
-// Typed client for Knowledge Service's REST API (services/knowledge/, port
-// 8100 in this dev setup) — a separate service from Config Service, but the
-// same JWT (see lib/auth.ts) is valid against both: Knowledge Service only
-// validates tokens (services.config.deps.get_current_user), it never mints
-// them, so no separate login flow exists or is needed here.
+// Knowledge Service client. Uses the Config Service JWT; Knowledge only validates tokens.
 
 import { getToken } from "./auth";
 import { ApiError } from "./api";
@@ -162,9 +158,7 @@ export const detachKnowledgeBase = (agentId: string, kbId: string) =>
   request<void>(`/agents/${agentId}/knowledge-bases/${kbId}`, { method: "DELETE" });
 
 // ── Retrieval Policy ─────────────────────────────────────────────────────
-// Fields are all optional here on purpose — an unset field means "fall
-// back to the system default", never a fixed number baked into this
-// client. See services/knowledge/retrieval.py's _resolve_policy().
+// Unset fields fall back to the server-side system default.
 
 export interface RetrievalPolicy {
   agent_id: string;

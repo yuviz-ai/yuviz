@@ -1,8 +1,4 @@
-"""AC3-AC5 and the admission rule: resolve_did_route must distinguish a
-miss from a hit, stay bounded on a slow/unreachable Redis, and recover
-once Redis is fast again. Also covers CloudonixProvider's credential
-validation and its always-False verify_webhook_signature (R2-3/enc:-only
-guards live here rather than in a separate file per the task list)."""
+"""resolve_did_route miss/hit/timeout/recovery, plus CloudonixProvider credential guards."""
 
 from __future__ import annotations
 

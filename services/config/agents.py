@@ -1,11 +1,6 @@
 """
-Agent CRUD — same cache-aside + audited-mutation pattern as tenants.py.
-
-get_agent() is keyed by (tenant_slug, agent_slug) rather than a bare id,
-because that's what the hot path actually has: the WebSocket path is
-`/<agent>/<uuid>`, and the tenant is resolved from the same connection
-context — nobody holds a UUID before the call starts. get_agent_by_id()
-exists for the Admin UI's edit-by-id flow, where the id is already known.
+Agent CRUD — cache-aside + audited mutations. get_agent() is keyed by slugs
+because that's all the call hot path has.
 
 Prompt sync (phase until Conversation reads agents.workflow):
 - Runtime still speaks agents.greeting / system_prompt.
@@ -182,22 +177,12 @@ _PROVIDER_ROLE_BY_FIELD = {
 
 
 async def _validate_provider_assignments(conn: Any, tenant_id: Any, fields: dict[str, Any]) -> None:
-    """FK existence alone lets stt_config_id point at another tenant's
-    provider, or at a real provider_configs row with the wrong role (e.g.
-    an llm engine assigned as tts_config_id) — either silently breaks the
-    agent at call time rather than at config time. Checked here instead of
-    relying on the caller, so both create_agent() and update_agent() get
-    the same guarantee."""
+    """Reject provider ids from another tenant or with the wrong role (FK alone allows both)."""
     for field, expected_role in _PROVIDER_ROLE_BY_FIELD.items():
         config_id = fields.get(field)
         if config_id is None:
             continue
-        # UUID-format check before the query: a malformed (non-UUID-shaped)
-        # string reaching asyncpg's parameter binding raises DataError, which
-        # is neither a ValueError nor a LookupError — app.py has no handler
-        # for it, so it would otherwise surface as a raw, undetailed 500
-        # instead of a clean 400. Same discipline as deps.py's
-        # validate_id_exists() for other id fields in request bodies.
+        # A malformed id would raise asyncpg DataError (an unhandled 500).
         try:
             uuid.UUID(config_id)
         except (ValueError, TypeError):
@@ -209,14 +194,7 @@ async def _validate_provider_assignments(conn: Any, tenant_id: Any, fields: dict
         )
         if row is None:
             raise ValueError(f"{field}={config_id!r} does not exist")
-        # tenant_id may arrive as a str (tenants.get_tenant() on a cache hit —
-        # cache.py round-trips through JSON, which has no UUID type) or a
-        # uuid.UUID (a fresh asyncpg row) depending on which caller resolved
-        # it; row["tenant_id"] here is always a fresh asyncpg UUID. Comparing
-        # the two directly is a type mismatch, not a tenant mismatch, and
-        # made every stt/llm/tts_config_id assignment fail immediately after
-        # the first cache hit for that tenant — same bug class as
-        # libs/tenancy.session's _split_tenant fix; same fix here.
+        # tenant_id may be a str (cache hit) or UUID; compare as strings.
         if str(row["tenant_id"]) != str(tenant_id):
             raise ValueError(f"{field}={config_id!r} belongs to a different tenant")
         if row["role"] != expected_role:
@@ -285,13 +263,7 @@ async def create_agent(
         )
     public = _public_agent(result)
     if tenant_slug is not None:
-        # Warm the cache immediately rather than leaving it for the agent's
-        # first real call to populate lazily — same reasoning, and the same
-        # real live-call failure this exact gap already caused, as
-        # phone_numbers.create_phone_number()'s identical fix (see project
-        # memory). Optional (not required) because most existing
-        # callers only have tenant_id on hand; the REST router (the actual
-        # live-usage path) does have tenant_slug and passes it.
+        # Warm the cache now rather than on the agent's first live call.
         await get_agent(tenant_slug, slug)
     return public
 
@@ -304,9 +276,7 @@ async def update_agent(
     user_email: str | None = None,
     **fields: Any,
 ) -> dict[str, Any]:
-    """tenant_slug is required so the correct cache key can be invalidated —
-    it's not derivable from agent_id alone without an extra query, and the
-    caller (Admin UI / API layer) already has it from the request context."""
+    """tenant_slug scopes the lookup and names the cache key to invalidate."""
     if not fields:
         raise ValueError("update_agent() called with no fields to update")
     unknown = set(fields) - _UPDATABLE_FIELDS
@@ -315,15 +285,8 @@ async def update_agent(
 
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
-        # FOR UPDATE OF a is two fixes in one: it locks the agent row for
-        # the rest of this transaction (so a concurrent update can't read
-        # a stale "old" value for the audit log — see project memory's
-        # audit-race note), and the join against tenants scopes the
-        # lookup by tenant_slug — an agent_id that exists but belongs to
-        # a *different* tenant is indistinguishable from "doesn't exist"
-        # to this caller. Previously this was scoped by agent_id alone,
-        # which let any tenant's URL path update or delete any other
-        # tenant's agent by id (cross-tenant hijack).
+        # Row lock keeps the audit "old" value accurate; the tenant join makes
+        # another tenant's agent_id indistinguishable from not-found.
         old_row = await conn.fetchrow(
             "SELECT a.* FROM agents a JOIN tenants t ON t.id = a.tenant_id "
             "WHERE a.id = $1 AND t.slug = $2 FOR UPDATE OF a",
@@ -395,12 +358,7 @@ async def update_agent(
 
 
 class AgentHasLiveCalls(Exception):
-    """Raised instead of deleting an agent with a call in progress right
-    now — deliberately no force override anywhere in this feature (unlike
-    TenantHasActiveResources/ProviderConfigInUse): those are administrative
-    housekeeping that can wait a moment; this is a real person on the
-    phone. `ended_at IS NULL` is the same "live" signal live_calls.py's own
-    KPIs already use for "in progress," not a new definition."""
+    """Refuses deleting an agent with a call in progress; deliberately no force override."""
 
     def __init__(self, live_call_count: int) -> None:
         self.live_call_count = live_call_count

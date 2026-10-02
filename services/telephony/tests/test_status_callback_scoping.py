@@ -1,7 +1,4 @@
-"""Finding #5: a callback validly signed by account A carrying tenant B's
-idempotency key must write idemref only under A's tenant, and B's own
-observed_call_id() must still return None — a route with no account_ref
-segment would have no tenant to scope the write to."""
+"""A callback signed by account A with tenant B's idempotency key writes only under A's tenant."""
 
 from __future__ import annotations
 
@@ -60,8 +57,7 @@ async def test_callback_writes_idemref_only_under_signing_accounts_tenant(client
     )
     assert resp.status_code == 200
 
-    # The redis client the app just used was created inside TestClient's own
-    # worker loop; force a fresh one bound to this test's loop before reading.
+    # Rebind the redis client to this test's loop (TestClient used its own).
     idempotency._client = None
     observed_a = await idempotency.observed_call_id("fake", uuid.UUID(TENANT_A), tenant_b_key)
     observed_b = await idempotency.observed_call_id("fake", uuid.UUID(TENANT_B), tenant_b_key)

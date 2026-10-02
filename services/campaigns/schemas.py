@@ -1,8 +1,4 @@
-"""
-Pydantic request models for Campaign Service's REST API — same "responses
-are the plain dicts the service modules already return" convention as
-services/config/schemas.py.
-"""
+"""Pydantic request models for Campaign Service's REST API."""
 
 from __future__ import annotations
 
@@ -20,8 +16,7 @@ class CampaignCreate(BaseModel):
     max_concurrent_calls:   int = 1
     pacing_seconds:         int = 5
     max_attempts:           int = 1
-    # "HH:MM" 24h strings, both required together or both omitted — see
-    # worker.py's _within_calling_hours(). None/None means unrestricted.
+    # "HH:MM" 24h, both or neither; None/None means unrestricted.
     calling_hours_start:    str | None = None
     calling_hours_end:      str | None = None
     calling_hours_timezone: str = "UTC"

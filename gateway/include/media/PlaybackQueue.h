@@ -17,13 +17,8 @@
 
 namespace voiceai {
 
-// Bounded outbound audio queue: TTS chunks arrive here and are consumed by
-// the playback thread that sends PCM back to FreeSWITCH.
-//
-// Overflow policy: drop-newest.  Dropping the oldest frame corrupts speech
-// that is about to play; rejecting the newest only truncates the tail of an
-// over-long response.  MediaSession tracks the end-of-response marker before
-// push(), so playback_finished survives a rejected marker frame.
+// Bounded outbound TTS queue. Drops newest on overflow: dropping oldest would
+// corrupt speech about to play, while this only truncates an over-long tail.
 class PlaybackQueue : private NonCopyable, private NonMovable {
 public:
     using DrainCallback = std::function<void()>;  // fired when queue becomes empty
@@ -33,16 +28,14 @@ public:
                   IMetrics&   metrics,
                   Logger&     logger);
 
-    // Push a TTS audio frame.  Thread-safe.  Rejects the frame on overflow.
     void push(AudioFrame frame);
 
-    // Pop the next frame.  Blocks up to timeout; returns nullopt on timeout/stop.
+    // Returns nullopt on timeout/stop.
     std::optional<AudioFrame> pop(std::chrono::milliseconds timeout = std::chrono::milliseconds{100});
 
-    // Discard all queued frames (barge-in cancellation).
     void clear();
 
-    // Signal the consumer to stop blocking and return.
+    // Unblocks the consumer.
     void stop();
 
     void set_on_drained(DrainCallback cb);

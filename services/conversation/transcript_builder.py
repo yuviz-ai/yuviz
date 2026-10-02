@@ -1,17 +1,5 @@
-"""
-TranscriptBuilder — fire-and-forget persistence to the calls /
-transcript_entries tables (database/schema.sql).
-
-Every public method schedules its write as a background asyncio task and
-returns immediately; none are awaited by the conversation pipeline, so a
-slow or unreachable database can never add latency to a live call. Writes
-for a given session_id are chained in order (not run concurrently) so a
-transcript_entries row can never reach Postgres before the calls row
-it references — required by the schema's foreign key.
-
-Disabled (all methods become no-ops) when constructed with pool=None, i.e.
-when POSTGRES_DSN is unset — persistence is opt-in.
-"""
+"""TranscriptBuilder — fire-and-forget persistence to calls/transcript_entries; never adds call latency.
+Writes per session_id are chained in order (FK: calls row first). No-op when pool is None."""
 
 from __future__ import annotations
 
@@ -31,11 +19,7 @@ log = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class TurnLatency:
-    """Per-turn voice-to-voice timing — see pipeline.py's on_speech_ended()
-    for exactly what each field measures. All fields optional: a
-    cancelled/barge-in/errored turn can legitimately have some or all of
-    these unset (e.g. no audio ever got synthesized), and that's recorded
-    as NULL, not zero — a zero would misleadingly read as "instant."""
+    """Per-turn voice-to-voice timing; unset fields are stored as NULL, never zero."""
     stt_ms:            float | None = None
     llm_ms:            float | None = None
     tts_ms:            float | None = None
@@ -53,27 +37,13 @@ class TranscriptBuilder:
         sentiment: "SentimentScorer | None" = None,
     ) -> None:
         self._pool = pool
-        # Optional: when None, calls.sentiment is simply never written and
-        # stays NULL ("never scored" — see schema.sql). Scoring is an
-        # end-of-call extra, so nothing about persistence depends on it.
         self._sentiment = sentiment
-        # Identifies THIS process instance (see connect()'s docstring) —
-        # stamped onto every call this instance begins, and used to scope
-        # reconcile_stale_calls() so restarting one instance can never
-        # touch a call another still-running instance is legitimately
-        # serving (see project history: an earlier version of
-        # reconcile_stale_calls() closed out EVERY live call platform-wide,
-        # which is only safe with exactly one Conversation Service process
-        # — this project runs two, :50051 and :50052, behind Envoy).
+        # Scopes reconcile_stale_calls() so a restart never closes another instance's live calls.
         self._node_id = node_id
         self._chains:          dict[str, asyncio.Task] = {}
         self._turn_counts:     dict[str, int]           = {}
         self._barge_in_counts: dict[str, int]           = {}
-        # The tenant slug this session's calls row was written under —
-        # cached at begin_call() so every later write for the same
-        # session_id can scope its own connection to that tenant without a
-        # round trip to look it up (RLS review T52: per-session writes must
-        # never share a connection scoped to a different tenant).
+        # Cached at begin_call() so every later write scopes its connection to the same tenant.
         self._tenant_slugs:    dict[str, str]            = {}
 
     @classmethod
@@ -94,19 +64,7 @@ class TranscriptBuilder:
         return cls(pool=pool, node_id=node_id, sentiment=sentiment)
 
     async def close(self, *, drain_timeout_s: float = 25.0) -> None:
-        """Let outstanding per-session write chains finish before the pool
-        goes away.
-
-        Previously this closed the pool immediately, which was near enough
-        to safe when the longest-running chain step was a single UPDATE.
-        It stopped being safe once end_call() grew an LLM sentiment score
-        (see _score_sentiment): that holds a chain open for seconds, and
-        closing the pool underneath it would drop the final write of every
-        call that happened to end during shutdown. Bounded, so a wedged
-        scorer delays shutdown by at most drain_timeout_s rather than
-        hanging it — the timeout is above SentimentScorer's own default
-        ceiling so a scorer running normally is never cut off.
-        """
+        """Drain outstanding write chains (bounded; above the sentiment scorer's ceiling), then close the pool."""
         if self._pool is None:
             return
         pending = [t for t in self._chains.values() if not t.done()]
@@ -123,25 +81,8 @@ class TranscriptBuilder:
         await self._pool.close()
 
     async def reconcile_stale_calls(self) -> int:
-        """Call once at process startup, before serving any traffic. Any
-        calls row with THIS instance's conv_node still marked live
-        (ended_at IS NULL) necessarily belongs to a session from a
-        PREVIOUS process that ran as this same node_id — a restart drops
-        every gRPC stream the old process was holding, so nothing in this
-        process can still be "finishing" that call. Scoped to conv_node =
-        this instance's own id — never touches another instance's rows,
-        which may be genuinely live right now. Left unreconciled, stale
-        rows show up as permanently live in the Admin UI forever (see
-        project history). Closed with a distinct close_reason
-        so this is never confused with a call that ended normally;
-        duration_ms is deliberately left NULL rather than computed from
-        "now" — we don't actually know when it really ended, and a
-        fabricated duration would be worse than no duration.
-
-        No-ops (returns 0) if this instance has no node_id — reconciling
-        with no scope would mean reconciling everything, exactly the bug
-        this replaced, so "can't scope it" must mean "don't run it,"
-        not "run it unscoped."""
+        """At startup, close live calls left by a previous process with this node_id (duration left NULL).
+        No-op without a node_id — never run unscoped."""
         if self._pool is None or not self._node_id:
             return 0
         async with platform_conn(self._pool, reason="conversation-reconcile-sweep") as conn:
@@ -159,12 +100,7 @@ class TranscriptBuilder:
         return count
 
     async def heartbeat(self) -> None:
-        """Called on a timer (see __main__.py's heartbeat loop) — proves
-        this instance is still alive to reconcile_dead_nodes(), running on
-        every OTHER instance. Deliberately its own tiny UPSERT, sharing no
-        lock or state with the per-call pipeline — this must never be able
-        to add latency to a live call (see project history — this was
-        explicitly checked before building it, not assumed)."""
+        """Liveness UPSERT for other instances' reconcile_dead_nodes(); shares no state with the call path."""
         if self._pool is None or not self._node_id:
             return
         try:
@@ -178,16 +114,7 @@ class TranscriptBuilder:
             log.exception("TranscriptBuilder: heartbeat write failed node_id=%s", self._node_id)
 
     async def reconcile_dead_nodes(self, *, stale_after_seconds: int) -> int:
-        """The general-case backstop reconcile_stale_calls() can't be:
-        that one only fires when a crashed instance's exact node_id
-        restarts. This closes out live calls owned by ANY node whose
-        heartbeat has gone silent for stale_after_seconds — whether or not
-        it ever comes back — checked periodically by every still-running
-        instance (see __main__.py's heartbeat loop), not just by the dead
-        node itself. A node with no heartbeat row at all (crashed before
-        its first heartbeat, or heartbeats never ran) counts as dead too.
-        Same close_reason discipline as reconcile_stale_calls(): distinct
-        marker, duration_ms left NULL, never fabricated."""
+        """Close live calls owned by any node whose heartbeat is missing or older than stale_after_seconds."""
         if self._pool is None:
             return 0
         async with platform_conn(self._pool, reason="conversation-reconcile-sweep") as conn:
@@ -209,37 +136,8 @@ class TranscriptBuilder:
         return count
 
     async def reconcile_inactive_calls(self, *, inactive_after_seconds: int) -> int:
-        """The backstop reconcile_stale_calls()/reconcile_dead_nodes() can't
-        be: both of those only fire when an entire Conversation Service
-        process has crashed or restarted. Neither catches the far more
-        common real-world case — a single call's client disconnects
-        uncleanly (browser tab killed, laptop slept, network dropped) while
-        its owning process keeps running perfectly normally. WebSocket/TCP
-        close events aren't guaranteed to ever reach the server in that
-        case, so nothing else notices; the row would otherwise stay "live"
-        in the Admin UI forever (confirmed live: a webcall test
-        session's browser vanished mid-farewell, the process never
-        restarted, and the row sat with ended_at IS NULL indefinitely even
-        though lsof showed zero actual open connections).
-
-        A call counts as inactive once it's both older than
-        inactive_after_seconds AND has had no transcript_entries write in
-        that same window — the started_at floor means a call that hasn't
-        had its first turn yet is never mistaken for stale just because
-        transcript_entries has nothing for it. Deliberately NOT scoped to
-        this instance's own node_id (unlike reconcile_stale_calls): this is
-        a pure time-based heuristic on DB timestamps, not a claim about
-        which process's in-memory state is authoritative, so any
-        still-running instance can safely reconcile any node's inactive
-        call — same posture as reconcile_dead_nodes(), and harmless to run
-        redundantly on multiple instances (idempotent UPDATE...WHERE
-        ended_at IS NULL). inactive_after_seconds should be set well above
-        any legitimate silence — the Gateway's own no-speech-timeout
-        already ends a genuinely silent-caller call within ~19s (see
-        project history), so this is a last-resort backstop for zombie
-        connections, not a substitute for that. Same close_reason
-        discipline as the other two reconcile methods: distinct marker,
-        duration_ms never fabricated."""
+        """Close zombie calls (client vanished, process alive) with no transcript activity in the window.
+        Time-based and idempotent, so any instance may run it for any node."""
         if self._pool is None:
             return 0
         async with platform_conn(self._pool, reason="conversation-reconcile-sweep") as conn:
@@ -262,8 +160,6 @@ class TranscriptBuilder:
                         count, inactive_after_seconds)
         return count
 
-    # ── Public API — all fire-and-forget ────────────────────────────────────
-
     def begin_call(
         self,
         session_id:    str,
@@ -277,9 +173,6 @@ class TranscriptBuilder:
     ) -> None:
         if self._pool is None:
             return
-        # Normalized once, here, so the value cached for every later write
-        # on this session_id is byte-identical to the value actually
-        # written into calls.tenant_id below.
         tenant_slug = tenant_id or "default"
         self._turn_counts[session_id] = 0
         self._barge_in_counts[session_id] = 0
@@ -325,17 +218,8 @@ class TranscriptBuilder:
         ))
 
     def record_live_stage(self, session_id: str, stage: str) -> None:
-        """Live Calls Monitoring's mid-call stage column (database/
-        schema.sql's calls.live_stage) — 'ai' | 'waiting_for_human' |
-        'human_connected'. Rides the same per-session _spawn() chain as
-        every other write here, which is load-bearing, not incidental: two
-        transfer-hook calls for the same session (session.py's
-        on_transfer_initiated/on_transfer_completed/on_transfer_failed/
-        on_transfer_cancelled) are chained in the order they're CALLED, so
-        even if an earlier call's write is slower to actually land on
-        Postgres, it still completes before the later call's write starts —
-        a later stage can never be overwritten by an earlier one arriving
-        late."""
+        """Set calls.live_stage ('ai' | 'waiting_for_human' | 'human_connected').
+        The per-session chain guarantees a later stage is never overwritten by an earlier one."""
         if self._pool is None:
             return
         self._spawn(session_id, self._record_live_stage(session_id, self._tenant_slugs.get(session_id), stage))
@@ -350,11 +234,7 @@ class TranscriptBuilder:
         self._spawn(session_id, self._end_call(
             session_id, tenant_slug, close_reason, turn_count, barge_in_count, final_state,
         ))
-        # Drop the chain once this session's final write completes — nothing
-        # will call _spawn() for this session_id again after end_call().
         self._chains[session_id].add_done_callback(lambda _: self._chains.pop(session_id, None))
-
-    # ── Internal ─────────────────────────────────────────────────────────────
 
     def _spawn(self, session_id: str, coro) -> None:
         """Schedule *coro*, chained after any write already in flight for this
@@ -440,10 +320,7 @@ class TranscriptBuilder:
         interrupted:        bool,
         latency:            TurnLatency,
     ) -> None:
-        # latency_ms JSONB mirrors the individual *_latency_ms columns —
-        # kept alongside them (not instead of) so a future latency field
-        # doesn't need a new column, matching the schema's own original
-        # intent (see its comment: {"vad_hold":..,"stt":..,"llm":..,"tts":..}).
+        # JSONB mirror of the *_latency_ms columns so new fields don't need a migration.
         latency_json = json.dumps({
             "stt_ms": latency.stt_ms, "llm_ms": latency.llm_ms,
             "tts_ms": latency.tts_ms, "voice_to_voice_ms": latency.voice_to_voice_ms,
@@ -487,11 +364,7 @@ class TranscriptBuilder:
                     "WHERE session_id = $1",
                     session_id, close_reason, turn_count, barge_in_count, final_state,
                 )
-                # Read the transcript back here rather than accumulating it in
-                # memory across the call: record_turn() already persisted every
-                # turn, this task is chained strictly after those writes, and
-                # holding a full transcript per live session just to score it
-                # once at the end would grow with concurrency for no reason.
+                # Read back rather than holding transcripts in memory; chained after all turn writes.
                 if self._sentiment is not None:
                     rows = await conn.fetch(
                         "SELECT caller_text, ai_response FROM transcript_entries "
@@ -504,19 +377,14 @@ class TranscriptBuilder:
             log.exception("TranscriptBuilder: end_call failed session=%s", session_id)
             return
 
-        # Scoring runs OUTSIDE the connection block above on purpose: an LLM
-        # round-trip is seconds, and holding a pooled connection open across
-        # it would starve a pool sized for short writes (max_size=5) as soon
-        # as a handful of calls ended together. The call is already correctly
-        # finalized at this point — everything below is additive.
+        # Outside the connection block: a seconds-long LLM call would starve the small pool.
         if self._sentiment is not None and turns:
             await self._score_sentiment(session_id, tenant_slug, turns)
 
     async def _score_sentiment(
         self, session_id: str, tenant_slug: str | None, turns: list[Turn],
     ) -> None:
-        """Best-effort: any failure leaves calls.sentiment NULL, which reads
-        as "never scored" rather than as a neutral call."""
+        """Best-effort: failure leaves calls.sentiment NULL ("never scored")."""
         try:
             result = await self._sentiment.score(turns)
         except Exception:

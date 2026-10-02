@@ -1,11 +1,6 @@
 "use client";
 
-// Test an agent on a real call, as a page rather than a modal: a transcript
-// that stays readable while you talk, and call controls beside it. The modal
-// it replaces had the transcript behind a collapsed toggle, which is the
-// wrong shape for the thing you are actually watching.
-//
-// The call itself is lib/useWebCall — identical engine, different chrome.
+// Test an agent on a real call: live transcript beside call controls (engine: lib/useWebCall).
 
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";

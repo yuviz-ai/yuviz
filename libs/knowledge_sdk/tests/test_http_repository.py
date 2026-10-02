@@ -1,10 +1,4 @@
-"""
-In-process against the real services.config.app (auth) and
-services.knowledge.app (retrieval) FastAPI apps via httpx.ASGITransport —
-same convention libs/config_sdk/tests/test_http_repository.py uses. Proves
-HttpKnowledgeRepository's cross-service login (Config Service) + API call
-(Knowledge Service) flow against the real auth system, not a mock of it.
-"""
+"""HttpKnowledgeRepository against the real Config (auth) and Knowledge apps in-process."""
 
 from __future__ import annotations
 

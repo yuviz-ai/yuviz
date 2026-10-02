@@ -25,9 +25,7 @@ def _provider_module_count() -> int:
 
 
 def test_registry_size_matches_provider_module_count():
-    # A provider added without conforming (e.g. missing an abstract method
-    # override) would fail to import, so this enumeration itself fails
-    # rather than silently omitting the new module (lesson 12, lesson 29).
+    # A non-conforming provider fails to import, so it can't be silently omitted.
     assert len(TelephonyProviderRegistry.all()) == _provider_module_count()
 
 

@@ -1,11 +1,5 @@
 """
-RetryOnceLLM — retries a single ILLM once on failure, before any output has
-been yielded. Replaces the earlier cross-engine fallback design (a second,
-weaker engine as a safety net): that added its own risk — a different
-model's tool-calling quality, a translation layer for tool_choice — for a
-benefit that mostly only mattered on rate-limited/free-tier accounts. A
-same-engine retry recovers from the same transient failures without ever
-handing the conversation to a different model.
+RetryOnceLLM — retries an ILLM once on failure, only if nothing was yielded yet.
 """
 
 from __future__ import annotations

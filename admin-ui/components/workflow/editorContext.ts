@@ -3,14 +3,9 @@
 import { createContext, useContext } from "react";
 
 /** Actions a node card can trigger on the canvas.
- *
- *  Passed through context rather than through node.data: React Flow spreads
- *  data into the persisted graph, and putting a callback there would both
- *  pollute the saved JSON and change identity on every render — which would
- *  re-serialize the graph, re-trigger autosave, and never settle. */
+ *  Passed via context, not node.data, so callbacks don't leak into the saved graph or retrigger autosave. */
 export interface WorkflowEditorActions {
-  /** Add a stage already wired to this node, so building a flow never
-   *  depends on landing a drag on a 12px handle. */
+  /** Add a stage already wired to this node. */
   addConnectedStage: (fromNodeId: string) => void;
 }
 

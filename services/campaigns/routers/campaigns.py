@@ -1,7 +1,4 @@
-"""
-Campaigns router — CRUD + contact CSV upload + start/pause/resume +
-progress.
-"""
+"""Campaigns router — CRUD, contact CSV upload, start/pause/resume, progress."""
 
 from __future__ import annotations
 
@@ -37,18 +34,9 @@ async def create_campaign(
     tenant_id: str, body: CampaignCreate,
     current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
 ):
-    # agent_id is a NOT NULL FK server-side (database/schema.sql) but the
-    # Admin UI's wizard now lets it through blank ("optional for now") — an
-    # empty or foreign-tenant id must fail here with a real 422, not reach
-    # the INSERT and crash with an unhandled asyncpg cast/FK error (which
-    # returns without CORS headers and shows up in the browser as a bare,
-    # misleading "blocked by CORS policy" fetch failure).
     if not await campaigns_service.agent_exists_for_tenant(tenant_id, body.agent_id):
         raise HTTPException(status_code=422, detail="agent_id must reference an existing agent for this tenant")
-    # caller_id is the outbound caller-id identity every dial presents —
-    # unvalidated, a campaign could present another tenant's provisioned
-    # DID (or an arbitrary number) as its own (security finding: unowned
-    # caller_id falls through to the unchecked ESL path at dial time).
+    # Otherwise a campaign could present another tenant's DID as its caller id.
     if not await campaigns_service.caller_id_owned_by_tenant(tenant_id, body.caller_id):
         raise HTTPException(status_code=422, detail="caller_id must be a DID provisioned for this tenant")
     return await campaigns_service.create_campaign(
@@ -132,10 +120,7 @@ async def upload_contacts(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    # DNC is enforced here (not just by worker.py at dial time) so a
-    # blocked number never even enters the queue as 'pending' — the
-    # worker's own check is defense in depth for numbers added to the DNC
-    # list after upload, not the primary enforcement point.
+    # Primary DNC enforcement; the worker re-checks for numbers added after upload.
     blocked = {
         dnc.normalize_phone(row["phone_number"])
         for row in await dnc.list_numbers(campaign["tenant_id"], platform_scoped=is_platform_scoped(current_user))
