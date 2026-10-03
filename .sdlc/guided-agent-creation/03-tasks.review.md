@@ -1,0 +1,8 @@
+# Review: 03-tasks.md
+VERDICT: AMBER
+
+1. [blocking] T11 (B2) tests the `handler_factory` credential branch with `ctx.test_credential`, but the `SessionContext.test_credential` field is added by T12 (B3), so T11's tests cannot construct the context and its dependency is out of order — T11 vs T12 — fix: move the `session.py` field into T11 (or into T4 in B1) and leave T12 with only the servicer change and its test.
+2. [blocking] T12's servicer must import `AgentUnavailable`, which T11 defines in `services/conversation/__main__.py`. `__main__` already imports the servicer, so this is a circular import, and no task owns resolving it — T11/T12 vs design Changes — fix: define `AgentUnavailable` in `services/conversation/session.py` (or a new module) in the earlier task, and have both `__main__` and `servicer.py` import it from there.
+3. [minor] T14's done-when (`&test=1` in the URL, first frame sent before audio, credential cleared after send, no reconnect reuse) is only checked by `tsc`. T17 asserts only the mint count, so nothing exercises these behaviours — T14/T17 — fix: add T17 assertions that capture the WebSocket URL and first frame, and that a forced reconnect sends a different credential.
+4. [minor] T10's done-when never tests the design's `"session_id"` addition to the `service_ready` frame. T14 and T15 depend on it for the revise flow — T10 — fix: add a T10 unit assertion that `service_ready` carries `session_id`.
+5. [minor] T13 writes the `api.ts` types and clients in B3, before the routes exist (T9 is B4). Only `tsc` checks them, so the response shapes are never compared with the server — T13 — fix: add a done-when that the types match the Pydantic response models, or have T15 re-verify them against the live T9 routes.

@@ -63,7 +63,7 @@ class DtmfDigit(_message.Message):
     def __init__(self, session_id: _Optional[str] = ..., digit: _Optional[str] = ..., trace_id: _Optional[str] = ...) -> None: ...
 
 class SessionOpenRequest(_message.Message):
-    __slots__ = ("protocol_version", "session_id", "tenant_id", "trace_id", "call_id", "caller_did", "called_did", "script_id", "codec", "sample_rate", "channels", "direction")
+    __slots__ = ("protocol_version", "session_id", "tenant_id", "trace_id", "call_id", "caller_did", "called_did", "script_id", "codec", "sample_rate", "channels", "direction", "test_credential")
     PROTOCOL_VERSION_FIELD_NUMBER: _ClassVar[int]
     SESSION_ID_FIELD_NUMBER: _ClassVar[int]
     TENANT_ID_FIELD_NUMBER: _ClassVar[int]
@@ -76,6 +76,7 @@ class SessionOpenRequest(_message.Message):
     SAMPLE_RATE_FIELD_NUMBER: _ClassVar[int]
     CHANNELS_FIELD_NUMBER: _ClassVar[int]
     DIRECTION_FIELD_NUMBER: _ClassVar[int]
+    TEST_CREDENTIAL_FIELD_NUMBER: _ClassVar[int]
     protocol_version: str
     session_id: str
     tenant_id: str
@@ -88,7 +89,8 @@ class SessionOpenRequest(_message.Message):
     sample_rate: int
     channels: int
     direction: str
-    def __init__(self, protocol_version: _Optional[str] = ..., session_id: _Optional[str] = ..., tenant_id: _Optional[str] = ..., trace_id: _Optional[str] = ..., call_id: _Optional[str] = ..., caller_did: _Optional[str] = ..., called_did: _Optional[str] = ..., script_id: _Optional[str] = ..., codec: _Optional[_Union[AudioCodec, str]] = ..., sample_rate: _Optional[int] = ..., channels: _Optional[int] = ..., direction: _Optional[str] = ...) -> None: ...
+    test_credential: str
+    def __init__(self, protocol_version: _Optional[str] = ..., session_id: _Optional[str] = ..., tenant_id: _Optional[str] = ..., trace_id: _Optional[str] = ..., call_id: _Optional[str] = ..., caller_did: _Optional[str] = ..., called_did: _Optional[str] = ..., script_id: _Optional[str] = ..., codec: _Optional[_Union[AudioCodec, str]] = ..., sample_rate: _Optional[int] = ..., channels: _Optional[int] = ..., direction: _Optional[str] = ..., test_credential: _Optional[str] = ...) -> None: ...
 
 class AudioChunk(_message.Message):
     __slots__ = ("session_id", "trace_id", "sequence_num", "timestamp_us", "payload")

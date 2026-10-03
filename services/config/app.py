@@ -89,6 +89,33 @@ class LiveCallsThrottle:
         self._counter.increment(key)
 
 
+class AgentAssistThrottle:
+    """Per-tenant caps on the guided-creation routes, keyed on the tenant id:
+    20 test-credential mints/min, 60 chat turns/min, 20 prompt revises/hour.
+    Same FixedWindowCounter precedent as InviteThrottle above."""
+
+    def __init__(self) -> None:
+        self.mint = FixedWindowCounter(limit=20, window_seconds=60)
+        self.turn = FixedWindowCounter(limit=60, window_seconds=60)
+        self.revise = FixedWindowCounter(limit=20, window_seconds=3600)
+
+    @staticmethod
+    def _check(counter: FixedWindowCounter, tenant_id: str) -> None:
+        over, retry_after = counter.over_limit(tenant_id)
+        if over:
+            raise _too_many_requests("too many requests; try again later", retry_after)
+        counter.increment(tenant_id)
+
+    def check_mint(self, tenant_id: str) -> None:
+        self._check(self.mint, tenant_id)
+
+    def check_turn(self, tenant_id: str) -> None:
+        self._check(self.turn, tenant_id)
+
+    def check_revise(self, tenant_id: str) -> None:
+        self._check(self.revise, tenant_id)
+
+
 def _too_many_requests(detail: str, retry_after: int) -> HTTPException:
     return HTTPException(status_code=429, detail=detail, headers={"Retry-After": str(retry_after)})
 
@@ -122,12 +149,14 @@ app.state.accept_throttle = AcceptThrottle()
 app.state.register_throttle = AcceptThrottle()
 app.state.verify_throttle = AcceptThrottle()
 app.state.live_calls_throttle = LiveCallsThrottle()
+app.state.agent_assist_throttle = AgentAssistThrottle()
 
 app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(invites_router.router)
 app.include_router(tenants.router)
 app.include_router(agents.router)
+app.include_router(agents.catalog_router)
 app.include_router(call_flows.tenant_scoped_router)
 app.include_router(call_flows.router)
 app.include_router(provider_configs.tenant_scoped_router)

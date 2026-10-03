@@ -251,6 +251,14 @@ export interface Agent {
   max_call_duration_s: number | null;
   /** Which call flow answers ahead of this agent (call_flows.id), or null. */
   call_flow_id: string | null;
+  // Set only on agents created from a shipped Easy job; null for Advanced.
+  template_id: string | null;
+  template_version: number | null;
+  // True while the stored prompt still equals the one the last accepted fix
+  // wrote, so "Undo last change" can be offered. Computed server-side.
+  can_undo: boolean;
+  // False when the prompt was hand-edited so it can't be fixed automatically.
+  prompt_fixable: boolean;
   status: AgentStatus;
   config_version: number;
   created_at: string;
@@ -300,6 +308,91 @@ export const createAgent = (tenantSlug: string, body: AgentCreate) =>
   request<Agent>(`/tenants/${tenantSlug}/agents`, { method: "POST", body: JSON.stringify(body) });
 export const updateAgent = (tenantSlug: string, agentId: string, body: AgentUpdate) =>
   request<Agent>(`/tenants/${tenantSlug}/agents/${agentId}`, { method: "PATCH", body: JSON.stringify(body) });
+
+// ── Easy agent creation (shipped jobs, test sessions, prompt fixes) ──────
+
+export type AgentTemplateChannel = "phone_in" | "phone_out" | "chat";
+
+export interface AgentTemplateInfo {
+  id: string;
+  version: number;
+  channel: AgentTemplateChannel;
+  label: string;
+  blurb: string;
+  does: string;
+  wont_do: string;
+  handoff: string;
+  needs: ("llm" | "stt" | "tts")[];
+}
+
+export interface AgentFromTemplateRequest {
+  template_id: string;
+  template_version: number;
+  name: string;
+  business_name: string;
+  // Always sent; "" when the user enters nothing.
+  business_facts: string;
+  language?: string | null;
+  stt_config_id?: string | null;
+  llm_config_id?: string | null;
+  tts_config_id?: string | null;
+}
+
+export type TestChannel = "voice" | "chat";
+
+export interface VoiceTestSession {
+  credential: string;
+  expires_in: number;
+}
+
+export interface ChatTestSession extends VoiceTestSession {
+  session_id: string;
+  greeting: string;
+}
+
+export interface PromptRevision {
+  before: string;
+  after: string;
+  base_prompt_sha256: string;
+}
+
+export const listAgentTemplates = () => request<AgentTemplateInfo[]>("/agent-templates");
+export const createAgentFromTemplate = (tenantSlug: string, body: AgentFromTemplateRequest) =>
+  request<Agent>(`/tenants/${tenantSlug}/agents/from-template`, { method: "POST", body: JSON.stringify(body) });
+export const createTestSession = <C extends TestChannel>(tenantSlug: string, agentId: string, channel: C) =>
+  request<C extends "chat" ? ChatTestSession : VoiceTestSession>(
+    `/tenants/${tenantSlug}/agents/${agentId}/test-sessions`,
+    { method: "POST", body: JSON.stringify({ channel }) },
+  );
+export const sendTestChat = (
+  tenantSlug: string,
+  agentId: string,
+  body: { credential: string; session_id: string; message: string },
+) =>
+  request<{ reply: string }>(`/tenants/${tenantSlug}/agents/${agentId}/test-chat`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+export const revisePrompt = (
+  tenantSlug: string,
+  agentId: string,
+  body: { session_id: string; problem: string; llm_config_id?: string },
+) =>
+  request<PromptRevision>(`/tenants/${tenantSlug}/agents/${agentId}/prompt/revise`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+export const acceptPrompt = (
+  tenantSlug: string,
+  agentId: string,
+  body: { session_id: string; problem: string; proposed_prompt: string; base_prompt_sha256: string },
+) =>
+  request<Agent>(`/tenants/${tenantSlug}/agents/${agentId}/prompt/accept`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+export const undoPrompt = (tenantSlug: string, agentId: string) =>
+  request<Agent>(`/tenants/${tenantSlug}/agents/${agentId}/prompt/undo`, { method: "POST" });
 
 export interface SystemPromptGenerateRequest {
   name: string;

@@ -18,9 +18,11 @@ import sys
 from datetime import datetime, timezone
 
 import grpc.aio
+import redis.asyncio as aioredis
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 
 from libs.config_sdk import CacheAsideConfigProvider, HttpConfigRepository, IConfigProvider, RedisConfigRepository
+from libs.config_sdk.test_credentials import redeem_test_credential
 from libs.knowledge_sdk import (
     CacheAsideKnowledgeProvider,
     HttpKnowledgeRepository,
@@ -44,7 +46,7 @@ from .providers.stt.faster_whisper import FasterWhisperSTT
 from .providers.llm.ollama import OllamaLLM
 from .secret_resolver import CompositeSecretResolver
 from .servicer import ConversationServicer
-from .session import SessionContext
+from .session import AgentUnavailable, SessionContext
 from .tools.executor_registry import ExecutorRegistry
 from .tools.executors.api_exec_executor import ApiExecExecutor
 from .tools.llm_adapter import LLMAdapter
@@ -60,6 +62,39 @@ from .workflow import graph_for
 from .generated.voiceai.v1 import conversation_pb2_grpc as pb_grpc
 
 SERVICE_NAME = "voiceai.v1.ConversationService"
+
+
+async def _resolve_session_deps(
+    ctx: SessionContext, credential_redis, provider_registry: ProviderRegistry,
+    config: IConfigProvider, stt, llm, tts,
+):
+    # A credential, not the direction, is what makes this a test session:
+    # webcall sends direction="test" for every browser session. With a
+    # credential there is never a legacy fallback; without one, today's
+    # path runs unchanged, so inactive and missing agents stay indistinguishable.
+    if ctx.direction == "test" and ctx.test_credential:
+        grant = await redeem_test_credential(
+            credential_redis, ctx.test_credential, channel="voice", consume=True,
+        )
+        if grant is None or grant.tenant_slug != ctx.tenant_id or grant.agent_slug != ctx.script_id:
+            raise AgentUnavailable()
+        resolved = await resolve_handler_deps(
+            ctx.tenant_id, ctx.script_id, provider_registry, config, include_inactive=True,
+        )
+        # The id check catches an agent deleted and re-created under the same slug.
+        if resolved is None or resolved[0].agent.id != grant.agent_id:
+            raise AgentUnavailable()
+        return resolved
+
+    resolved = await resolve_handler_deps(
+        ctx.tenant_id or "default", ctx.script_id or "default", provider_registry, config,
+    )
+    if resolved is not None:
+        return resolved
+    agent = load_agent(ctx.script_id)
+    return to_runtime_config(
+        agent, ctx.tenant_id or "default", ctx.script_id or "default", stt, llm, tts,
+    )
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -198,6 +233,9 @@ async def serve(port: int, args: argparse.Namespace) -> None:
         cfg.db.database_url, node_id=node_id, sentiment=sentiment_scorer,
     )
     await transcripts.reconcile_stale_calls()
+    credential_redis = aioredis.from_url(
+        os.environ.get("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True,
+    )
     provider_manager = AIProviderManager(CompositeSecretResolver())
     provider_registry = ProviderRegistry(provider_manager)
     provider_config_subscriber = ProviderConfigSubscriber(
@@ -312,16 +350,9 @@ async def serve(port: int, args: argparse.Namespace) -> None:
 
         async def handler_factory(ctx: SessionContext) -> PipelineConversationHandler:
             # Config SDK path, else legacy YAML path; never a mix for one call.
-            resolved = await resolve_handler_deps(
-                ctx.tenant_id or "default", ctx.script_id or "default", provider_registry, config,
+            runtime_config, bundle = await _resolve_session_deps(
+                ctx, credential_redis, provider_registry, config, stt, llm, tts,
             )
-            if resolved is not None:
-                runtime_config, bundle = resolved
-            else:
-                agent = load_agent(ctx.script_id)
-                runtime_config, bundle = to_runtime_config(
-                    agent, ctx.tenant_id or "default", ctx.script_id or "default", stt, llm, tts,
-                )
 
             if not runtime_config.agent.call_flow_id:
                 return await _build_pipeline_handler(ctx, runtime_config, bundle)

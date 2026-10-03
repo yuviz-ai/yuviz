@@ -449,3 +449,43 @@ async def test_agent_row_maps_call_flow_id():
 
     agent = await provider.get_agent("acme", "sup")
     assert agent is not None and agent.call_flow_id == "flow1"
+
+
+def _complete_inactive_repo():
+    return FakeRepo(
+        tenants={"acme": _tenant_row(
+            "acme", default_stt_config_id="stt1", default_llm_config_id="llm1", default_tts_config_id="tts1",
+        )},
+        agents={("acme", "sup"): _agent_row("sup", status="inactive", system_prompt="Draft prompt.")},
+        providers={
+            "stt1": _provider_row("stt1", "stt", "deepgram"),
+            "llm1": _provider_row("llm1", "llm", "openai"),
+            "tts1": _provider_row("tts1", "tts", "elevenlabs"),
+        },
+    )
+
+
+async def test_runtime_config_inactive_agent_default_is_none_even_when_complete():
+    provider = CacheAsideConfigProvider(_complete_inactive_repo(), FakeRepo())
+    assert await provider.get_runtime_config("acme", "sup") is None
+
+
+async def test_runtime_config_include_inactive_returns_inactive_agent():
+    provider = CacheAsideConfigProvider(_complete_inactive_repo(), FakeRepo())
+
+    rc = await provider.get_runtime_config("acme", "sup", include_inactive=True)
+    assert rc is not None
+    assert rc.agent.status == "inactive"
+    assert rc.conversation.system_prompt == "Draft prompt."
+
+
+async def test_runtime_config_include_inactive_missing_agent_is_still_none():
+    provider = CacheAsideConfigProvider(_complete_inactive_repo(), FakeRepo())
+    assert await provider.get_runtime_config("acme", "no-such-agent", include_inactive=True) is None
+
+
+async def test_runtime_config_include_inactive_still_requires_complete_providers():
+    repo = _complete_inactive_repo()
+    del repo.providers["tts1"]
+    provider = CacheAsideConfigProvider(repo, FakeRepo())
+    assert await provider.get_runtime_config("acme", "sup", include_inactive=True) is None

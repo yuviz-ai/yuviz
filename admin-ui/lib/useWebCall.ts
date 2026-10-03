@@ -30,6 +30,7 @@ export interface WebCall {
   state: CallState;
   transcript: { role: "user" | "assistant"; text: string; ts: number }[];
   errorMsg: string | null;
+  sessionId: string | null;
   micLevelPct: number;
   muted: boolean;
   setMuted: (m: boolean) => void;
@@ -38,17 +39,28 @@ export interface WebCall {
   reset: () => void;
 }
 
-export function useWebCall(tenantSlug: string, agentSlug: string): WebCall {
+// `testCredential` is for testing an agent that is not live yet: a one-shot
+// credential minted by Config for this call. It travels as the first WebSocket
+// frame, never in the URL. It is spent by the connection that sends it, so the
+// caller must pass a freshly minted one before every start().
+export function useWebCall(tenantSlug: string, agentSlug: string, testCredential?: string): WebCall {
   const [state, setState] = useState<CallState>("idle");
   const [transcript, setTranscript] = useState<{ role: "user" | "assistant"; text: string; ts: number }[]>([]);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [micLevelPct, setMicLevelPct] = useState(0);
   const [muted, setMutedState] = useState(false);
   const mutedRef = useRef<boolean>(false);
 
   // Bumped per call so a delayed end_call teardown can't tear down a newer call.
   const sessionGenRef = useRef<number>(0);
+  // undefined: not a test call. "": the credential was sent and is spent.
+  // Refilled only when the caller passes a different credential.
+  const testCredentialRef = useRef<string | undefined>(testCredential);
+  useEffect(() => {
+    testCredentialRef.current = testCredential;
+  }, [testCredential]);
   const wsRef = useRef<WebSocket | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -87,7 +99,11 @@ export function useWebCall(tenantSlug: string, agentSlug: string): WebCall {
     recordingRef.current = false;
     agentSpeakingRef.current = false;
     stopAgentPlayback();
-    wsRef.current?.close();
+    if (wsRef.current) {
+      // A closing socket must not report "ended" over whatever state follows.
+      wsRef.current.onclose = null;
+      wsRef.current.close();
+    }
     wsRef.current = null;
     workletRef.current?.disconnect();
     workletRef.current = null;
@@ -170,9 +186,19 @@ export function useWebCall(tenantSlug: string, agentSlug: string): WebCall {
   };
 
   const handleStart = useCallback(async () => {
+    // A previous call's socket and mic must not outlive this one's refs.
+    teardown();
     sessionGenRef.current += 1;
     mutedRef.current = false;
     setMutedState(false);
+    setSessionId(null);
+    setTranscript([]);
+    const credential = testCredentialRef.current;
+    if (credential === "") {
+      setState("error");
+      setErrorMsg("This test credential was already used. Start a new test.");
+      return;
+    }
     setState("connecting");
     setErrorMsg(null);
     try {
@@ -194,12 +220,17 @@ export function useWebCall(tenantSlug: string, agentSlug: string): WebCall {
       // Not connected to ctx.destination, to avoid echoing the mic back.
 
       const ws = new WebSocket(
-        `${WEBCALL_URL}/webcall?tenant=${encodeURIComponent(tenantSlug)}&agent=${encodeURIComponent(agentSlug)}`,
+        `${WEBCALL_URL}/webcall?tenant=${encodeURIComponent(tenantSlug)}&agent=${encodeURIComponent(agentSlug)}` +
+          (credential ? "&test=1" : ""),
       );
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
 
       ws.onopen = () => {
+        if (credential) {
+          ws.send(JSON.stringify({ type: "test_credential", credential }));
+          testCredentialRef.current = "";
+        }
         // Talk is enabled on service_ready, not on open.
       };
       ws.onerror = () => {
@@ -218,6 +249,7 @@ export function useWebCall(tenantSlug: string, agentSlug: string): WebCall {
         const msg = JSON.parse(ev.data);
         switch (msg.type) {
           case "service_ready":
+            setSessionId(msg.session_id ?? null);
             setState("ready");
             break;
           case "stt_result":
@@ -360,13 +392,14 @@ export function useWebCall(tenantSlug: string, agentSlug: string): WebCall {
     setState("idle");
     setTranscript([]);
     setErrorMsg(null);
+    setSessionId(null);
     setMicLevelPct(0);
   }, []);
 
   useEffect(() => () => teardown(), []);
 
   return {
-    state, transcript, errorMsg, micLevelPct,
+    state, transcript, errorMsg, sessionId, micLevelPct,
     muted, setMuted, start: handleStart, hangUp, reset,
   };
 }

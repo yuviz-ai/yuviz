@@ -91,6 +91,54 @@ class AgentCreate(BaseModel):
         return _check_graph_bounds(value)
 
 
+def _no_double_braces(value: str) -> str:
+    # The runtime workflow renderer evaluates or deletes {{ ... }} and has no escape syntax.
+    if "{{" in value or "}}" in value:
+        raise ValueError("double curly brackets are not allowed")
+    return value
+
+
+class AgentFromTemplate(BaseModel):
+    template_id:      str
+    template_version: int
+    name:             str = Field(min_length=1, max_length=80)
+    business_name:    str = Field(min_length=1, max_length=120)
+    business_facts:   str = Field(max_length=1000)
+    language:         str | None = None
+    stt_config_id:    str | None = None
+    llm_config_id:    str | None = None
+    tts_config_id:    str | None = None
+
+    _braces = field_validator("name", "business_name", "business_facts")(_no_double_braces)
+
+
+class TestSessionCreate(BaseModel):
+    __test__ = False  # not a pytest class
+
+    channel: Literal["voice", "chat"]
+
+
+class TestChatTurn(BaseModel):
+    __test__ = False  # not a pytest class
+
+    credential: str
+    session_id: str
+    message:    str = Field(min_length=1, max_length=1000)
+
+
+class PromptRevise(BaseModel):
+    session_id:    str
+    problem:       str = Field(min_length=1, max_length=1000)
+    llm_config_id: str | None = None
+
+
+class PromptAccept(BaseModel):
+    session_id:         str
+    problem:            str = Field(min_length=1, max_length=1000)
+    proposed_prompt:    str = Field(max_length=20_000)
+    base_prompt_sha256: str
+
+
 class AgentUpdate(BaseModel):
     name:                 str | None = None
     greeting:             str | None = None

@@ -70,9 +70,11 @@ class MockConfigProvider:
     async def get_provider_config(self, provider_id: str) -> ProviderConfig | None:
         return self.provider_configs.get(provider_id)
 
-    async def get_runtime_config(self, tenant_slug: str, agent_slug: str) -> RuntimeConfig | None:
+    async def get_runtime_config(
+        self, tenant_slug: str, agent_slug: str, *, include_inactive: bool = False,
+    ) -> RuntimeConfig | None:
         agent = await self.get_agent(tenant_slug, agent_slug)
-        if agent is None or agent.status != "active":
+        if agent is None or (agent.status != "active" and not include_inactive):
             return None
         tenant = await self.get_tenant(tenant_slug)
         if tenant is None:

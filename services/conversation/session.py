@@ -127,6 +127,12 @@ class SessionContext:
     called_did:  str = ""
     direction:   str = ""
     script_id:   str = ""
+    test_credential: str = field(default="", repr=False)
+
+
+class AgentUnavailable(Exception):
+    """A test credential was refused, or the agent it names did not resolve.
+    Raised instead of falling back to the legacy agent."""
 
 
 # ---------------------------------------------------------------------------

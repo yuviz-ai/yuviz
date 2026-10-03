@@ -23,7 +23,7 @@ import grpc
 import grpc.aio
 
 from .event_bus import EventBus, TransferRequested
-from .session import ConversationSession, IConversationHandler, SessionContext
+from .session import AgentUnavailable, ConversationSession, IConversationHandler, SessionContext
 
 from .generated.voiceai.v1 import conversation_pb2 as pb
 from .generated.voiceai.v1 import conversation_pb2_grpc as pb_grpc
@@ -120,10 +120,22 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
             called_did=open_req.called_did,
             direction=open_req.direction,
             script_id=open_req.script_id,
+            test_credential=open_req.test_credential,
         )
 
         bus     = EventBus()
-        handler = await self._handler_factory(ctx)  # fresh instance per stream, agent-aware
+        try:
+            handler = await self._handler_factory(ctx)  # fresh instance per stream, agent-aware
+        except AgentUnavailable:
+            yield pb.ServiceMessage(
+                error=pb.ServiceError(
+                    session_id=sid,
+                    code="AGENT_UNAVAILABLE",
+                    message="agent unavailable",
+                    fatal=True,
+                )
+            )
+            return
         session = ConversationSession(ctx=ctx, bus=bus, handler=handler)
         session.session_ready()
         await bus.start()

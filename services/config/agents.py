@@ -11,15 +11,17 @@ Prompt sync (phase until Conversation reads agents.workflow):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 from libs.config_sdk.workflow import graphs_equivalent, starter_graph
 from libs.tenancy import platform_conn, tenant_conn
 
 from . import audit, cache, call_flows, db
 from .provider_configs import require_usable_tts_voice
+from .system_prompt import check_prompt_structure
 
 # `workflow` is absent — only publish/create may write a validated graph
 # (except the greeting/system_prompt mirror sync in update_agent).
@@ -38,6 +40,12 @@ _UPDATABLE_FIELDS = {
 
 _JSON_COLUMNS = ("workflow", "workflow_draft")
 
+# Undo slot: the prompt before the last accepted fix, and the hash of the
+# prompt that fix wrote. Never leaves this module (audit rows, API payloads).
+_SLOT_COLUMNS = ("prompt_undo_previous", "prompt_undo_accepted_sha256")
+
+_PROMPT_SHA_SQL = "encode(sha256(convert_to(coalesce(system_prompt,''),'UTF8')),'hex')"
+
 
 def cache_key(tenant_slug: str, agent_slug: str) -> str:
     return f"agent:{tenant_slug}:{agent_slug}"
@@ -52,16 +60,32 @@ def _row(row: Any) -> dict[str, Any]:
     return out
 
 
+def _strip_slot(row: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in row.items() if k not in _SLOT_COLUMNS}
+
+
+def _sha256_hex(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def _audit_view(row: dict[str, Any]) -> dict[str, Any]:
     """Strip graph columns from ordinary agent audits (publish records them)."""
-    return {k: v for k, v in row.items() if k not in _JSON_COLUMNS}
+    return {k: v for k, v in _strip_slot(row).items() if k not in _JSON_COLUMNS}
 
 
 def _public_agent(row: dict[str, Any]) -> dict[str, Any]:
     """Published workflow stays on the agent GET/cache payload so call-setup
-    can carry it into RuntimeConfig. Draft is editor-only until draft testing."""
-    out = dict(row)
+    can carry it into RuntimeConfig. Draft is editor-only until draft testing.
+    can_undo and prompt_fixable are computed from the raw row before the slot
+    is stripped."""
+    prompt = row.get("system_prompt") or ""
+    out = _strip_slot(row)
     out.pop("workflow_draft", None)
+    out["can_undo"] = (
+        row.get("prompt_undo_previous") is not None
+        and _sha256_hex(prompt) == row.get("prompt_undo_accepted_sha256")
+    )
+    out["prompt_fixable"] = check_prompt_structure(prompt)
     return out
 
 
@@ -193,10 +217,10 @@ async def _validate_provider_assignments(conn: Any, tenant_id: Any, fields: dict
             "WHERE id = $1 AND deleted_at IS NULL FOR SHARE", config_id,
         )
         if row is None:
-            raise ValueError(f"{field}={config_id!r} does not exist")
+            raise ValueError(f"{field} not found")
         # tenant_id may be a str (cache hit) or UUID; compare as strings.
         if str(row["tenant_id"]) != str(tenant_id):
-            raise ValueError(f"{field}={config_id!r} belongs to a different tenant")
+            raise ValueError(f"{field} not found")
         if row["role"] != expected_role:
             raise ValueError(f"{field}={config_id!r} has role {row['role']!r}, expected {expected_role!r}")
         require_usable_tts_voice(field, config_id, row["engine"], row["voice"])
@@ -213,6 +237,10 @@ async def create_agent(
     llm_config_id: Any | None = None,
     tts_config_id: Any | None = None,
     workflow: dict[str, Any] | None = None,
+    language: str | None = None,
+    status: str = "active",
+    template_id: str | None = None,
+    template_version: int | None = None,
     tenant_slug: str | None = None,
     user_id: Any | None = None,
     user_email: str | None = None,
@@ -242,10 +270,13 @@ async def create_agent(
         row = await conn.fetchrow(
             "INSERT INTO agents "
             "(tenant_id, slug, name, greeting, system_prompt, "
-            "stt_config_id, llm_config_id, tts_config_id, workflow, workflow_draft) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $9::jsonb) RETURNING *",
+            "stt_config_id, llm_config_id, tts_config_id, workflow, workflow_draft, "
+            "language, status, template_id, template_version) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $9::jsonb, $10, $11, $12, $13) "
+            "RETURNING *",
             tenant_id, slug, name, greeting, system_prompt,
             stt_config_id, llm_config_id, tts_config_id, graph_json,
+            language, status, template_id, template_version,
         )
         result = _row(row)
         await append_version(
@@ -337,8 +368,8 @@ async def update_agent(
             )
 
         # Mirror mutates the live graph — keep graphs in this audit row.
-        old_audit = old if mirrored_graph else _audit_view(old)
-        new_audit = new if mirrored_graph else _audit_view(new)
+        old_audit = _strip_slot(old) if mirrored_graph else _audit_view(old)
+        new_audit = _strip_slot(new) if mirrored_graph else _audit_view(new)
         await audit.write_audit(
             conn,
             entity_type="agent",
@@ -355,6 +386,117 @@ async def update_agent(
     # answer; a deactivation must reach the next call, not the next TTL.
     await call_flows.invalidate_runtime_caches_naming_agent(old["tenant_id"], tenant_slug, agent_id)
     return _public_agent(new)
+
+
+async def _replace_prompt(
+    agent_id: Any,
+    *,
+    tenant_id: Any,
+    tenant_slug: str,
+    user_id: Any | None,
+    user_email: str | None,
+    new_prompt: Callable[[dict[str, Any]], str | None],
+    update_sql: str,
+    update_args: tuple[Any, ...],
+    note: str,
+) -> dict[str, Any] | None:
+    """Shared body of Accept and Undo: lock the row, mirror the new prompt into
+    the graphs, run the one conditional update that decides the outcome, then
+    version, audit and invalidate. `update_sql` takes $1 id, $2 tenant, then
+    `update_args`, then the two mirrored graphs as the last two parameters.
+    new_prompt maps the locked row to the prompt being written, since Undo
+    reads it from the slot."""
+    from .workflows import append_version
+
+    pool = await db.get_pool()
+    async with tenant_conn(pool) as conn:
+        old_row = await conn.fetchrow(
+            "SELECT * FROM agents WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL FOR UPDATE",
+            agent_id, tenant_id,
+        )
+        if old_row is None:
+            return None
+        old = _row(old_row)
+        fields = {"system_prompt": new_prompt(old)}
+        graph = _mirror_prompts_into_graph(old["workflow"], fields)
+        draft = _mirror_prompts_into_graph(old["workflow_draft"], fields)
+        graph_json = None if graph is None else json.dumps(graph)
+        draft_json = None if draft is None else json.dumps(draft)
+
+        new_row = await conn.fetchrow(update_sql, agent_id, tenant_id, *update_args, graph_json, draft_json)
+        if new_row is None:
+            return None
+        new = _row(new_row)
+
+        if graph_json is not None:
+            await append_version(conn, agent_id, graph_json, user_id=user_id, note=note)
+        await audit.write_audit(
+            conn,
+            entity_type="agent",
+            entity_id=agent_id,
+            action="updated",
+            user_id=user_id,
+            user_email=user_email,
+            old_value=_strip_slot(old),
+            new_value=_strip_slot(new),
+        )
+
+    await cache.invalidate(cache_key(tenant_slug, old["slug"]))
+    await call_flows.invalidate_runtime_caches_naming_agent(tenant_id, tenant_slug, agent_id)
+    return _public_agent(new)
+
+
+async def accept_prompt_revision(
+    agent_id: Any,
+    *,
+    tenant_id: Any,
+    tenant_slug: str,
+    proposed_prompt: str,
+    base_prompt_sha256: str,
+    user_id: Any | None = None,
+    user_email: str | None = None,
+) -> dict[str, Any] | None:
+    """Swap in a revised prompt only if the stored prompt still hashes to
+    base_prompt_sha256, keeping the old one in the undo slot. None means the
+    conditional update matched no row (stale base, or no such agent)."""
+    return await _replace_prompt(
+        agent_id, tenant_id=tenant_id, tenant_slug=tenant_slug, user_id=user_id, user_email=user_email,
+        new_prompt=lambda _old: proposed_prompt,
+        update_sql=(
+            "UPDATE agents SET system_prompt = $4, prompt_undo_previous = system_prompt, "
+            "prompt_undo_accepted_sha256 = $5, workflow = $6::jsonb, workflow_draft = $7::jsonb, "
+            "updated_at = now() "
+            "WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL "
+            f"AND {_PROMPT_SHA_SQL} = $3 RETURNING *"
+        ),
+        update_args=(base_prompt_sha256, proposed_prompt, _sha256_hex(proposed_prompt)),
+        note="prompt revision accepted",
+    )
+
+
+async def undo_prompt_revision(
+    agent_id: Any,
+    *,
+    tenant_id: Any,
+    tenant_slug: str,
+    user_id: Any | None = None,
+    user_email: str | None = None,
+) -> dict[str, Any] | None:
+    """Restore the prompt from before the last accepted fix, only while the
+    stored prompt is still the one that fix wrote. None means nothing to undo."""
+    return await _replace_prompt(
+        agent_id, tenant_id=tenant_id, tenant_slug=tenant_slug, user_id=user_id, user_email=user_email,
+        new_prompt=lambda old: old["prompt_undo_previous"],
+        update_sql=(
+            "UPDATE agents SET system_prompt = prompt_undo_previous, prompt_undo_previous = NULL, "
+            "prompt_undo_accepted_sha256 = NULL, workflow = $3::jsonb, workflow_draft = $4::jsonb, "
+            "updated_at = now() "
+            "WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL AND prompt_undo_previous IS NOT NULL "
+            f"AND {_PROMPT_SHA_SQL} = prompt_undo_accepted_sha256 RETURNING *"
+        ),
+        update_args=(),
+        note="prompt revision undone",
+    )
 
 
 class AgentHasLiveCalls(Exception):

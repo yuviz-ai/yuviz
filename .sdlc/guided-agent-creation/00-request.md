@@ -1,0 +1,1 @@
+currently we are creating the agents like we are engineer but the end user will not knoewt abou what is the system prompt even after trasing it might be possible he is not able to configure great bot. Suggest me how we are easy the end user life in case of agent creation .

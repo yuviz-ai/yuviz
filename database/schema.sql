@@ -944,6 +944,21 @@ CREATE INDEX IF NOT EXISTS idx_cfv_flow ON call_flow_versions (call_flow_id, ver
 -- Flow answering ahead of this agent; deleting the flow reverts agents to answering directly.
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS call_flow_id UUID REFERENCES call_flows(id) ON DELETE SET NULL;
 
+-- Guided agent creation: shipped template (and version) that built the agent, plus a one-deep
+-- prompt undo slot. All nullable, no backfill. The undo columns are never returned by the API.
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS template_id                 TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS template_version            INT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS prompt_undo_previous        TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS prompt_undo_accepted_sha256 TEXT;
+DO $$ BEGIN
+    ALTER TABLE agents ADD CONSTRAINT agents_template_pair_check
+        CHECK ((template_id IS NULL) = (template_version IS NULL));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+    ALTER TABLE agents ADD CONSTRAINT agents_prompt_undo_pair_check
+        CHECK ((prompt_undo_previous IS NULL) = (prompt_undo_accepted_sha256 IS NULL));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
 -- agents.call_flow_id must reference a flow in the same tenant (composite FK).
 -- Guard, UNIQUE and FK swap share one DO block so they're atomic. NULL is exempt (MATCH SIMPLE).
 DO $$

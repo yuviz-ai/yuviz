@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { Agent, AgentStatus, AgentUpdate, ApiError, deleteAgent, getAgent, getLiveCalls, listProviders, ProviderConfig, updateAgent, updateProvider } from "@/lib/api";
+import { Agent, AgentStatus, AgentUpdate, ApiError, deleteAgent, getAgent, getLiveCalls, listProviders, ProviderConfig, undoPrompt, updateAgent, updateProvider } from "@/lib/api";
 import { KnowledgeBaseTabs } from "@/components/KnowledgeBaseTabs";
 import { ToolsPanel } from "@/components/ToolsPanel";
 import { Modal } from "@/components/Modal";
@@ -131,6 +131,21 @@ export default function AgentDetailPage() {
       setAgent(updated);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      setSaveError(e instanceof ApiError ? e.detail : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleUndo = async () => {
+    if (!agent) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const restored = await undoPrompt(tenantSlug, agent.id);
+      setAgent(restored);
+      setForm((f) => ({ ...f, system_prompt: restored.system_prompt }));
     } catch (e) {
       setSaveError(e instanceof ApiError ? e.detail : String(e));
     } finally {
@@ -308,6 +323,13 @@ export default function AgentDetailPage() {
                 value={form.system_prompt ?? ""}
                 onChange={(e) => setForm({ ...form, system_prompt: e.target.value })}
               />
+              {agent.can_undo && (
+                <div className="form-hint">
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={handleUndo} disabled={saving}>
+                    Undo last change
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>
