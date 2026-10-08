@@ -57,6 +57,9 @@ class FakeCall:
     async def write(self, msg) -> None:
         self.writes.append(msg)
 
+    async def done_writing(self) -> None:
+        pass
+
     def cancel(self) -> None:
         self.cancelled = True
 
@@ -183,3 +186,39 @@ def test_credential_frame_without_test_flag_behaves_as_before(conv, caplog, fram
     # the frame went down the ordinary control path and was not written as audio
     assert [w.WhichOneof("payload") for w in conv.writes] == ["session_open"]
     _assert_sentinel_unlogged(caplog)
+
+
+class HeldOpenCall(FakeCall):
+    """Like the real server: the reply stream stays open until the client half-closes."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._writes_done = asyncio.Event()
+
+    async def done_writing(self) -> None:
+        self._writes_done.set()
+
+    async def _replies(self):
+        async for msg in super()._replies():
+            yield msg
+        await self._writes_done.wait()
+
+
+def test_clean_browser_close_ends_the_session(monkeypatch):
+    call = HeldOpenCall()
+
+    class Channel:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(webcall.grpc.aio, "insecure_channel", lambda target: Channel())
+    monkeypatch.setattr(
+        webcall.pb_grpc, "ConversationServiceStub", lambda channel: SimpleNamespace(Converse=lambda: call),
+    )
+    # Seen live: a hung-up web call stayed "live" in call logs until something else closed the stream.
+    asyncio.run(asyncio.wait_for(webcall._handle_connection(FakeWs(PLAIN_PATH, [])), timeout=2))
+    assert call._writes_done.is_set()
+    assert call.cancelled

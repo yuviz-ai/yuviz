@@ -110,6 +110,8 @@ async def _browser_to_grpc(
             )))
         else:
             log.warning("webcall: unknown control type=%r", kind)
+    # A clean browser close ends the loop without raising; half-close so ConvSvc ends the session.
+    await call.done_writing()
 
 
 class ResponseWatchdog:

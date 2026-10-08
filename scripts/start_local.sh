@@ -161,6 +161,12 @@ start_gateway() {
   ./build/gateway/voice_ai_gateway config/gateway.yaml
 }
 
+# ── Block 12b: Webcall bridge (browser WebSocket <-> gRPC via Envoy, port 8300) ─
+start_webcall() {
+  cd "$REPO"
+  python3 -m services.webcall --port 8300
+}
+
 # ── Block 13: FreeSWITCH (registers with Kamailio from Block 2) ──────────────
 start_freeswitch() {
   # Homebrew FreeSWITCH (scripts/freeswitch/setup_macos.sh), else the source install.
@@ -177,7 +183,7 @@ start_admin_ui() {
 # ── Verify: check all services are healthy ───────────────────────────────────
 verify() {
   echo "=== Port check ==="
-  for port in 3306 5060 5080 5432 6379 11434 8000 8100 8400 8600 8750 50051 50052 10000 8080 3000; do
+  for port in 3306 5060 5080 5432 6379 11434 8000 8100 8400 8600 8750 50051 50052 10000 8080 8300 3000; do
     nc -z localhost "$port" 2>/dev/null && echo "  :$port  OPEN" || echo "  :$port  CLOSED"
   done
 
@@ -222,8 +228,9 @@ portmap() {
   :9901   Envoy admin — http://localhost:9901
   :8080   C++ Gateway — WebSocket (FreeSWITCH mod_audio_fork -> here)
   :9090   Gateway metrics — http://localhost:9090/metrics
+  :8300   Webcall    — WebSocket (Admin UI browser test calls -> Envoy)
   :3000   Admin UI   — Next.js
 EOF
 }
 
-echo "start_local.sh loaded. Functions: start_mysql, start_kamailio, start_data, start_ollama, start_config_service, start_knowledge_service, start_knowledge_worker, start_campaigns_service, start_toolexec_service, start_telephony_service, start_conv1, start_conv2, start_envoy, start_gateway, start_freeswitch, start_admin_ui, install_network_sync, remove_network_sync, verify, portmap"
+echo "start_local.sh loaded. Functions: start_mysql, start_kamailio, start_data, start_ollama, start_config_service, start_knowledge_service, start_knowledge_worker, start_campaigns_service, start_toolexec_service, start_telephony_service, start_conv1, start_conv2, start_envoy, start_gateway, start_webcall, start_freeswitch, start_admin_ui, install_network_sync, remove_network_sync, verify, portmap"
