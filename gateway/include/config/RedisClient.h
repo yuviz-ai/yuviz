@@ -27,6 +27,9 @@ public:
     // exist, Redis is unreachable, or cfg.enabled is false.
     [[nodiscard]] std::optional<std::string> get(const std::string& key);
 
+    // Like get(), but tells a missing key apart from an unreachable or disabled Redis.
+    [[nodiscard]] LookupResult get_checked(const std::string& key);
+
 private:
     struct Connection {
         redisContext* ctx{nullptr};

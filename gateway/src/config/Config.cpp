@@ -249,25 +249,80 @@ TenantConfig TenantConfig::from_redis(
     return t;
 }
 
-PhoneRoute PhoneRoute::from_redis(RedisClient& redis, const std::string& did) noexcept {
-    PhoneRoute route;   // defaults: {"default", "default"}
+const char* to_string(RoutingStatus s) noexcept {
+    switch (s) {
+        case RoutingStatus::Routed:      return "routed";
+        case RoutingStatus::RoutedLkg:   return "routed_lkg";
+        case RoutingStatus::Unknown:     return "unknown";
+        case RoutingStatus::Unavailable: return "unavailable";
+    }
+    return "unavailable";
+}
 
+std::optional<PhoneRoute> PhoneRoute::parse(const std::string& raw) noexcept {
     try {
-        const auto raw = redis.get("did:" + did);
-        if (!raw.has_value()) return route;   // cache miss — unrouted DID falls back
+        const auto j = nlohmann::json::parse(raw);
+        if (!j.is_object()) return std::nullopt;
+        const auto t = j.find("tenant_slug");
+        const auto a = j.find("agent_slug");
+        if (t == j.end() || !t->is_string() || a == j.end() || !a->is_string())
+            return std::nullopt;
 
-        const auto j = nlohmann::json::parse(*raw);
-        if (j.contains("tenant_slug") && j["tenant_slug"].is_string())
-            route.tenant_slug = j["tenant_slug"].get<std::string>();
-        if (j.contains("agent_slug") && j["agent_slug"].is_string())
-            route.agent_slug = j["agent_slug"].get<std::string>();
-        if (j.contains("version") && j["version"].is_number())
-            route.version = j["version"].get<uint32_t>();
+        PhoneRoute route;
+        route.tenant_slug = t->get<std::string>();
+        route.agent_slug  = a->get<std::string>();
+        if (route.tenant_slug.empty() || route.agent_slug.empty()) return std::nullopt;
+        if (const auto v = j.find("version"); v != j.end() && v->is_number_unsigned())
+            route.version = v->get<uint32_t>();
+        return route;
     } catch (const nlohmann::json::exception&) {
-        return PhoneRoute{};
+        return std::nullopt;
+    }
+}
+
+void DidRouteCache::put(const std::string& did, const PhoneRoute& route) {
+    std::lock_guard lock{mutex_};
+    routes_[did] = route;
+}
+
+void DidRouteCache::erase(const std::string& did) {
+    std::lock_guard lock{mutex_};
+    routes_.erase(did);
+}
+
+std::optional<PhoneRoute> DidRouteCache::get(const std::string& did) const {
+    std::lock_guard lock{mutex_};
+    const auto it = routes_.find(did);
+    if (it == routes_.end()) return std::nullopt;
+    return it->second;
+}
+
+RouteResolution resolve_route(
+    const std::string& did, const LookupResult& lookup, DidRouteCache& cache)
+{
+    if (did.empty()) return {RoutingStatus::Unknown, {}};
+
+    switch (lookup.status) {
+        case LookupStatus::Miss:
+            cache.erase(did);
+            return {RoutingStatus::Unknown, {}};
+        case LookupStatus::Hit:
+            if (auto route = PhoneRoute::parse(lookup.value)) {
+                cache.put(did, *route);
+                return {RoutingStatus::Routed, *route};
+            }
+            break;   // corrupt value: treat like an outage
+        case LookupStatus::Error:
+            break;
     }
 
-    return route;
+    if (auto cached = cache.get(did)) return {RoutingStatus::RoutedLkg, *cached};
+    return {RoutingStatus::Unavailable, {}};
+}
+
+RouteResolution resolve_route(RedisClient& redis, const std::string& did, DidRouteCache& cache) {
+    if (did.empty()) return {RoutingStatus::Unknown, {}};
+    return resolve_route(did, redis.get_checked("did:" + did), cache);
 }
 
 CallMetadata CallMetadata::parse(const std::optional<std::string>& raw) noexcept {

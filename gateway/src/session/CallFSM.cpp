@@ -7,7 +7,7 @@ namespace voiceai {
 
 // The only place that defines legal state changes; any (from, to) pair not
 // listed here is rejected at runtime and logged.
-static constexpr std::array<std::pair<CallFsmState, CallFsmState>, 34> kValidTransitions{{
+static constexpr std::array<std::pair<CallFsmState, CallFsmState>, 35> kValidTransitions{{
     // ── Happy path ─────────────────────────────────────────────────────────
     {CallFsmState::Idle,          CallFsmState::Connecting  },
     {CallFsmState::Connecting,    CallFsmState::Listening   },
@@ -17,6 +17,7 @@ static constexpr std::array<std::pair<CallFsmState, CallFsmState>, 34> kValidTra
     {CallFsmState::Synthesizing,  CallFsmState::Speaking    },
     {CallFsmState::Speaking,      CallFsmState::Listening   },  // PlaybackFinished
     {CallFsmState::Speaking,      CallFsmState::WaitingForHangup}, // PlaybackFinished, EndCall pending
+    {CallFsmState::Listening,     CallFsmState::WaitingForHangup}, // greeting played, EndCall pending
     {CallFsmState::WaitingForHangup, CallFsmState::Recognizing},  // SpeechStarted — caller cancelled hangup
     {CallFsmState::Speaking,      CallFsmState::BargeIn     },  // SpeechStarted during playback
     {CallFsmState::Thinking,      CallFsmState::BargeIn     },  // SpeechStarted before audio arrives
@@ -150,7 +151,11 @@ void CallFSM::on_first_audio_chunk() {
 
 void CallFSM::on_playback_finished(bool interrupted, bool end_call_pending,
                                    std::chrono::milliseconds goodbye_timeout_override) {
-    if (state() != CallFsmState::Speaking) return;
+    // Greeting audio plays while still Listening; an EndCall on it (e.g. a rejected
+    // route) must still hang up.
+    const bool greeting_goodbye =
+        state() == CallFsmState::Listening && end_call_pending && !interrupted;
+    if (state() != CallFsmState::Speaking && !greeting_goodbye) return;
     if (interrupted) {
         transition(CallFsmState::BargeIn, "playback_interrupted");
         return;

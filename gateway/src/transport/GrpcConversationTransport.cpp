@@ -13,6 +13,20 @@
 
 namespace voiceai {
 
+namespace {
+
+::voiceai::v1::RoutingStatus to_proto(RoutingStatus s) {
+    switch (s) {
+        case RoutingStatus::Routed:      return ::voiceai::v1::ROUTING_STATUS_ROUTED;
+        case RoutingStatus::RoutedLkg:   return ::voiceai::v1::ROUTING_STATUS_ROUTED_LKG;
+        case RoutingStatus::Unknown:     return ::voiceai::v1::ROUTING_STATUS_UNKNOWN;
+        case RoutingStatus::Unavailable: return ::voiceai::v1::ROUTING_STATUS_UNAVAILABLE;
+    }
+    return ::voiceai::v1::ROUTING_STATUS_UNAVAILABLE;
+}
+
+}  // namespace
+
 // ── Opaque structs (defined here so grpc/proto headers stay out of .h) ────────
 
 struct GrpcConversationTransport::StreamState {
@@ -84,6 +98,7 @@ void GrpcConversationTransport::open_session(const SessionContext& ctx) {
         req->set_codec(::voiceai::v1::AUDIO_CODEC_PCM_S16LE);
         req->set_sample_rate(16000);
         req->set_channels(1);
+        req->set_routing_status(to_proto(ctx.routing_status));
 
         if (!stream_->rw->Write(msg)) {
             logger_.error("GrpcTransport: failed to write SessionOpenRequest session={}",

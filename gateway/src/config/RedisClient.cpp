@@ -66,7 +66,13 @@ bool RedisClient::ensure_connected(Connection& conn) {
 }
 
 std::optional<std::string> RedisClient::get(const std::string& key) {
-    if (!cfg_.enabled) return std::nullopt;
+    auto r = get_checked(key);
+    if (r.status != LookupStatus::Hit) return std::nullopt;
+    return std::move(r.value);
+}
+
+LookupResult RedisClient::get_checked(const std::string& key) {
+    if (!cfg_.enabled) return {LookupStatus::Error, {}};
 
     Connection conn;
     {
@@ -87,7 +93,7 @@ std::optional<std::string> RedisClient::get(const std::string& key) {
         }
     } returner{this, &conn};
 
-    std::optional<std::string> result;
+    LookupResult result{LookupStatus::Error, {}};
     if (ensure_connected(conn)) {
         redisReply* reply = static_cast<redisReply*>(
             ::redisCommand(conn.ctx, "GET %s", key.c_str()));
@@ -99,9 +105,10 @@ std::optional<std::string> RedisClient::get(const std::string& key) {
         } else {
             std::unique_ptr<redisReply, void(*)(void*)> reply_guard{reply, ::freeReplyObject};
             if (reply->type == REDIS_REPLY_STRING) {
-                result = std::string(reply->str, static_cast<size_t>(reply->len));
+                result = {LookupStatus::Hit,
+                          std::string(reply->str, static_cast<size_t>(reply->len))};
             } else if (reply->type == REDIS_REPLY_NIL) {
-                result = std::nullopt;   // cache miss — not an error
+                result = {LookupStatus::Miss, {}};
             } else if (reply->type == REDIS_REPLY_ERROR) {
                 logger_.warn("RedisClient: GET error key={} err={}", key, reply->str);
             }

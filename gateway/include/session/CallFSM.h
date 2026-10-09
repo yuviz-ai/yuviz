@@ -122,7 +122,7 @@ public:
     void on_playback_finished(
         bool interrupted,
         bool end_call_pending = false,
-        std::chrono::milliseconds goodbye_timeout_override = {}); // Speaking → Listening | WaitingForHangup | BargeIn
+        std::chrono::milliseconds goodbye_timeout_override = {}); // Speaking → Listening | WaitingForHangup | BargeIn; Listening → WaitingForHangup
     void on_cancel_complete();                                    // BargeIn    → Listening
     void on_early_barge_in();                                   // Thinking|Synthesizing → BargeIn
     void on_transfer_requested(std::string queue_id,

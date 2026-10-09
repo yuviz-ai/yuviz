@@ -17,6 +17,7 @@ struct SessionContext {
     std::string                            direction{"inbound"};
     std::string                            script_id;   // conversation script / persona for this tenant
     std::string                            freeswitch_host;  // originating FS node for ESL affinity
+    RoutingStatus                          routing_status{RoutingStatus::Unavailable};
 };
 
 } // namespace voiceai

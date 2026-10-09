@@ -40,6 +40,7 @@ from .callflow.runner import CallFlowRunner
 from .echo import EchoConversationHandler
 from .fillers import FillerSelector
 from .pipeline import PipelineConversationHandler
+from .rejection import RejectionHandler
 from .pipeline_config import PipelineConfig
 from .provider_bundle import ProviderRegistry, _to_ai_provider_config
 from .providers.stt.faster_whisper import FasterWhisperSTT
@@ -349,6 +350,9 @@ async def serve(port: int, args: argparse.Namespace) -> None:
             )
 
         async def handler_factory(ctx: SessionContext) -> PipelineConversationHandler:
+            if ctx.routing_status.rejects_call:
+                return RejectionHandler(ctx.routing_status, tts, cfg.sample_rate)
+
             # Config SDK path, else legacy YAML path; never a mix for one call.
             runtime_config, bundle = await _resolve_session_deps(
                 ctx, credential_redis, provider_registry, config, stt, llm, tts,

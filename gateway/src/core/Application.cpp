@@ -216,10 +216,19 @@ void Application::wire_websocket_handlers() {
                         "Metadata frame resolved sid={} did={} ani={} direction={} fs_host={}",
                         sid, md.did, md.ani, md.direction, md.freeswitch_host);
 
-                    const auto route = PhoneRoute::from_redis(*redis_client_, md.did);
-                    logger_->info(
-                        "Route resolved sid={} tenant={} agent={} version={}",
-                        sid, route.tenant_slug, route.agent_slug, route.version);
+                    const auto [status, route] =
+                        resolve_route(*redis_client_, md.did, did_route_cache_);
+                    if (status == RoutingStatus::Routed) {
+                        logger_->info(
+                            "Route resolved sid={} status={} tenant={} agent={} version={}",
+                            sid, to_string(status), route.tenant_slug, route.agent_slug,
+                            route.version);
+                    } else {
+                        logger_->warn(
+                            "Route resolved sid={} status={} did={} tenant={} agent={}",
+                            sid, to_string(status), md.did, route.tenant_slug, route.agent_slug);
+                    }
+                    metrics_->increment(std::string("routing.") + to_string(status));
 
                     SessionContext ctx;
                     // sid is a per-process counter that repeats across restarts, so the
@@ -232,8 +241,12 @@ void Application::wire_websocket_handlers() {
                     ctx.caller_did     = md.ani;
                     ctx.direction      = md.direction;
                     ctx.freeswitch_host = md.freeswitch_host;
-                    ctx.tenant = std::make_shared<TenantConfig>(TenantConfig::from_redis(
-                        *redis_client_, ctx.obs.tenant_id, *config_data_, logger_.get()));
+                    ctx.routing_status  = status;
+                    ctx.tenant = std::make_shared<TenantConfig>(
+                        route.tenant_slug.empty()
+                            ? TenantConfig::from_default(*config_data_)
+                            : TenantConfig::from_redis(*redis_client_, ctx.obs.tenant_id,
+                                                       *config_data_, logger_.get()));
 
                     session_manager_->create(sid, std::move(ctx), std::move(conn));
 

@@ -208,6 +208,28 @@ TEST_F(CallFsmTest, EndCallPending_EntersWaitingForHangup) {
     EXPECT_FALSE(last_playback_interrupted_);
 }
 
+TEST_F(CallFsmTest, GreetingWithEndCall_EntersWaitingForHangupFromListening) {
+    auto fsm = make_fsm();
+    fsm.on_session_start();
+    fsm.on_service_ready();
+    ASSERT_EQ(fsm.state(), CallFsmState::Listening);
+
+    fsm.on_playback_finished(/*interrupted=*/false, /*end_call_pending=*/true);
+    EXPECT_EQ(fsm.state(), CallFsmState::WaitingForHangup);
+    EXPECT_TRUE(has_timer(FsmTimerType::GoodbyeTimeout));
+}
+
+TEST_F(CallFsmTest, GreetingWithoutEndCall_StaysListening) {
+    auto fsm = make_fsm();
+    fsm.on_session_start();
+    fsm.on_service_ready();
+
+    fsm.on_playback_finished(/*interrupted=*/false, /*end_call_pending=*/false);
+    EXPECT_EQ(fsm.state(), CallFsmState::Listening);
+    fsm.on_playback_finished(/*interrupted=*/true, /*end_call_pending=*/true);
+    EXPECT_EQ(fsm.state(), CallFsmState::Listening);
+}
+
 TEST_F(CallFsmTest, WaitingForHangup_SpeechStartedAwaitsConfirmBeforeCancelling) {
     // A bare VAD onset doesn't cancel the goodbye until the confirm timer fires.
     auto fsm = make_fsm();
