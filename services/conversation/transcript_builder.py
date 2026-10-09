@@ -225,7 +225,7 @@ class TranscriptBuilder:
         self._spawn(session_id, self._record_live_stage(session_id, self._tenant_slugs.get(session_id), stage))
 
     def end_call(self, session_id: str, close_reason: str,
-                 final_state: str | None = None) -> None:
+                 final_state: str | None = None, *, score_sentiment: bool = True) -> None:
         if self._pool is None:
             return
         turn_count     = self._turn_counts.pop(session_id, 0)
@@ -233,6 +233,7 @@ class TranscriptBuilder:
         tenant_slug    = self._tenant_slugs.pop(session_id, None)
         self._spawn(session_id, self._end_call(
             session_id, tenant_slug, close_reason, turn_count, barge_in_count, final_state,
+            score_sentiment,
         ))
         self._chains[session_id].add_done_callback(lambda _: self._chains.pop(session_id, None))
 
@@ -348,7 +349,7 @@ class TranscriptBuilder:
 
     async def _end_call(
         self, session_id: str, tenant_slug: str | None, close_reason: str, turn_count: int,
-        barge_in_count: int, final_state: str | None = None,
+        barge_in_count: int, final_state: str | None = None, score_sentiment: bool = True,
     ) -> None:
         turns: list[Turn] = []
         try:
@@ -365,7 +366,7 @@ class TranscriptBuilder:
                     session_id, close_reason, turn_count, barge_in_count, final_state,
                 )
                 # Read back rather than holding transcripts in memory; chained after all turn writes.
-                if self._sentiment is not None:
+                if self._sentiment is not None and score_sentiment:
                     rows = await conn.fetch(
                         "SELECT caller_text, ai_response FROM transcript_entries "
                         "WHERE session_id = $1 ORDER BY turn_number",

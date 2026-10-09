@@ -136,6 +136,7 @@ export default function AgentDetailPage() {
           custom_caller_id: a.custom_caller_id,
           transfer_waiting_experience: a.transfer_waiting_experience,
           max_call_duration_s: a.max_call_duration_s,
+          sentiment_analysis_enabled: a.sentiment_analysis_enabled ?? false,
           status: a.status,
           end_call_prompt: a.end_call_prompt,
           transfer_prompt: a.transfer_prompt,
@@ -764,6 +765,23 @@ export default function AgentDetailPage() {
                       <a href="#" onClick={(e) => { e.preventDefault(); setSection("transfers"); }}>Set up a transfer</a>
                     </div>
                   )}
+                </div>
+                <div className="form-group" style={{ marginTop: 24 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div>
+                      <label className="form-label" style={{ marginBottom: 8 }}>Caller mood analysis</label>
+                      <div className="form-hint" style={{ marginTop: 4 }}>Score how the caller felt after each call. Shown in call logs and the dashboard.</div>
+                      <div className="form-hint" style={{ marginTop: 4 }}>⚠️ Enabling increases token utilization.</div>
+                    </div>
+                    <label className="toggle-switch" title="Caller mood analysis">
+                      <input
+                        type="checkbox"
+                        checked={form.sentiment_analysis_enabled ?? false}
+                        onChange={(e) => setForm({ ...form, sentiment_analysis_enabled: e.target.checked })}
+                      />
+                      <span className="toggle-slider" />
+                    </label>
+                  </div>
                 </div>
               </div>
             </div>

@@ -192,6 +192,8 @@ class AgentUpdate(BaseModel):
     status:               Literal["active", "inactive"] | None = None
     # Hard call-length ceiling in seconds (None = unlimited); bounds mirror the DB CHECK.
     max_call_duration_s:  int | None = Field(default=None, ge=30, le=7200)
+    # Caller-mood scoring at end_call; independent of escalation policy.
+    sentiment_analysis_enabled: bool | None = None
     # Call flow that answers ahead of this agent; explicit null detaches it.
     call_flow_id:         str | None = None
 

@@ -353,6 +353,7 @@ class PipelineConversationHandler:
         self._goodbye_grace_period_ms = runtime_config.policies.goodbye_grace_ms
         # None = unlimited. Checked per turn rather than by a timer; the handler is built per call.
         self._max_call_duration_s = runtime_config.policies.max_call_duration_s
+        self._sentiment_enabled = runtime_config.policies.sentiment_analysis_enabled
         self._call_started_at = time.monotonic()
         self._transfer_type_default        = runtime_config.policies.transfer_type
         self._transfer_destination_default = runtime_config.policies.transfer_destination
@@ -762,7 +763,9 @@ class PipelineConversationHandler:
         if self._transcripts is not None:
             for caller_text, ai_response, interrupted in pending_recovery_turns:
                 self._transcripts.record_turn(session_id, caller_text, 1.0, ai_response, interrupted)
-            self._transcripts.end_call(session_id, reason, final_state=final_state)
+            self._transcripts.end_call(
+                session_id, reason, final_state=final_state, score_sentiment=self._sentiment_enabled,
+            )
         self._guardrail_counter.reset(session_id)
         self._booking_fabrication_counter.reset(session_id)
         self._sessions.pop(session_id, None)

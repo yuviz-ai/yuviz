@@ -127,6 +127,7 @@ DO $$ BEGIN
     ALTER TABLE agents ADD CONSTRAINT agents_max_call_duration_s_check
         CHECK (max_call_duration_s IS NULL OR max_call_duration_s BETWEEN 30 AND 7200);
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS sentiment_analysis_enabled BOOLEAN NOT NULL DEFAULT false;
 
 -- Draft autosave (may be invalid) vs published live graph; backfilled further below.
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS workflow       JSONB;

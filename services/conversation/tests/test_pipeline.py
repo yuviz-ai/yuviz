@@ -134,6 +134,7 @@ def _make_handler(
     end_call_prompt: str | None = None, transfer_prompt: str | None = None,
     farewell_message: str | None = None, transfer_announcement: str | None = None,
     tool_orchestrator=None, max_call_duration_s: int | None = None,
+    sentiment_analysis_enabled: bool = False,
     has_booking_tool: bool = False,
     workflow: dict | None = None, node_tools: list[str] | None = None,
     node_knowledge: list[str] | None = None, transcripts=None, **handler_kwargs,
@@ -183,6 +184,7 @@ def _make_handler(
             transfer_type=transfer_type, transfer_destination=transfer_destination,
             escalation_threshold=escalation_threshold,
             max_call_duration_s=max_call_duration_s,
+            sentiment_analysis_enabled=sentiment_analysis_enabled,
         ),
         tools=[], version=1, resolved_at=now,
     )
@@ -977,7 +979,31 @@ async def test_on_transfer_failed_defers_transcript_persistence_to_session_end()
     assert "hangup_before_bridge" in args[1]
     assert args[3] == "Apologies, let's continue."
     assert args[4] is False  # not cancelled
-    transcripts.end_call.assert_called_once_with("s1", "caller_hangup", final_state=None)
+    transcripts.end_call.assert_called_once_with(
+        "s1", "caller_hangup", final_state=None, score_sentiment=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_session_end_scores_sentiment_only_when_the_agent_turned_it_on():
+    transcripts = MagicMock()
+    handler = _make_handler(
+        _make_stt(), _make_llm([]), _make_tts(b""), transcripts=transcripts,
+        sentiment_analysis_enabled=True,
+    )
+
+    await handler.on_session_end("s1", "caller_hangup")
+
+    transcripts.end_call.assert_called_once_with(
+        "s1", "caller_hangup", final_state=None, score_sentiment=True,
+    )
+
+
+def test_sentiment_analysis_is_off_by_default():
+    assert Policies(
+        vad_engine=None, vad_onset_ms=None, vad_hold_ms=None, vad_speech_threshold=None,
+        silence_timeout_ms=None, stt_timeout_ms=None, llm_timeout_ms=None, goodbye_grace_ms=0,
+    ).sentiment_analysis_enabled is False
 
 
 @pytest.mark.asyncio
