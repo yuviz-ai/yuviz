@@ -27,7 +27,7 @@ class HttpConfigRepository:
         self._base_url = base_url.rstrip("/")
         self._email = service_email
         self._password = service_password
-        self._client = httpx.AsyncClient(base_url=self._base_url, timeout=5.0, transport=transport)
+        self._client = httpx.AsyncClient(base_url=self._base_url, timeout=1.0, transport=transport)
         self._token: str | None = None
 
     async def close(self) -> None:

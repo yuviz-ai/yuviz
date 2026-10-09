@@ -77,7 +77,7 @@ async def test_rejected_call_still_ends_when_tts_fails():
 
 
 @pytest.mark.parametrize("proto_status, status", [
-    (pb.ROUTING_STATUS_UNSPECIFIED, RoutingStatus.ROUTED),  # webcall / vobiz clients
+    (pb.ROUTING_STATUS_UNSPECIFIED, RoutingStatus.UNSPECIFIED),  # webcall / vobiz clients
     (pb.ROUTING_STATUS_ROUTED, RoutingStatus.ROUTED),
     (pb.ROUTING_STATUS_ROUTED_LKG, RoutingStatus.ROUTED_LKG),
 ])

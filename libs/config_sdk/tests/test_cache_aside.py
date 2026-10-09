@@ -5,6 +5,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 
+import pytest
+
+from libs.config_sdk.exceptions import ConfigUnavailableError, RepositoryUnavailableError
 from libs.config_sdk.providers.cache_aside import CacheAsideConfigProvider
 
 
@@ -489,3 +492,93 @@ async def test_runtime_config_include_inactive_still_requires_complete_providers
     del repo.providers["tts1"]
     provider = CacheAsideConfigProvider(repo, FakeRepo())
     assert await provider.get_runtime_config("acme", "sup", include_inactive=True) is None
+
+
+class DownRepo(FakeRepo):
+    """Every fetch fails the way an unreachable store does."""
+
+    async def _down(self, *args):
+        self.calls.append("down")
+        raise RepositoryUnavailableError("down")
+
+    fetch_tenant = fetch_agent = fetch_provider_config = fetch_call_flow = _down
+
+
+def _full_repo(agent_status="active"):
+    return FakeRepo(
+        tenants={"acme": _tenant_row(
+            "acme", default_stt_config_id="stt1", default_llm_config_id="llm1", default_tts_config_id="tts1",
+        )},
+        agents={("acme", "sup"): _agent_row("sup", status=agent_status)},
+        providers={
+            "stt1": _provider_row("stt1", "stt", "deepgram"),
+            "llm1": _provider_row("llm1", "llm", "openai"),
+            "tts1": _provider_row("tts1", "tts", "elevenlabs"),
+        },
+    )
+
+
+async def test_outage_serves_last_known_good_runtime_config():
+    provider = CacheAsideConfigProvider(_full_repo(), FakeRepo())
+    fresh = await provider.get_runtime_config("acme", "sup")
+
+    provider._redis_repo, provider._http_repo = DownRepo(), DownRepo()
+
+    assert await provider.get_runtime_config("acme", "sup") is fresh
+
+
+async def test_outage_without_last_known_good_raises_instead_of_returning_none():
+    provider = CacheAsideConfigProvider(DownRepo(), DownRepo())
+
+    with pytest.raises(ConfigUnavailableError):
+        await provider.get_runtime_config("acme", "sup")
+
+
+async def test_agent_gone_drops_last_known_good():
+    provider = CacheAsideConfigProvider(_full_repo(), FakeRepo())
+    await provider.get_runtime_config("acme", "sup")
+
+    provider._redis_repo = FakeRepo()
+    assert await provider.get_runtime_config("acme", "sup") is None
+
+    provider._redis_repo, provider._http_repo = DownRepo(), DownRepo()
+    with pytest.raises(ConfigUnavailableError):
+        await provider.get_runtime_config("acme", "sup")
+
+
+async def test_last_known_good_inactive_agent_is_not_served_to_live_calls():
+    provider = CacheAsideConfigProvider(_full_repo("inactive"), FakeRepo())
+    await provider.get_runtime_config("acme", "sup", include_inactive=True)
+
+    provider._redis_repo, provider._http_repo = DownRepo(), DownRepo()
+
+    with pytest.raises(ConfigUnavailableError):
+        await provider.get_runtime_config("acme", "sup")
+
+
+async def test_breaker_skips_stores_after_repeated_outages():
+    redis_repo, http_repo = DownRepo(), DownRepo()
+    provider = CacheAsideConfigProvider(redis_repo, http_repo)
+    for _ in range(3):
+        with pytest.raises(ConfigUnavailableError):
+            await provider.get_runtime_config("acme", "sup")
+    calls_before = len(redis_repo.calls) + len(http_repo.calls)
+
+    with pytest.raises(ConfigUnavailableError):
+        await provider.get_runtime_config("acme", "sup")
+
+    assert len(redis_repo.calls) + len(http_repo.calls) == calls_before
+
+
+async def test_redis_down_still_falls_through_to_http():
+    provider = CacheAsideConfigProvider(DownRepo(), _full_repo())
+
+    config = await provider.get_runtime_config("acme", "sup")
+
+    assert config is not None and config.agent.slug == "sup"
+
+
+async def test_public_getters_still_return_none_during_outage():
+    provider = CacheAsideConfigProvider(DownRepo(), DownRepo())
+
+    assert await provider.get_agent("acme", "sup") is None

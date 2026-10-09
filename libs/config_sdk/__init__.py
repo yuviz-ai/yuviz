@@ -3,6 +3,7 @@
 Consumers depend on IConfigProvider and these models, never on Redis/HTTP directly.
 """
 
+from .exceptions import ConfigUnavailableError
 from .interfaces import IConfigProvider, IConfigRepository
 from .models import (
     TRANSFER_TIMEOUT_DEFAULT_MS,
@@ -41,6 +42,7 @@ from .workflow import (
 )
 
 __all__ = [
+    "ConfigUnavailableError",
     "IConfigProvider",
     "IConfigRepository",
     "Tenant",

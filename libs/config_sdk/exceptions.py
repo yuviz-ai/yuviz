@@ -6,6 +6,8 @@ class ConfigSDKError(Exception):
 
 
 class RepositoryUnavailableError(ConfigSDKError):
-    """Repository backend unreachable (distinct from "not found", which is None).
+    """Repository backend unreachable (distinct from "not found", which is None)."""
 
-    CacheAsideConfigProvider catches this and falls through; it never escapes to callers."""
+
+class ConfigUnavailableError(ConfigSDKError):
+    """No fresh config could be loaded and there is no last-known-good copy."""

@@ -118,7 +118,7 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
             return
 
         sid = open_req.session_id
-        routing_status = _ROUTING_STATUS.get(open_req.routing_status, RoutingStatus.ROUTED)
+        routing_status = _ROUTING_STATUS.get(open_req.routing_status, RoutingStatus.UNSPECIFIED)
         log.info("Converse: session_open session=%s tenant=%s routing=%s",
                  sid, open_req.tenant_id, routing_status.value)
 

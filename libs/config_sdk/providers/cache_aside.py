@@ -5,11 +5,13 @@ Never writes back to Redis: Config Service's GET handlers own that (one writer p
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any
 
-from ..exceptions import RepositoryUnavailableError
+from ..exceptions import ConfigUnavailableError, RepositoryUnavailableError
 from ..interfaces import IConfigRepository
 from ..models import (
     TRANSFER_TIMEOUT_DEFAULT_MS,
@@ -30,6 +32,11 @@ from ..models import (
 log = logging.getLogger(__name__)
 
 _ROLES = ("stt", "llm", "tts")
+
+# Outage handling: well inside the Gateway's 10 s wait for the session to be ready.
+_RESOLVE_DEADLINE_S = 2.0
+_BREAKER_THRESHOLD = 3
+_BREAKER_OPEN_S = 10.0
 
 
 def _parse_dt(value: Any) -> datetime | None:
@@ -141,52 +148,111 @@ class CacheAsideConfigProvider:
     def __init__(self, redis_repo: IConfigRepository, http_repo: IConfigRepository) -> None:
         self._redis_repo = redis_repo
         self._http_repo = http_repo
+        self._last_good: dict[tuple[str, str], RuntimeConfig] = {}
+        self._failures = 0
+        self._open_until = 0.0
+
+    def _record_failure(self) -> None:
+        self._failures += 1
+        if self._failures >= _BREAKER_THRESHOLD:
+            self._open_until = time.monotonic() + _BREAKER_OPEN_S
+            log.warning("CacheAsideConfigProvider: config stores unavailable, skipping them for %.0fs",
+                        _BREAKER_OPEN_S)
 
     async def _fetch(self, redis_call, http_call) -> dict[str, Any] | None:
-        raw = await redis_call(self._redis_repo)
-        if raw is not None:
-            return raw
+        """Raw dict, None if not found, or RepositoryUnavailableError if neither store answered."""
+        if time.monotonic() < self._open_until:
+            raise RepositoryUnavailableError("config stores unavailable (circuit open)")
         try:
-            return await http_call(self._http_repo)
+            raw = await redis_call(self._redis_repo)
+            if raw is not None:
+                self._failures = 0
+                return raw
         except RepositoryUnavailableError:
-            log.warning("CacheAsideConfigProvider: HTTP fallback unavailable", exc_info=True)
+            pass
+        try:
+            raw = await http_call(self._http_repo)
+        except RepositoryUnavailableError:
+            self._record_failure()
+            raise
+        self._failures = 0
+        return raw
+
+    async def _lenient(self, fetch) -> dict[str, Any] | None:
+        try:
+            return await fetch
+        except RepositoryUnavailableError:
+            log.warning("CacheAsideConfigProvider: config stores unavailable", exc_info=True)
             return None
 
-    async def get_tenant(self, tenant_slug: str) -> Tenant | None:
-        raw = await self._fetch(
-            lambda r: r.fetch_tenant(tenant_slug), lambda r: r.fetch_tenant(tenant_slug),
+    def _agent_raw(self, tenant_slug: str, agent_slug: str):
+        return self._fetch(
+            lambda r: r.fetch_agent(tenant_slug, agent_slug),
+            lambda r: r.fetch_agent(tenant_slug, agent_slug),
         )
+
+    def _tenant_raw(self, tenant_slug: str):
+        return self._fetch(lambda r: r.fetch_tenant(tenant_slug), lambda r: r.fetch_tenant(tenant_slug))
+
+    def _provider_raw(self, provider_id: str):
+        return self._fetch(
+            lambda r: r.fetch_provider_config(provider_id), lambda r: r.fetch_provider_config(provider_id),
+        )
+
+    async def get_tenant(self, tenant_slug: str) -> Tenant | None:
+        raw = await self._lenient(self._tenant_raw(tenant_slug))
         return _tenant_from_dict(raw) if raw is not None else None
 
     async def get_agent(self, tenant_slug: str, agent_slug: str) -> Agent | None:
-        raw = await self._fetch(
-            lambda r: r.fetch_agent(tenant_slug, agent_slug),
-            lambda r: r.fetch_agent(tenant_slug, agent_slug),
-        )
+        raw = await self._lenient(self._agent_raw(tenant_slug, agent_slug))
         return _agent_from_dict(raw) if raw is not None else None
 
     async def get_provider_config(self, provider_id: str) -> ProviderConfig | None:
-        raw = await self._fetch(
-            lambda r: r.fetch_provider_config(provider_id), lambda r: r.fetch_provider_config(provider_id),
-        )
+        raw = await self._lenient(self._provider_raw(provider_id))
         return _provider_config_from_dict(raw) if raw is not None else None
 
     async def get_call_flow(self, tenant_slug: str, call_flow_id: str) -> CallFlow | None:
-        raw = await self._fetch(
+        raw = await self._lenient(self._fetch(
             lambda r: r.fetch_call_flow(tenant_slug, call_flow_id),
             lambda r: r.fetch_call_flow(tenant_slug, call_flow_id),
-        )
+        ))
         return _call_flow_from_dict(raw) if raw is not None else None
 
     async def get_runtime_config(
         self, tenant_slug: str, agent_slug: str, *, include_inactive: bool = False,
     ) -> RuntimeConfig | None:
-        agent = await self.get_agent(tenant_slug, agent_slug)
+        """None means the agent is genuinely missing/inactive/incomplete; an outage serves the
+        last-known-good copy, or raises ConfigUnavailableError when there is none."""
+        key = (tenant_slug, agent_slug)
+        try:
+            config = await asyncio.wait_for(
+                self._build_runtime_config(tenant_slug, agent_slug, include_inactive),
+                _RESOLVE_DEADLINE_S,
+            )
+        except (RepositoryUnavailableError, asyncio.TimeoutError):
+            cached = self._last_good.get(key)
+            if cached is None or (cached.agent.status != "active" and not include_inactive):
+                raise ConfigUnavailableError(f"no config for tenant={tenant_slug} agent={agent_slug}")
+            log.warning("CacheAsideConfigProvider: serving last-known-good config tenant=%s agent=%s",
+                        tenant_slug, agent_slug)
+            return cached
+        if config is None:
+            self._last_good.pop(key, None)
+        else:
+            self._last_good[key] = config
+        return config
+
+    async def _build_runtime_config(
+        self, tenant_slug: str, agent_slug: str, include_inactive: bool,
+    ) -> RuntimeConfig | None:
+        raw_agent = await self._agent_raw(tenant_slug, agent_slug)
+        agent = _agent_from_dict(raw_agent) if raw_agent is not None else None
         if agent is None or (agent.status != "active" and not include_inactive):
             return None
-        tenant = await self.get_tenant(tenant_slug)
-        if tenant is None:
+        raw_tenant = await self._tenant_raw(tenant_slug)
+        if raw_tenant is None:
             return None
+        tenant = _tenant_from_dict(raw_tenant)
 
         provider_ids: dict[str, str] = {}
         for role in _ROLES:
@@ -197,10 +263,10 @@ class CacheAsideConfigProvider:
 
         providers: dict[str, ProviderConfig] = {}
         for role, config_id in provider_ids.items():
-            cfg = await self.get_provider_config(config_id)
-            if cfg is None:
+            raw_provider = await self._provider_raw(config_id)
+            if raw_provider is None:
                 return None
-            providers[role] = cfg
+            providers[role] = _provider_config_from_dict(raw_provider)
 
         return RuntimeConfig(
             tenant=tenant,
