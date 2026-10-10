@@ -85,16 +85,30 @@ async def get_disposition_mix(
 async def get_usage_trend(
     tenant_slug: str,
     days: int = Query(default=30, ge=1, le=365),
+    tz: str = Query(default="UTC", max_length=64),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     await get_or_404(tenants_service.get_tenant(tenant_slug), f"tenant {tenant_slug!r} not found")
-    return await calls_service.get_usage_trend(tenant_slug, days=days)
+    return await calls_service.get_usage_trend(tenant_slug, days=days, tz=_valid_tz(tz))
 
 
 @tenant_scoped_router.get("/todays-activity")
-async def get_todays_activity(tenant_slug: str, current_user: CurrentUser = Depends(get_current_user)):
+async def get_todays_activity(
+    tenant_slug: str,
+    tz: str = Query(default="UTC", max_length=64),
+    current_user: CurrentUser = Depends(get_current_user),
+):
     await get_or_404(tenants_service.get_tenant(tenant_slug), f"tenant {tenant_slug!r} not found")
-    return await calls_service.get_todays_activity(tenant_slug)
+    return await calls_service.get_todays_activity(tenant_slug, tz=_valid_tz(tz))
+
+
+def _valid_tz(tz: str) -> str:
+    """The viewer's IANA zone; buckets days/hours as the browser shows them."""
+    try:
+        ZoneInfo(tz)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise HTTPException(status_code=400, detail=f"unknown time zone {tz!r}") from None
+    return tz
 
 
 _EXPORT_MEDIA_TYPES = {

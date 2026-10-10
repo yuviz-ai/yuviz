@@ -88,6 +88,7 @@ private:
 
     // ── Config-plane cache ───────────────────────────────────────────────────
     std::unique_ptr<RedisClient>      redis_client_;
+    DidRouteCache                     did_route_cache_;
 
     // Runs blocking Redis lookups + session creation off the shared lws thread.
     // Must be drained in teardown() before redis_client_ and session_manager_ die.

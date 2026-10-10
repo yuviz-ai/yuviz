@@ -9,6 +9,9 @@ import uuid
 
 import redis.asyncio as redis
 
+import pytest
+
+from libs.config_sdk.exceptions import RepositoryUnavailableError
 from libs.config_sdk.repositories.redis_repository import RedisConfigRepository
 
 REDIS_URL = os.environ["REDIS_URL"]
@@ -80,3 +83,18 @@ async def test_fetch_call_flow_uses_correct_key_format():
     await client.delete(f"callflow:{tenant_slug}:{call_flow_id}")
     await client.aclose()
     await repo.close()
+
+
+async def test_unreachable_redis_raises_unavailable_instead_of_a_miss():
+    repo = RedisConfigRepository("redis://127.0.0.1:1/0")
+    try:
+        with pytest.raises(RepositoryUnavailableError):
+            await repo.fetch_tenant("acme")
+    finally:
+        await repo.close()
+
+
+def test_reads_fail_fast():
+    repo = RedisConfigRepository("redis://localhost:6379/0")
+    kwargs = repo._client.connection_pool.connection_kwargs
+    assert kwargs["socket_timeout"] <= 0.1 and kwargs["socket_connect_timeout"] <= 0.1

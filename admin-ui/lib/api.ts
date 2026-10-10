@@ -975,8 +975,11 @@ export interface UsageTrendPoint {
   escalated: number;
 }
 
+// Days and hours are bucketed in the viewer's time zone, so the chart matches their clock.
+const viewerTz = () => encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+
 export const getUsageTrend = (tenantSlug: string, days: number = 30) =>
-  request<UsageTrendPoint[]>(`/tenants/${tenantSlug}/calls/usage-trend?days=${days}`);
+  request<UsageTrendPoint[]>(`/tenants/${tenantSlug}/calls/usage-trend?days=${days}&tz=${viewerTz()}`);
 
 export const listAllUsageTrend = async (tenants: Tenant[], days: number = 30): Promise<UsageTrendPoint[]> => {
   const perTenant = await Promise.all(tenants.map((t) => getUsageTrend(t.slug, days)));
@@ -1008,7 +1011,7 @@ export interface TodaysActivityPoint {
 }
 
 export const getTodaysActivity = (tenantSlug: string) =>
-  request<TodaysActivityPoint[]>(`/tenants/${tenantSlug}/calls/todays-activity`);
+  request<TodaysActivityPoint[]>(`/tenants/${tenantSlug}/calls/todays-activity?tz=${viewerTz()}`);
 
 export const listAllTodaysActivity = async (tenants: Tenant[]): Promise<TodaysActivityPoint[]> => {
   const perTenant = await Promise.all(tenants.map((t) => getTodaysActivity(t.slug)));

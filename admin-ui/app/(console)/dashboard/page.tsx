@@ -76,47 +76,45 @@ function TrendChart({ points }: { points: ChartPoint[] }) {
   if (points.length === 0) return <div className="d-empty">No calls in this period yet.</div>;
   const w = 400;
   const h = 110;
-  const total = points.map((p) => p.inbound + p.outbound);
-  const max = Math.max(1, ...total);
+  const max = Math.max(1, ...points.map((p) => Math.max(p.inbound, p.outbound)));
   const xAt = (i: number) => (points.length === 1 ? w / 2 : (i / (points.length - 1)) * w);
   const yAt = (frac: number) => h - 6 - frac * (h - 16);
-  const inboundXy = points.map((p, i) => [xAt(i), yAt(p.inbound / max)]);
-  const outboundXy = points.map((p, i) => [xAt(i), yAt((p.inbound + p.outbound) / max)]);
-  const inboundLine = inboundXy.map(([x, y]) => `${x},${y}`).join(" ");
-  const outboundLine = outboundXy.map(([x, y]) => `${x},${y}`).join(" ");
+  const series = [
+    { key: "inbound", label: "Inbound", color: "var(--chart-inbound)", xy: points.map((p, i) => [xAt(i), yAt(p.inbound / max)]) },
+    { key: "outbound", label: "Outbound", color: "var(--chart-outbound)", xy: points.map((p, i) => [xAt(i), yAt(p.outbound / max)]) },
+  ] as const;
+  const hasOutbound = points.some((p) => p.outbound > 0);
+  const shown = hasOutbound ? series : series.slice(0, 1);
+  const pts = (xy: readonly (readonly number[])[]) => xy.map(([x, y]) => `${x},${y}`).join(" ");
+  const inXy = series[0].xy;
   const aiXy = points.flatMap((p, i) => (p.aiPct == null ? [] : [[xAt(i), yAt(p.aiPct / 100), i]]));
   const ticks = points.length <= 6 ? points.map((_, i) => i) : [0, Math.floor((points.length - 1) / 2), points.length - 1];
   return (
     <>
       <div className="d-chart">
-        <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" role="img" aria-label="Calls over time">
+        <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" role="img" aria-label="Inbound and outbound calls over time">
           <path d={`M0 ${h * 0.25}H${w}M0 ${h * 0.5}H${w}M0 ${h * 0.75}H${w}`} stroke="var(--border)" strokeWidth="1" />
-          <path d={`M${outboundXy[0][0]} ${h} L${outboundLine.replaceAll(" ", " L")} L${outboundXy[outboundXy.length - 1][0]} ${h}Z`} fill="#3b82f6" opacity="0.15" />
-          <polyline points={inboundLine} fill="none" stroke="#3b82f6" strokeWidth="2" vectorEffect="non-scaling-stroke" />
-          {outboundXy.some(([x, y], i) => y !== inboundXy[i][1]) && (
-            <polyline points={outboundLine} fill="none" stroke="#f97316" strokeWidth="2" vectorEffect="non-scaling-stroke" />
-          )}
+          <path d={`M${inXy[0][0]} ${h} L${pts(inXy).replaceAll(" ", " L")} L${inXy[inXy.length - 1][0]} ${h}Z`} fill="var(--chart-inbound)" opacity="0.12" />
           {aiXy.length > 1 && (
             <polyline
-              points={aiXy.map(([x, y]) => `${x},${y}`).join(" ")}
-              fill="none"
-              stroke="var(--green)"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              vectorEffect="non-scaling-stroke"
+              points={pts(aiXy)} fill="none" stroke="var(--green)" strokeWidth="1.5" opacity="0.7"
+              strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke"
             />
           )}
+          {shown.map((s) => (
+            <polyline key={s.key} points={pts(s.xy)} fill="none" stroke={s.color} strokeWidth="2"
+              strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+          ))}
         </svg>
         {/* HTML dots: SVG circles would stretch under the non-uniform viewBox scaling. */}
-        {inboundXy.map(([x, y], i) => (
+        {shown.flatMap((s) => s.xy.map(([x, y], i) => (
           <span
-            key={i}
+            key={`${s.key}-${i}`}
             className="d-dot"
-            style={{ left: `${(x / w) * 100}%`, top: `${(y / h) * 100}%` }}
-            title={`${points[i].label}: ${points[i].inbound + points[i].outbound} call${points[i].inbound + points[i].outbound === 1 ? "" : "s"}`}
+            style={{ left: `${(x / w) * 100}%`, top: `${(y / h) * 100}%`, background: s.color }}
+            title={`${points[i].label}: ${points[i][s.key]} ${s.label.toLowerCase()} call${points[i][s.key] === 1 ? "" : "s"}`}
           />
-        ))}
+        )))}
         {aiXy.map(([x, y, i]) => (
           <span
             key={`ai-${i}`}
@@ -127,8 +125,7 @@ function TrendChart({ points }: { points: ChartPoint[] }) {
         ))}
       </div>
       <div className="d-legend">
-        <span><i style={{ background: "#3b82f6" }} />Inbound</span>
-        <span><i style={{ background: "#f97316" }} />Outbound</span>
+        {shown.map((s) => <span key={s.key}><i style={{ background: s.color }} />{s.label}</span>)}
         <span><i style={{ background: "var(--green)" }} />Handled by AI (%)</span>
       </div>
       <div className="d-ticks">
@@ -215,14 +212,13 @@ export default function DashboardPage() {
             // API omits zero-call days; draw every day of the range so today is always the last point.
             const byDate = new Map(pts.map((p) => [p.date.slice(0, 10), p]));
             const dense: ChartPoint[] = [];
-            const userTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
             for (let i = range.days - 1; i >= 0; i--) {
               const d = new Date();
               d.setDate(d.getDate() - i);
               const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
               const p = byDate.get(key);
               dense.push(toChartPoint(
-                d.toLocaleDateString("en-IN", { day: "numeric", month: "short", timeZone: userTz }),
+                d.toLocaleDateString("en-IN", { day: "numeric", month: "short" }),
                 p?.inbound ?? 0, p?.outbound ?? 0, p?.ended ?? 0, p?.escalated ?? 0,
               ));
             }

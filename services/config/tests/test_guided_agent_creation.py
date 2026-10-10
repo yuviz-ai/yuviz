@@ -983,7 +983,7 @@ class TestChatPath:
         assert 40 in numbers
 
     async def test_a_chat_test_leaves_no_live_call_and_does_not_block_delete(
-        self, pool, client, test_tenant, configs, model,
+        self, pool, client, test_tenant, configs, model, test_superadmin,
     ):
         agent = await _create_agent(client, test_tenant, configs)
         session = await _chat_session(client, test_tenant, agent)
@@ -998,7 +998,9 @@ class TestChatPath:
         assert await pool.fetchval(
             "SELECT ended_at FROM calls WHERE session_id = $1", session["session_id"]) is not None
 
-        listed = await client.get("/live-calls", params={"tenant_slug": test_tenant["slug"]})
+        # Live calls are superadmin-only (LIVE_CALLS_ROLES); a tenant admin can't list them.
+        async with _client_for(test_superadmin["token"]) as su:
+            listed = await su.get("/live-calls", params={"tenant_slug": test_tenant["slug"]})
         assert listed.status_code == 200, listed.text
         ids = [item["session_id"] for item in listed.json()["items"]]
         assert live_id in ids and session["session_id"] not in ids  # the control row is listed

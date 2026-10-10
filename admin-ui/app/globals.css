@@ -1,6 +1,7 @@
 @import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap');
 
 :root {
+  --chart-inbound: #3b82f6; --chart-outbound: #f97316;
   --bg: #f7f4ee; --sidebar: #efe9df; --surf: #fffdf9; --surf-2: #f3efe8; --surf-3: #eee9e1;
   --border: #ded8cf; --border-2: #e8e2d9;
   --cyan: #8a5a3b; --cyan-dim: #f0e3d8; --cyan-dim2: #f7efe7; --on-cyan: #fff;

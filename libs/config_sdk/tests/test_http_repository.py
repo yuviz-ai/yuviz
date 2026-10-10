@@ -128,3 +128,35 @@ async def test_fetch_call_flow_requests_exact_path_and_404_is_none():
     assert seen_paths == ["/tenants/acme/call-flows/flow-1/published"]
 
     await repo.close()
+
+
+async def test_control_characters_never_reach_the_config_service():
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        return httpx.Response(200, json={"access_token": "t"})
+
+    repo = HttpConfigRepository("http://cfg", "e", "p", transport=httpx.MockTransport(handler))
+    try:
+        assert await repo.fetch_agent("acme\x00", "x") is None
+        assert await repo.fetch_tenant("\x1b") is None
+    finally:
+        await repo.close()
+    assert calls == []
+
+
+@pytest.mark.parametrize("status, transient", [(500, False), (400, False), (403, False), (503, True), (504, True)])
+async def test_only_service_down_statuses_count_as_outages(status, transient):
+    def handler(request):
+        if request.url.path == "/auth/login":
+            return httpx.Response(200, json={"access_token": "t"})
+        return httpx.Response(status)
+
+    repo = HttpConfigRepository("http://cfg", "e", "p", transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(RepositoryUnavailableError) as exc:
+            await repo.fetch_tenant("acme")
+        assert exc.value.transient is transient
+    finally:
+        await repo.close()

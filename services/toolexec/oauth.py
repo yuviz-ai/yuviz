@@ -47,7 +47,7 @@ _platform_secret_resolver = CompositeSecretResolver()  # the PLATFORM resolver â
 _STATE_TTL_MINUTES = 10
 _EXPIRY_SKEW_SECONDS = 60
 _PROVIDER_TIMEOUT_S = 10.0
-_API_KEY_VERIFY_URLS = {}
+_API_KEY_VERIFY_URLS = {"calcom": "https://api.cal.com/v2/me"}
 _REDIRECT_URI_ENV = "TOOLEXEC_OAUTH_REDIRECT_URI"
 
 # What a connection row may reveal: no *_ref, no provider_sub.
@@ -125,6 +125,17 @@ PROVIDERS: dict[str, OAuthProvider] = {
         api_hosts=frozenset(),
         api_host_suffixes=frozenset({".my.salesforce.com", ".salesforce.com"}),
         api_base_claim="instance_url",
+    ),
+    "calcom": OAuthProvider(
+        key="calcom",
+        label="Cal.com",
+        authorize_url="",         # no consent redirect: the admin pastes an API key
+        token_url="",
+        revoke_url=None,          # keys are revoked in cal.com
+        identity_scopes=frozenset(),
+        api_hosts=frozenset({"api.cal.com"}),
+        auth_kind="api_key",
+        revoke_style="none",
     ),
     "hubspot": OAuthProvider(
         key="hubspot",

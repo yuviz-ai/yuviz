@@ -7,8 +7,8 @@
 -- Load-bearing details (see gateway/src/core/Application.cpp and
 -- gateway/src/config/Config.cpp):
 --   - The channel UUID in the URL path becomes session_id, the calls-table PK.
---   - Metadata keys are exactly did/ani/direction; malformed JSON degrades
---     silently to the {"default","default"} tenant/agent.
+--   - Metadata keys are exactly did/ani/direction; malformed or missing metadata
+--     gets the call rejected as "unavailable" (never routed to a default agent).
 --   - mod_audio_fork splits its API args on spaces, so the metadata JSON
 --     must not contain any.
 

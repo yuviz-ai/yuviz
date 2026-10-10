@@ -269,11 +269,10 @@ def _salesforce_steps(setup: SalesforceCrmSetup) -> list[PresetStep]:
 
 
 def _hubspot_steps(setup: HubspotCrmSetup) -> list[PresetStep]:
-    # hs_searchable_calculated_phone_number is HubSpot's normalized phone field,
-    # matches E.164, bare digits, and common formats like (555) 123-4567.
+    # filterGroups are OR-ed: the number is sent both as E.164 and as bare digits.
     group = lambda i: (  # noqa: E731
-        _literal(f"group_{i}_property", "hs_searchable_calculated_phone_number", body_path=f"filterGroups.{i}.filters.0.propertyName"),
-        _literal(f"group_{i}_operator", "CONTAINS", body_path=f"filterGroups.{i}.filters.0.operator"),
+        _literal(f"group_{i}_property", "phone", body_path=f"filterGroups.{i}.filters.0.propertyName"),
+        _literal(f"group_{i}_operator", "EQ", body_path=f"filterGroups.{i}.filters.0.operator"),
     )
     return _crm_lookup_step(
         "hubspot", method="POST", endpoint_url="https://api.hubapi.com/crm/v3/objects/contacts/search",
