@@ -7,8 +7,9 @@ import json
 
 import pytest
 
-from libs.config_sdk.secrets import generate_key
+from libs.config_sdk.secrets import decrypt_secret, generate_key
 from services.config import cache, telephony_configs
+from services.config.provider_configs import STORED_SENTINEL
 
 
 @pytest.fixture(autouse=True)
@@ -172,3 +173,55 @@ class TestListTelephonyConfigsHealth:
         finally:
             await cache.invalidate(f"telephony:health:{config_id}")
             await pool.execute("DELETE FROM telephony_configs WHERE id = $1", config_id)
+
+
+def test_plaintext_sensitive_credential_is_masked_like_a_sealed_one():
+    # Rows saved before sealing existed (2026-09-25) hold plaintext; they must never reach a browser.
+    cfg = {"provider": "vobiz", "credentials": {"auth_id": "MA123", "auth_token": "raw-secret"}}
+
+    out = telephony_configs.public_telephony_config(cfg, masked=True)
+
+    assert out["credentials"] == {"auth_id": "MA123", "auth_token": STORED_SENTINEL}
+
+
+def test_secret_saved_on_a_native_row_is_masked():
+    cfg = {"provider": "native", "credentials": {"auth_token": "raw-secret"}}
+
+    assert telephony_configs.public_telephony_config(cfg, masked=True)["credentials"]["auth_token"] == STORED_SENTINEL
+
+
+def test_pointer_refs_stay_visible():
+    cfg = {"provider": "vobiz", "credentials": {"auth_id": "MA123", "auth_token": "env:VOBIZ_TOKEN"}}
+
+    assert telephony_configs.public_telephony_config(cfg, masked=True)["credentials"]["auth_token"] == "env:VOBIZ_TOKEN"
+
+
+async def test_startup_seals_plaintext_credentials_once(test_tenant, pool):
+    config_id = await pool.fetchval(
+        "INSERT INTO telephony_configs (tenant_id, name, provider, credentials) "
+        "VALUES ($1, 'legacy', 'vobiz', $2::jsonb) RETURNING id",
+        test_tenant["id"], json.dumps({"auth_id": "MA123", "auth_token": "legacy-plaintext"}),
+    )
+    try:
+        assert await telephony_configs.seal_plaintext_credentials(tenant_id=test_tenant["id"]) == 1
+        creds = json.loads(await pool.fetchval("SELECT credentials FROM telephony_configs WHERE id = $1", config_id))
+        assert creds["auth_token"].startswith("enc:") and decrypt_secret(creds["auth_token"]) == "legacy-plaintext"
+        assert creds["auth_id"] == "MA123"
+
+        await telephony_configs.seal_plaintext_credentials(tenant_id=test_tenant["id"])
+        again = json.loads(await pool.fetchval("SELECT credentials FROM telephony_configs WHERE id = $1", config_id))
+        assert again["auth_token"] == creds["auth_token"]
+    finally:
+        await pool.execute("DELETE FROM telephony_configs WHERE id = $1", config_id)
+
+
+def test_native_save_seals_a_secret_named_field():
+    out = telephony_configs._normalize_credentials("native", {"auth_token": "raw"}, allow_pointer_schemes=False)
+
+    assert out["auth_token"].startswith("enc:") and decrypt_secret(out["auth_token"]) == "raw"
+
+
+def test_native_save_keeps_empty_secret_fields():
+    creds = {"auth_id": "", "auth_token": ""}
+
+    assert telephony_configs._normalize_credentials("native", creds, allow_pointer_schemes=False) == creds

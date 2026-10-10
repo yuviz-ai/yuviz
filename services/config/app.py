@@ -153,6 +153,12 @@ async def lifespan(app: FastAPI):
     # Connect eagerly so a broken POSTGRES_DSN/REDIS_URL fails at startup.
     await db.get_pool()
     cache.get_client()
+    try:
+        sealed = await telephony_configs_service.seal_plaintext_credentials()
+        if sealed:
+            log.warning("Encrypted plaintext credentials in %d telephony config(s)", sealed)
+    except Exception:
+        log.exception("Sealing plaintext telephony credentials failed; they stay masked in responses")
     await _prewarm_routes(overwrite=True)
     watchdog = asyncio.create_task(_reload_routes_when_redis_empties())
     yield
