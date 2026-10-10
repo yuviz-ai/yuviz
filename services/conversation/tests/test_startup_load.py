@@ -80,4 +80,4 @@ def test_serve_starts_its_background_tasks_only_through_spawn():
     bare = [n.lineno for n in calls if getattr(n.func, "attr", None) == "create_task"]
     assert bare == [], f"serve() calls create_task directly (line offsets {bare}); use _spawn"
     spawned = [n.args[1].value for n in calls if getattr(n.func, "id", None) == "_spawn"]
-    assert sorted(spawned) == ["heartbeat", "startup load"]
+    assert sorted(spawned) == ["config refresh", "heartbeat", "startup load"]

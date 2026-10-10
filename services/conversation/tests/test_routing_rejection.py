@@ -174,3 +174,17 @@ async def test_unknown_routing_value_is_rejected_not_routed():
 
     assert seen == [RoutingStatus.UNAVAILABLE]
     assert [m.WhichOneof("payload") for m in out][-1] == "end_call"
+
+
+async def test_routed_call_rejected_by_the_factory_still_hangs_up_after_the_message():
+    # The handler factory rejects a routed call whose agent config can't be loaded.
+    async def factory(ctx):
+        ctx.routing_status = RoutingStatus.UNAVAILABLE
+        return RejectionHandler(RoutingStatus.UNAVAILABLE, FakeTTS(), 16000)
+
+    out = [m async for m in ConversationServicer(factory).Converse(
+        _stream(_open(pb.ROUTING_STATUS_ROUTED)), AsyncMock())]
+
+    kinds = [m.WhichOneof("payload") for m in out]
+    assert kinds[-1] == "end_call"
+    assert out[-1].end_call.reason == "routing_unavailable"

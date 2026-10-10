@@ -7,12 +7,18 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
 from ..exceptions import RepositoryUnavailableError
 
 log = logging.getLogger(__name__)
+
+
+def _seg(value: str) -> str:
+    """One URL path segment: a slug from an unauthenticated client can't add path parts."""
+    return quote(str(value), safe="")
 
 
 class HttpConfigRepository:
@@ -34,9 +40,12 @@ class HttpConfigRepository:
         await self._client.aclose()
 
     async def _login(self) -> str:
-        resp = await self._client.post(
-            "/auth/login", json={"email": self._email, "password": self._password},
-        )
+        try:
+            resp = await self._client.post(
+                "/auth/login", json={"email": self._email, "password": self._password},
+            )
+        except httpx.HTTPError as exc:
+            raise RepositoryUnavailableError(f"HttpConfigRepository: login failed: {exc}") from exc
         if resp.status_code != 200:
             raise RepositoryUnavailableError(
                 f"HttpConfigRepository: service-account login failed status={resp.status_code}",
@@ -55,31 +64,36 @@ class HttpConfigRepository:
         if resp.status_code == 401:
             # Re-authenticate once, not in a loop, so a broken account fails loudly.
             self._token = await self._login()
-            resp = await self._client.get(path, headers={"Authorization": f"Bearer {self._token}"})
+            try:
+                resp = await self._client.get(path, headers={"Authorization": f"Bearer {self._token}"})
+            except httpx.HTTPError as exc:
+                raise RepositoryUnavailableError(f"HttpConfigRepository: request failed path={path}: {exc}") from exc
 
         if resp.status_code == 404:
             return None
         if resp.status_code >= 400:
+            # Other 4xx is this request's fault, so it must not trip the shared breaker.
             raise RepositoryUnavailableError(
                 f"HttpConfigRepository: GET {path} returned status={resp.status_code}",
+                transient=resp.status_code >= 500 or resp.status_code in (401, 403, 408, 429),
             )
         return resp.json()
 
     async def fetch_tenant(self, tenant_slug: str) -> dict[str, Any] | None:
-        return await self._get(f"/tenants/{tenant_slug}")
+        return await self._get(f"/tenants/{_seg(tenant_slug)}")
 
     async def fetch_agent(self, tenant_slug: str, agent_slug: str) -> dict[str, Any] | None:
-        return await self._get(f"/tenants/{tenant_slug}/agents/{agent_slug}")
+        return await self._get(f"/tenants/{_seg(tenant_slug)}/agents/{_seg(agent_slug)}")
 
     async def fetch_provider_config(self, provider_id: str) -> dict[str, Any] | None:
-        return await self._get(f"/providers/{provider_id}")
+        return await self._get(f"/providers/{_seg(provider_id)}")
 
     async def fetch_call_flow(self, tenant_slug: str, call_flow_id: str) -> dict[str, Any] | None:
-        return await self._get(f"/tenants/{tenant_slug}/call-flows/{call_flow_id}/published")
+        return await self._get(f"/tenants/{_seg(tenant_slug)}/call-flows/{_seg(call_flow_id)}/published")
 
     async def list_tenants(self) -> list[dict[str, Any]]:
         """Startup prewarming only; never on the call path."""
         return await self._get("/tenants") or []
 
     async def list_agents(self, tenant_slug: str) -> list[dict[str, Any]]:
-        return await self._get(f"/tenants/{tenant_slug}/agents") or []
+        return await self._get(f"/tenants/{_seg(tenant_slug)}/agents") or []

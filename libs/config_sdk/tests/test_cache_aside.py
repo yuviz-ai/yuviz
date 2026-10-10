@@ -556,18 +556,103 @@ async def test_last_known_good_inactive_agent_is_not_served_to_live_calls():
         await provider.get_runtime_config("acme", "sup")
 
 
-async def test_breaker_skips_stores_after_repeated_outages():
+async def test_breaker_skips_only_the_config_service_after_repeated_outages():
     redis_repo, http_repo = DownRepo(), DownRepo()
     provider = CacheAsideConfigProvider(redis_repo, http_repo)
     for _ in range(3):
         with pytest.raises(ConfigUnavailableError):
             await provider.get_runtime_config("acme", "sup")
-    calls_before = len(redis_repo.calls) + len(http_repo.calls)
+    http_before, redis_before = len(http_repo.calls), len(redis_repo.calls)
 
     with pytest.raises(ConfigUnavailableError):
         await provider.get_runtime_config("acme", "sup")
 
-    assert len(redis_repo.calls) + len(http_repo.calls) == calls_before
+    assert len(http_repo.calls) == http_before
+    assert len(redis_repo.calls) > redis_before   # Redis is still tried: it may be healthy
+
+
+async def test_open_breaker_still_serves_from_a_healthy_redis():
+    http_repo = DownRepo()
+    provider = CacheAsideConfigProvider(DownRepo(), http_repo)
+    for _ in range(3):
+        with pytest.raises(ConfigUnavailableError):
+            await provider.get_runtime_config("acme", "sup")
+
+    provider._redis_repo = _full_repo()
+
+    assert (await provider.get_runtime_config("acme", "sup")).agent.slug == "sup"
+
+
+async def test_rejected_requests_do_not_trip_the_breaker():
+    class BadRequestRepo(FakeRepo):
+        async def fetch_agent(self, tenant_slug, agent_slug):
+            self.calls.append("bad")
+            raise RepositoryUnavailableError("405", transient=False)
+
+    provider = CacheAsideConfigProvider(FakeRepo(), BadRequestRepo())
+    for _ in range(5):
+        with pytest.raises(ConfigUnavailableError):
+            await provider.get_runtime_config("acme", "../bad")
+
+    assert provider._http_open_until == 0.0
+
+
+async def test_last_known_good_older_than_max_age_is_not_served(monkeypatch):
+    from libs.config_sdk.providers import cache_aside
+
+    provider = CacheAsideConfigProvider(_full_repo(), FakeRepo())
+    await provider.get_runtime_config("acme", "sup")
+    config, stored_at = provider._last_good[("acme", "sup")]
+    provider._last_good[("acme", "sup")] = (config, stored_at - cache_aside._LKG_MAX_AGE_S - 1)
+    provider._redis_repo, provider._http_repo = DownRepo(), DownRepo()
+
+    with pytest.raises(ConfigUnavailableError):
+        await provider.get_runtime_config("acme", "sup")
+
+
+async def test_refresh_drops_a_paused_agent_and_keeps_active_ones_young():
+    provider = CacheAsideConfigProvider(_full_repo(), FakeRepo())
+    await provider.get_runtime_config("acme", "sup")
+    _, first = provider._last_good[("acme", "sup")]
+
+    await provider.refresh_last_known_good()
+    assert provider._last_good[("acme", "sup")][1] >= first
+
+    provider._redis_repo = _full_repo(agent_status="inactive")
+    await provider.refresh_last_known_good()
+    assert ("acme", "sup") not in provider._last_good
+
+
+async def test_outage_does_not_drop_a_language_voice_and_overwrite_the_good_copy():
+    repo = _full_repo()
+    repo.agents[("acme", "sup")] = _agent_row(
+        "sup", language="en", supported_languages=["en", "hi"], tts_config_by_language={"hi": "tts-hi"},
+    )
+    repo.providers["tts-hi"] = _provider_row("tts-hi", "tts", "elevenlabs", tenant_id="t1")
+
+    class VoiceDown(FakeRepo):
+        async def fetch_provider_config(self, provider_id):
+            if provider_id == "tts-hi":
+                raise RepositoryUnavailableError("down")
+            return repo.providers.get(provider_id)
+
+    provider = CacheAsideConfigProvider(repo, FakeRepo())
+    good = await provider.get_runtime_config("acme", "sup")
+    assert "hi" in good.providers.tts_by_language
+    del repo.providers["tts-hi"]               # Redis key gone, and the Config Service is down
+    provider._http_repo = VoiceDown()
+
+    assert await provider.get_runtime_config("acme", "sup") is good
+
+
+async def test_call_flow_outage_serves_last_known_good():
+    flow_repo = FakeRepo(call_flows={("acme", "f1"): _call_flow_row("f1", "acme")})
+    provider = CacheAsideConfigProvider(flow_repo, FakeRepo())
+    flow = await provider.get_call_flow("acme", "f1")
+
+    provider._redis_repo, provider._http_repo = DownRepo(), DownRepo()
+
+    assert await provider.get_call_flow("acme", "f1") is flow
 
 
 async def test_redis_down_still_falls_through_to_http():

@@ -13,7 +13,10 @@ from .models import Agent, CallFlow, Prompt, ProviderConfig, RuntimeConfig, Tena
 class IConfigProvider(Protocol):
     async def get_runtime_config(
         self, tenant_slug: str, agent_slug: str, *, include_inactive: bool = False,
-    ) -> RuntimeConfig | None: ...
+    ) -> RuntimeConfig | None:
+        """None: the agent is missing, inactive or incomplete. Raises ConfigUnavailableError
+        when the config stores are unreachable and no recent copy is held."""
+        ...
 
     async def get_tenant(self, tenant_slug: str) -> Tenant | None: ...
 

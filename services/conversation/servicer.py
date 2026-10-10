@@ -268,9 +268,9 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
 
             if greeting_end_call is not None:
                 log.info("Converse: rejecting call routing=%s session=%s",
-                         routing_status.value, sid)
+                         ctx.routing_status.value, sid)
                 async for out in _emit_response(
-                    greeting_end_call, end_reason=f"routing_{routing_status.value}",
+                    greeting_end_call, end_reason=f"routing_{ctx.routing_status.value}",
                 ):
                     yield out
 

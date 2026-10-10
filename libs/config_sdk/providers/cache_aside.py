@@ -38,6 +38,10 @@ _ROLES = ("stt", "llm", "tts")
 _RESOLVE_DEADLINE_S = 2.0
 _BREAKER_THRESHOLD = 3
 _BREAKER_OPEN_S = 10.0
+# Same bound as the Gateway's DID last-known-good (redis.did_lkg_max_age_s); the refresh keeps
+# copies of active agents young and drops paused or deleted ones.
+_LKG_MAX_AGE_S = 300.0
+_LKG_REFRESH_S = 60.0
 
 
 def _parse_dt(value: Any) -> datetime | None:
@@ -153,34 +157,36 @@ class CacheAsideConfigProvider:
     def __init__(self, redis_repo: IConfigRepository, http_repo: IConfigRepository) -> None:
         self._redis_repo = redis_repo
         self._http_repo = http_repo
-        self._last_good: dict[tuple[str, str], RuntimeConfig] = {}
-        self._failures = 0
-        self._open_until = 0.0
+        self._last_good: dict[tuple[str, str], tuple[RuntimeConfig, float]] = {}
+        self._last_good_flows: dict[tuple[str, str], tuple[CallFlow, float]] = {}
+        # Guards the Config Service only: it is shared, so only its own failures count.
+        self._http_failures = 0
+        self._http_open_until = 0.0
 
-    def _record_failure(self) -> None:
-        self._failures += 1
-        if self._failures >= _BREAKER_THRESHOLD:
-            self._open_until = time.monotonic() + _BREAKER_OPEN_S
-            log.warning("CacheAsideConfigProvider: config stores unavailable, skipping them for %.0fs",
+    def _record_http_failure(self) -> None:
+        self._http_failures += 1
+        if self._http_failures >= _BREAKER_THRESHOLD:
+            self._http_open_until = time.monotonic() + _BREAKER_OPEN_S
+            log.warning("CacheAsideConfigProvider: Config Service unavailable, skipping it for %.0fs",
                         _BREAKER_OPEN_S)
 
     async def _fetch(self, redis_call, http_call) -> dict[str, Any] | None:
         """Raw dict, None if not found, or RepositoryUnavailableError if neither store answered."""
-        if time.monotonic() < self._open_until:
-            raise RepositoryUnavailableError("config stores unavailable (circuit open)")
         try:
             raw = await redis_call(self._redis_repo)
             if raw is not None:
-                self._failures = 0
                 return raw
         except RepositoryUnavailableError:
             pass
+        if time.monotonic() < self._http_open_until:
+            raise RepositoryUnavailableError("Config Service skipped (circuit open)")
         try:
             raw = await http_call(self._http_repo)
-        except RepositoryUnavailableError:
-            self._record_failure()
+        except RepositoryUnavailableError as exc:
+            if exc.transient:
+                self._record_http_failure()
             raise
-        self._failures = 0
+        self._http_failures = 0
         return raw
 
     async def _lenient(self, fetch) -> dict[str, Any] | None:
@@ -204,6 +210,20 @@ class CacheAsideConfigProvider:
             lambda r: r.fetch_provider_config(provider_id), lambda r: r.fetch_provider_config(provider_id),
         )
 
+    async def _providers_raw(self, ids: list[str]) -> list[dict[str, Any] | None]:
+        """Concurrent; raises the first RepositoryUnavailableError after all have finished."""
+        results = await asyncio.gather(*(self._provider_raw(i) for i in ids), return_exceptions=True)
+        for r in results:
+            if isinstance(r, BaseException):
+                raise r
+        return list(results)
+
+    @staticmethod
+    def _fresh(entry: tuple[Any, float] | None) -> Any | None:
+        if entry is None or time.monotonic() - entry[1] > _LKG_MAX_AGE_S:
+            return None
+        return entry[0]
+
     async def get_tenant(self, tenant_slug: str) -> Tenant | None:
         raw = await self._lenient(self._tenant_raw(tenant_slug))
         return _tenant_from_dict(raw) if raw is not None else None
@@ -217,25 +237,40 @@ class CacheAsideConfigProvider:
         return _provider_config_from_dict(raw) if raw is not None else None
 
     async def get_call_flow(self, tenant_slug: str, call_flow_id: str) -> CallFlow | None:
-        raw = await self._lenient(self._fetch(
-            lambda r: r.fetch_call_flow(tenant_slug, call_flow_id),
-            lambda r: r.fetch_call_flow(tenant_slug, call_flow_id),
-        ))
-        return _call_flow_from_dict(raw) if raw is not None else None
+        """During an outage serves a recent copy, so an IVR agent keeps its menu."""
+        key = (tenant_slug, call_flow_id)
+        try:
+            raw = await self._fetch(
+                lambda r: r.fetch_call_flow(tenant_slug, call_flow_id),
+                lambda r: r.fetch_call_flow(tenant_slug, call_flow_id),
+            )
+        except RepositoryUnavailableError:
+            cached = self._fresh(self._last_good_flows.get(key))
+            log.warning("CacheAsideConfigProvider: call flow unavailable tenant=%s flow=%s, %s",
+                        tenant_slug, call_flow_id, "serving last-known-good" if cached else "no recent copy")
+            return cached
+        if raw is None:
+            self._last_good_flows.pop(key, None)
+            return None
+        flow = _call_flow_from_dict(raw)
+        self._last_good_flows[key] = (flow, time.monotonic())
+        return flow
 
     async def get_runtime_config(
         self, tenant_slug: str, agent_slug: str, *, include_inactive: bool = False,
     ) -> RuntimeConfig | None:
-        """None means the agent is genuinely missing/inactive/incomplete; an outage serves the
-        last-known-good copy, or raises ConfigUnavailableError when there is none."""
+        """None means the agent is genuinely missing/inactive/incomplete; an outage serves a
+        last-known-good copy younger than _LKG_MAX_AGE_S, else raises ConfigUnavailableError."""
         key = (tenant_slug, agent_slug)
         try:
             config = await asyncio.wait_for(
                 self._build_runtime_config(tenant_slug, agent_slug, include_inactive),
                 _RESOLVE_DEADLINE_S,
             )
-        except (RepositoryUnavailableError, asyncio.TimeoutError):
-            cached = self._last_good.get(key)
+        except (RepositoryUnavailableError, asyncio.TimeoutError) as exc:
+            if isinstance(exc, asyncio.TimeoutError):
+                self._record_http_failure()
+            cached = self._fresh(self._last_good.get(key))
             if cached is None or (cached.agent.status != "active" and not include_inactive):
                 raise ConfigUnavailableError(f"no config for tenant={tenant_slug} agent={agent_slug}")
             log.warning("CacheAsideConfigProvider: serving last-known-good config tenant=%s agent=%s",
@@ -244,8 +279,27 @@ class CacheAsideConfigProvider:
         if config is None:
             self._last_good.pop(key, None)
         else:
-            self._last_good[key] = config
+            self._last_good[key] = (config, time.monotonic())
         return config
+
+    async def refresh_last_known_good(self) -> None:
+        """Re-resolves every remembered config and call flow: keeps active ones young,
+        drops agents and flows that were deleted or paused. Cold path."""
+        for tenant_slug, agent_slug in list(self._last_good):
+            try:
+                await self.get_runtime_config(tenant_slug, agent_slug)
+            except ConfigUnavailableError:
+                pass
+            except Exception:
+                log.exception("CacheAsideConfigProvider: refresh failed tenant=%s agent=%s",
+                              tenant_slug, agent_slug)
+        for tenant_slug, call_flow_id in list(self._last_good_flows):
+            await self.get_call_flow(tenant_slug, call_flow_id)
+
+    async def run_refresh(self, interval_s: float = _LKG_REFRESH_S) -> None:
+        while True:
+            await asyncio.sleep(interval_s)
+            await self.refresh_last_known_good()
 
     async def _build_runtime_config(
         self, tenant_slug: str, agent_slug: str, include_inactive: bool,
@@ -267,8 +321,7 @@ class CacheAsideConfigProvider:
             provider_ids[role] = config_id
 
         providers: dict[str, ProviderConfig] = {}
-        for role, config_id in provider_ids.items():
-            raw_provider = await self._provider_raw(config_id)
+        for role, raw_provider in zip(provider_ids, await self._providers_raw(list(provider_ids.values()))):
             if raw_provider is None:
                 return None
             providers[role] = _provider_config_from_dict(raw_provider)
@@ -276,9 +329,12 @@ class CacheAsideConfigProvider:
         langs = resolve_languages(agent, providers["stt"], providers["tts"])
         tts_by_language = {}
         if langs.supported_languages and agent.tts_config_by_language:
+            # Strict, like the base providers: an outage must not drop a voice and look fresh.
+            langs_ids = list(agent.tts_config_by_language.items())
+            raws = await self._providers_raw([config_id for _, config_id in langs_ids])
             tts_by_language = same_tenant_tts_overrides(agent, langs.supported_languages, {
-                lang: await self.get_provider_config(config_id)
-                for lang, config_id in agent.tts_config_by_language.items()
+                lang: _provider_config_from_dict(raw) if raw is not None else None
+                for (lang, _), raw in zip(langs_ids, raws)
             })
 
         return RuntimeConfig(

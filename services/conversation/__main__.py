@@ -389,6 +389,8 @@ async def serve(port: int, args: argparse.Namespace) -> None:
             if deps is None:
                 log.warning("handler_factory: no agent config for routed call tenant=%s agent=%s — rejecting",
                             ctx.tenant_id, ctx.script_id)
+                # The session ends the call after the greeting only when the status rejects it.
+                ctx.routing_status = RoutingStatus.UNAVAILABLE
                 return RejectionHandler(RoutingStatus.UNAVAILABLE, tts, cfg.sample_rate)
             runtime_config, bundle = deps
 
@@ -489,6 +491,9 @@ async def serve(port: int, args: argparse.Namespace) -> None:
             await asyncio.sleep(HEARTBEAT_INTERVAL_S)
 
     heartbeat_task = _spawn(_heartbeat_loop(), "heartbeat")
+    # Keeps outage copies of agent configs recent; cold path, off the call path.
+    refresh_task = _spawn(config.run_refresh(), "config refresh") if isinstance(
+        config, CacheAsideConfigProvider) else None
 
     loop = asyncio.get_running_loop()
     stop = loop.create_future()
@@ -497,9 +502,10 @@ async def serve(port: int, args: argparse.Namespace) -> None:
 
     try:
         await stop
-        load_task.cancel()
-        heartbeat_task.cancel()
-        for task in (load_task, heartbeat_task):
+        background = [t for t in (load_task, heartbeat_task, refresh_task) if t is not None]
+        for task in background:
+            task.cancel()
+        for task in background:
             await _await_stopped(task)
         await provider_config_subscriber.stop()
         log.info("Shutting down…")
