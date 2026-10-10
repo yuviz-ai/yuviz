@@ -10,6 +10,7 @@ import {
   PresetSetup,
   applyConnectorPreset,
   authorizeOAuthConnection,
+  connectApiKey,
   disconnectOAuthConnection,
   listConnectorPresets,
   listCustomApis,
@@ -33,6 +34,13 @@ const STATUS_BADGE: Record<OAuthConnection["status"], { label: string; cls: stri
   reconnect_needed: { label: "Reconnect needed", cls: "amber" },
   disconnected: { label: "Disconnected", cls: "gray" },
 };
+
+// Catalogue entries that ship dark: each is shown as "Not available" until the
+// server lists it, so an operator's env switch is the only thing that turns it on.
+const DARK_ENTRIES = [
+  { label: "Cal.com", isLive: (providers: OAuthProvider[]) => providers.some((p) => p.key === "calcom") },
+  { label: "Dynamics 365", isLive: (_: OAuthProvider[], presets: ConnectorPreset[]) => presets.some((p) => p.key === "dynamics_crm") },
+];
 
 // The preset 409s the server uses to say a Google grant is missing or too narrow.
 const CONNECTOR_REQUIRED = new Set(["connector_required", "connector_scope_required"]);
@@ -120,6 +128,10 @@ export function ConnectorsPanel({ tenantId }: { tenantId: string }) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState<string | null>(null);
 
+  const [pasting, setPasting] = useState<OAuthProvider | null>(null);
+  const [apiKey, setApiKey] = useState("");
+  const [keyError, setKeyError] = useState<string | null>(null);
+
   // The four reads are independent: one failing must not blank what the
   // others returned.
   const refresh = async () => {
@@ -166,6 +178,22 @@ export function ConnectorsPanel({ tenantId }: { tenantId: string }) {
       window.location.assign(authorize_url);
     } catch (e) {
       setError(errorText(e));
+      setBusy(null);
+    }
+  };
+
+  const submitApiKey = async () => {
+    if (!pasting) return;
+    setBusy(`connect:${pasting.key}`);
+    setKeyError(null);
+    try {
+      await connectApiKey(tenantId, pasting.key, apiKey.trim());
+      setPasting(null);
+      setApiKey("");
+      await refresh();
+    } catch (e) {
+      setKeyError(errorText(e));
+    } finally {
       setBusy(null);
     }
   };
@@ -275,7 +303,12 @@ export function ConnectorsPanel({ tenantId }: { tenantId: string }) {
                     <button
                       className="btn btn-indigo btn-sm"
                       disabled={busy !== null}
-                      onClick={() => connect(provider.key, null)}
+                      onClick={() => {
+                        if (provider.auth_kind !== "api_key") return connect(provider.key, null);
+                        setPasting(provider);
+                        setApiKey("");
+                        setKeyError(null);
+                      }}
                     >
                       {connection ? "Reconnect" : "Connect"}
                     </button>
@@ -293,6 +326,12 @@ export function ConnectorsPanel({ tenantId }: { tenantId: string }) {
               </div>
             );
           })}
+          {DARK_ENTRIES.filter((entry) => !entry.isLive(providers, presets)).map((entry) => (
+            <div key={entry.label} className="kb-row">
+              <div style={{ flex: 1, fontWeight: 500 }}>{entry.label}</div>
+              <span className="badge gray">Not available</span>
+            </div>
+          ))}
         </div>
       </div>
 
@@ -338,6 +377,40 @@ export function ConnectorsPanel({ tenantId }: { tenantId: string }) {
           })}
         </div>
       </div>
+
+      <Modal
+        open={pasting !== null}
+        title={pasting ? `Connect ${pasting.label}` : ""}
+        onClose={() => setPasting(null)}
+        footer={
+          <>
+            <button className="btn btn-ghost btn-sm" onClick={() => setPasting(null)}>
+              Cancel
+            </button>
+            <button className="btn btn-primary btn-sm" onClick={submitApiKey} disabled={busy !== null || !apiKey.trim()}>
+              {busy?.startsWith("connect:") ? "Connecting…" : "Connect"}
+            </button>
+          </>
+        }
+      >
+        {keyError && <div className="error-banner">{keyError}</div>}
+        <div className="info-banner">
+          A {pasting?.label} API key is not limited to one thing: it acts as the whole account, so anyone who can
+          use it can read and change everything that account can. Revoke it in {pasting?.label} to cut access.
+        </div>
+        <div className="form-group">
+          <label className="form-label">
+            API key<span className="hint"> Stored encrypted; it is never shown again</span>
+          </label>
+          <input
+            className="form-input"
+            type="password"
+            autoComplete="off"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+          />
+        </div>
+      </Modal>
 
       <Modal
         open={applying !== null}

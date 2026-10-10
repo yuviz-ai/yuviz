@@ -26,6 +26,7 @@ async def test_upload_creates_document_and_ingestion_job(tenant_agent, pool):
     assert result["status"] == "pending"
     assert result["source_ref"]
     assert (await storage.read(result["source_ref"])) == b"Refunds take 30 days."
+    assert result["byte_size"] == len(b"Refunds take 30 days.")
 
     job = await pool.fetchrow("SELECT * FROM kb_ingestion_jobs WHERE id = $1", result["ingestion_job_id"])
     assert job is not None and job["status"] == "pending" and job["document_id"] == result["id"]

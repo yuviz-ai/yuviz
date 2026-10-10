@@ -5,6 +5,9 @@
 #include "telephony/EslClient.h"
 #include "telephony/TransferRequest.h"
 #include <cstdlib>
+#include <hiredis/hiredis.h>
+#include <memory>
+#include <unistd.h>
 #include <fstream>
 #include <filesystem>
 #include <string>
@@ -185,37 +188,139 @@ TEST_F(ConfigTest, FromRedisFallsBackToDefaultsWhenRedisDisabled) {
     EXPECT_EQ(actual.tenant_id, "default");
 }
 
-// ── PhoneRoute::from_redis() ─────────────────────────────────────────────────
-// Hermetic: only the disabled/missing-key fallback is tested.
+// ── resolve_route() ──────────────────────────────────────────────────────────
 
-TEST_F(ConfigTest, PhoneRouteFallsBackToDefaultsWhenRedisDisabled) {
+namespace {
+using voiceai::LookupResult;
+using voiceai::LookupStatus;
+using voiceai::RoutingStatus;
+
+const LookupResult kHit{LookupStatus::Hit,
+                        R"({"tenant_slug": "acme", "agent_slug": "reception", "version": 24})"};
+const LookupResult kMiss{LookupStatus::Miss, {}};
+const LookupResult kError{LookupStatus::Error, {}};
+}  // namespace
+
+TEST_F(ConfigTest, RouteHitIsRoutedWithParsedSlugs) {
+    voiceai::DidRouteCache cache;
+    const auto r = voiceai::resolve_route("5002", kHit, cache);
+
+    EXPECT_EQ(r.status, RoutingStatus::Routed);
+    EXPECT_EQ(r.route.tenant_slug, "acme");
+    EXPECT_EQ(r.route.agent_slug, "reception");
+    EXPECT_EQ(r.route.version, 24u);
+}
+
+TEST_F(ConfigTest, RouteMissIsUnknownNotDefault) {
+    voiceai::DidRouteCache cache;
+    const auto r = voiceai::resolve_route("5002", kMiss, cache);
+
+    EXPECT_EQ(r.status, RoutingStatus::Unknown);
+    EXPECT_TRUE(r.route.tenant_slug.empty());
+}
+
+TEST_F(ConfigTest, RouteErrorWithoutCacheIsUnavailable) {
+    voiceai::DidRouteCache cache;
+    EXPECT_EQ(voiceai::resolve_route("5002", kError, cache).status, RoutingStatus::Unavailable);
+}
+
+TEST_F(ConfigTest, RouteErrorAfterHitServesLastKnownGood) {
+    voiceai::DidRouteCache cache;
+    (void)voiceai::resolve_route("5002", kHit, cache);
+    const auto r = voiceai::resolve_route("5002", kError, cache);
+
+    EXPECT_EQ(r.status, RoutingStatus::RoutedLkg);
+    EXPECT_EQ(r.route.tenant_slug, "acme");
+    EXPECT_EQ(r.route.agent_slug, "reception");
+}
+
+TEST_F(ConfigTest, RouteMissEvictsCachedRoute) {
+    voiceai::DidRouteCache cache;
+    (void)voiceai::resolve_route("5002", kHit, cache);
+    (void)voiceai::resolve_route("5002", kMiss, cache);
+
+    EXPECT_EQ(voiceai::resolve_route("5002", kError, cache).status, RoutingStatus::Unavailable);
+}
+
+TEST_F(ConfigTest, RouteCacheIsPerDid) {
+    voiceai::DidRouteCache cache;
+    (void)voiceai::resolve_route("5002", kHit, cache);
+    EXPECT_EQ(voiceai::resolve_route("5003", kError, cache).status, RoutingStatus::Unavailable);
+}
+
+TEST_F(ConfigTest, RouteCorruptValueFallsBackLikeAnOutage) {
+    voiceai::DidRouteCache cache;
+    for (const char* bad : {"{not json", "[]", R"({"tenant_slug": "acme"})",
+                            R"({"tenant_slug": "acme", "agent_slug": ""})",
+                            R"({"tenant_slug": 1, "agent_slug": "x"})"}) {
+        EXPECT_EQ(voiceai::resolve_route("5002", {LookupStatus::Hit, bad}, cache).status,
+                  RoutingStatus::Unavailable) << bad;
+    }
+    (void)voiceai::resolve_route("5002", kHit, cache);
+    EXPECT_EQ(voiceai::resolve_route("5002", {LookupStatus::Hit, "{bad"}, cache).status,
+              RoutingStatus::RoutedLkg);
+}
+
+TEST_F(ConfigTest, RouteEmptyDidIsUnavailableEvenFromCache) {
+    voiceai::DidRouteCache cache;
+    cache.put("", voiceai::PhoneRoute{"acme", "reception", 1});
+    EXPECT_EQ(voiceai::resolve_route("", kHit, cache).status, RoutingStatus::Unavailable);
+    EXPECT_EQ(voiceai::resolve_route("", kError, cache).status, RoutingStatus::Unavailable);
+}
+
+TEST_F(ConfigTest, RouteLastKnownGoodExpiresAfterMaxAge) {
+    using namespace std::chrono_literals;
+    voiceai::DidRouteCache cache{300s};
+    const auto t0 = voiceai::DidRouteCache::Clock::now();
+    cache.put("5002", voiceai::PhoneRoute{"acme", "support", 1}, t0);
+
+    EXPECT_TRUE(cache.get("5002", t0 + 299s).has_value());
+    EXPECT_FALSE(cache.get("5002", t0 + 301s).has_value());
+}
+
+TEST_F(ConfigTest, RouteWithRedisDisabledIsUnavailable) {
     write_yaml("gateway:\n");
     voiceai::Config cfg;
     cfg.load(tmp_yaml_.string());
 
     voiceai::Logger logger = voiceai::Logger::make_null();
     voiceai::RedisClient redis{cfg.gateway().redis, logger};  // enabled=false by default
+    voiceai::DidRouteCache cache;
 
-    const auto route = voiceai::PhoneRoute::from_redis(redis, "5000");
-
-    EXPECT_EQ(route.tenant_slug, "default");
-    EXPECT_EQ(route.agent_slug, "default");
-    EXPECT_EQ(route.version, 0u);
+    EXPECT_EQ(voiceai::resolve_route(redis, "5000", cache).status, RoutingStatus::Unavailable);
 }
 
-TEST_F(ConfigTest, PhoneRouteFallsBackToDefaultsOnEmptyDid) {
-    write_yaml("gateway:\n");
-    voiceai::Config cfg;
-    cfg.load(tmp_yaml_.string());
+// Live Redis on localhost; private key names so the real routing:ready is never touched.
+TEST_F(ConfigTest, GuardedLookupMissIsErrorUntilGuardExists) {
+    redisContext* raw = ::redisConnect("127.0.0.1", 6379);
+    if (raw == nullptr || raw->err) {
+        if (raw) ::redisFree(raw);
+        GTEST_SKIP() << "no Redis on 127.0.0.1:6379";
+    }
+    std::unique_ptr<redisContext, void(*)(redisContext*)> admin{raw, ::redisFree};
+    const std::string key   = "gwtest:did:" + std::to_string(::getpid());
+    const std::string guard = "gwtest:ready:" + std::to_string(::getpid());
+    auto run = [&](const char* fmt, const std::string& k) {
+        ::freeReplyObject(::redisCommand(admin.get(), fmt, k.c_str()));
+    };
+    run("DEL %s", key);
+    run("DEL %s", guard);
 
+    voiceai::RedisConfig rc;
+    rc.enabled = true;
     voiceai::Logger logger = voiceai::Logger::make_null();
-    voiceai::RedisClient redis{cfg.gateway().redis, logger};
+    voiceai::RedisClient redis{rc, logger};
 
-    const auto route = voiceai::PhoneRoute::from_redis(redis, "");
+    EXPECT_EQ(redis.get_guarded(key, guard.c_str()).status, LookupStatus::Error);
+    run("SET %s 1", guard);
+    EXPECT_EQ(redis.get_guarded(key, guard.c_str()).status, LookupStatus::Miss);
+    ::freeReplyObject(::redisCommand(admin.get(), "SET %s %s", key.c_str(), "v"));
+    const auto hit = redis.get_guarded(key, guard.c_str());
+    EXPECT_EQ(hit.status, LookupStatus::Hit);
+    EXPECT_EQ(hit.value, "v");
 
-    EXPECT_EQ(route.tenant_slug, "default");
-    EXPECT_EQ(route.agent_slug, "default");
-    EXPECT_EQ(route.version, 0u);
+    run("DEL %s", key);
+    run("DEL %s", guard);
 }
 
 // ── CallMetadata::parse() ────────────────────────────────────────────────────

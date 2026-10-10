@@ -13,6 +13,20 @@
 
 namespace voiceai {
 
+namespace {
+
+::voiceai::v1::RoutingStatus to_proto(RoutingStatus s) {
+    switch (s) {
+        case RoutingStatus::Routed:      return ::voiceai::v1::ROUTING_STATUS_ROUTED;
+        case RoutingStatus::RoutedLkg:   return ::voiceai::v1::ROUTING_STATUS_ROUTED_LKG;
+        case RoutingStatus::Unknown:     return ::voiceai::v1::ROUTING_STATUS_UNKNOWN;
+        case RoutingStatus::Unavailable: return ::voiceai::v1::ROUTING_STATUS_UNAVAILABLE;
+    }
+    return ::voiceai::v1::ROUTING_STATUS_UNAVAILABLE;
+}
+
+}  // namespace
+
 // ── Opaque structs (defined here so grpc/proto headers stay out of .h) ────────
 
 struct GrpcConversationTransport::StreamState {
@@ -84,6 +98,7 @@ void GrpcConversationTransport::open_session(const SessionContext& ctx) {
         req->set_codec(::voiceai::v1::AUDIO_CODEC_PCM_S16LE);
         req->set_sample_rate(16000);
         req->set_channels(1);
+        req->set_routing_status(to_proto(ctx.routing_status));
 
         if (!stream_->rw->Write(msg)) {
             logger_.error("GrpcTransport: failed to write SessionOpenRequest session={}",
@@ -384,10 +399,17 @@ void GrpcConversationTransport::reader_loop() noexcept {
 
         case ::voiceai::v1::ServiceMessage::kError: {
             const auto& err = msg.error();
-            logger_.error("GrpcTransport: service error code={} msg={} fatal={} session={}",
-                          err.code(), err.message(), err.fatal(), session_id_);
+            if (err.code() == kCallRejectedCode) {
+                logger_.info("GrpcTransport: rejected call ended by service session={}", session_id_);
+            } else {
+                logger_.error("GrpcTransport: service error code={} msg={} fatal={} session={}",
+                              err.code(), err.message(), err.fatal(), session_id_);
+            }
+            // Code-prefixed so the session can tell a deliberate hangup from a failure.
             if (callbacks_.on_error)
-                callbacks_.on_error(session_id_, err.message(), err.fatal());
+                callbacks_.on_error(session_id_,
+                                    err.code().empty() ? err.message() : err.code() + ": " + err.message(),
+                                    err.fatal());
             break;
         }
 

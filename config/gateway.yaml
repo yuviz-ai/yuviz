@@ -38,8 +38,10 @@ gateway:
     # Transfer dials go via Kamailio at SIP_PROXY_HOST/PORT in .env; blank refuses them.
 
   redis:
-    # Tenant config cache written by services/config (tenant:{tenant_id}).
-    # Off or unreachable falls back to process-level defaults.
+    # Written by services/config: tenant:{slug} tuning and did:{did} routes.
+    # Off or unreachable: tuning falls back to defaults; routing serves last-known-good
+    # routes up to did_lkg_max_age_s, else rejects calls. command_timeout_ms is the outage threshold.
     enabled: true
     connect_timeout_ms: 200
     command_timeout_ms: 100
+    did_lkg_max_age_s: 300

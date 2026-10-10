@@ -7,5 +7,12 @@ class ConfigSDKError(Exception):
 
 class RepositoryUnavailableError(ConfigSDKError):
     """Repository backend unreachable (distinct from "not found", which is None).
+    transient=False marks a rejected request (bad input), which says nothing about the backend."""
 
-    CacheAsideConfigProvider catches this and falls through; it never escapes to callers."""
+    def __init__(self, message: str, *, transient: bool = True) -> None:
+        super().__init__(message)
+        self.transient = transient
+
+
+class ConfigUnavailableError(ConfigSDKError):
+    """No fresh config could be loaded and there is no last-known-good copy."""

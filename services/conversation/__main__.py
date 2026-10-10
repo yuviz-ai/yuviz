@@ -15,7 +15,9 @@ import logging
 import signal
 import socket
 import sys
+from collections.abc import Coroutine
 from datetime import datetime, timezone
+from typing import Any
 
 import grpc.aio
 import redis.asyncio as aioredis
@@ -40,13 +42,15 @@ from .callflow.runner import CallFlowRunner
 from .echo import EchoConversationHandler
 from .fillers import FillerSelector
 from .pipeline import PipelineConversationHandler
+from . import rejection
+from .rejection import RejectionHandler
 from .pipeline_config import PipelineConfig
 from .provider_bundle import ProviderRegistry, _to_ai_provider_config
 from .providers.stt.faster_whisper import FasterWhisperSTT
 from .providers.llm.ollama import OllamaLLM
 from .secret_resolver import CompositeSecretResolver
 from .servicer import ConversationServicer
-from .session import AgentUnavailable, SessionContext
+from .session import AgentUnavailable, RoutingStatus, SessionContext
 from .tools.executor_registry import ExecutorRegistry
 from .tools.executors.api_exec_executor import ApiExecExecutor
 from .tools.llm_adapter import LLMAdapter
@@ -91,6 +95,9 @@ async def _resolve_session_deps(
     )
     if resolved is not None:
         return resolved
+    # A Gateway-routed call never falls back to default.yaml: that would answer as the wrong agent.
+    if ctx.routing_status is not RoutingStatus.UNSPECIFIED:
+        return None
     agent = load_agent(ctx.script_id)
     return to_runtime_config(
         agent, ctx.tenant_id or "default", ctx.script_id or "default", stt, llm, tts,
@@ -169,6 +176,12 @@ async def _prewarm_agents(
                 continue
             _, bundle = resolved
             graph = graph_for(resolved[0])
+            # Remembers the IVR flow too, so an outage before its first call keeps the menu.
+            if resolved[0].agent.call_flow_id:
+                try:
+                    await config.get_call_flow(tenant_slug, resolved[0].agent.call_flow_id)
+                except Exception:
+                    log.exception("prewarm: call flow load failed tenant=%s agent=%s", tenant_slug, agent_slug)
             # Ollama only loads the model on a real request; no-op for cloud LLMs.
             warm = getattr(bundle.llm, "warm", None)
             if warm is not None:
@@ -180,6 +193,28 @@ async def _prewarm_agents(
                 "prewarm: tenant=%s agent=%s providers ready, workflow graph parsed (%d nodes)",
                 tenant_slug, agent_slug, len(graph.nodes),
             )
+
+
+def _log_task_failure(task: asyncio.Task) -> None:
+    """Done-callback for background tasks: a failed startup load or heartbeat is never silent."""
+    if not task.cancelled() and task.exception() is not None:
+        logging.getLogger(__name__).error("Background task %r failed", task.get_name(), exc_info=task.exception())
+
+
+def _spawn(coro: Coroutine[Any, Any, None], name: str) -> asyncio.Task:
+    """create_task for serve()'s background work, with failures logged."""
+    task = asyncio.create_task(coro, name=name)
+    task.add_done_callback(_log_task_failure)
+    return task
+
+
+async def _await_stopped(task: asyncio.Task) -> None:
+    """Join a cancelled background task at shutdown. Whatever it died of must not skip the
+    rest of the shutdown; a failure was already logged by _log_task_failure."""
+    try:
+        await task
+    except (asyncio.CancelledError, Exception):
+        pass
 
 
 async def serve(port: int, args: argparse.Namespace) -> None:
@@ -309,6 +344,7 @@ async def serve(port: int, args: argparse.Namespace) -> None:
             timeout_s=cfg.llm.timeout_s,
         )
         tts = _build_tts(cfg)
+        await rejection.prewarm(tts, cfg.sample_rate)
 
         async def _build_pipeline_handler(
             ctx: SessionContext, runtime_config, bundle,
@@ -348,11 +384,21 @@ async def serve(port: int, args: argparse.Namespace) -> None:
                 filler_selector=filler_selector,
             )
 
-        async def handler_factory(ctx: SessionContext) -> PipelineConversationHandler:
+        async def handler_factory(ctx: SessionContext) -> PipelineConversationHandler | RejectionHandler:
+            if ctx.routing_status.rejects_call:
+                return RejectionHandler(ctx.routing_status, tts, cfg.sample_rate)
+
             # Config SDK path, else legacy YAML path; never a mix for one call.
-            runtime_config, bundle = await _resolve_session_deps(
+            deps = await _resolve_session_deps(
                 ctx, credential_redis, provider_registry, config, stt, llm, tts,
             )
+            if deps is None:
+                log.warning("handler_factory: no agent config for routed call tenant=%s agent=%s — rejecting",
+                            ctx.tenant_id, ctx.script_id)
+                # The session ends the call after the greeting only when the status rejects it.
+                ctx.routing_status = RoutingStatus.UNAVAILABLE
+                return RejectionHandler(RoutingStatus.UNAVAILABLE, tts, cfg.sample_rate)
+            runtime_config, bundle = deps
 
             if not runtime_config.agent.call_flow_id:
                 return await _build_pipeline_handler(ctx, runtime_config, bundle)
@@ -436,7 +482,7 @@ async def serve(port: int, args: argparse.Namespace) -> None:
         health_servicer.set(SERVICE_NAME, health_pb2.HealthCheckResponse.SERVING)
         log.info("ConversationService SERVING")
 
-    load_task = asyncio.create_task(_load_and_promote())
+    load_task = _spawn(_load_and_promote(), "startup load")
 
     # Node is considered dead after 3 missed heartbeats (45s).
     HEARTBEAT_INTERVAL_S = 15
@@ -450,7 +496,10 @@ async def serve(port: int, args: argparse.Namespace) -> None:
             await transcripts.reconcile_inactive_calls(inactive_after_seconds=INACTIVE_CALL_TIMEOUT_S)
             await asyncio.sleep(HEARTBEAT_INTERVAL_S)
 
-    heartbeat_task = asyncio.create_task(_heartbeat_loop())
+    heartbeat_task = _spawn(_heartbeat_loop(), "heartbeat")
+    # Keeps outage copies of agent configs recent; cold path, off the call path.
+    refresh_task = _spawn(config.run_refresh(), "config refresh") if isinstance(
+        config, CacheAsideConfigProvider) else None
 
     loop = asyncio.get_running_loop()
     stop = loop.create_future()
@@ -459,13 +508,11 @@ async def serve(port: int, args: argparse.Namespace) -> None:
 
     try:
         await stop
-        load_task.cancel()
-        heartbeat_task.cancel()
-        for task in (load_task, heartbeat_task):
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        background = [t for t in (load_task, heartbeat_task, refresh_task) if t is not None]
+        for task in background:
+            task.cancel()
+        for task in background:
+            await _await_stopped(task)
         await provider_config_subscriber.stop()
         log.info("Shutting down…")
         health_servicer.set(SERVICE_NAME, health_pb2.HealthCheckResponse.NOT_SERVING)

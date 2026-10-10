@@ -15,7 +15,7 @@ Tasks to build: $ARGUMENTS, or every unchecked task in `<dir>/03-tasks.md` if no
 
    **Only one agent in the batch runs the test suite.** Concurrent pytest against the same database interleaves and produces flaky failures that look like real regressions and cost more than the parallelism saved. Tell the others to report failures in files they do not own rather than fixing them.
 
-3. If any agent reports a deviation or a blocked task, stop and tell me — do not improvise a different design.
+3. If any agent reports a deviation or a blocked task, do not improvise a different design. Hand the reports verbatim to `sdlc-approver` (gate `build-batch`) and act on its verdict: PROCEED → next batch; PROCEED_AFTER_FIXES → send each fix to the owning agent, then back to the approver; ESCALATE → stop and tell me.
 
 4. **Fan in before reporting.** Run the full suite yourself on the combined tree: each agent verified against a tree that did not contain the others' work, and that is not the tree we are shipping. Reconcile the reports for contradiction, not just for a union.
 

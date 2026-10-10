@@ -152,6 +152,14 @@ async def update_tenant(
             tenant_id, *(fields[col] for col in columns),
         )
         new = dict(new_row)
+        # Agents without their own STT/TTS use these defaults; don't let a default change
+        # leave a multilingual agent unable to hear or speak one of its languages.
+        if "default_stt_config_id" in fields or "default_tts_config_id" in fields:
+            from .agents import revalidate_multilingual_agents  # agents imports this module's peers
+            await revalidate_multilingual_agents(
+                conn, tenant_id,
+                default_roles=tuple(r for r in ("stt", "tts") if f"default_{r}_config_id" in fields),
+            )
 
         await audit.write_audit(
             conn,

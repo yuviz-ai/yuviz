@@ -217,8 +217,14 @@ export interface Agent {
   greeting: string;
   system_prompt: string;
   goodbye_grace_ms: number;
-  // null = use the STT/TTS provider's language.
+  // Default language. null = use the STT/TTS provider's language.
   language: string | null;
+  // null/[] = single-language. Set = detect and switch per utterance; the server puts `language` first.
+  supported_languages: string[] | null;
+  // language -> tts provider_configs.id; a missing language uses the agent's base voice.
+  tts_config_by_language: Record<string, string> | null;
+  // Only the default language's entry is spoken (at call start, in place of the opening line).
+  greeting_by_language: Record<string, string> | null;
   stt_config_id: string | null;
   llm_config_id: string | null;
   tts_config_id: string | null;
@@ -256,6 +262,8 @@ export interface Agent {
   // Set only on agents created from a shipped Easy job; null for Advanced.
   template_id: string | null;
   template_version: number | null;
+  // First time the agent went active; null = still a draft.
+  activated_at: string | null;
   // True while the stored prompt still equals the one the last accepted fix
   // wrote, so "Undo last change" can be offered. Computed server-side.
   can_undo: boolean;
@@ -276,6 +284,11 @@ export interface AgentCreate {
   llm_config_id?: string | null;
   tts_config_id?: string | null;
   status?: "active" | "inactive";
+  // Validated with the rest on create, so a bad language setting creates nothing.
+  language?: string | null;
+  supported_languages?: string[] | null;
+  tts_config_by_language?: Record<string, string> | null;
+  greeting_by_language?: Record<string, string> | null;
 }
 
 export interface AgentUpdate {
@@ -284,6 +297,9 @@ export interface AgentUpdate {
   system_prompt?: string;
   goodbye_grace_ms?: number;
   language?: string | null;
+  supported_languages?: string[] | null;
+  tts_config_by_language?: Record<string, string> | null;
+  greeting_by_language?: Record<string, string> | null;
   stt_config_id?: string | null;
   llm_config_id?: string | null;
   tts_config_id?: string | null;
@@ -903,13 +919,18 @@ export const listAllDispositionMix = async (
 export interface UsageTrendPoint {
   date: string;
   calls: number;
+  inbound: number;
+  outbound: number;
   minutes: number;
   ended: number;
   escalated: number;
 }
 
+// Days and hours are bucketed in the viewer's time zone, so the chart matches their clock.
+const viewerTz = () => encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+
 export const getUsageTrend = (tenantSlug: string, days: number = 30) =>
-  request<UsageTrendPoint[]>(`/tenants/${tenantSlug}/calls/usage-trend?days=${days}`);
+  request<UsageTrendPoint[]>(`/tenants/${tenantSlug}/calls/usage-trend?days=${days}&tz=${viewerTz()}`);
 
 export const listAllUsageTrend = async (tenants: Tenant[], days: number = 30): Promise<UsageTrendPoint[]> => {
   const perTenant = await Promise.all(tenants.map((t) => getUsageTrend(t.slug, days)));
@@ -920,6 +941,8 @@ export const listAllUsageTrend = async (tenants: Tenant[], days: number = 30): P
       byDate.set(p.date, {
         date: p.date,
         calls: (existing?.calls || 0) + p.calls,
+        inbound: (existing?.inbound || 0) + p.inbound,
+        outbound: (existing?.outbound || 0) + p.outbound,
         minutes: Math.round(((existing?.minutes || 0) + p.minutes) * 100) / 100,
         ended: (existing?.ended || 0) + p.ended,
         escalated: (existing?.escalated || 0) + p.escalated,
@@ -939,7 +962,7 @@ export interface TodaysActivityPoint {
 }
 
 export const getTodaysActivity = (tenantSlug: string) =>
-  request<TodaysActivityPoint[]>(`/tenants/${tenantSlug}/calls/todays-activity`);
+  request<TodaysActivityPoint[]>(`/tenants/${tenantSlug}/calls/todays-activity?tz=${viewerTz()}`);
 
 export const listAllTodaysActivity = async (tenants: Tenant[]): Promise<TodaysActivityPoint[]> => {
   const perTenant = await Promise.all(tenants.map((t) => getTodaysActivity(t.slug)));

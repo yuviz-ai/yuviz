@@ -108,3 +108,50 @@ async def test_synthesize_omits_language_code_when_unset():
 
     tts = _make_tts(handler)
     await tts.synthesize("hello", 16000)
+
+
+async def test_synthesize_per_call_language_overrides_row():
+    import json as _json
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert _json.loads(request.content)["language_code"] == "hi"
+        return httpx.Response(200, content=_silence_pcm(1600))
+
+    tts = _make_tts(handler, language_code="en")
+    chunks = [c async for c in tts.synthesize_stream("नमस्ते", 16000, language="hi")]
+    assert chunks
+
+
+async def test_regional_language_code_is_normalised():
+    import json as _json
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert _json.loads(request.content)["language_code"] == "en"
+        return httpx.Response(200, content=_silence_pcm(1600))
+
+    tts = _make_tts(handler, language_code="en-US")
+    await tts.synthesize("hello", 16000)
+
+
+@pytest.mark.parametrize("model_id", ["eleven_multilingual_v2", "eleven_turbo_v2", "eleven_flash_v2", "eleven_monolingual_v1"])
+async def test_models_without_language_enforcement_never_get_language_code(model_id):
+    import json as _json
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "language_code" not in _json.loads(request.content)
+        return httpx.Response(200, content=_silence_pcm(1600))
+
+    tts = _make_tts(handler, model_id=model_id, language_code="en-US")
+    await tts.synthesize("hello", 16000)
+    await tts.synthesize("नमस्ते", 16000, language="hi")
+
+
+async def test_flash_v2_5_sends_normalised_language_code():
+    import json as _json
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert _json.loads(request.content)["language_code"] == "en"
+        return httpx.Response(200, content=_silence_pcm(1600))
+
+    tts = _make_tts(handler, model_id="eleven_flash_v2_5", language_code="en-US")
+    await tts.synthesize("hello", 16000)

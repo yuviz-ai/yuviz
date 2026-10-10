@@ -23,7 +23,7 @@ import httpx
 from libs.config_sdk.secret_resolver import CompositeSecretResolver
 from libs.tenancy import tenant_conn
 
-from . import admission, agent_apis, auth_schemes, db, graph, presets, redaction
+from . import admission, agent_apis, auth_schemes, db, graph, oauth, presets, redaction
 from . import custom_apis as custom_apis_module
 from .custom_apis import PinnedResolverTransport, resolve_and_validate_endpoint
 from .schemas import ChainExecuteRequest, ChainExecuteResponse, ChainStepReport
@@ -334,7 +334,7 @@ def _set_body_path(body: dict, path: str, value: Any) -> None:
 
 def _resolve_arguments(
     api_row: dict, params: list[dict], caller_arguments: dict, prior_responses: dict[str, Any],
-    *, remote_party: str | None,
+    *, endpoint_url: str, remote_party: str | None,
 ) -> tuple[dict, dict, dict, str, dict, list[str], dict]:
     """Returns (headers, query_params, body_fields, url, argument_sources,
     from_prior_step, path_values). Raises _StepFailure for a missing required
@@ -352,7 +352,7 @@ def _resolve_arguments(
     query_params: dict[str, Any] = {}
     body_fields: dict[str, Any] = {}
     path_values: dict[str, str] = {}
-    url = api_row["endpoint_url"]
+    url = endpoint_url
     argument_sources: dict[str, str] = {}
     from_prior_step: list[str] = []
     missing_fields: list[dict] = []
@@ -376,7 +376,7 @@ def _resolve_arguments(
         elif source == "caller_id":
             if remote_party is None:
                 raise _StepFailure("invalid_argument", "caller_id_unavailable")
-            number = remote_party.lstrip("+") if param["value_digits_only"] else remote_party
+            number = presets.digits_only(remote_party) if param["value_digits_only"] else remote_party
             raw_values[name] = (param["value_prefix"] or "") + number
             argument_sources[name] = "caller_id"
         else:  # upstream
@@ -770,15 +770,22 @@ async def _run_steps(
         started = time.monotonic()
 
         try:
+            effective_url = api_row["endpoint_url"]
+            if api_row["endpoint_base_source"] == "oauth_connection":
+                api_base = await oauth.connection_api_base(tenant_id, api_row["oauth_connection_id"])
+                if api_base is None:
+                    raise _StepFailure("unavailable", "reconnect_required")
+                effective_url = api_base + api_row["endpoint_url"]
+
             headers, query_params, body_fields, url, argument_sources, from_prior_step, path_values = _resolve_arguments(
                 api_row, params_by_api.get(api_id, []), request.caller_arguments, prior_responses,
-                remote_party=remote_party,
+                endpoint_url=effective_url, remote_party=remote_party,
             )
 
-            hostname, allowed_ips = await resolve_and_validate_endpoint(api_row["endpoint_url"])
+            hostname, allowed_ips = await resolve_and_validate_endpoint(url)
 
             try:
-                injected_auth_keys = await auth_schemes.apply(api_row, headers, query_params)
+                injected_auth_keys = await auth_schemes.apply(api_row, headers, query_params, effective_url=url)
             except auth_schemes.ReconnectRequired:
                 raise _StepFailure("unavailable", "reconnect_required")
             except ValueError:

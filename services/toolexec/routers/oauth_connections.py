@@ -26,7 +26,7 @@ from services.config.deps import (
 )
 
 from .. import oauth
-from ..schemas import OAuthAuthorizeRequest, OAuthCallbackRequest
+from ..schemas import ApiKeyConnectRequest, OAuthAuthorizeRequest, OAuthCallbackRequest
 
 tenant_scoped_router = APIRouter(
     prefix="/tenants/{tenant_id}/oauth-connections",
@@ -38,7 +38,10 @@ router = APIRouter(tags=["oauth_connections"])
 
 @router.get("/oauth-providers")
 async def list_oauth_providers(current_user: CurrentUser = Depends(get_current_user)):
-    return [{"key": key, "label": oauth.PROVIDERS[key].label} for key in oauth.configured_providers()]
+    return [
+        {"key": key, "label": oauth.PROVIDERS[key].label, "auth_kind": oauth.PROVIDERS[key].auth_kind}
+        for key in oauth.configured_providers()
+    ]
 
 
 @tenant_scoped_router.get("")
@@ -75,6 +78,23 @@ async def authorize_oauth_connection(
         tenant_id=tenant_id, user_id=current_user.id, provider=provider, preset_key=body.preset_key,
     )
     return {"authorize_url": authorize_url}
+
+
+@tenant_scoped_router.post("/{provider}/api-key")
+async def connect_api_key_connection(
+    tenant_id: str,
+    provider: str,
+    body: ApiKeyConnectRequest,
+    current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
+):
+    await assert_tenant_access(tenant_id, current_user)
+    try:
+        return await oauth.connect_api_key(
+            tenant_id=tenant_id, provider=provider, api_key=body.api_key.get_secret_value(),
+            user_id=current_user.id, user_email=current_user.email,
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="oauth_connection_failed") from None
 
 
 @tenant_scoped_router.delete("/{connection_id}")

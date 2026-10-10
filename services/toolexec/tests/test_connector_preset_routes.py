@@ -188,7 +188,8 @@ async def test_every_console_role_can_list_the_presets(world):
         r = await c.get("/connector-presets", headers=users["viewer_a"]["headers"])
     assert r.status_code == 200
     assert [(p["key"], p["provider"]) for p in r.json()] == [
-        ("calendar_booking", "google"), ("whatsapp_confirmation", None), ("sheets_lead_capture", "google")]
+        ("calendar_booking", "google"), ("whatsapp_confirmation", None), ("sheets_lead_capture", "google"),
+        ("salesforce_crm", "salesforce"), ("hubspot_crm", "hubspot"), ("zoho_crm", "zoho")]
     assert all(set(p) == {"key", "title", "provider", "setup_schema"} for p in r.json())
 
 

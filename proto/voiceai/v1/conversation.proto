@@ -14,6 +14,16 @@ enum AudioCodec {
   AUDIO_CODEC_PCM_S16LE   = 1;  // 16-bit signed PCM, little-endian
 }
 
+// UNKNOWN and UNAVAILABLE are rejected with a spoken message; no agent is loaded.
+// UNSPECIFIED is sent by clients other than the gateway and is treated as ROUTED.
+enum RoutingStatus {
+  ROUTING_STATUS_UNSPECIFIED = 0;
+  ROUTING_STATUS_ROUTED      = 1;
+  ROUTING_STATUS_ROUTED_LKG  = 2;  // route served from the gateway's last-known-good cache
+  ROUTING_STATUS_UNKNOWN     = 3;  // number not assigned
+  ROUTING_STATUS_UNAVAILABLE = 4;  // routing data unreachable and nothing cached
+}
+
 // ---------------------------------------------------------------------------
 // ConversationService — single bidirectional stream per call-session
 // ---------------------------------------------------------------------------
@@ -103,6 +113,8 @@ message SessionOpenRequest {
   // Single-use credential for testing an inactive agent; minted by Config,
   // redeemed by Conversation. The gateway never sets it.
   string test_credential     = 13;
+
+  RoutingStatus routing_status = 14;
 }
 
 // Raw PCM inbound audio (microphone → gateway → service).

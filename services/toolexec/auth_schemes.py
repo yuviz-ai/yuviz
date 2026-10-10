@@ -178,7 +178,7 @@ async def _oauth2_client_credentials_token(tenant_id: str, custom_api_id: str, c
     return token
 
 
-async def apply(api: dict, headers: dict[str, Any], query_params: dict[str, Any]) -> set[str]:
+async def apply(api: dict, headers: dict[str, Any], query_params: dict[str, Any], *, effective_url: str) -> set[str]:
     """Places api['auth_scheme']'s credential into `headers` or
     `query_params` (mutated in place), resolving every ref through
     resolve_tenant_ref() at call time — never the bare
@@ -220,12 +220,17 @@ async def apply(api: dict, headers: dict[str, Any], query_params: dict[str, Any]
         elif scheme == "oauth2_authorization_code":
             from . import oauth  # function-local: oauth imports this module
 
-            token, provider = await oauth.access_token_for(tenant_id, api["oauth_connection_id"])
-            # A connector token goes only to its own provider's API hosts.
-            if urlsplit(api["endpoint_url"]).hostname not in provider.api_hosts:
+            token, provider, api_base_url, _auth_kind = await oauth.access_token_for(
+                tenant_id, api["oauth_connection_id"],
+            )
+            # A connector token goes only to the host this row is bound to, judged on the URL actually dialed.
+            if not oauth.provider_host_allowed(
+                provider, urlsplit(effective_url).hostname, api_base_url, base_source=api["endpoint_base_source"],
+            ):
                 raise ValueError("credential_unavailable")
-            headers["Authorization"] = f"Bearer {token}"
-            return {"Authorization"}
+            header_name, header_value = provider.auth_header
+            headers[header_name] = header_value.format(token=token)
+            return {header_name}
     except ReconnectRequired:
         raise
     except Exception as exc:

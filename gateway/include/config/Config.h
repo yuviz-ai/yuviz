@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <string>
 
@@ -19,8 +20,8 @@ struct WebSocketConfig {
     uint32_t    max_connections{1000};
     uint32_t    timeout_ms{30000};
 
-    // Max wait for mod_audio_fork's metadata frame before routing to the default
-    // tenant/agent. Real calls send it first, so this only bounds misbehaving clients.
+    // Max wait for mod_audio_fork's metadata frame; without it the DID is empty and the
+    // call is rejected as unknown. Real calls send it first.
     uint32_t    metadata_wait_ms{300};
 };
 
@@ -86,7 +87,7 @@ struct EslConfig {
     }
 };
 
-// Config-plane cache. Any Redis failure degrades to defaults; it never rejects a call.
+// Config-plane cache. Tenant tuning degrades to defaults; DID routing fails closed.
 struct RedisConfig {
     bool        enabled{false};
     std::string host{"127.0.0.1"};
@@ -94,6 +95,8 @@ struct RedisConfig {
     uint32_t    connect_timeout_ms{200};
     uint32_t    command_timeout_ms{100};
     uint32_t    pool_size{4};
+    // Oldest last-known-good route served during an outage; bounds misroutes after a reassignment.
+    uint32_t    did_lkg_max_age_s{300};
 };
 
 struct GatewayConfig {
@@ -140,23 +143,80 @@ struct TenantConfig {
         class Logger*        logger = nullptr) noexcept;
 };
 
-// DID → tenant/agent routing. Any lookup failure degrades to {"default", "default"};
-// it never rejects a call.
+enum class LookupStatus { Hit, Miss, Error };
+
+struct LookupResult {
+    LookupStatus status{LookupStatus::Error};
+    std::string  value;   // set only on Hit
+};
+
+// Unknown and Unavailable calls are rejected; they never reach a default agent.
+enum class RoutingStatus {
+    Routed,
+    RoutedLkg,     // Redis unreachable or unpopulated; fresh last-known-good route served
+    Unknown,       // no did:{did} key in a populated Redis — number not assigned
+    Unavailable,   // no metadata, or Redis unusable and no fresh cached route
+};
+
+// Written by services/config after it loads every did:{did}; absent means Redis was
+// flushed or replaced, so a missing did:{did} proves nothing.
+inline constexpr const char* kDidRoutesReadyKey = "routing:ready";
+
+[[nodiscard]] const char* to_string(RoutingStatus s) noexcept;
+
+// DID → tenant/agent routing.
 struct PhoneRoute {
-    std::string tenant_slug{"default"};
-    std::string agent_slug{"default"};
+    std::string tenant_slug;
+    std::string agent_slug;
     // Agent config_version; 0 when absent. Observability only.
     uint32_t    version{0};
 
-    // Looks up `did:{did}` in Redis (written by services/config/phone_numbers.py).
-    [[nodiscard]] static PhoneRoute from_redis(
-        class RedisClient& redis, const std::string& did) noexcept;
+    // Parses a did:{did} value; nullopt if malformed or missing either slug.
+    [[nodiscard]] static std::optional<PhoneRoute> parse(const std::string& raw) noexcept;
 };
+
+// Last route seen per DID, used only while Redis is unusable. A Miss evicts the entry;
+// entries older than max_age are never served, since a reassignment may not have been seen.
+class DidRouteCache {
+public:
+    using Clock = std::chrono::steady_clock;
+
+    explicit DidRouteCache(std::chrono::seconds max_age = std::chrono::seconds{300}) noexcept
+        : max_age_{max_age} {}
+
+    void set_max_age(std::chrono::seconds max_age) noexcept;
+    void put(const std::string& did, const PhoneRoute& route, Clock::time_point now = Clock::now());
+    void erase(const std::string& did);
+    [[nodiscard]] std::optional<PhoneRoute> get(
+        const std::string& did, Clock::time_point now = Clock::now()) const;
+
+private:
+    struct Entry {
+        PhoneRoute        route;
+        Clock::time_point cached_at;
+    };
+    mutable std::mutex            mutex_;
+    std::chrono::seconds          max_age_;
+    std::map<std::string, Entry>  routes_;
+};
+
+struct RouteResolution {
+    RoutingStatus status{RoutingStatus::Unavailable};
+    PhoneRoute    route;
+};
+
+// Pure decision over an already-performed did:{did} lookup; testable without Redis.
+[[nodiscard]] RouteResolution resolve_route(
+    const std::string& did, const LookupResult& lookup, DidRouteCache& cache);
+
+// Looks up did:{did} (written by services/config/phone_numbers.py) and resolves it.
+[[nodiscard]] RouteResolution resolve_route(
+    class RedisClient& redis, const std::string& did, DidRouteCache& cache);
 
 // DID/ANI/direction/freeswitch_host from mod_audio_fork's first WS text frame.
 // Missing or malformed input degrades gracefully; never throws.
 struct CallMetadata {
-    std::string did;              // called number — feeds PhoneRoute::from_redis()
+    std::string did;              // called number — feeds resolve_route()
     std::string ani;              // calling number — feeds SessionContext::caller_did
     std::string direction{"inbound"};
     std::string freeswitch_host;  // originating FS node (hostname/IP); routes ESL commands

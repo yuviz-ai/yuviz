@@ -17,6 +17,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import AsyncGenerator, Protocol
 
 from .directives import TransferRequest
@@ -117,6 +118,19 @@ class IConversationHandler(Protocol):
 # SessionContext
 # ---------------------------------------------------------------------------
 
+class RoutingStatus(Enum):
+    # Not routed by the Gateway: webcall, provider bridges, tests.
+    UNSPECIFIED = "unspecified"
+    ROUTED      = "routed"
+    ROUTED_LKG  = "routed_lkg"
+    UNKNOWN     = "unknown"
+    UNAVAILABLE = "unavailable"
+
+    @property
+    def rejects_call(self) -> bool:
+        return self in (RoutingStatus.UNKNOWN, RoutingStatus.UNAVAILABLE)
+
+
 @dataclass
 class SessionContext:
     session_id:  str
@@ -128,6 +142,7 @@ class SessionContext:
     direction:   str = ""
     script_id:   str = ""
     test_credential: str = field(default="", repr=False)
+    routing_status: RoutingStatus = RoutingStatus.UNSPECIFIED
 
 
 class AgentUnavailable(Exception):
@@ -201,9 +216,10 @@ class ConversationSession:
     async def greet(self) -> AsyncGenerator[HandlerResponse, None]:
         """Synthesize the opening greeting and yield it as a HandlerResponse."""
         payloads = await self._handler.greeting(self._ctx.session_id)
-        if payloads:
+        ends_call = self._ctx.routing_status.rejects_call
+        if payloads or ends_call:
             self._tts_seq += len(payloads)
-            yield HandlerResponse(tts_payloads=payloads)
+            yield HandlerResponse(tts_payloads=payloads, end_call=ends_call)
 
     async def push_audio(self, payload: bytes, *, trace_id: str = "") -> HandlerResponse:
         """Accumulate inbound audio and call the handler's per-chunk hook."""

@@ -24,7 +24,7 @@ from libs.config_sdk.test_credentials import (
 
 from .. import __main__ as entry
 from ..generated.voiceai.v1 import conversation_pb2 as pb
-from ..session import AgentUnavailable, SessionContext
+from ..session import AgentUnavailable, RoutingStatus, SessionContext
 from .test_agent_resolver import _registry
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
@@ -179,3 +179,17 @@ def test_session_open_request_carries_the_credential_field():
 def test_repr_of_session_context_omits_the_credential():
     assert SENTINEL not in repr(_ctx(SENTINEL))
     assert _ctx(SENTINEL).test_credential == SENTINEL
+
+
+@pytest.mark.parametrize("status", [RoutingStatus.ROUTED, RoutingStatus.ROUTED_LKG])
+async def test_gateway_routed_call_never_falls_back_to_default_yaml(status, legacy_calls, credential_redis):
+    ctx = _ctx(direction="inbound")
+    ctx.routing_status = status
+
+    assert await _resolve(ctx, credential_redis, _config(status="inactive")) is None
+    assert legacy_calls == []
+
+
+async def test_unrouted_client_keeps_legacy_fallback(legacy_calls, credential_redis):
+    assert await _resolve(_ctx(direction="inbound"), credential_redis, _config(status="inactive")) is LEGACY
+    assert legacy_calls == ["sup"]

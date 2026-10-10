@@ -79,7 +79,7 @@ services:
       SUPERADMIN_EMAIL: ${SUPERADMIN_EMAIL:-}
       SUPERADMIN_PASSWORD: ${SUPERADMIN_PASSWORD:-}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
-      VOICEAI_STT_MODEL: ${VOICEAI_STT_MODEL:-small.en}
+      VOICEAI_STT_MODEL: ${VOICEAI_STT_MODEL:-small}
       # dev.sh --llm-model. The seed writes it into the default agent's
       # provider row, so this and the conversation service must agree.
       VOICEAI_LLM_MODEL: ${VOICEAI_LLM_MODEL:-llama3.2}
@@ -195,7 +195,7 @@ services:
       # pipeline_config.py defaults to "macos", which needs the macOS `say` binary.
       VOICEAI_TTS_ENGINE: kokoro
       VOICEAI_TTS_VOICE: af_sarah
-      VOICEAI_STT_MODEL: ${VOICEAI_STT_MODEL:-small.en}
+      VOICEAI_STT_MODEL: ${VOICEAI_STT_MODEL:-small}
       VOICEAI_LLM_MODEL: ${VOICEAI_LLM_MODEL:-llama3.2}
       # dev.sh --no-stt / --no-tts: skip loading the model at startup.
       VOICEAI_ENABLE_STT: ${VOICEAI_ENABLE_STT:-1}

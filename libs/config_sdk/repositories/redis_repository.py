@@ -8,23 +8,30 @@ from typing import Any
 
 import redis.asyncio as redis
 
+from ..exceptions import RepositoryUnavailableError
+
 log = logging.getLogger(__name__)
+
+# Read on the call path: a hung Redis must fail fast (Gateway uses 100 ms too).
+_TIMEOUT_S = 0.1
 
 
 class RedisConfigRepository:
     def __init__(self, redis_url: str) -> None:
-        self._client = redis.from_url(redis_url, decode_responses=True)
+        self._client = redis.from_url(
+            redis_url, decode_responses=True,
+            socket_timeout=_TIMEOUT_S, socket_connect_timeout=_TIMEOUT_S,
+        )
 
     async def close(self) -> None:
         await self._client.aclose()
 
     async def _get_json(self, key: str) -> dict[str, Any] | None:
-        # A Redis outage is just a miss; the caller falls through to HTTP.
         try:
             raw = await self._client.get(key)
-        except redis.RedisError:
-            log.warning("RedisConfigRepository: Redis unreachable, treating as miss key=%s", key)
-            return None
+        except redis.RedisError as exc:
+            log.warning("RedisConfigRepository: Redis unreachable key=%s", key)
+            raise RepositoryUnavailableError(f"redis unavailable key={key}") from exc
         return json.loads(raw) if raw is not None else None
 
     async def fetch_tenant(self, tenant_slug: str) -> dict[str, Any] | None:

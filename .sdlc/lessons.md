@@ -6,7 +6,7 @@ and complies with the lessons tagged for it. Append-only via `/sdlc:retro` (Clau
 or `.cursor/`. Keep each entry to two lines. Delete an entry only when it becomes wrong, not when
 it becomes familiar.
 
-Tags: [prd] [architect] [planner] [implementer] [critic] [security] [tester] [qa] [all]
+Tags: [prd] [architect] [planner] [implementer] [critic] [security] [tester] [qa] [approver] [all]
 
 ---
 
@@ -134,12 +134,15 @@ Tags: [prd] [architect] [planner] [implementer] [critic] [security] [tester] [qa
     an unreachable relay would have stalled every Config request including the `/health` check that
     docker-compose gates other services on.*
 
-19. [critic][implementer] A control the design specified and the implementation dropped will not
+19. [critic][implementer][approver] A control the design specified and the implementation dropped will not
     surface as a test failure — no test was written for it, because the design assumed it existed.
     When reviewing against a design, diff its named controls (timeouts, limits, predicates, headers)
-    against the code one by one.
+    against the code one by one. The same goes for a PRD criterion that enumerates required
+    content: check each listed item is present. "Wording left open" never licenses dropping an item.
     *Earned: the design specified a 10s SMTP timeout; the implementation shipped without one and
-    every test still passed.*
+    every test still passed. Guided agent creation: PRD criterion 16 listed six speech behaviours,
+    the build reused an old 2-line block, the approver passed it as "design gave no wording", and the
+    user found the prompts "not up to the mark" in hands-on testing.*
 
 20. [architect][implementer][security] An outbound connection carrying a secret needs transport
     security requested explicitly — the client library will not do it for you. `smtplib` sends AUTH
@@ -266,7 +269,10 @@ Tags: [prd] [architect] [planner] [implementer] [critic] [security] [tester] [qa
     *Earned: a `Listen` node's timeout task and `on_dtmf` from the servicer loop both mutated the
     same `CallFlowRunner` across awaits — a double advance, a `Handoff` plus a `Hangup`, or the
     wrong node. `services/conversation` is full of paired producers (servicer loop, audio delay
-    pump, VAD), so this is the default shape there, not an unlucky one.*
+    pump, VAD), so this is the default shape there, not an unlucky one. The same shape bites UI
+    hooks: a restart must reset every per-session field, and a "has data" gate must check that the
+    data belongs to the current session. Easy-mode Stop→Start kept the old transcript, so Fix
+    unlocked for a session with no turns.*
 
 35. [implementer][critic] After adding a method or branch to an existing file, re-read the whole
     enclosing function. A new `def` inserted inside another function's body silently adopts that
@@ -366,3 +372,35 @@ Tags: [prd] [architect] [planner] [implementer] [critic] [security] [tester] [qa
     *Earned: `gcal_find_booking` matched `q=<caller-stated phone>`, so any caller could cancel any
     patient's appointment. The fix bound it to `caller_did`, which on campaign calls is the shared
     outbound DID, so every callee shared one "ANI".*
+
+45. [implementer][critic] Every value handed to a third-party engine or API must be in the form that
+    engine accepts, normalised at the adapter that calls it — not where the value was stored. A
+    field the UI fills from one source ("en-US" from a voice pick, legacy free text, "en_US") reaches
+    every provider; each adapter normalises or drops what its engine rejects, and the field is
+    shape-checked on write *and* tolerated-or-ignored on read for rows saved before the check.
+    *Earned: multilingual-agents. Honouring `agents.language` sent "en-US" to faster-whisper (raises
+    on every turn — dead air for ordinary single-language agents), ElevenLabs and Cartesia; review
+    rounds then found `en_US` and legacy "English" reaching Deepgram's stream URL, and
+    `language_code` sent to ElevenLabs models that don't support it.*
+
+46. [architect][critic] A capability table (registry, catalogue, UI hint) is a promise the runtime
+    must keep: before advertising "engine X speaks language Y", prove the runtime path for Y on X
+    actually works in this environment (dependency installed, parameter accepted, voice of that
+    language), and make the failure path fall back with one loud log instead of going silent.
+    *Earned: multilingual-agents advertised Kokoro ja/zh (misaki extras not installed: ImportError
+    and silence on every sentence), English Kokoro voices as Hindi-capable, and `language_code` on
+    multilingual_v2. Each passed unit tests and validation, and only a reviewer reading the
+    third-party code/docs found the gap.*
+
+47. [architect][implementer][critic] When rows record which version of a shipped definition made
+    them, read version-independent properties by stable id at runtime. Require the current version
+    only at creation, and add a test that sets a row to an older version.
+    *Earned: Easy templates bumped to v2. `_agent_channel` looked them up by (id, version), so every
+    v1 chat agent came back channel=None and was revised with the voice speech block.*
+
+48. [architect][implementer][security][critic] A row that links two tenant-owned rows (agent ↔ KB,
+    agent ↔ provider config) must check that both share a tenant: in the write path, in every join that
+    reads it, and in the DB itself (a trigger or composite FK). Authorizing only the row the URL names is
+    a cross-tenant attach.
+    *Earned: PR #66 (critical ×2). Attaching a KB checked only the agent, so another tenant's KB could be
+    read; an agent tool policy accepted another tenant's provider config, and its API key was used at runtime.*
