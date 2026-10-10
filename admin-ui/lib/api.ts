@@ -707,6 +707,53 @@ export const listAllCalls = async (
   };
 };
 
+export type CallExportColumn =
+  | "session_id" | "started_at" | "ended_at" | "account" | "direction" | "caller_number" | "called_number"
+  | "agent" | "duration" | "status" | "outcome" | "close_reason" | "sentiment" | "sentiment_reason"
+  | "turns" | "disposition" | "languages";
+
+/** Mirrors services/config/schemas.py CallExport; `session_ids` set = export only those calls. */
+export interface CallExportRequest {
+  tenant_slugs: string[];
+  format: "csv" | "xlsx";
+  columns: CallExportColumn[];
+  session_ids?: string[];
+  timezone?: string;
+  started_after?: string;
+  started_before?: string;
+  q?: string;
+  parties?: string;
+  agent?: string;
+  duration?: string;
+  sentiment?: string;
+  status?: string;
+  turns?: string;
+}
+
+/** `truncated`: more calls matched than the server's per-export row cap. */
+export const exportCalls = async (body: CallExportRequest): Promise<{ blob: Blob; truncated: boolean }> => {
+  const token = getToken();
+  const res = await fetch(`${BASE_URL}/calls/export`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const raw = (await res.json())?.detail;
+      detail = (Array.isArray(raw) ? raw[0]?.msg : raw) || detail;
+    } catch {
+      // not JSON — keep statusText
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return { blob: await res.blob(), truncated: res.headers.get("X-Export-Truncated") === "true" };
+};
+
 // ── Live Calls Monitoring ────────────────────────────────────────────────
 // Mirrors services/config/routers/live_calls.py.
 

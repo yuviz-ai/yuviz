@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
-  ArrowRight, Check, ChevronDown, ChevronLeft, ChevronRight, PhoneIncoming, PhoneOutgoing, RefreshCw, Search, X,
+  ArrowRight, Check, ChevronDown, ChevronLeft, ChevronRight, Download, PhoneIncoming, PhoneOutgoing, RefreshCw, Search, X,
 } from "lucide-react";
 import { ALL_CALLS_LIMIT, ApiError, CallTimeRange, CallWithTenant, listAllCalls } from "@/lib/api";
+import { ExportCallsModal, ExportScope } from "@/components/ExportCallsModal";
 import { SentimentBadge, SENTIMENT_ORDER, sentimentLabel } from "@/components/SentimentBadge";
 import { useActiveTenant } from "@/lib/useActiveTenant";
 import { OUTCOMES, Tone, outcomeOf } from "@/lib/callOutcome";
@@ -220,6 +221,8 @@ export default function CallsPage() {
   const [customRange, setCustomRange] = useState<TimeRange>(() => ({ from: customFromUrl(searchParams), to: "" }));
 
   const [truncated, setTruncated] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [exporting, setExporting] = useState(false);
 
   const [pageSize, setPageSize] = useState(25);
   const [page, setPage] = useState(1);
@@ -234,6 +237,7 @@ export default function CallsPage() {
       .then((result) => {
         setCalls(result.calls);
         setTruncated(result.truncated);
+        setSelected(new Set());
         setPage(1);
       })
       .catch((e) => setError(e instanceof ApiError ? e.detail : String(e)))
@@ -380,6 +384,36 @@ export default function CallsPage() {
 
   const openDetail = (call: CallWithTenant) => router.push(`/calls/${call.session_id}`);
 
+  const toggleSelected = (ids: string[], on: boolean) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      ids.forEach((id) => (on ? next.add(id) : next.delete(id)));
+      return next;
+    });
+  const pageAllSelected = pageCalls.length > 0 && pageCalls.every((c) => selected.has(c.session_id));
+  const pageSomeSelected = pageCalls.some((c) => selected.has(c.session_id));
+
+  // The server re-applies these filters, so the export isn't capped at the calls loaded here.
+  const exportRequest = (scope: ExportScope) => {
+    if (scope === "selected") {
+      const picked = calls.filter((c) => selected.has(c.session_id));
+      return { tenant_slugs: [...new Set(picked.map((c) => c.tenant_id))], session_ids: picked.map((c) => c.session_id) };
+    }
+    const range = timeRangeFor(timeFilter, customRange);
+    return {
+      tenant_slugs: targetTenants.filter((t) => !filters.account || t.name === filters.account).map((t) => t.slug),
+      started_after: range.startedAfter,
+      started_before: range.startedBefore,
+      q: search.trim() || undefined,
+      parties: filters.parties,
+      agent: filters.agent,
+      duration: filters.duration,
+      sentiment: filters.sentiment,
+      status: filters.status,
+      turns: filters.turns,
+    };
+  };
+
   return (
     <>
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
@@ -389,10 +423,29 @@ export default function CallsPage() {
             Every finished and in-progress call. Open one to read its transcript and how it ended.
           </div>
         </div>
-        <button className="btn btn-ghost" onClick={load} disabled={loading}>
-          <RefreshCw size={14} /> Refresh
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn btn-ghost" onClick={load} disabled={loading}>
+            <RefreshCw size={14} /> Refresh
+          </button>
+          <button className="btn btn-primary" onClick={() => setExporting(true)} disabled={loading || calls.length === 0}>
+            <Download size={14} /> Export
+          </button>
+        </div>
       </div>
+
+      {exporting && (
+        <ExportCallsModal
+          onClose={() => setExporting(false)}
+          filteredLabel={
+            truncated
+              ? `${filtered.length}+ calls, including older matches not loaded in the table`
+              : `${filtered.length} call${filtered.length === 1 ? "" : "s"}`
+          }
+          selectedCount={selected.size}
+          showAccount={isAllTenants}
+          request={exportRequest}
+        />
+      )}
 
       {error && <div className="error-banner">{error}</div>}
 
@@ -406,6 +459,14 @@ export default function CallsPage() {
                 ? `${calls.length} call${calls.length === 1 ? "" : "s"}`
                 : `${filtered.length} of ${calls.length} calls`}
             {!loading && truncated && ` · showing the latest ${ALL_CALLS_LIMIT} per account, narrow the time range to see older calls`}
+            {!loading && selected.size > 0 && (
+              <>
+                {` · ${selected.size} selected `}
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setSelected(new Set())}>
+                  Clear
+                </button>
+              </>
+            )}
           </div>
           {!loading && (calls.length > 0 || timeFilter) && (
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
@@ -442,6 +503,17 @@ export default function CallsPage() {
             <table className="tbl">
               <thead>
                 <tr>
+                  <th className="calls-check">
+                    <input
+                      type="checkbox"
+                      aria-label="Select calls on this page"
+                      checked={pageAllSelected}
+                      ref={(el) => {
+                        if (el) el.indeterminate = pageSomeSelected && !pageAllSelected;
+                      }}
+                      onChange={() => toggleSelected(pageCalls.map((c) => c.session_id), !pageAllSelected)}
+                    />
+                  </th>
                   {columns.map((col) => (
                     <th
                       key={col.key}
@@ -472,7 +544,7 @@ export default function CallsPage() {
               <tbody>
                 {filtered.length === 0 && (
                   <tr>
-                    <td colSpan={columns.length + 1} style={{ cursor: "default" }}>
+                    <td colSpan={columns.length + 2} style={{ cursor: "default" }}>
                       <div className="empty-state">
                         No calls match these filters.
                         <button type="button" className="btn btn-ghost btn-sm" style={{ marginLeft: 8 }} onClick={clearFilters}>
@@ -495,6 +567,14 @@ export default function CallsPage() {
                       }
                     }}
                   >
+                    <td className="calls-check" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        aria-label="Select call"
+                        checked={selected.has(c.session_id)}
+                        onChange={(e) => toggleSelected([c.session_id], e.target.checked)}
+                      />
+                    </td>
                     <td style={{ whiteSpace: "nowrap" }}>
                       <div className="cell-stack">
                         <span className="cell-primary">{formatTime(c.started_at)}</span>

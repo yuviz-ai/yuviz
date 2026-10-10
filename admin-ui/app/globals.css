@@ -1394,6 +1394,18 @@ body {
 .sentiment-dot { width: 6px; height: 6px; border-radius: 99px; background: currentColor; flex-shrink: 0; }
 .sentiment-unscored { color: var(--text-3); font-size: .78rem; cursor: help; }
 
+.calls-check { width: 34px; padding-right: 0 !important; }
+.calls-check input { cursor: pointer; accent-color: var(--cyan); }
+.export-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.export-opt { display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--rs); cursor: pointer; }
+.export-opt.on { border-color: var(--cyan); background: var(--cyan-dim2); }
+.export-opt.off { opacity: .55; cursor: not-allowed; }
+.export-opt input { margin-top: 2px; accent-color: var(--cyan); }
+.export-opt b { display: block; font-size: .78rem; font-weight: 600; color: var(--text); }
+.export-opt small { display: block; margin-top: 2px; font-size: .68rem; color: var(--text-3); }
+.export-cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--rs); }
+.export-cols label { display: flex; align-items: center; gap: 6px; font-size: .74rem; color: var(--text-2); cursor: pointer; }
+.export-cols input { accent-color: var(--cyan); }
 .calls-search { position: relative; width: 240px; max-width: 100%; }
 .calls-search .form-input { padding: 5px 10px 5px 28px; font-size: .74rem; }
 .calls-search-icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--text-3); pointer-events: none; }

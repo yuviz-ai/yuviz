@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, SecretStr, field_validator
@@ -233,6 +234,32 @@ class WorkflowPublish(BaseModel):
 class VoicePreview(BaseModel):
     """Text to speak in a provider_config's voice."""
     text: str = Field(min_length=1, max_length=600)
+
+
+CallExportColumn = Literal[
+    "session_id", "started_at", "ended_at", "account", "direction", "caller_number", "called_number",
+    "agent", "duration", "status", "outcome", "close_reason", "sentiment", "sentiment_reason",
+    "turns", "disposition", "languages",
+]
+
+
+class CallExport(BaseModel):
+    """Calls page export; filter values mirror the page's column filters."""
+    tenant_slugs: list[str] = Field(min_length=1, max_length=500)
+    format: Literal["csv", "xlsx"] = "csv"
+    columns: list[CallExportColumn] = Field(min_length=1)
+    # Set = export exactly these calls and ignore the filters below.
+    session_ids: list[str] | None = Field(default=None, max_length=10_000)
+    timezone: str = "UTC"
+    started_after: datetime | None = None
+    started_before: datetime | None = None
+    q: str | None = Field(default=None, max_length=200)
+    parties: Literal["inbound", "outbound", "AI", "WebRTC"] | None = None
+    agent: str | None = None  # agent name; "__none" = calls with no agent
+    duration: Literal["short", "mid", "long", "none"] | None = None
+    sentiment: Literal["positive", "neutral", "negative", "frustrated", "unscored"] | None = None
+    status: Literal["live", "completed", "done", "to_person", "transfer_failed", "dropped"] | None = None
+    turns: Literal["0", "few", "many"] | None = None
 
 
 class CallFlowCreate(BaseModel):

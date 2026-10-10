@@ -436,3 +436,108 @@ async def test_get_disposition_mix_groups_ended_calls_only(test_tenant, scoped, 
 
     for sid in (a_id, b_id, xfer_id, live_id):
         await pool.execute("DELETE FROM calls WHERE session_id = $1", sid)
+
+
+async def _seed_export_calls(pool, tenant_slug):
+    ids = [f"test-call-{uuid.uuid4().hex[:8]}" for _ in range(3)]
+    await pool.execute(
+        "INSERT INTO calls (session_id, tenant_id, direction, caller_number, called_number, started_at, ended_at, "
+        "duration_ms, close_reason, sentiment, turn_count) VALUES "
+        "($1, $4, 'inbound', '+15550100', '+15550199', '2026-10-01T10:00:00Z', '2026-10-01T10:01:30Z', "
+        "90000, 'TRANSFER_SUCCESS', 'positive', 4), "
+        "($2, $4, 'outbound', '=HYPERLINK(\"x\")', '+15550123', '2026-10-02T10:00:00Z', NULL, NULL, NULL, NULL, 0), "
+        "($3, $4, 'inbound', '+15550111', '+15550199', '2026-10-03T10:00:00Z', '2026-10-03T10:00:10Z', "
+        "10000, 'transport_error', 'frustrated', 1)",
+        *ids, tenant_slug,
+    )
+    return ids
+
+
+async def _export(base, **overrides):
+    from services.config.schemas import CallExport
+
+    # Caller is the first listed tenant, as the router passes it.
+    return await calls.export_calls(CallExport(**{**base, **overrides}), tenant_slug=base["tenant_slugs"][0])
+
+
+async def test_export_csv_applies_filters_and_formats_columns(test_tenant, scoped, pool):
+    import csv
+    import os
+
+    ids = await _seed_export_calls(pool, test_tenant["slug"])
+    spec = {
+        "tenant_slugs": [test_tenant["slug"]],
+        "columns": ["session_id", "started_at", "caller_number", "duration", "status", "outcome", "sentiment"],
+        "timezone": "Asia/Kolkata",
+    }
+    try:
+        path, truncated = await _export(spec, parties="inbound")
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            rows = list(csv.reader(f))
+        os.unlink(path)
+        assert not truncated
+        assert rows[0] == ["Call ID", "Started", "From", "Duration (s)", "Status", "Outcome", "Sentiment"]
+        # Newest first, times in the requested zone, phone numbers untouched.
+        assert rows[1:] == [
+            [ids[2], "2026-10-03 15:30:00", "+15550111", "10", "Completed", "Call dropped", "Frustrated"],
+            [ids[0], "2026-10-01 15:30:00", "+15550100", "90", "Completed", "Sent to a person", "Positive"],
+        ]
+
+        path, _ = await _export(spec, status="to_person")
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            assert [r[0] for r in list(csv.reader(f))[1:]] == [ids[0]]
+        os.unlink(path)
+
+        path, _ = await _export(spec, status="live", columns=["caller_number", "outcome"])
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            # Formula-looking text is defused; a live call has no outcome yet.
+            assert list(csv.reader(f))[1:] == [["'=HYPERLINK(\"x\")", ""]]
+        os.unlink(path)
+
+        path, _ = await _export(spec, q="5550111", columns=["session_id"])
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            assert list(csv.reader(f))[1:] == [[ids[2]]]
+        os.unlink(path)
+    finally:
+        await pool.execute("DELETE FROM calls WHERE session_id = ANY($1)", ids)
+
+
+async def test_export_selected_ids_xlsx(test_tenant, scoped, pool):
+    import os
+    import zipfile
+
+    ids = await _seed_export_calls(pool, test_tenant["slug"])
+    try:
+        path, _ = await _export(
+            {"tenant_slugs": [test_tenant["slug"]], "columns": ["session_id", "duration"]},
+            format="xlsx", session_ids=[ids[0], ids[2]], status="live",  # filters ignored for a selection
+        )
+        with zipfile.ZipFile(path) as z:
+            sheet = z.read("xl/worksheets/sheet1.xml").decode()
+            strings = z.read("xl/sharedStrings.xml").decode() if "xl/sharedStrings.xml" in z.namelist() else sheet
+        os.unlink(path)
+        assert ids[0] in strings and ids[2] in strings and ids[1] not in strings
+        assert "<v>90</v>" in sheet and "<v>10</v>" in sheet  # durations written as numbers
+    finally:
+        await pool.execute("DELETE FROM calls WHERE session_id = ANY($1)", ids)
+
+
+async def test_export_never_reads_another_tenants_calls(test_tenant, scoped, pool):
+    import os
+
+    other = await pool.fetchrow(
+        "INSERT INTO tenants (name, slug) VALUES ($1, $2) RETURNING *",
+        "Export Cross Tenant", f"test-call-ex-{uuid.uuid4().hex[:8]}",
+    )
+    ids = await _seed_export_calls(pool, other["slug"])
+    try:
+        path, _ = await _export(
+            {"tenant_slugs": [test_tenant["slug"], other["slug"]], "columns": ["session_id"]}, session_ids=ids,
+        )
+        with open(path, encoding="utf-8-sig") as f:
+            content = f.read()
+        os.unlink(path)
+        assert content.strip() == "Call ID"
+    finally:
+        await pool.execute("DELETE FROM calls WHERE session_id = ANY($1)", ids)
+        await pool.execute("DELETE FROM tenants WHERE id = $1", other["id"])

@@ -1548,6 +1548,36 @@ class TestCallEndpoints:
         await pool.execute("DELETE FROM transcript_entries WHERE session_id = $1", session_id)
         await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
 
+    async def test_viewer_exports_own_calls_but_not_another_tenants(self, viewer_client, test_tenant, pool):
+        session_id = f"test-call-{uuid.uuid4().hex[:8]}"
+        await pool.execute(
+            "INSERT INTO calls (session_id, tenant_id, direction) VALUES ($1, $2, 'inbound')",
+            session_id, test_tenant["slug"],
+        )
+        try:
+            body = {"tenant_slugs": [test_tenant["slug"]], "columns": ["session_id", "direction"]}
+            resp = await viewer_client.post("/calls/export", json=body)
+            assert resp.status_code == 200
+            assert resp.headers["x-export-truncated"] == "false"
+            assert "attachment" in resp.headers["content-disposition"]
+            assert resp.content.decode("utf-8-sig").splitlines() == ["Call ID,Direction", f"{session_id},Inbound"]
+
+            resp = await viewer_client.post("/calls/export", json={**body, "format": "xlsx"})
+            assert resp.status_code == 200
+            assert resp.content[:2] == b"PK"  # xlsx is a zip
+
+            resp = await viewer_client.post("/calls/export", json={**body, "tenant_slugs": ["someone-else"]})
+            assert resp.status_code == 404
+
+            # Legacy alias some browsers still report; slim images drop it without the tzdata package.
+            resp = await viewer_client.post("/calls/export", json={**body, "timezone": "Asia/Calcutta"})
+            assert resp.status_code == 200
+
+            resp = await viewer_client.post("/calls/export", json={**body, "timezone": "Not/AZone"})
+            assert resp.status_code == 422
+        finally:
+            await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
+
     async def test_tenant_admin_cannot_read_another_tenants_call(
         self, admin_client, test_tenant, pool,
     ):

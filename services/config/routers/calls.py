@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 
 from .. import calls as calls_service
 from .. import tenants as tenants_service
 from ..auth import CurrentUser
 from ..deps import bind_path_tenant, get_current_user, get_or_404, is_platform_scoped, require_path_tenant_access
+from ..schemas import CallExport
 
 tenant_scoped_router = APIRouter(
     prefix="/tenants/{tenant_slug}/calls",
@@ -90,6 +95,32 @@ async def get_usage_trend(
 async def get_todays_activity(tenant_slug: str, current_user: CurrentUser = Depends(get_current_user)):
     await get_or_404(tenants_service.get_tenant(tenant_slug), f"tenant {tenant_slug!r} not found")
     return await calls_service.get_todays_activity(tenant_slug)
+
+
+_EXPORT_MEDIA_TYPES = {
+    "csv": "text/csv; charset=utf-8",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+
+
+@router.post("/export")
+async def export_calls(body: CallExport, current_user: CurrentUser = Depends(get_current_user)):
+    tenant_slug = await _caller_tenant_slug(current_user)
+    if tenant_slug is not None and set(body.tenant_slugs) != {tenant_slug}:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    try:
+        ZoneInfo(body.timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise HTTPException(status_code=422, detail=f"unknown timezone {body.timezone!r}")
+    path, truncated = await calls_service.export_calls(body, tenant_slug=tenant_slug)
+    filename = f"calls-{datetime.now(timezone.utc):%Y%m%d-%H%M}.{body.format}"
+    return FileResponse(
+        path,
+        media_type=_EXPORT_MEDIA_TYPES[body.format],
+        filename=filename,
+        headers={"X-Export-Truncated": "true" if truncated else "false"},
+        background=BackgroundTask(os.unlink, path),
+    )
 
 
 @router.get("/{session_id}")
