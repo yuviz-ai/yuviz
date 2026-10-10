@@ -667,3 +667,17 @@ async def test_public_getters_still_return_none_during_outage():
     provider = CacheAsideConfigProvider(DownRepo(), DownRepo())
 
     assert await provider.get_agent("acme", "sup") is None
+
+
+async def test_refresh_survives_a_call_flow_that_raises():
+    provider = CacheAsideConfigProvider(_full_repo(), FakeRepo())
+    await provider.get_runtime_config("acme", "sup")
+    provider._last_good_flows[("acme", "broken")] = (object(), 0.0)
+
+    class Boom(FakeRepo):
+        async def fetch_call_flow(self, tenant_slug, call_flow_id):
+            raise ValueError("unexpected")
+
+    provider._redis_repo = Boom(**{k: getattr(_full_repo(), k) for k in ("tenants", "agents", "providers")})
+
+    await provider.refresh_last_known_good()   # must not raise

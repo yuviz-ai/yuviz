@@ -294,7 +294,11 @@ class CacheAsideConfigProvider:
                 log.exception("CacheAsideConfigProvider: refresh failed tenant=%s agent=%s",
                               tenant_slug, agent_slug)
         for tenant_slug, call_flow_id in list(self._last_good_flows):
-            await self.get_call_flow(tenant_slug, call_flow_id)
+            try:
+                await self.get_call_flow(tenant_slug, call_flow_id)
+            except Exception:
+                log.exception("CacheAsideConfigProvider: refresh failed tenant=%s flow=%s",
+                              tenant_slug, call_flow_id)
 
     async def run_refresh(self, interval_s: float = _LKG_REFRESH_S) -> None:
         while True:

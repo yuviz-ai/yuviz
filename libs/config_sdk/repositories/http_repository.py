@@ -21,6 +21,11 @@ def _seg(value: str) -> str:
     return quote(str(value), safe="")
 
 
+def _unusable(*parts: str) -> bool:
+    """Control characters can't be in a real slug or id; looking them up only provokes errors."""
+    return any(ord(c) < 32 or c == "\x7f" for p in parts for c in str(p))
+
+
 class HttpConfigRepository:
     def __init__(
         self,
@@ -72,23 +77,32 @@ class HttpConfigRepository:
         if resp.status_code == 404:
             return None
         if resp.status_code >= 400:
-            # Other 4xx is this request's fault, so it must not trip the shared breaker.
+            # Only "service down" statuses trip the shared breaker; a 4xx or a 500 can be
+            # provoked by one caller's input.
             raise RepositoryUnavailableError(
                 f"HttpConfigRepository: GET {path} returned status={resp.status_code}",
-                transient=resp.status_code >= 500 or resp.status_code in (401, 403, 408, 429),
+                transient=resp.status_code in (502, 503, 504),
             )
         return resp.json()
 
     async def fetch_tenant(self, tenant_slug: str) -> dict[str, Any] | None:
+        if _unusable(tenant_slug):
+            return None
         return await self._get(f"/tenants/{_seg(tenant_slug)}")
 
     async def fetch_agent(self, tenant_slug: str, agent_slug: str) -> dict[str, Any] | None:
+        if _unusable(tenant_slug, agent_slug):
+            return None
         return await self._get(f"/tenants/{_seg(tenant_slug)}/agents/{_seg(agent_slug)}")
 
     async def fetch_provider_config(self, provider_id: str) -> dict[str, Any] | None:
+        if _unusable(provider_id):
+            return None
         return await self._get(f"/providers/{_seg(provider_id)}")
 
     async def fetch_call_flow(self, tenant_slug: str, call_flow_id: str) -> dict[str, Any] | None:
+        if _unusable(tenant_slug, call_flow_id):
+            return None
         return await self._get(f"/tenants/{_seg(tenant_slug)}/call-flows/{_seg(call_flow_id)}/published")
 
     async def list_tenants(self) -> list[dict[str, Any]]:

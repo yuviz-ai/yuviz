@@ -176,6 +176,9 @@ async def _prewarm_agents(
                 continue
             _, bundle = resolved
             graph = graph_for(resolved[0])
+            # Remembers the IVR flow too, so an outage before its first call keeps the menu.
+            if resolved[0].agent.call_flow_id:
+                await config.get_call_flow(tenant_slug, resolved[0].agent.call_flow_id)
             # Ollama only loads the model on a real request; no-op for cloud LLMs.
             warm = getattr(bundle.llm, "warm", None)
             if warm is not None:
