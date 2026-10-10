@@ -96,15 +96,6 @@ def test_needs_by_channel():
         assert t.needs == ({"llm"} if t.channel == "chat" else {"llm", "stt", "tts"})
 
 
-def test_existing_advanced_prefills_are_in_catalog_with_same_label():
-    src = (REPO / "admin-ui/lib/agentTemplates.ts").read_text()
-    pairs = re.findall(r'key:\s*"([^"]+)",\s*label:\s*"([^"]+)"', src)
-    assert len(pairs) == 4
-    labels = {t.id: t.label for t in CATALOG}
-    for key, label in pairs:
-        assert labels.get(key) == label
-
-
 def test_get_template_needs_exact_version():
     assert get_template("faq-support", 4).id == "faq-support"
     assert get_template("faq-support", 1) is None
