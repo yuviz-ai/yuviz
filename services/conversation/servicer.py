@@ -37,7 +37,7 @@ PROTOCOL_VERSION = "1.0"
 
 # UNSPECIFIED is a non-gateway client: webcall, vobiz, tests.
 _ROUTING_STATUS = {
-    pb.ROUTING_STATUS_UNSPECIFIED: RoutingStatus.ROUTED,
+    pb.ROUTING_STATUS_UNSPECIFIED: RoutingStatus.UNSPECIFIED,
     pb.ROUTING_STATUS_ROUTED:      RoutingStatus.ROUTED,
     pb.ROUTING_STATUS_ROUTED_LKG:  RoutingStatus.ROUTED_LKG,
     pb.ROUTING_STATUS_UNKNOWN:     RoutingStatus.UNKNOWN,
@@ -268,9 +268,9 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
 
             if greeting_end_call is not None:
                 log.info("Converse: rejecting call routing=%s session=%s",
-                         routing_status.value, sid)
+                         ctx.routing_status.value, sid)
                 async for out in _emit_response(
-                    greeting_end_call, end_reason=f"routing_{routing_status.value}",
+                    greeting_end_call, end_reason=f"routing_{ctx.routing_status.value}",
                 ):
                     yield out
 

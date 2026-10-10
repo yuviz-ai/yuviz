@@ -119,6 +119,8 @@ class IConversationHandler(Protocol):
 # ---------------------------------------------------------------------------
 
 class RoutingStatus(Enum):
+    # Not routed by the Gateway: webcall, provider bridges, tests.
+    UNSPECIFIED = "unspecified"
     ROUTED      = "routed"
     ROUTED_LKG  = "routed_lkg"
     UNKNOWN     = "unknown"
@@ -140,7 +142,7 @@ class SessionContext:
     direction:   str = ""
     script_id:   str = ""
     test_credential: str = field(default="", repr=False)
-    routing_status: RoutingStatus = RoutingStatus.ROUTED
+    routing_status: RoutingStatus = RoutingStatus.UNSPECIFIED
 
 
 class AgentUnavailable(Exception):

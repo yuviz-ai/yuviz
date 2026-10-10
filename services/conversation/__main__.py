@@ -50,7 +50,7 @@ from .providers.stt.faster_whisper import FasterWhisperSTT
 from .providers.llm.ollama import OllamaLLM
 from .secret_resolver import CompositeSecretResolver
 from .servicer import ConversationServicer
-from .session import AgentUnavailable, SessionContext
+from .session import AgentUnavailable, RoutingStatus, SessionContext
 from .tools.executor_registry import ExecutorRegistry
 from .tools.executors.api_exec_executor import ApiExecExecutor
 from .tools.llm_adapter import LLMAdapter
@@ -95,6 +95,9 @@ async def _resolve_session_deps(
     )
     if resolved is not None:
         return resolved
+    # A Gateway-routed call never falls back to default.yaml: that would answer as the wrong agent.
+    if ctx.routing_status is not RoutingStatus.UNSPECIFIED:
+        return None
     agent = load_agent(ctx.script_id)
     return to_runtime_config(
         agent, ctx.tenant_id or "default", ctx.script_id or "default", stt, llm, tts,
@@ -173,6 +176,12 @@ async def _prewarm_agents(
                 continue
             _, bundle = resolved
             graph = graph_for(resolved[0])
+            # Remembers the IVR flow too, so an outage before its first call keeps the menu.
+            if resolved[0].agent.call_flow_id:
+                try:
+                    await config.get_call_flow(tenant_slug, resolved[0].agent.call_flow_id)
+                except Exception:
+                    log.exception("prewarm: call flow load failed tenant=%s agent=%s", tenant_slug, agent_slug)
             # Ollama only loads the model on a real request; no-op for cloud LLMs.
             warm = getattr(bundle.llm, "warm", None)
             if warm is not None:
@@ -380,9 +389,16 @@ async def serve(port: int, args: argparse.Namespace) -> None:
                 return RejectionHandler(ctx.routing_status, tts, cfg.sample_rate)
 
             # Config SDK path, else legacy YAML path; never a mix for one call.
-            runtime_config, bundle = await _resolve_session_deps(
+            deps = await _resolve_session_deps(
                 ctx, credential_redis, provider_registry, config, stt, llm, tts,
             )
+            if deps is None:
+                log.warning("handler_factory: no agent config for routed call tenant=%s agent=%s — rejecting",
+                            ctx.tenant_id, ctx.script_id)
+                # The session ends the call after the greeting only when the status rejects it.
+                ctx.routing_status = RoutingStatus.UNAVAILABLE
+                return RejectionHandler(RoutingStatus.UNAVAILABLE, tts, cfg.sample_rate)
+            runtime_config, bundle = deps
 
             if not runtime_config.agent.call_flow_id:
                 return await _build_pipeline_handler(ctx, runtime_config, bundle)
@@ -481,6 +497,9 @@ async def serve(port: int, args: argparse.Namespace) -> None:
             await asyncio.sleep(HEARTBEAT_INTERVAL_S)
 
     heartbeat_task = _spawn(_heartbeat_loop(), "heartbeat")
+    # Keeps outage copies of agent configs recent; cold path, off the call path.
+    refresh_task = _spawn(config.run_refresh(), "config refresh") if isinstance(
+        config, CacheAsideConfigProvider) else None
 
     loop = asyncio.get_running_loop()
     stop = loop.create_future()
@@ -489,9 +508,10 @@ async def serve(port: int, args: argparse.Namespace) -> None:
 
     try:
         await stop
-        load_task.cancel()
-        heartbeat_task.cancel()
-        for task in (load_task, heartbeat_task):
+        background = [t for t in (load_task, heartbeat_task, refresh_task) if t is not None]
+        for task in background:
+            task.cancel()
+        for task in background:
             await _await_stopped(task)
         await provider_config_subscriber.stop()
         log.info("Shutting down…")
