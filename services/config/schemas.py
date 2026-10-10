@@ -197,6 +197,8 @@ class AgentUpdate(BaseModel):
     status:               Literal["active", "inactive"] | None = None
     # Hard call-length ceiling in seconds (None = unlimited); bounds mirror the DB CHECK.
     max_call_duration_s:  int | None = Field(default=None, ge=30, le=7200)
+    # Caller-mood scoring at end_call; independent of escalation policy.
+    sentiment_analysis_enabled: bool | None = None
     # Call flow that answers ahead of this agent; explicit null detaches it.
     call_flow_id:         str | None = None
     # Multilingual: set = language switching + per-turn reply-language instruction;
@@ -204,6 +206,14 @@ class AgentUpdate(BaseModel):
     supported_languages:    list[str] | None = None
     tts_config_by_language: dict[str, str | None] | None = None
     greeting_by_language:   dict[str, str] | None = None
+
+    # Runs only when the field is sent: omitted means "unchanged", explicit null is a bad request.
+    @field_validator("sentiment_analysis_enabled")
+    @classmethod
+    def _sentiment_not_null(cls, value: bool | None) -> bool:
+        if value is None:
+            raise ValueError("sentiment_analysis_enabled must be true or false")
+        return value
 
 
 class WorkflowDraft(BaseModel):

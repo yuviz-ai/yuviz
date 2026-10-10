@@ -255,6 +255,8 @@ export interface Agent {
   transfer_announcement: string | null;
   // Seconds (30-7200); null = unlimited. On expiry the call is wrapped up and ended.
   max_call_duration_s: number | null;
+  // Caller-mood scoring at end_call; independent of escalation policy.
+  sentiment_analysis_enabled: boolean;
   /** Which call flow answers ahead of this agent (call_flows.id), or null. */
   call_flow_id: string | null;
   // Set only on agents created from a shipped Easy job; null for Advanced.
@@ -314,6 +316,7 @@ export interface AgentUpdate {
   farewell_message?: string | null;
   transfer_announcement?: string | null;
   max_call_duration_s?: number | null;
+  sentiment_analysis_enabled?: boolean;
   call_flow_id?: string | null;
   status?: AgentStatus;
 }

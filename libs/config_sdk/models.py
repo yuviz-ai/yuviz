@@ -88,6 +88,7 @@ class Agent:
     custom_caller_id: str | None = None
     transfer_waiting_experience: str = "announcement_moh"
     max_call_duration_s: int | None = None  # None = unlimited
+    sentiment_analysis_enabled: bool = False
     workflow: dict[str, Any] | None = None
     workflow_draft: dict[str, Any] | None = None
     # Non-null pins this agent to a call flow's IVR runtime instead of its workflow.
@@ -180,6 +181,8 @@ class Policies:
     barge_in_enabled: bool | None = None      # no schema column yet
     # Hard ceiling on call length in seconds, checked after STT; None = unlimited.
     max_call_duration_s: int | None = None
+    # Caller-mood scoring at end_call; independent of escalation policy.
+    sentiment_analysis_enabled: bool = False
     transfer_type: str = "none"
     transfer_destination: str | None = None
     queue_id: str | None = None

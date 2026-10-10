@@ -44,7 +44,7 @@ _UPDATABLE_FIELDS = {
     "transfer_waiting_experience",
     "end_call_prompt", "transfer_prompt",
     "farewell_message", "transfer_announcement",
-    "status", "max_call_duration_s",
+    "status", "max_call_duration_s", "sentiment_analysis_enabled",
     # Which call flow (if any) answers ahead of this agent — see call_flows.py.
     "call_flow_id",
     "supported_languages", "tts_config_by_language", "greeting_by_language",

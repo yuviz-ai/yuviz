@@ -1261,3 +1261,19 @@ def test_the_admin_ui_prompt_builder_emits_the_required_headings_in_order():
     returned = path.read_text().split("return [", 1)[1]
     emitted = [ln.strip().strip(",").strip('"') for ln in returned.splitlines()]
     assert [h for h in emitted if h in sp._HEADINGS] == list(sp._HEADINGS)
+
+
+class TestSentimentSwitch:
+    async def test_off_by_default_and_toggles(self, client, test_tenant, configs):
+        agent = await _create_agent(client, test_tenant, configs)
+        assert agent["sentiment_analysis_enabled"] is False
+
+        on = await client.patch(_url(test_tenant, f"/{agent['id']}"), json={"sentiment_analysis_enabled": True})
+        assert on.status_code == 200 and on.json()["sentiment_analysis_enabled"] is True
+
+    async def test_explicit_null_is_a_bad_request_not_a_500(self, client, test_tenant, configs):
+        agent = await _create_agent(client, test_tenant, configs)
+
+        resp = await client.patch(_url(test_tenant, f"/{agent['id']}"), json={"sentiment_analysis_enabled": None})
+
+        assert resp.status_code == 422, resp.text

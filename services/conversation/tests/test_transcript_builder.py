@@ -25,7 +25,7 @@ async def test_full_call_lifecycle_begin_turn_end():
 
     builder.begin_call(session_id, "default", "call-1")
     builder.record_turn(session_id, "hello", 0.9, "hi there", False)
-    builder.end_call(session_id, "stream_ended")
+    builder.end_call(session_id, "stream_ended", score_sentiment=False)
     await builder._chains[session_id]  # fire-and-forget — wait for the whole chain
 
     row = await pool.fetchrow(
@@ -448,13 +448,36 @@ class _Result:
 async def _finish_call(builder, session_id: str) -> None:
     builder.begin_call(session_id, "default", "call-1")
     builder.record_turn(session_id, "this is the third time I've called", 0.9, "I'm sorry about that", False)
-    builder.end_call(session_id, "stream_ended")
+    builder.end_call(session_id, "stream_ended", score_sentiment=True)
     await builder._chains[session_id]
 
 
 async def _cleanup(pool, session_id: str) -> None:
     await pool.execute("DELETE FROM transcript_entries WHERE session_id = $1", session_id)
     await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
+
+
+async def test_sentiment_switched_off_skips_scoring_but_still_ends_the_call():
+    scorer = _StubScorer(_Result("frustrated", "should never be written"))
+    builder = await TranscriptBuilder.connect(os.environ["POSTGRES_DSN"], sentiment=scorer)
+    pool = builder._pool
+    session_id = f"test-sentiment-off-{uuid.uuid4().hex[:8]}"
+
+    builder.begin_call(session_id, "default", "call-1")
+    builder.record_turn(session_id, "hello", 0.9, "hi there", False)
+    builder.end_call(session_id, "stream_ended", score_sentiment=False)
+    await builder._chains[session_id]
+
+    row = await pool.fetchrow(
+        "SELECT ended_at, close_reason, sentiment FROM calls WHERE session_id = $1", session_id,
+    )
+    assert row["ended_at"] is not None
+    assert row["close_reason"] == "stream_ended"
+    assert row["sentiment"] is None
+    assert scorer.calls == 0
+
+    await _cleanup(pool, session_id)
+    await builder.close()
 
 
 async def test_end_call_writes_sentiment_from_the_persisted_transcript():
@@ -549,7 +572,7 @@ async def test_close_drains_an_in_flight_sentiment_write():
 
     builder.begin_call(session_id, "default", "call-1")
     builder.record_turn(session_id, "thank you so much", 0.9, "happy to help", False)
-    builder.end_call(session_id, "stream_ended")
+    builder.end_call(session_id, "stream_ended", score_sentiment=True)
 
     # Let the chain reach the scorer, then shut down while it is still there.
     await asyncio.sleep(0.05)
