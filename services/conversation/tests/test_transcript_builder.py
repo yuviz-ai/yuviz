@@ -25,7 +25,7 @@ async def test_full_call_lifecycle_begin_turn_end():
 
     builder.begin_call(session_id, "default", "call-1")
     builder.record_turn(session_id, "hello", 0.9, "hi there", False)
-    builder.end_call(session_id, "stream_ended")
+    builder.end_call(session_id, "stream_ended", score_sentiment=False)
     await builder._chains[session_id]  # fire-and-forget — wait for the whole chain
 
     row = await pool.fetchrow(
@@ -448,7 +448,7 @@ class _Result:
 async def _finish_call(builder, session_id: str) -> None:
     builder.begin_call(session_id, "default", "call-1")
     builder.record_turn(session_id, "this is the third time I've called", 0.9, "I'm sorry about that", False)
-    builder.end_call(session_id, "stream_ended")
+    builder.end_call(session_id, "stream_ended", score_sentiment=True)
     await builder._chains[session_id]
 
 
@@ -572,7 +572,7 @@ async def test_close_drains_an_in_flight_sentiment_write():
 
     builder.begin_call(session_id, "default", "call-1")
     builder.record_turn(session_id, "thank you so much", 0.9, "happy to help", False)
-    builder.end_call(session_id, "stream_ended")
+    builder.end_call(session_id, "stream_ended", score_sentiment=True)
 
     # Let the chain reach the scorer, then shut down while it is still there.
     await asyncio.sleep(0.05)

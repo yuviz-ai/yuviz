@@ -207,6 +207,14 @@ class AgentUpdate(BaseModel):
     tts_config_by_language: dict[str, str | None] | None = None
     greeting_by_language:   dict[str, str] | None = None
 
+    # Runs only when the field is sent: omitted means "unchanged", explicit null is a bad request.
+    @field_validator("sentiment_analysis_enabled")
+    @classmethod
+    def _sentiment_not_null(cls, value: bool | None) -> bool:
+        if value is None:
+            raise ValueError("sentiment_analysis_enabled must be true or false")
+        return value
+
 
 class WorkflowDraft(BaseModel):
     graph: dict[str, Any]

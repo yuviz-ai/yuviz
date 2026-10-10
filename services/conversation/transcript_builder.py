@@ -234,7 +234,8 @@ class TranscriptBuilder:
         self._spawn(session_id, self._record_live_stage(session_id, self._tenant_slugs.get(session_id), stage))
 
     def end_call(self, session_id: str, close_reason: str,
-                 final_state: str | None = None, *, score_sentiment: bool = True) -> None:
+                 final_state: str | None = None, *, score_sentiment: bool) -> None:
+        # No default: sentiment is a per-agent opt-in, so every caller must say which.
         if self._pool is None:
             return
         turn_count     = self._turn_counts.pop(session_id, 0)

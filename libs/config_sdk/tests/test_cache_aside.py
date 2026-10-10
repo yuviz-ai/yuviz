@@ -681,3 +681,21 @@ async def test_refresh_survives_a_call_flow_that_raises():
     provider._redis_repo = Boom(**{k: getattr(_full_repo(), k) for k in ("tenants", "agents", "providers")})
 
     await provider.refresh_last_known_good()   # must not raise
+
+
+async def test_sentiment_switch_is_off_when_the_agent_row_lacks_it():
+    provider = CacheAsideConfigProvider(_full_repo(), FakeRepo())
+
+    config = await provider.get_runtime_config("acme", "sup")
+
+    assert config.agent.sentiment_analysis_enabled is False
+    assert config.policies.sentiment_analysis_enabled is False
+
+
+async def test_sentiment_switch_reaches_runtime_policies():
+    repo = _full_repo()
+    repo.agents[("acme", "sup")] = _agent_row("sup", sentiment_analysis_enabled=True)
+
+    config = await CacheAsideConfigProvider(repo, FakeRepo()).get_runtime_config("acme", "sup")
+
+    assert config.policies.sentiment_analysis_enabled is True
