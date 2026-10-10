@@ -40,6 +40,7 @@ from .callflow.runner import CallFlowRunner
 from .echo import EchoConversationHandler
 from .fillers import FillerSelector
 from .pipeline import PipelineConversationHandler
+from . import rejection
 from .rejection import RejectionHandler
 from .pipeline_config import PipelineConfig
 from .provider_bundle import ProviderRegistry, _to_ai_provider_config
@@ -310,6 +311,7 @@ async def serve(port: int, args: argparse.Namespace) -> None:
             timeout_s=cfg.llm.timeout_s,
         )
         tts = _build_tts(cfg)
+        await rejection.prewarm(tts, cfg.sample_rate)
 
         async def _build_pipeline_handler(
             ctx: SessionContext, runtime_config, bundle,
@@ -349,7 +351,7 @@ async def serve(port: int, args: argparse.Namespace) -> None:
                 filler_selector=filler_selector,
             )
 
-        async def handler_factory(ctx: SessionContext) -> PipelineConversationHandler:
+        async def handler_factory(ctx: SessionContext) -> PipelineConversationHandler | RejectionHandler:
             if ctx.routing_status.rejects_call:
                 return RejectionHandler(ctx.routing_status, tts, cfg.sample_rate)
 

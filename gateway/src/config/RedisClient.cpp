@@ -72,6 +72,14 @@ std::optional<std::string> RedisClient::get(const std::string& key) {
 }
 
 LookupResult RedisClient::get_checked(const std::string& key) {
+    return lookup(key, nullptr);
+}
+
+LookupResult RedisClient::get_guarded(const std::string& key, const char* guard_key) {
+    return lookup(key, guard_key);
+}
+
+LookupResult RedisClient::lookup(const std::string& key, const char* guard_key) {
     if (!cfg_.enabled) return {LookupStatus::Error, {}};
 
     Connection conn;
@@ -95,8 +103,10 @@ LookupResult RedisClient::get_checked(const std::string& key) {
 
     LookupResult result{LookupStatus::Error, {}};
     if (ensure_connected(conn)) {
-        redisReply* reply = static_cast<redisReply*>(
-            ::redisCommand(conn.ctx, "GET %s", key.c_str()));
+        // One round trip either way: the guard rides along in the same MGET.
+        redisReply* reply = static_cast<redisReply*>(guard_key == nullptr
+            ? ::redisCommand(conn.ctx, "GET %s", key.c_str())
+            : ::redisCommand(conn.ctx, "MGET %s %s", key.c_str(), guard_key));
 
         if (reply == nullptr) {
             // hiredis convention: a null reply means the connection died mid-command.
@@ -104,7 +114,20 @@ LookupResult RedisClient::get_checked(const std::string& key) {
             disconnect(conn);
         } else {
             std::unique_ptr<redisReply, void(*)(void*)> reply_guard{reply, ::freeReplyObject};
-            if (reply->type == REDIS_REPLY_STRING) {
+            if (guard_key != nullptr && reply->type == REDIS_REPLY_ARRAY && reply->elements == 2) {
+                const redisReply* value = reply->element[0];
+                const redisReply* guard = reply->element[1];
+                if (value->type == REDIS_REPLY_STRING) {
+                    result = {LookupStatus::Hit,
+                              std::string(value->str, static_cast<size_t>(value->len))};
+                } else if (guard->type == REDIS_REPLY_STRING) {
+                    result = {LookupStatus::Miss, {}};
+                } else {
+                    // Unpopulated Redis (flushed, recreated, failed over): a miss proves nothing.
+                    logger_.warn("RedisClient: {} missing, treating key={} as unavailable",
+                                 guard_key, key);
+                }
+            } else if (reply->type == REDIS_REPLY_STRING) {
                 result = {LookupStatus::Hit,
                           std::string(reply->str, static_cast<size_t>(reply->len))};
             } else if (reply->type == REDIS_REPLY_NIL) {

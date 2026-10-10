@@ -95,6 +95,8 @@ struct RedisConfig {
     uint32_t    connect_timeout_ms{200};
     uint32_t    command_timeout_ms{100};
     uint32_t    pool_size{4};
+    // Oldest last-known-good route served during an outage; bounds misroutes after a reassignment.
+    uint32_t    did_lkg_max_age_s{300};
 };
 
 struct GatewayConfig {
@@ -151,10 +153,14 @@ struct LookupResult {
 // Unknown and Unavailable calls are rejected; they never reach a default agent.
 enum class RoutingStatus {
     Routed,
-    RoutedLkg,     // Redis unreachable; route served from the last-known-good cache
-    Unknown,       // no did:{did} key — number not assigned
-    Unavailable,   // Redis unreachable or route corrupt, and no cached route
+    RoutedLkg,     // Redis unreachable or unpopulated; fresh last-known-good route served
+    Unknown,       // no did:{did} key in a populated Redis — number not assigned
+    Unavailable,   // no metadata, or Redis unusable and no fresh cached route
 };
+
+// Written by services/config after it loads every did:{did}; absent means Redis was
+// flushed or replaced, so a missing did:{did} proves nothing.
+inline constexpr const char* kDidRoutesReadyKey = "routing:ready";
 
 [[nodiscard]] const char* to_string(RoutingStatus s) noexcept;
 
@@ -169,17 +175,29 @@ struct PhoneRoute {
     [[nodiscard]] static std::optional<PhoneRoute> parse(const std::string& raw) noexcept;
 };
 
-// Last route seen per DID, used only while Redis is unreachable. A Miss evicts the
-// entry so an unassigned number never routes from stale data.
+// Last route seen per DID, used only while Redis is unusable. A Miss evicts the entry;
+// entries older than max_age are never served, since a reassignment may not have been seen.
 class DidRouteCache {
 public:
-    void put(const std::string& did, const PhoneRoute& route);
+    using Clock = std::chrono::steady_clock;
+
+    explicit DidRouteCache(std::chrono::seconds max_age = std::chrono::seconds{300}) noexcept
+        : max_age_{max_age} {}
+
+    void set_max_age(std::chrono::seconds max_age) noexcept;
+    void put(const std::string& did, const PhoneRoute& route, Clock::time_point now = Clock::now());
     void erase(const std::string& did);
-    [[nodiscard]] std::optional<PhoneRoute> get(const std::string& did) const;
+    [[nodiscard]] std::optional<PhoneRoute> get(
+        const std::string& did, Clock::time_point now = Clock::now()) const;
 
 private:
-    mutable std::mutex                 mutex_;
-    std::map<std::string, PhoneRoute>  routes_;
+    struct Entry {
+        PhoneRoute        route;
+        Clock::time_point cached_at;
+    };
+    mutable std::mutex            mutex_;
+    std::chrono::seconds          max_age_;
+    std::map<std::string, Entry>  routes_;
 };
 
 struct RouteResolution {

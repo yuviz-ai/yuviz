@@ -34,8 +34,9 @@ log = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = "1.0"
 
-# UNSPECIFIED (and any unknown value) is a non-gateway client: webcall, vobiz, tests.
+# UNSPECIFIED is a non-gateway client: webcall, vobiz, tests.
 _ROUTING_STATUS = {
+    pb.ROUTING_STATUS_UNSPECIFIED: RoutingStatus.ROUTED,
     pb.ROUTING_STATUS_ROUTED:      RoutingStatus.ROUTED,
     pb.ROUTING_STATUS_ROUTED_LKG:  RoutingStatus.ROUTED_LKG,
     pb.ROUTING_STATUS_UNKNOWN:     RoutingStatus.UNKNOWN,
@@ -118,7 +119,12 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
             return
 
         sid = open_req.session_id
-        routing_status = _ROUTING_STATUS.get(open_req.routing_status, RoutingStatus.ROUTED)
+        routing_status = _ROUTING_STATUS.get(open_req.routing_status)
+        if routing_status is None:
+            # A status this build doesn't know must not fail open to a default agent.
+            log.warning("Converse: unknown routing_status=%d — treating as unavailable",
+                        open_req.routing_status)
+            routing_status = RoutingStatus.UNAVAILABLE
         log.info("Converse: session_open session=%s tenant=%s routing=%s",
                  sid, open_req.tenant_id, routing_status.value)
 

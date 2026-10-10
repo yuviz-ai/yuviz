@@ -6,6 +6,7 @@ inbound call; everything else operates on raw phone_numbers rows.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -51,44 +52,63 @@ async def get_by_did(did: str, *, platform_scoped: bool = False) -> dict[str, An
         if platform_scoped
         else tenant_conn(pool)
     )
+    async with conn_cm as conn:
+        result = await _load_route(conn, did)
+    if result is not None:
+        await cache.set_json(_cache_key(did), result, ttl=None)
+    return result
+
+
+async def _load_route(conn: Any, did: str) -> dict[str, Any] | None:
     # Inactive numbers route like unknown DIDs. Agent falls back primary -> fallback -> 'default',
     # matching the Gateway's PhoneRoute::from_redis().
-    async with conn_cm as conn:
-        row = await conn.fetchrow(
-            "SELECT t.slug AS tenant_slug, "
-            "       COALESCE(a.slug, fb.slug, 'default') AS agent_slug, "
-            "       COALESCE(a.config_version, fb.config_version) AS agent_config_version "
-            "FROM phone_numbers pn "
-            "JOIN tenants t ON t.id = pn.tenant_id "
-            "LEFT JOIN agents a  ON a.id = pn.agent_id AND a.deleted_at IS NULL AND a.status = 'active' "
-            "LEFT JOIN agents fb ON fb.id = pn.fallback_agent_id AND fb.deleted_at IS NULL AND fb.status = 'active' "
-            "WHERE pn.did = $1 AND pn.status = 'active' "
-            "  AND pn.deleted_at IS NULL AND t.deleted_at IS NULL",
-            did,
-        )
+    row = await conn.fetchrow(
+        "SELECT t.slug AS tenant_slug, "
+        "       COALESCE(a.slug, fb.slug, 'default') AS agent_slug, "
+        "       COALESCE(a.config_version, fb.config_version) AS agent_config_version "
+        "FROM phone_numbers pn "
+        "JOIN tenants t ON t.id = pn.tenant_id "
+        "LEFT JOIN agents a  ON a.id = pn.agent_id AND a.deleted_at IS NULL AND a.status = 'active' "
+        "LEFT JOIN agents fb ON fb.id = pn.fallback_agent_id AND fb.deleted_at IS NULL AND fb.status = 'active' "
+        "WHERE pn.did = $1 AND pn.status = 'active' "
+        "  AND pn.deleted_at IS NULL AND t.deleted_at IS NULL",
+        did,
+    )
     if row is None:
         return None
-
-    result = {
+    return {
         "tenant_slug": row["tenant_slug"],
         "agent_slug": row["agent_slug"],
         # null when agent_slug fell through to the literal 'default'.
         "version": row["agent_config_version"],
     }
-    await cache.set_json(_cache_key(did), result, ttl=None)
-    return result
+
+
+# The Gateway treats a missing did:{did} as "not in service" only while this key exists;
+# a flushed or replaced Redis loses it, so callers hear "try later" until prewarm() reruns.
+ROUTES_READY_KEY = "routing:ready"
 
 
 async def prewarm() -> int:
-    """Populate did:{did} for every active number at startup; returns the count warmed."""
+    """Write did:{did} for every active number, then ROUTES_READY_KEY; returns the count.
+    Raises redis.RedisError if Redis is down, so the marker is never set over a partial load."""
     pool = await db.get_pool()
     async with platform_conn(pool, reason="phone-numbers-prewarm") as conn:
         rows = await conn.fetch(
             "SELECT did FROM phone_numbers WHERE status = 'active' AND deleted_at IS NULL",
         )
-    for row in rows:
-        await get_by_did(row["did"], platform_scoped=True)
+        routes = {r["did"]: await _load_route(conn, r["did"]) for r in rows}
+    pipe = cache.get_client().pipeline(transaction=False)
+    for did, route in routes.items():
+        if route is not None:
+            pipe.set(_cache_key(did), json.dumps(route, default=str))
+    pipe.set(ROUTES_READY_KEY, "1")
+    await pipe.execute()
     return len(rows)
+
+
+async def routes_loaded() -> bool:
+    return bool(await cache.get_client().exists(ROUTES_READY_KEY))
 
 
 async def get_phone_number(phone_number_id: Any, *, platform_scoped: bool = False) -> dict[str, Any] | None:

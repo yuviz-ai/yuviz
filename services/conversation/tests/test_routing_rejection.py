@@ -3,6 +3,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from services.conversation import rejection
+
 from services.conversation.generated.voiceai.v1 import conversation_pb2 as pb
 from services.conversation.rejection import REJECTION_MESSAGES, RejectionHandler
 from services.conversation.servicer import ConversationServicer
@@ -22,6 +24,13 @@ class FakeTTS:
             raise RuntimeError("tts down")
         self.spoken.append(text)
         yield b"\x01\x02"
+
+
+@pytest.fixture(autouse=True)
+def _fresh_rejection_audio():
+    rejection._audio_cache.clear()
+    yield
+    rejection._audio_cache.clear()
 
 
 async def _stream(*messages):
@@ -97,3 +106,52 @@ async def test_caller_talking_over_rejection_hears_it_again_and_call_ends():
     assert len(responses) == 1
     assert responses[0].end_call and responses[0].stt_text
     assert tts.spoken == [REJECTION_MESSAGES[RoutingStatus.UNKNOWN]]
+
+
+async def test_tts_failure_still_sends_audio_so_end_call_is_sent():
+    handler = RejectionHandler(RoutingStatus.UNKNOWN, FakeTTS(fail=True), 16000)
+
+    greeting = await handler.greeting("s1")
+    [repeat] = [r async for r in handler.on_speech_ended("s1", b"", 500, -20.0)]
+
+    assert greeting and all(greeting)
+    assert repeat.end_call and repeat.tts_payloads and all(repeat.tts_payloads)
+
+
+async def test_failed_synthesis_is_not_cached():
+    await RejectionHandler(RoutingStatus.UNKNOWN, FakeTTS(fail=True), 16000).greeting("s1")
+    tts = FakeTTS()
+
+    await RejectionHandler(RoutingStatus.UNKNOWN, tts, 16000).greeting("s2")
+
+    assert tts.spoken == [REJECTION_MESSAGES[RoutingStatus.UNKNOWN]]
+
+
+async def test_message_is_synthesized_once_across_calls():
+    tts = FakeTTS()
+    await rejection.prewarm(tts, 16000)
+
+    for sid in ("s1", "s2", "s3"):
+        await RejectionHandler(RoutingStatus.UNKNOWN, tts, 16000).greeting(sid)
+
+    assert sorted(tts.spoken) == sorted(REJECTION_MESSAGES.values())
+
+
+async def test_repeated_talk_over_hangs_up_without_speaking_again():
+    tts = FakeTTS()
+    handler = RejectionHandler(RoutingStatus.UNKNOWN, tts, 16000)
+
+    [first] = [r async for r in handler.on_speech_ended("s1", b"", 500, -20.0)]
+    [second] = [r async for r in handler.on_speech_ended("s1", b"", 500, -20.0)]
+
+    assert first.end_call and second.end_call
+    assert tts.spoken == [REJECTION_MESSAGES[RoutingStatus.UNKNOWN]]
+    assert second.tts_payloads and not any(any(p) for p in second.tts_payloads)
+    assert second.end_call_grace_period_ms > 0
+
+
+async def test_unknown_routing_value_is_rejected_not_routed():
+    seen, out = await _converse(99, FakeTTS())
+
+    assert seen == [RoutingStatus.UNAVAILABLE]
+    assert [m.WhichOneof("payload") for m in out][-1] == "end_call"

@@ -5,6 +5,9 @@
 #include "telephony/EslClient.h"
 #include "telephony/TransferRequest.h"
 #include <cstdlib>
+#include <hiredis/hiredis.h>
+#include <memory>
+#include <unistd.h>
 #include <fstream>
 #include <filesystem>
 #include <string>
@@ -258,11 +261,21 @@ TEST_F(ConfigTest, RouteCorruptValueFallsBackLikeAnOutage) {
               RoutingStatus::RoutedLkg);
 }
 
-TEST_F(ConfigTest, RouteEmptyDidIsUnknownEvenFromCache) {
+TEST_F(ConfigTest, RouteEmptyDidIsUnavailableEvenFromCache) {
     voiceai::DidRouteCache cache;
     cache.put("", voiceai::PhoneRoute{"acme", "reception", 1});
-    EXPECT_EQ(voiceai::resolve_route("", kHit, cache).status, RoutingStatus::Unknown);
-    EXPECT_EQ(voiceai::resolve_route("", kError, cache).status, RoutingStatus::Unknown);
+    EXPECT_EQ(voiceai::resolve_route("", kHit, cache).status, RoutingStatus::Unavailable);
+    EXPECT_EQ(voiceai::resolve_route("", kError, cache).status, RoutingStatus::Unavailable);
+}
+
+TEST_F(ConfigTest, RouteLastKnownGoodExpiresAfterMaxAge) {
+    using namespace std::chrono_literals;
+    voiceai::DidRouteCache cache{300s};
+    const auto t0 = voiceai::DidRouteCache::Clock::now();
+    cache.put("5002", voiceai::PhoneRoute{"acme", "support", 1}, t0);
+
+    EXPECT_TRUE(cache.get("5002", t0 + 299s).has_value());
+    EXPECT_FALSE(cache.get("5002", t0 + 301s).has_value());
 }
 
 TEST_F(ConfigTest, RouteWithRedisDisabledIsUnavailable) {
@@ -275,6 +288,39 @@ TEST_F(ConfigTest, RouteWithRedisDisabledIsUnavailable) {
     voiceai::DidRouteCache cache;
 
     EXPECT_EQ(voiceai::resolve_route(redis, "5000", cache).status, RoutingStatus::Unavailable);
+}
+
+// Live Redis on localhost; private key names so the real routing:ready is never touched.
+TEST_F(ConfigTest, GuardedLookupMissIsErrorUntilGuardExists) {
+    redisContext* raw = ::redisConnect("127.0.0.1", 6379);
+    if (raw == nullptr || raw->err) {
+        if (raw) ::redisFree(raw);
+        GTEST_SKIP() << "no Redis on 127.0.0.1:6379";
+    }
+    std::unique_ptr<redisContext, void(*)(redisContext*)> admin{raw, ::redisFree};
+    const std::string key   = "gwtest:did:" + std::to_string(::getpid());
+    const std::string guard = "gwtest:ready:" + std::to_string(::getpid());
+    auto run = [&](const char* fmt, const std::string& k) {
+        ::freeReplyObject(::redisCommand(admin.get(), fmt, k.c_str()));
+    };
+    run("DEL %s", key);
+    run("DEL %s", guard);
+
+    voiceai::RedisConfig rc;
+    rc.enabled = true;
+    voiceai::Logger logger = voiceai::Logger::make_null();
+    voiceai::RedisClient redis{rc, logger};
+
+    EXPECT_EQ(redis.get_guarded(key, guard.c_str()).status, LookupStatus::Error);
+    run("SET %s 1", guard);
+    EXPECT_EQ(redis.get_guarded(key, guard.c_str()).status, LookupStatus::Miss);
+    ::freeReplyObject(::redisCommand(admin.get(), "SET %s %s", key.c_str(), "v"));
+    const auto hit = redis.get_guarded(key, guard.c_str());
+    EXPECT_EQ(hit.status, LookupStatus::Hit);
+    EXPECT_EQ(hit.value, "v");
+
+    run("DEL %s", key);
+    run("DEL %s", guard);
 }
 
 // ── CallMetadata::parse() ────────────────────────────────────────────────────

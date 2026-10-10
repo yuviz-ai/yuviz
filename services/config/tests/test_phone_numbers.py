@@ -212,6 +212,7 @@ async def test_prewarm_populates_cache_for_active_dids_only(test_tenant, scoped,
     assert warmed >= 1  # at least this test's active DID (other tests may leave rows too)
     assert await cache.get_json(f"did:{active_did}") is not None
     assert await cache.get_json(f"did:{inactive_did}") is None  # prewarm only queries active rows
+    assert await phone_numbers.routes_loaded()
 
     await pool.execute("DELETE FROM phone_numbers WHERE did IN ($1, $2)", active_did, inactive_did)
 
@@ -255,3 +256,15 @@ async def test_update_phone_number_rename_writes_through_new_and_clears_old(test
     assert await cache.get_json(f"did:{new_did}") is not None
 
     await pool.execute("DELETE FROM phone_numbers WHERE did = $1", new_did)
+
+
+async def test_prewarm_overwrites_a_stale_cached_route(test_tenant, scoped, pool):
+    did = f"test-did-{uuid.uuid4().hex[:8]}"
+    await phone_numbers.create_phone_number(tenant_id=test_tenant["id"], did=did)
+    await cache.set_json(f"did:{did}", {"tenant_slug": "someone-else", "agent_slug": "x", "version": 1}, ttl=None)
+
+    await phone_numbers.prewarm()
+
+    assert (await cache.get_json(f"did:{did}"))["tenant_slug"] == test_tenant["slug"]
+
+    await pool.execute("DELETE FROM phone_numbers WHERE did = $1", did)

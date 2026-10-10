@@ -143,6 +143,7 @@ void Config::load(const std::string& path) {
         if (redis["connect_timeout_ms"]) config_.redis.connect_timeout_ms = redis["connect_timeout_ms"].as<uint32_t>();
         if (redis["command_timeout_ms"]) config_.redis.command_timeout_ms = redis["command_timeout_ms"].as<uint32_t>();
         if (redis["pool_size"])          config_.redis.pool_size          = redis["pool_size"].as<uint32_t>();
+        if (redis["did_lkg_max_age_s"])  config_.redis.did_lkg_max_age_s  = redis["did_lkg_max_age_s"].as<uint32_t>();
     }
 
     apply_env(config_);
@@ -280,9 +281,14 @@ std::optional<PhoneRoute> PhoneRoute::parse(const std::string& raw) noexcept {
     }
 }
 
-void DidRouteCache::put(const std::string& did, const PhoneRoute& route) {
+void DidRouteCache::set_max_age(std::chrono::seconds max_age) noexcept {
     std::lock_guard lock{mutex_};
-    routes_[did] = route;
+    max_age_ = max_age;
+}
+
+void DidRouteCache::put(const std::string& did, const PhoneRoute& route, Clock::time_point now) {
+    std::lock_guard lock{mutex_};
+    routes_[did] = Entry{route, now};
 }
 
 void DidRouteCache::erase(const std::string& did) {
@@ -290,17 +296,18 @@ void DidRouteCache::erase(const std::string& did) {
     routes_.erase(did);
 }
 
-std::optional<PhoneRoute> DidRouteCache::get(const std::string& did) const {
+std::optional<PhoneRoute> DidRouteCache::get(const std::string& did, Clock::time_point now) const {
     std::lock_guard lock{mutex_};
     const auto it = routes_.find(did);
-    if (it == routes_.end()) return std::nullopt;
-    return it->second;
+    if (it == routes_.end() || now - it->second.cached_at > max_age_) return std::nullopt;
+    return it->second.route;
 }
 
 RouteResolution resolve_route(
     const std::string& did, const LookupResult& lookup, DidRouteCache& cache)
 {
-    if (did.empty()) return {RoutingStatus::Unknown, {}};
+    // No DID means the metadata frame was missing or late, not that the number is unassigned.
+    if (did.empty()) return {RoutingStatus::Unavailable, {}};
 
     switch (lookup.status) {
         case LookupStatus::Miss:
@@ -321,8 +328,8 @@ RouteResolution resolve_route(
 }
 
 RouteResolution resolve_route(RedisClient& redis, const std::string& did, DidRouteCache& cache) {
-    if (did.empty()) return {RoutingStatus::Unknown, {}};
-    return resolve_route(did, redis.get_checked("did:" + did), cache);
+    if (did.empty()) return {RoutingStatus::Unavailable, {}};
+    return resolve_route(did, redis.get_guarded("did:" + did, kDidRoutesReadyKey), cache);
 }
 
 CallMetadata CallMetadata::parse(const std::optional<std::string>& raw) noexcept {

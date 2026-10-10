@@ -5,12 +5,14 @@ Run: uvicorn services.config.app:app --reload
 
 from __future__ import annotations
 
+import asyncio
 import os
 import logging
 import time  # noqa: F401
 from contextlib import asynccontextmanager
 
 import asyncpg
+from redis import exceptions as redis_exceptions
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -121,14 +123,41 @@ def _too_many_requests(detail: str, retry_after: int) -> HTTPException:
     return HTTPException(status_code=429, detail=detail, headers={"Retry-After": str(retry_after)})
 
 
+_ROUTES_CHECK_INTERVAL_S = 15
+
+
+async def _prewarm_routes() -> None:
+    try:
+        warmed = await phone_numbers_service.prewarm()
+        log.info("Prewarmed %d active phone number(s) into Redis", warmed)
+    except redis_exceptions.RedisError:
+        log.error("Phone number prewarm failed: Redis unreachable; retrying every %ds",
+                  _ROUTES_CHECK_INTERVAL_S)
+
+
+async def _reload_routes_when_redis_empties() -> None:
+    """A flushed, recreated or failed-over Redis loses every did:{did}; reload them."""
+    while True:
+        await asyncio.sleep(_ROUTES_CHECK_INTERVAL_S)
+        try:
+            if await phone_numbers_service.routes_loaded():
+                continue
+        except redis_exceptions.RedisError:
+            continue
+        log.warning("Redis has no %s marker; reloading phone number routes",
+                    phone_numbers_service.ROUTES_READY_KEY)
+        await _prewarm_routes()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Connect eagerly so a broken POSTGRES_DSN/REDIS_URL fails at startup.
     await db.get_pool()
     cache.get_client()
-    warmed = await phone_numbers_service.prewarm()
-    log.info("Prewarmed %d active phone number(s) into Redis", warmed)
+    await _prewarm_routes()
+    watchdog = asyncio.create_task(_reload_routes_when_redis_empties())
     yield
+    watchdog.cancel()
     await db.close_pool()
     await cache.close()
     email.close_smtp_executor()
