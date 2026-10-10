@@ -1,10 +1,13 @@
 "use client";
 
+import { useRouter, useSearchParams } from "next/navigation";
 import { ConnectorsPanel } from "@/components/ConnectorsPanel";
 import { useActiveTenant } from "@/lib/useActiveTenant";
 
 export default function IntegrationsPage() {
   const { tenant, isAllTenants, loading, error } = useActiveTenant();
+  const searchParams = useSearchParams();
+  const router = useRouter();
 
   return (
     <>
@@ -24,7 +27,12 @@ export default function IntegrationsPage() {
           <div className="empty-state">Loading integrations…</div>
         </div>
       ) : tenant ? (
-        <ConnectorsPanel key={tenant.id} tenantId={tenant.id} />
+        <ConnectorsPanel
+          key={tenant.id}
+          tenantId={tenant.id}
+          connectOpen={searchParams.get("add") === "1"}
+          onConnectClose={() => router.replace("/integrations")}
+        />
       ) : (
         <div className="empty-state">
           {isAllTenants

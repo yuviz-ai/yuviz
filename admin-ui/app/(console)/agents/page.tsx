@@ -1,17 +1,18 @@
 "use client";
 
-// Agent Studio. Opening an agent goes to its config tabs; the call-flow canvas lives under /workflows.
+// Agent Studio. Opening an agent goes to its config tabs; its conversation-steps canvas lives under /workflows.
 // Cards show only stored values — no invented metrics like containment rate.
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { BookOpen, Bot, Globe, Mic, Pencil, PhoneForwarded, Plug, Plus, Volume2 } from "lucide-react";
-import { Agent, ApiError, ProviderConfig, listAgents, listProviders } from "@/lib/api";
+import { Bot, MoreVertical, Pencil, Play, Plus, Workflow } from "lucide-react";
+import { Agent, ApiError, listAgents, listCalls, listPhoneNumbers } from "@/lib/api";
+import { AgentTestPopup } from "@/components/AgentTestPopup";
 import { useActiveTenant } from "@/lib/useActiveTenant";
 import { listAgentKnowledgeBases } from "@/lib/knowledgeApi";
 import { listAgentCustomApis } from "@/lib/toolexecApi";
-import { AGENT_TEMPLATES } from "@/lib/agentTemplates";
-import { BUILTIN_TTS_ENGINE, LANGUAGES } from "@/lib/engineCatalog";
+import { AGENT_TEMPLATES, agentIcon, agentTemplate } from "@/lib/agentTemplates";
+import { LANGUAGES } from "@/lib/engineCatalog";
 import { AgentDraft, clearAgentDraft, draftSavedLabel, loadAgentDraft } from "@/lib/agentDraft";
 
 interface AgentRow extends Agent {
@@ -22,18 +23,21 @@ interface AgentRow extends Agent {
 interface Attachments {
   sources: number | null; // null = the lookup failed; render "—", never 0
   tools: number | null;
+  calls: number | null;
+  numbers: string[] | null;
 }
 
 export default function AgentsPage() {
   const router = useRouter();
   const { tenant, allTenants, isPlatformScoped, isAllTenants, loading: tenantLoading } = useActiveTenant();
   const [agents, setAgents] = useState<AgentRow[]>([]);
-  const [providersById, setProvidersById] = useState<Record<string, ProviderConfig>>({});
   const [attachments, setAttachments] = useState<Record<string, Attachments>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [draft, setDraft] = useState<AgentDraft | null>(null);
+  const [menuFor, setMenuFor] = useState<string | null>(null);
+  const [testing, setTesting] = useState<AgentRow | null>(null);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -70,18 +74,22 @@ export default function AgentsPage() {
       setError(errs.length > 0 ? errs.join("; ") : null);
       setLoading(false);
 
-      const provResults = await Promise.allSettled(targets.map((t) => listProviders(t.id)));
-      const provs = provResults.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
-      setProvidersById(Object.fromEntries(provs.map((p) => [p.id, p])));
-
       // No bulk endpoint for attachment counts; failures degrade to "—" per agent.
+      const tenantNumbers = new Map(
+        await Promise.all(
+          targets.map(async (t) => [t.id, await listPhoneNumbers(t.id).catch(() => null)] as const),
+        ),
+      );
       const entries = await Promise.all(
         list.map(async (a) => {
-          const [kbs, apis] = await Promise.all([
+          const [kbs, apis, calls] = await Promise.all([
             listAgentKnowledgeBases(a.id).then((r) => r.length).catch(() => null),
             listAgentCustomApis(a.id).then((r) => r.length).catch(() => null),
+            listCalls(a.tenantSlug, { agentId: a.id, limit: 1 }).then((r) => r.total).catch(() => null),
           ]);
-          return [a.id, { sources: kbs, tools: apis }] as const;
+          const nums = tenantNumbers.get(a.tenant_id);
+          const numbers = nums ? nums.filter((n) => n.agent_id === a.id).map((n) => n.did) : null;
+          return [a.id, { sources: kbs, tools: apis, calls, numbers }] as const;
         }),
       );
       setAttachments(Object.fromEntries(entries));
@@ -98,13 +106,6 @@ export default function AgentsPage() {
         Number(b.status === "active") - Number(a.status === "active") || a.name.localeCompare(b.name),
     );
   }, [agents, search]);
-
-  // No voice on the agent means the account's default voice is used.
-  const voiceLabel = (id: string | null) => {
-    const p = id ? providersById[id] : undefined;
-    if (!p) return "Default voice";
-    return p.engine === BUILTIN_TTS_ENGINE ? "Built-in voice" : p.name;
-  };
 
   const accountLine = isAllTenants
     ? `${agents.length} agent${agents.length === 1 ? "" : "s"} across ${allTenants.length} account${allTenants.length === 1 ? "" : "s"}.` +
@@ -169,57 +170,98 @@ export default function AgentsPage() {
           {rows.map((a) => {
             const att = attachments[a.id];
             const language = LANGUAGES.find((l) => l.value === a.language)?.label ?? a.language;
+            const Icon = agentIcon(a);
+            const tpl = agentTemplate(a);
+            const editUrl = `/agents/${a.tenantSlug}/${a.slug}`;
             return (
-              <div key={a.id} className={`agent-card${a.status === "active" ? "" : " paused"}`}>
-                <div className="agent-card-top">
-                  <div className="agent-card-avatar">{a.name.trim()[0]?.toUpperCase() ?? "A"}</div>
-                  <div className="agent-card-id">
-                    <div className="agent-card-name">{a.name}</div>
-                    {isAllTenants && <div className="agent-card-acct">{a.tenantName}</div>}
+              <div
+                key={a.id}
+                className={`agent-card${a.status === "active" ? "" : " paused"}`}
+                role="link"
+                tabIndex={0}
+                onClick={() => router.push(editUrl)}
+                onKeyDown={(e) => e.key === "Enter" && e.target === e.currentTarget && router.push(editUrl)}
+              >
+                <div className="agent-card-top" onClick={(e) => e.stopPropagation()}>
+                  <div className="agent-card-avatar"><Icon size={22} /></div>
+                  <button className="agent-card-icon-btn" aria-label={`Test ${a.name}`} title="Test it" onClick={() => setTesting(a)}>
+                    <Play size={15} />
+                  </button>
+                  <div className="ed2-menu">
+                    <button
+                      className="agent-card-icon-btn"
+                      aria-label="More actions"
+                      aria-expanded={menuFor === a.id}
+                      onClick={() => setMenuFor(menuFor === a.id ? null : a.id)}
+                    >
+                      <MoreVertical size={15} />
+                    </button>
+                    {menuFor === a.id && (
+                      <>
+                        <div className="ed2-menu-backdrop" onClick={() => setMenuFor(null)} />
+                        <div className="ed2-menu-pop" role="menu">
+                          <button role="menuitem" onClick={() => router.push(editUrl)}>
+                            <Pencil size={13} /> Edit agent
+                          </button>
+                          <button role="menuitem" onClick={() => router.push(`/workflows/${a.tenantSlug}/${a.slug}`)}>
+                            <Workflow size={13} /> Conversation steps
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </div>
+                </div>
+
+                <div className="agent-card-name">{a.name}</div>
+                {isAllTenants && <div className="agent-card-acct">{a.tenantName}</div>}
+
+                <dl className="agent-card-meta">
+                  <dt>Type</dt>
+                  <dd>
+                    {tpl ? `${tpl.direction === "inbound" ? "Incoming" : "Outgoing"} · ${tpl.label}` : "Custom"}
+                  </dd>
+                  <dt>Number</dt>
+                  <dd className={att?.numbers?.length ? "" : "muted"}>
+                    {att?.numbers == null
+                      ? "—"
+                      : att.numbers.length === 0
+                        ? "Not connected"
+                        : att.numbers.join(", ")}
+                  </dd>
+                </dl>
+
+                <div className="agent-card-facts">
+                  {language && <span>{language}</span>}
+                  {att?.sources != null && (
+                    <span className={att.sources === 0 ? "muted" : ""}>
+                      {att.sources === 0 ? "No knowledge added" : `${att.sources} knowledge source${att.sources === 1 ? "" : "s"}`}
+                    </span>
+                  )}
+                  {!!att?.tools && <span>{att.tools} connection{att.tools === 1 ? "" : "s"}</span>}
+                  {a.transfer_type !== "none" && <span>Can transfer to a person</span>}
+                </div>
+
+                <div className="agent-card-foot">
                   <span className={`agent-card-status${a.status === "active" ? " on" : ""}`}>
                     <i />{a.status === "active" ? "Live" : "Paused"}
                   </span>
-                </div>
-
-                <div className="agent-card-lbl">Opens with</div>
-                <div className="agent-card-quote">
-                  {a.greeting?.trim() ? `“${a.greeting.trim()}”` : "No opening line yet."}
-                </div>
-
-                <div className="agent-card-facts">
-                  <span><Volume2 size={13} />{voiceLabel(a.tts_config_id)}</span>
-                  {language && <span><Globe size={13} />{language}</span>}
-                  {att?.sources != null && (
-                    <span className={att.sources === 0 ? "muted" : ""}>
-                      <BookOpen size={13} />
-                      {att.sources === 0 ? "No knowledge yet" : `${att.sources} knowledge source${att.sources === 1 ? "" : "s"}`}
-                    </span>
-                  )}
-                  {!!att?.tools && (
-                    <span><Plug size={13} />{att.tools} connection{att.tools === 1 ? "" : "s"}</span>
-                  )}
-                  {a.transfer_type !== "none" && <span><PhoneForwarded size={13} />Can transfer to a person</span>}
-                </div>
-
-                <div className="agent-card-actions">
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    onClick={() => router.push(`/agents/${a.tenantSlug}/${a.slug}`)}
-                  >
-                    <Pencil size={13} /> Edit
-                  </button>
-                  <button
-                    className="btn btn-primary btn-sm"
-                    onClick={() => router.push(`/agents/${a.tenantSlug}/${a.slug}/test`)}
-                  >
-                    <Mic size={13} /> Test it
-                  </button>
+                  {att?.calls != null && <span>{att.calls} call{att.calls === 1 ? "" : "s"}</span>}
                 </div>
               </div>
             );
           })}
         </div>
+      )}
+
+      {testing && (
+        <AgentTestPopup
+          key={testing.id}
+          tenantSlug={testing.tenantSlug}
+          agentSlug={testing.slug}
+          name={testing.name}
+          icon={agentIcon(testing)}
+          onClose={() => setTesting(null)}
+        />
       )}
 
       {!loading && (

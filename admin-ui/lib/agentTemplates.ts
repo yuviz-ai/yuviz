@@ -1,6 +1,8 @@
 // Creation templates: client-side prefill only, no backend entity.
 
-import { CalendarCheck, Headphones, LucideIcon, Target, Wallet } from "lucide-react";
+import {
+  Bot, CalendarCheck, Headphones, LucideIcon, MessageCircle, PhoneCall, Smile, Sparkles, Star, Target, Wallet, Zap,
+} from "lucide-react";
 
 export type CallDirection = "inbound" | "outbound";
 
@@ -78,3 +80,24 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
 
 export const templateByKey = (key: string | null): AgentTemplate | null =>
   AGENT_TEMPLATES.find((t) => t.key === key) ?? null;
+
+const FALLBACK_ICONS: LucideIcon[] = [Bot, Sparkles, MessageCircle, PhoneCall, Smile, Star, Zap];
+
+// Agents don't record their template, so match on its greeting or name.
+export function agentTemplate(agent: { name: string; greeting: string | null }): AgentTemplate | null {
+  const name = agent.name.trim().toLowerCase();
+  return (
+    AGENT_TEMPLATES.find(
+      (t) => t.greeting === agent.greeting?.trim() || (name.length > 3 && t.label.toLowerCase().startsWith(name)),
+    ) ?? null
+  );
+}
+
+// Template icon when one matches; otherwise a stable pick by id.
+export function agentIcon(agent: { id: string; name: string; greeting: string | null }): LucideIcon {
+  const tpl = agentTemplate(agent);
+  if (tpl) return tpl.icon;
+  let hash = 0;
+  for (const ch of agent.id) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  return FALLBACK_ICONS[hash % FALLBACK_ICONS.length];
+}

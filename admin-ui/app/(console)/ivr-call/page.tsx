@@ -63,7 +63,7 @@ export default function CallFlowsPage() {
     return [...matched].sort((a, b) => a.name.localeCompare(b.name));
   }, [flows, search]);
 
-  const open = (f: FlowRow) => router.push(`/workflows/flows/${f.id}`);
+  const open = (f: FlowRow) => router.push(`/ivr-call/${f.id}`);
 
   const remove = async (f: FlowRow) => {
     const msg =
@@ -85,11 +85,11 @@ export default function CallFlowsPage() {
     <>
       <div className="card">
         <div className="card-hdr">
-          <span className="card-title">Call Flows</span>
+          <span className="card-title">IVR-Call</span>
           <input
             className="form-input"
             style={{ width: 200, marginLeft: "auto" }}
-            placeholder="Search flows…"
+            placeholder="Search menus…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -101,14 +101,14 @@ export default function CallFlowsPage() {
           <div className="card-body"><div className="error-banner">{error}</div></div>
         ) : rows.length === 0 ? (
           <div className="empty-state">
-            No call flows yet. A flow answers the call, plays a menu and routes on a keypress —
-            create one to draw it.
+            No IVR call menus yet. An IVR call menu answers the call, plays options like &ldquo;press 1 for
+            sales&rdquo; and sends the caller on — create one to draw it.
           </div>
         ) : (
           <table className="tbl">
             <thead>
               <tr>
-                <th>Flow</th><th>Account</th><th>Type</th><th>State</th><th>Version</th><th />
+                <th>Menu</th><th>Account</th><th>Type</th><th>State</th><th>Version</th><th />
               </tr>
             </thead>
             <tbody>
@@ -143,9 +143,9 @@ export default function CallFlowsPage() {
       </div>
 
       <div className="form-hint" style={{ marginTop: 10 }}>
-        A call flow answers before any AI agent does: it plays prompts, collects keypresses, and
-        routes the caller — to a human, to an AI agent, or to hangup. Open a flow to pick which
-        agents answer behind it.
+        An IVR call menu answers before any AI agent does: it plays messages, listens for keypresses,
+        and sends the caller to a person, to an AI agent, or ends the call. Open a menu to pick
+        which agents answer behind it.
       </div>
 
     </>

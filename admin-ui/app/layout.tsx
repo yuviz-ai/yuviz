@@ -11,7 +11,15 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" data-theme="light" style={{ backgroundColor: 'var(--background, #f7f4ee)' }}>
+    <html lang="en" data-theme="light" suppressHydrationWarning style={{ backgroundColor: 'var(--background, #f7f4ee)' }}>
+      <head>
+        {/* Applies the saved theme before first paint so a refresh doesn't flash light mode. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `try{if(localStorage.getItem("yuviz.theme")==="dark")document.documentElement.dataset.theme="dark"}catch(e){}`,
+          }}
+        />
+      </head>
       <body className="antialiased">{children}</body>
     </html>
   );

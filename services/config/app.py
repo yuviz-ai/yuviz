@@ -182,6 +182,7 @@ app.add_middleware(
     allow_origins=_ADMIN_UI_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Export-Truncated"],
 )
 
 # On app.state so routers needn't import this module (avoids an import cycle).

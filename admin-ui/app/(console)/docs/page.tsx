@@ -15,7 +15,7 @@ const SECTIONS: { id: SectionId; label: string }[] = [
   { id: "knowledge", label: "Knowledge bases" },
   { id: "apis", label: "APIs" },
   { id: "chained", label: "Dependent APIs" },
-  { id: "flows", label: "IVR Flows" },
+  { id: "flows", label: "IVR-Call" },
   { id: "voice", label: "AI & Voice" },
   { id: "other", label: "Other pages" },
   { id: "test", label: "Testing an agent" },
@@ -529,29 +529,29 @@ export default function DocsPage() {
           {section === "flows" && (
             <>
               <P>
-                <strong>IVR Flows</strong> are keypad menus — &ldquo;press 1 for sales&rdquo;.
-                They are a separate thing from an agent: a flow does not converse, it
-                plays prompts, reads keypresses, and routes. A flow can hand the call
+                <strong>IVR-Call</strong> menus are keypad menus — &ldquo;press 1 for sales&rdquo;.
+                They are a separate thing from an agent: a menu does not hold a conversation, it
+                plays messages, reads keypresses, and sends the caller on. A menu can hand the call
                 to an agent when it is done.
               </P>
 
               <Note>
-                <strong>You do not need a flow.</strong> An agent answers perfectly well
-                on its own. Add a flow only when callers should choose from a menu, key
+                <strong>You do not need a phone menu.</strong> An agent answers perfectly well
+                on its own. Add one only when callers should choose from options, key
                 in a number, or reach different destinations before anyone speaks to
                 them.
               </Note>
 
               <H3>Creating one</H3>
               <P>
-                Choose standalone or a copy of an existing flow, then whether it is for
+                Start from scratch or copy an existing menu, then choose whether it is for
                 inbound calls, outbound, or both. You then get a canvas to build on.
               </P>
 
               <H3>The steps you can add</H3>
               <Field name="Start" required>
-                Every flow begins here. It carries the <strong>voice</strong> used by every
-                speaking step in the flow — set it once, here, not per step.
+                Every menu begins here. It carries the <strong>voice</strong> used by every
+                speaking step in the menu — set it once, here, not per step.
               </Field>
               <Field name="Play message">
                 Speaks something and moves on. Use it for a welcome or an announcement.
@@ -566,7 +566,7 @@ export default function DocsPage() {
                 retries twice.
               </Field>
               <Field name="Collect digits"
-                wrong="Without a variable name the flow will not publish — there is nowhere to put what they typed.">
+                wrong="Without a variable name the menu will not publish — there is nowhere to put what they typed.">
                 Gathers a number — a reference, an account, a date of birth. Needs a{" "}
                 <strong>variable name</strong> to store it under. Set the minimum and
                 maximum digits (up to 32) and the key that ends entry, normally hash.
@@ -574,7 +574,7 @@ export default function DocsPage() {
                 of the transcript, the logs, and anything handed to an agent.
               </Field>
               <Field name="Transfer"
-                wrong="Without a destination the flow will not publish.">
+                wrong="Without a destination the menu will not publish.">
                 Sends the call to a real number. Its prompt, if set, is the
                 announcement played before transferring.
               </Field>
@@ -596,7 +596,7 @@ export default function DocsPage() {
                 <li style={{ marginBottom: 6 }}>Nothing leads out of a hang-up.</li>
               </ul>
               <P>
-                You can save an unfinished flow as a draft at any point. Publishing is
+                You can save an unfinished menu as a draft at any point. Publishing is
                 what makes it live, and it will refuse until the above holds. Warnings —
                 a menu with no timeout branch, for instance — do not block publishing
                 but are worth reading.
@@ -608,19 +608,19 @@ export default function DocsPage() {
                 back to one, which republishes it as a <em>new</em> version rather than
                 rewinding — so the history stays intact and the rollback is itself
                 recorded. A call already in progress finishes on the version it
-                started with; publishing never moves a live caller onto a new flow.
+                started with; publishing never moves a live caller onto a new version.
               </P>
 
-              <H3>Attaching a flow to a number</H3>
+              <H3>Putting a menu in front of an agent</H3>
               <P>
-                A flow runs when it is attached to an agent, and that agent answers.
-                Attach it on the agent, not here.
+                A menu plays when it is attached to an agent and that agent gets a call.
+                Pick the agents on the menu&apos;s &ldquo;Agents behind this menu&rdquo; list.
               </P>
               <Note>
-                <strong>An attached flow takes over the whole call.</strong> The caller
-                gets the menu, not the agent&apos;s greeting — the agent only speaks if a{" "}
+                <strong>An attached menu takes over the whole call.</strong> The caller
+                hears the menu, not the agent&apos;s greeting — the agent only speaks if a{" "}
                 <em>hand to agent</em> step reaches it. If an agent that used to
-                converse suddenly answers with a menu, an IVR flow is attached to it.
+                talk suddenly answers with a menu, a phone menu is attached to it.
               </Note>
             </>
           )}
@@ -792,7 +792,7 @@ export default function DocsPage() {
 
               <H3>It answers a menu instead of talking</H3>
               <P>
-                An IVR flow is attached to the agent. Detach it unless you meant the
+                A phone menu is attached to the agent. Detach it unless you meant the
                 call to start with a keypad menu.
               </P>
             </>

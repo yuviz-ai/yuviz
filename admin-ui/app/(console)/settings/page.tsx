@@ -78,8 +78,8 @@ const ROLE_BLURB: Record<UserRole, string> = {
     AppShell and services/config/deps.py — it is a description of the real
     permissions, so it must be edited whenever those move. */
 const ROLE_ACCESS: Record<UserRole, string[]> = {
-  superadmin: ["Every account on the platform", "Agents, IVR flows, knowledge and voice", "Phone Numbers, users and billing", "Live Calls monitoring", "Full audit trail"],
-  admin: ["This account only", "Agents, IVR flows, knowledge and voice", "Phone Numbers, users and billing", "Full audit trail"],
+  superadmin: ["Every account on the platform", "Agents, phone menus, knowledge and voice", "Phone Numbers, users and billing", "Live Calls monitoring", "Full audit trail"],
+  admin: ["This account only", "Agents, phone menus, knowledge and voice", "Phone Numbers, users and billing", "Full audit trail"],
   supervisor: ["No console access yet", "Live Calls is superadmin-only"],
   agent: ["Handles calls", "No console access at all"],
   viewer: ["This account, read-only", "May not invite users or change configuration"],

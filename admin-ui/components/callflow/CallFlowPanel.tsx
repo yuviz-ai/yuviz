@@ -291,7 +291,7 @@ function Canvas({ flow, tenantSlug }: { flow: CallFlow; tenantSlug: string }) {
       if (errors) {
         setProblems(errors);
         setValid(false);
-        setBanner("This flow can't go live yet — see the problems below.");
+        setBanner("This menu can't go live yet — see the problems below.");
       } else {
         setBanner(e instanceof ApiError ? e.detail : String(e));
       }
@@ -308,7 +308,7 @@ function Canvas({ flow, tenantSlug }: { flow: CallFlow; tenantSlug: string }) {
     setDeleting(true);
     try {
       await deleteCallFlow(flow.id);
-      router.push("/workflows");
+      router.push("/ivr-call");
     } catch (e) {
       setBanner(e instanceof ApiError ? e.detail : String(e));
       setDeleting(false);
@@ -354,8 +354,8 @@ function Canvas({ flow, tenantSlug }: { flow: CallFlow; tenantSlug: string }) {
   return (
     <div className="wf-root">
       <div className="cf-header">
-        <button className="btn btn-ghost btn-sm" onClick={() => router.push("/workflows")}>
-          <ArrowLeft size={13} /> IVR Flows
+        <button className="btn btn-ghost btn-sm" onClick={() => router.push("/ivr-call")}>
+          <ArrowLeft size={13} /> IVR-Call
         </button>
         <div className="cf-header-title">
           <h1>{flow.name}</h1>
@@ -508,7 +508,7 @@ function Canvas({ flow, tenantSlug }: { flow: CallFlow; tenantSlug: string }) {
                   <div className="form-group">
                     <div className="cf-field-row">
                       <label className="form-label">
-                        Voice <span className="hint">used by every spoken step in this flow</span>
+                        Voice <span className="hint">used by every spoken step in this menu</span>
                       </label>
                     </div>
                     <select
@@ -671,7 +671,7 @@ function Canvas({ flow, tenantSlug }: { flow: CallFlow; tenantSlug: string }) {
                           )}
                           {!picked.tts_config_id && greeting && (
                             <div className="form-hint" style={{ marginTop: 6 }}>
-                              This agent has no voice of its own — previewing in the flow&apos;s voice.
+                              This agent has no voice of its own — previewing in the menu&apos;s voice.
                             </div>
                           )}
                         </div>
@@ -694,7 +694,7 @@ function Canvas({ flow, tenantSlug }: { flow: CallFlow; tenantSlug: string }) {
           {!selected && !selectedEdge && (
           <div className="wf-problems" style={{ marginBottom: 12 }}>
             <div className="wf-problems-hdr wf-problems-hdr-warn">
-              Agents on this flow
+              Agents behind this menu
             </div>
             <div style={{ padding: "8px 12px" }}>
               {agents.length === 0 ? (
@@ -706,7 +706,7 @@ function Canvas({ flow, tenantSlug }: { flow: CallFlow; tenantSlug: string }) {
                   return (
                     <label
                       key={a.id}
-                      title={onOther ? "Currently attached to a different flow" : undefined}
+                      title={onOther ? "Currently behind a different menu" : undefined}
                       style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0", fontSize: ".76rem" }}
                     >
                       <input
@@ -716,14 +716,14 @@ function Canvas({ flow, tenantSlug }: { flow: CallFlow; tenantSlug: string }) {
                         onChange={(e) => toggleAgent(a, e.target.checked)}
                       />
                       <span style={{ opacity: onOther ? 0.55 : 1 }}>{a.name}</span>
-                      {onOther && <span className="wf-badge" style={{ marginLeft: "auto" }}>other flow</span>}
+                      {onOther && <span className="wf-badge" style={{ marginLeft: "auto" }}>other menu</span>}
                     </label>
                   );
                 })
               )}
               <div className="form-hint" style={{ marginTop: 8 }}>
-                A call this agent answers runs this flow first. Ticking an agent already on another
-                flow moves it to this one.
+                Calls to a ticked agent hear this menu first. Ticking an agent that is behind another
+                menu moves it to this one.
               </div>
             </div>
           </div>
@@ -745,7 +745,7 @@ function Canvas({ flow, tenantSlug }: { flow: CallFlow; tenantSlug: string }) {
               </div>
             ))}
             {valid && warnings.length === 0 && (
-              <div className="wf-problems-ok">No problems — this flow is ready to publish.</div>
+              <div className="wf-problems-ok">No problems — this menu is ready to publish.</div>
             )}
           </div>
           )}

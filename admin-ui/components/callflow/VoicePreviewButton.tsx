@@ -70,7 +70,7 @@ export function VoicePreviewButton({
         className="btn btn-ghost btn-sm"
         onClick={play}
         disabled={disabled}
-        title={why ?? "Hear this line in the flow's voice"}
+        title={why ?? "Hear this line in the menu's voice"}
       >
 <Play size={12} /> {busy ? "Playing…" : label}
       </button>

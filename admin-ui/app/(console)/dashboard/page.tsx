@@ -59,6 +59,12 @@ const TONE_COLOR: Record<Tone, string> = {
 
 interface ChartPoint { label: string; inbound: number; outbound: number; aiPct: number | null }
 
+const DIRECTION_TAG: Record<string, { label: string; tone: Tone }> = {
+  inbound: { label: "Incoming", tone: "g" },
+  outbound: { label: "Outgoing", tone: "a" },
+  test: { label: "Test", tone: "n" },
+};
+
 const toChartPoint = (label: string, inbound: number, outbound: number, ended: number, escalated: number): ChartPoint => ({
   label,
   inbound,
@@ -408,7 +414,7 @@ export default function DashboardPage() {
           <small>
             {loading || !stats
               ? "Loading…"
-              : `Your agents took ${fmtInt(stats.total_calls)} call${stats.total_calls === 1 ? "" : "s"} ${range.period}`}
+              : `Your agents handled ${fmtInt(stats.total_calls)} call${stats.total_calls === 1 ? "" : "s"} ${range.period}`}
             {stats && (
               <>
                 {" · "}<span className="live-dot" />{fmtInt(stats.live_calls)} live now
@@ -443,6 +449,13 @@ export default function DashboardPage() {
               ? `${kpi.callsDeltaPct >= 0 ? "▲" : "▼"} ${Math.abs(kpi.callsDeltaPct).toFixed(0)}% vs ${range.prev}`
               : <span className="muted">No earlier data to compare</span>}
           </div>
+          {stats && (
+            <div className="kpi-d muted">
+              {fmtInt(stats.inbound_count)} incoming · {fmtInt(stats.outbound_count)} outgoing
+              {stats.total_calls > stats.inbound_count + stats.outbound_count &&
+                ` · ${fmtInt(stats.total_calls - stats.inbound_count - stats.outbound_count)} test`}
+            </div>
+          )}
         </div>
         <div className="d-card">
           <div className="kpi-l">Handled by AI</div>
@@ -607,11 +620,12 @@ export default function DashboardPage() {
           ) : (
             <table className="d-tbl">
               <thead>
-                <tr><th>Caller</th><th>Agent</th><th>Length</th><th>Result</th></tr>
+                <tr><th>Number</th><th>Type</th><th>Agent</th><th>Length</th><th>Result</th></tr>
               </thead>
               <tbody>
                 {calls.slice(0, 5).map((c) => {
                   const outcome = c.ended_at ? outcomeOf(c.close_reason) : { short: "Live", tone: "g" as Tone };
+                  const dir = DIRECTION_TAG[c.direction] ?? { label: c.direction, tone: "n" as Tone };
                   return (
                     <tr key={c.session_id}>
                       <td>
@@ -619,6 +633,7 @@ export default function DashboardPage() {
                           {maskNumber(c.direction === "outbound" ? c.called_number : c.caller_number)}
                         </Link>
                       </td>
+                      <td><span className={`st ${dir.tone}`}>{dir.label}</span></td>
                       <td>{c.agent_name ?? "—"}</td>
                       <td>{fmtDuration(c.duration_ms)}</td>
                       <td><span className={`st ${outcome.tone}`}>{outcome.short}</span></td>

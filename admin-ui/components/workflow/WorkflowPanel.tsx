@@ -494,7 +494,7 @@ function Panel({
   };
 
 
-  if (loading) return <div className="empty-state">Loading workflow…</div>;
+  if (loading) return <div className="empty-state">Loading conversation steps…</div>;
 
   const diverged = published !== canonical;
   const blocking = errors.length > 0;
@@ -506,7 +506,7 @@ function Panel({
         {showHelp && (
           <div className="wf-help">
             <div>
-              <strong>A workflow splits the call into stages.</strong> Each stage has its own
+              <strong>Conversation steps split the call into stages.</strong> Each stage has its own
               instructions and its own tools, and the agent moves between them when a
               connection&apos;s condition is met. Callers only reach a stage once the agent has
               earned its way there — so it can&apos;t book before it has verified.
@@ -518,7 +518,7 @@ function Panel({
         <div className="wf-toolbar">
           {header && (
             <>
-              <Link href={header.backHref} className="wf-back-btn" title="Back to Workflows"><ArrowLeft size={15} /></Link>
+              <Link href={header.backHref} className="wf-back-btn" title="Back to agent"><ArrowLeft size={15} /></Link>
               <span className="wf-page-title">{header.title}</span>
               <span className="wf-toolbar-sep" />
             </>
@@ -568,7 +568,7 @@ function Panel({
                 blocking ? "Fix the problems listed below first"
                   : justPublished ? "Just published"
                   : !diverged ? "Nothing has changed since the last publish"
-                  : "Make this the flow live calls run"
+                  : "Make these the steps live calls follow"
               }
               onClick={publish}
             >
@@ -686,7 +686,7 @@ function Panel({
                         <button
                           role="menuitem"
                           disabled={hasGlobal}
-                          title={hasGlobal ? "This flow already has one" : undefined}
+                          title={hasGlobal ? "There is already one" : undefined}
                           onClick={() => addNode("global")}
                         >
                           <span>Always applies</span>
@@ -760,7 +760,7 @@ function ProblemList({
   errors, warnings, onReveal,
 }: { errors: WorkflowError[]; warnings: WorkflowError[]; onReveal: (p: WorkflowError) => void }) {
   if (!errors.length && !warnings.length) {
-    return <div className="wf-problems wf-problems-ok">No problems — this flow is ready to publish.</div>;
+    return <div className="wf-problems wf-problems-ok">No problems — these steps are ready to publish.</div>;
   }
   const row = (p: WorkflowError, kind: "error" | "warning", i: number) => (
     <button

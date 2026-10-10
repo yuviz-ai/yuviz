@@ -483,7 +483,7 @@ export default function AgentDetailPage() {
             Test
           </button>
           <button className="btn btn-ghost btn-sm" onClick={() => router.push(`/workflows/${tenantSlug}/${agentSlug}`)}>
-            Call flow <ArrowRight size={13} />
+            Conversation steps <ArrowRight size={13} />
           </button>
           <div className="ed2-menu">
             <button className="btn btn-ghost btn-sm" aria-label="More actions" aria-expanded={menuOpen} onClick={() => setMenuOpen((o) => !o)}>
@@ -497,7 +497,7 @@ export default function AgentDetailPage() {
                     role="menuitem"
                     onClick={handleDuplicate}
                     disabled={duplicating}
-                    title="Copies the settings. Documents, connections and the call flow are not copied, and the copy starts paused."
+                    title="Copies the settings. Documents, connections and conversation steps are not copied, and the copy starts paused."
                   >
                     <Copy size={13} /> Duplicate settings
                   </button>
@@ -602,7 +602,7 @@ export default function AgentDetailPage() {
                     onBlur={saveHeld}
                   />
                   <div className="form-hint">
-                    Say who the agent is, what it helps with, and what it must never do. Changes also update its call flow.
+                    Say who the agent is, what it helps with, and what it must never do. Changes also update its conversation steps.
                   </div>
                 </div>
               </div>

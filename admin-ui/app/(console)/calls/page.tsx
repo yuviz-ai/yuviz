@@ -3,9 +3,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
-  ArrowRight, Check, ChevronDown, ChevronLeft, ChevronRight, PhoneIncoming, PhoneOutgoing, RefreshCw, Search, X,
+  ArrowRight, Check, ChevronDown, ChevronLeft, ChevronRight, Download, PhoneIncoming, PhoneOutgoing, RefreshCw, Search, X,
 } from "lucide-react";
 import { ALL_CALLS_LIMIT, ApiError, CallTimeRange, CallWithTenant, listAllCalls } from "@/lib/api";
+import { CallRowActions } from "@/components/CallRowActions";
+import { ExportCallsModal, ExportScope } from "@/components/ExportCallsModal";
 import { SentimentBadge, SENTIMENT_ORDER, sentimentLabel } from "@/components/SentimentBadge";
 import { useActiveTenant } from "@/lib/useActiveTenant";
 import { OUTCOMES, Tone, outcomeOf } from "@/lib/callOutcome";
@@ -49,13 +51,23 @@ function formatDuration(ms: number | null): string {
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 const HOUR = 3_600_000;
 
-type ColKey = "time" | "account" | "parties" | "agent" | "duration" | "sentiment" | "status" | "turns";
+type ColKey = "time" | "account" | "parties" | "agent" | "duration" | "sentiment" | "status";
 /** `hidden` options are set from the menu's extra slot, not a row. */
 type FilterOption = { value: string; label: string; test: (c: CallWithTenant) => boolean; hidden?: boolean };
-type Column = { key: ColKey; label: string; options: FilterOption[]; align?: "right" };
+type Column = { key: ColKey; label: string; options: FilterOption[] };
 type TimeRange = { from: string; to: string };
 
 const ageMs = (c: CallWithTenant) => Date.now() - new Date(c.started_at).getTime();
+// "Failed" = the call broke (dropped / transfer failed); other finished calls count as completed.
+const isFailed = (c: CallWithTenant) => c.status === "completed" && outcomeOf(c.close_reason).tone === "r";
+
+// Header pills; each sets the Status filter (null = all calls).
+const STAT_PILLS = [
+  { key: "total", status: null, label: "Total calls", dot: null },
+  { key: "succeeded", status: "succeeded", label: "Completed", dot: "green" },
+  { key: "live", status: "live", label: "In progress", dot: "amber" },
+  { key: "failed", status: "failed", label: "Failed", dot: "red" },
+] as const;
 
 function timeRangeFor(filter: string | undefined, custom: TimeRange): CallTimeRange {
   const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
@@ -220,6 +232,8 @@ export default function CallsPage() {
   const [customRange, setCustomRange] = useState<TimeRange>(() => ({ from: customFromUrl(searchParams), to: "" }));
 
   const [truncated, setTruncated] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [exporting, setExporting] = useState(false);
 
   const [pageSize, setPageSize] = useState(25);
   const [page, setPage] = useState(1);
@@ -234,6 +248,7 @@ export default function CallsPage() {
       .then((result) => {
         setCalls(result.calls);
         setTruncated(result.truncated);
+        setSelected(new Set());
         setPage(1);
       })
       .catch((e) => setError(e instanceof ApiError ? e.detail : String(e)))
@@ -303,17 +318,12 @@ export default function CallsPage() {
         key: "status", label: "Status", options: [
           { value: "live", label: "Live", test: (c) => c.status === "live" },
           { value: "completed", label: "Completed", test: (c) => c.status === "completed" },
+          { value: "succeeded", label: "Completed (not failed)", hidden: true, test: (c) => c.status === "completed" && !isFailed(c) },
+          { value: "failed", label: "Failed", hidden: true, test: isFailed },
           ...OUTCOME_FILTERS.map((o) => ({
             value: o.key, label: o.label,
             test: (c: CallWithTenant) => c.status === "completed" && outcomeOf(c.close_reason).key === o.key,
           })),
-        ],
-      },
-      {
-        key: "turns", label: "Turns", align: "right", options: [
-          { value: "0", label: "No turns", test: (c) => c.turn_count === 0 },
-          { value: "few", label: "1 – 5", test: (c) => c.turn_count >= 1 && c.turn_count <= 5 },
-          { value: "many", label: "More than 5", test: (c) => c.turn_count > 5 },
         ],
       },
     ];
@@ -355,6 +365,19 @@ export default function CallsPage() {
     return out;
   }, [columns, activeTests, searched]);
 
+  // Ignores the Status filter so picking one pill doesn't zero the others.
+  const stats = useMemo(() => {
+    const others = activeTests.filter((f) => f.key !== "status");
+    const base = searched.filter((c) => others.every((f) => f.test(c)));
+    let live = 0;
+    let failed = 0;
+    for (const c of base) {
+      if (c.status === "live") live++;
+      else if (isFailed(c)) failed++;
+    }
+    return { total: base.length, succeeded: base.length - live - failed, live, failed };
+  }, [searched, activeTests]);
+
   const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
   const currentPage = Math.min(page, pageCount);
   const pageCalls = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
@@ -380,6 +403,35 @@ export default function CallsPage() {
 
   const openDetail = (call: CallWithTenant) => router.push(`/calls/${call.session_id}`);
 
+  const toggleSelected = (ids: string[], on: boolean) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      ids.forEach((id) => (on ? next.add(id) : next.delete(id)));
+      return next;
+    });
+  const pageAllSelected = pageCalls.length > 0 && pageCalls.every((c) => selected.has(c.session_id));
+  const pageSomeSelected = pageCalls.some((c) => selected.has(c.session_id));
+
+  // The server re-applies these filters, so the export isn't capped at the calls loaded here.
+  const exportRequest = (scope: ExportScope) => {
+    if (scope === "selected") {
+      const picked = calls.filter((c) => selected.has(c.session_id));
+      return { tenant_slugs: [...new Set(picked.map((c) => c.tenant_id))], session_ids: picked.map((c) => c.session_id) };
+    }
+    const range = timeRangeFor(timeFilter, customRange);
+    return {
+      tenant_slugs: targetTenants.filter((t) => !filters.account || t.name === filters.account).map((t) => t.slug),
+      started_after: range.startedAfter,
+      started_before: range.startedBefore,
+      q: search.trim() || undefined,
+      parties: filters.parties,
+      agent: filters.agent,
+      duration: filters.duration,
+      sentiment: filters.sentiment,
+      status: filters.status,
+    };
+  };
+
   return (
     <>
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
@@ -389,23 +441,65 @@ export default function CallsPage() {
             Every finished and in-progress call. Open one to read its transcript and how it ended.
           </div>
         </div>
-        <button className="btn btn-ghost" onClick={load} disabled={loading}>
-          <RefreshCw size={14} /> Refresh
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn btn-ghost" onClick={load} disabled={loading}>
+            <RefreshCw size={14} /> Refresh
+          </button>
+          <button className="btn btn-primary" onClick={() => setExporting(true)} disabled={loading || calls.length === 0}>
+            <Download size={14} /> Export
+          </button>
+        </div>
       </div>
+
+      {exporting && (
+        <ExportCallsModal
+          onClose={() => setExporting(false)}
+          filteredLabel={
+            truncated
+              ? `${filtered.length}+ calls, including older matches not loaded in the table`
+              : `${filtered.length} call${filtered.length === 1 ? "" : "s"}`
+          }
+          selectedCount={selected.size}
+          showAccount={isAllTenants}
+          request={exportRequest}
+        />
+      )}
 
       {error && <div className="error-banner">{error}</div>}
 
       <div className="card">
         <div className="card-hdr" style={{ flexWrap: "wrap", gap: 10 }}>
           <div className="card-title">Call log</div>
+          {!loading && (
+            <div className="calls-stats" role="group" aria-label="Filter by call status">
+              {STAT_PILLS.map((p) => {
+                const on = (filters.status ?? null) === p.status;
+                return (
+                  <button
+                    key={p.key}
+                    type="button"
+                    className={on ? "on" : undefined}
+                    aria-pressed={on}
+                    onClick={() => setFilter("status", on ? null : p.status)}
+                  >
+                    {p.dot && <i className={p.dot} />}
+                    {p.label} <b>{stats[p.key]}</b>
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <div className="card-sub">
-            {loading
-              ? "Loading…"
-              : filtered.length === calls.length
-                ? `${calls.length} call${calls.length === 1 ? "" : "s"}`
-                : `${filtered.length} of ${calls.length} calls`}
-            {!loading && truncated && ` · showing the latest ${ALL_CALLS_LIMIT} per account, narrow the time range to see older calls`}
+            {loading && "Loading…"}
+            {!loading && truncated && `Showing the latest ${ALL_CALLS_LIMIT} per account, narrow the time range to see older calls`}
+            {!loading && selected.size > 0 && (
+              <>
+                {`${truncated ? " · " : ""}${selected.size} selected `}
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setSelected(new Set())}>
+                  Clear
+                </button>
+              </>
+            )}
           </div>
           {!loading && (calls.length > 0 || timeFilter) && (
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
@@ -442,11 +536,21 @@ export default function CallsPage() {
             <table className="tbl">
               <thead>
                 <tr>
+                  <th className="calls-check">
+                    <input
+                      type="checkbox"
+                      aria-label="Select calls on this page"
+                      checked={pageAllSelected}
+                      ref={(el) => {
+                        if (el) el.indeterminate = pageSomeSelected && !pageAllSelected;
+                      }}
+                      onChange={() => toggleSelected(pageCalls.map((c) => c.session_id), !pageAllSelected)}
+                    />
+                  </th>
                   {columns.map((col) => (
                     <th
                       key={col.key}
                       className={col.key === "sentiment" ? "col-sentiment" : undefined}
-                      style={col.align === "right" ? { textAlign: "right" } : undefined}
                     >
                       <ColumnFilter
                         column={col}
@@ -466,13 +570,13 @@ export default function CallsPage() {
                       />
                     </th>
                   ))}
-                  <th aria-hidden="true" />
+                  <th style={{ textAlign: "center", width: 96 }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.length === 0 && (
                   <tr>
-                    <td colSpan={columns.length + 1} style={{ cursor: "default" }}>
+                    <td colSpan={columns.length + 2} style={{ cursor: "default" }}>
                       <div className="empty-state">
                         No calls match these filters.
                         <button type="button" className="btn btn-ghost btn-sm" style={{ marginLeft: 8 }} onClick={clearFilters}>
@@ -495,6 +599,14 @@ export default function CallsPage() {
                       }
                     }}
                   >
+                    <td className="calls-check" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        aria-label="Select call"
+                        checked={selected.has(c.session_id)}
+                        onChange={(e) => toggleSelected([c.session_id], e.target.checked)}
+                      />
+                    </td>
                     <td style={{ whiteSpace: "nowrap" }}>
                       <div className="cell-stack">
                         <span className="cell-primary">{formatTime(c.started_at)}</span>
@@ -532,11 +644,9 @@ export default function CallsPage() {
                         ? <span className="badge green">Live</span>
                         : <StatusBadge reason={c.close_reason} />}
                     </td>
-                    {/* turn_count stays 0 for calls reconciled after a restart; the detail page reads the real transcript. */}
-                    <td className="cell-num" style={{ textAlign: "right" }}>
-                      {c.turn_count > 0 ? c.turn_count : "—"}
+                    <td>
+                      <CallRowActions call={c} onOpen={() => openDetail(c)} />
                     </td>
-                    <td className="calls-row-chevron"><ChevronRight size={14} /></td>
                   </tr>
                 ))}
               </tbody>

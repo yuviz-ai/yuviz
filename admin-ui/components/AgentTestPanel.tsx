@@ -16,9 +16,9 @@ const STATUS_TEXT: Record<string, string> = {
   error: "Something went wrong.",
 };
 
-type Mode = "browser" | "phone" | "chat";
+export type Mode = "browser" | "phone" | "chat";
 
-const MODES: { key: Mode; label: string; icon: LucideIcon; soon?: string }[] = [
+export const MODES: { key: Mode; label: string; icon: LucideIcon; soon?: string }[] = [
   { key: "browser", label: "Browser", icon: Headphones },
   { key: "phone", label: "Phone", icon: Phone, soon: "Get a real call from your agent on your own phone." },
   { key: "chat", label: "Chat", icon: MessageSquare, soon: "Type messages to your agent and read its replies." },

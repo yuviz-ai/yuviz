@@ -30,7 +30,15 @@ async def test_list_calls_scoped_to_tenant_and_decorated(test_tenant, scoped, po
     assert call["direction"] == "inbound"
     assert call["mode"] == "AI"       # derived: inbound -> AI
     assert call["status"] == "live"  # derived: no ended_at yet
+    assert call["has_transcript"] is False
 
+    await pool.execute(
+        "INSERT INTO transcript_entries (session_id, turn_number, caller_text, ai_response) VALUES ($1, 1, 'hi', 'hello')",
+        session_id,
+    )
+    assert (await calls.list_calls(test_tenant["slug"]))["items"][0]["has_transcript"] is True
+
+    await pool.execute("DELETE FROM transcript_entries WHERE session_id = $1", session_id)
     await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
 
 
@@ -250,6 +258,7 @@ async def test_get_dashboard_stats_counts_and_sums_minutes(test_tenant, scoped, 
     assert stats["live_calls"] == 1
     assert stats["success_count"] == 1
     assert stats["failed_count"] == 1
+    assert stats["inbound_count"] == 2
     assert stats["outbound_count"] == 1
 
     for sid in (ok_id, failed_id, live_id):
@@ -280,7 +289,7 @@ async def test_get_usage_trend_groups_by_day(test_tenant, scoped, pool):
     )
     await pool.execute(
         "INSERT INTO calls (session_id, tenant_id, direction, duration_ms, started_at, ended_at) "
-        "VALUES ($1, $2, 'inbound', 120000, NOW() - INTERVAL '1 day', NOW() - INTERVAL '1 day')",
+        "VALUES ($1, $2, 'outbound', 120000, NOW() - INTERVAL '1 day', NOW() - INTERVAL '1 day')",
         yesterday_id, test_tenant["slug"],
     )
 
@@ -288,6 +297,7 @@ async def test_get_usage_trend_groups_by_day(test_tenant, scoped, pool):
     assert len(trend) == 2
     assert sum(row["calls"] for row in trend) == 2
     assert sum(row["minutes"] for row in trend) == 3.0
+    assert [(row["inbound"], row["outbound"]) for row in trend] == [(0, 1), (1, 0)]
 
     for sid in (today_id, yesterday_id):
         await pool.execute("DELETE FROM calls WHERE session_id = $1", sid)
@@ -312,7 +322,7 @@ async def test_trend_and_activity_report_containment_inputs(test_tenant, scoped,
 
 
 async def test_get_todays_activity_buckets_by_hour_and_direction(test_tenant, scoped, pool):
-    inbound_id, outbound_id = (f"test-call-{uuid.uuid4().hex[:8]}" for _ in range(2))
+    inbound_id, outbound_id, test_id = (f"test-call-{uuid.uuid4().hex[:8]}" for _ in range(3))
     await pool.execute(
         "INSERT INTO calls (session_id, tenant_id, direction, started_at) VALUES ($1, $2, 'inbound', NOW())",
         inbound_id, test_tenant["slug"],
@@ -321,14 +331,18 @@ async def test_get_todays_activity_buckets_by_hour_and_direction(test_tenant, sc
         "INSERT INTO calls (session_id, tenant_id, direction, started_at) VALUES ($1, $2, 'outbound', NOW())",
         outbound_id, test_tenant["slug"],
     )
+    await pool.execute(
+        "INSERT INTO calls (session_id, tenant_id, direction, started_at) VALUES ($1, $2, 'test', NOW())",
+        test_id, test_tenant["slug"],
+    )
 
     activity = await calls.get_todays_activity(test_tenant["slug"])
-    assert len(activity) == 1  # both calls land in the current hour bucket
+    assert len(activity) == 1  # all calls land in the current hour bucket
     assert activity[0]["inbound"] == 1
     assert activity[0]["outbound"] == 1
-    assert activity[0]["web"] == 0
+    assert activity[0]["web"] == 1
 
-    for sid in (inbound_id, outbound_id):
+    for sid in (inbound_id, outbound_id, test_id):
         await pool.execute("DELETE FROM calls WHERE session_id = $1", sid)
 
 
@@ -436,6 +450,80 @@ async def test_get_disposition_mix_groups_ended_calls_only(test_tenant, scoped, 
         await pool.execute("DELETE FROM calls WHERE session_id = $1", sid)
 
 
+async def _seed_export_calls(pool, tenant_slug):
+    ids = [f"test-call-{uuid.uuid4().hex[:8]}" for _ in range(3)]
+    await pool.execute(
+        "INSERT INTO calls (session_id, tenant_id, direction, caller_number, called_number, started_at, ended_at, "
+        "duration_ms, close_reason, sentiment, turn_count) VALUES "
+        "($1, $4, 'inbound', '+15550100', '+15550199', '2026-10-01T10:00:00Z', '2026-10-01T10:01:30Z', "
+        "90000, 'TRANSFER_SUCCESS', 'positive', 4), "
+        "($2, $4, 'outbound', '=HYPERLINK(\"x\")', '+15550123', '2026-10-02T10:00:00Z', NULL, NULL, NULL, NULL, 0), "
+        "($3, $4, 'inbound', '+15550111', '+15550199', '2026-10-03T10:00:00Z', '2026-10-03T10:00:10Z', "
+        "10000, 'transport_error', 'frustrated', 1)",
+        *ids, tenant_slug,
+    )
+    return ids
+
+
+async def _export(base, **overrides):
+    from services.config.schemas import CallExport
+
+    # Caller is the first listed tenant, as the router passes it.
+    return await calls.export_calls(CallExport(**{**base, **overrides}), tenant_slug=base["tenant_slugs"][0])
+
+
+async def test_export_csv_applies_filters_and_formats_columns(test_tenant, scoped, pool):
+    import csv
+    import os
+
+    ids = await _seed_export_calls(pool, test_tenant["slug"])
+    spec = {
+        "tenant_slugs": [test_tenant["slug"]],
+        "columns": ["session_id", "started_at", "caller_number", "duration", "status", "outcome", "sentiment"],
+        "timezone": "Asia/Kolkata",
+    }
+    try:
+        path, truncated = await _export(spec, parties="inbound")
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            rows = list(csv.reader(f))
+        os.unlink(path)
+        assert not truncated
+        assert rows[0] == ["Call ID", "Started", "From", "Duration (s)", "Status", "Outcome", "Sentiment"]
+        # Newest first, times in the requested zone, phone numbers untouched.
+        assert rows[1:] == [
+            [ids[2], "2026-10-03 15:30:00", "+15550111", "10", "Completed", "Call dropped", "Frustrated"],
+            [ids[0], "2026-10-01 15:30:00", "+15550100", "90", "Completed", "Sent to a person", "Positive"],
+        ]
+
+        path, _ = await _export(spec, status="to_person")
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            assert [r[0] for r in list(csv.reader(f))[1:]] == [ids[0]]
+        os.unlink(path)
+
+        path, _ = await _export(spec, status="failed", columns=["session_id"])
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            assert [r[0] for r in list(csv.reader(f))[1:]] == [ids[2]]
+        os.unlink(path)
+
+        path, _ = await _export(spec, status="succeeded", columns=["session_id"])
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            assert [r[0] for r in list(csv.reader(f))[1:]] == [ids[0]]
+        os.unlink(path)
+
+        path, _ = await _export(spec, status="live", columns=["caller_number", "outcome"])
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            # Formula-looking text is defused; a live call has no outcome yet.
+            assert list(csv.reader(f))[1:] == [["'=HYPERLINK(\"x\")", ""]]
+        os.unlink(path)
+
+        path, _ = await _export(spec, q="5550111", columns=["session_id"])
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            assert list(csv.reader(f))[1:] == [[ids[2]]]
+        os.unlink(path)
+    finally:
+        await pool.execute("DELETE FROM calls WHERE session_id = ANY($1)", ids)
+
+
 async def test_trend_and_activity_bucket_in_the_viewers_time_zone(test_tenant, scoped, pool):
     # 00:01 today in India is the previous evening in UTC.
     ids = [f"test-call-{uuid.uuid4().hex[:8]}" for _ in range(2)]
@@ -456,6 +544,47 @@ async def test_trend_and_activity_bucket_in_the_viewers_time_zone(test_tenant, s
         assert [(a["hour"], a["inbound"], a["outbound"]) for a in activity] == [(0, 1, 1)]
     finally:
         await pool.execute("DELETE FROM calls WHERE session_id = ANY($1)", ids)
+
+
+async def test_export_selected_ids_xlsx(test_tenant, scoped, pool):
+    import os
+    import zipfile
+
+    ids = await _seed_export_calls(pool, test_tenant["slug"])
+    try:
+        path, _ = await _export(
+            {"tenant_slugs": [test_tenant["slug"]], "columns": ["session_id", "duration"]},
+            format="xlsx", session_ids=[ids[0], ids[2]], status="live",  # filters ignored for a selection
+        )
+        with zipfile.ZipFile(path) as z:
+            sheet = z.read("xl/worksheets/sheet1.xml").decode()
+            strings = z.read("xl/sharedStrings.xml").decode() if "xl/sharedStrings.xml" in z.namelist() else sheet
+        os.unlink(path)
+        assert ids[0] in strings and ids[2] in strings and ids[1] not in strings
+        assert "<v>90</v>" in sheet and "<v>10</v>" in sheet  # durations written as numbers
+    finally:
+        await pool.execute("DELETE FROM calls WHERE session_id = ANY($1)", ids)
+
+
+async def test_export_never_reads_another_tenants_calls(test_tenant, scoped, pool):
+    import os
+
+    other = await pool.fetchrow(
+        "INSERT INTO tenants (name, slug) VALUES ($1, $2) RETURNING *",
+        "Export Cross Tenant", f"test-call-ex-{uuid.uuid4().hex[:8]}",
+    )
+    ids = await _seed_export_calls(pool, other["slug"])
+    try:
+        path, _ = await _export(
+            {"tenant_slugs": [test_tenant["slug"], other["slug"]], "columns": ["session_id"]}, session_ids=ids,
+        )
+        with open(path, encoding="utf-8-sig") as f:
+            content = f.read()
+        os.unlink(path)
+        assert content.strip() == "Call ID"
+    finally:
+        await pool.execute("DELETE FROM calls WHERE session_id = ANY($1)", ids)
+        await pool.execute("DELETE FROM tenants WHERE id = $1", other["id"])
 
 
 def test_unknown_time_zone_is_rejected():

@@ -642,6 +642,9 @@ export interface Call {
   extracted_variables: Record<string, unknown> | null;
   sentiment: CallSentiment | null;
   sentiment_reason: string | null;
+  recording_ref: string | null;
+  // List responses only.
+  has_transcript?: boolean;
 }
 
 export interface CallListResult {
@@ -705,6 +708,53 @@ export const listAllCalls = async (
       .sort((a, b) => b.started_at.localeCompare(a.started_at)),
     truncated: perTenant.some((result) => result.total > result.items.length),
   };
+};
+
+export type CallExportColumn =
+  | "session_id" | "started_at" | "ended_at" | "account" | "direction" | "caller_number" | "called_number"
+  | "agent" | "duration" | "status" | "outcome" | "close_reason" | "sentiment" | "sentiment_reason"
+  | "turns" | "disposition" | "languages";
+
+/** Mirrors services/config/schemas.py CallExport; `session_ids` set = export only those calls. */
+export interface CallExportRequest {
+  tenant_slugs: string[];
+  format: "csv" | "xlsx";
+  columns: CallExportColumn[];
+  session_ids?: string[];
+  timezone?: string;
+  started_after?: string;
+  started_before?: string;
+  q?: string;
+  parties?: string;
+  agent?: string;
+  duration?: string;
+  sentiment?: string;
+  status?: string;
+  turns?: string;
+}
+
+/** `truncated`: more calls matched than the server's per-export row cap. */
+export const exportCalls = async (body: CallExportRequest): Promise<{ blob: Blob; truncated: boolean }> => {
+  const token = getToken();
+  const res = await fetch(`${BASE_URL}/calls/export`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const raw = (await res.json())?.detail;
+      detail = (Array.isArray(raw) ? raw[0]?.msg : raw) || detail;
+    } catch {
+      // not JSON — keep statusText
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return { blob: await res.blob(), truncated: res.headers.get("X-Export-Truncated") === "true" };
 };
 
 // ── Live Calls Monitoring ────────────────────────────────────────────────
@@ -821,6 +871,7 @@ export interface DashboardStats {
   live_calls: number;
   success_count: number;
   failed_count: number;
+  inbound_count: number;
   outbound_count: number;
   // Raw numerators/denominators, not rates, so they can be summed across tenants.
   ended_count: number;
@@ -838,7 +889,7 @@ export interface DashboardStats {
 
 const EMPTY_DASHBOARD_STATS: DashboardStats = {
   total_calls: 0, total_minutes: 0, live_calls: 0, success_count: 0, failed_count: 0,
-  outbound_count: 0, ended_count: 0, aht_sample_count: 0, aht_duration_ms: 0,
+  inbound_count: 0, outbound_count: 0, ended_count: 0, aht_sample_count: 0, aht_duration_ms: 0,
   handoff_count: 0, escalated_count: 0, prev_total_calls: 0, prev_ended_count: 0,
   prev_aht_sample_count: 0, prev_aht_duration_ms: 0, prev_handoff_count: 0,
   prev_escalated_count: 0,
@@ -856,6 +907,7 @@ export const listAllDashboardStats = async (tenants: Tenant[], hours: number = 2
       live_calls: acc.live_calls + s.live_calls,
       success_count: acc.success_count + s.success_count,
       failed_count: acc.failed_count + s.failed_count,
+      inbound_count: acc.inbound_count + s.inbound_count,
       outbound_count: acc.outbound_count + s.outbound_count,
       ended_count: acc.ended_count + s.ended_count,
       aht_sample_count: acc.aht_sample_count + s.aht_sample_count,

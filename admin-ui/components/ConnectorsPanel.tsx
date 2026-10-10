@@ -113,7 +113,15 @@ const setupFor = (key: string, values: Record<string, string>): PresetSetup => {
   return setup;
 };
 
-export function ConnectorsPanel({ tenantId }: { tenantId: string }) {
+export function ConnectorsPanel({
+  tenantId,
+  connectOpen = false,
+  onConnectClose,
+}: {
+  tenantId: string;
+  connectOpen?: boolean;
+  onConnectClose?: () => void;
+}) {
   const [providers, setProviders] = useState<OAuthProvider[]>([]);
   const [connections, setConnections] = useState<OAuthConnection[]>([]);
   const [presets, setPresets] = useState<ConnectorPreset[]>([]);
@@ -271,6 +279,63 @@ export function ConnectorsPanel({ tenantId }: { tenantId: string }) {
     (f) => (!f.when || f.when(values)) && !values[f.name]?.trim(),
   );
 
+  const providerList = (
+    <>
+      {providers.length === 0 && (
+        <div className="empty-state">
+          No account providers are configured on this platform yet. Ask a platform operator to set one up.
+        </div>
+      )}
+      {providers.map((provider) => {
+        const connection = connectionFor(provider.key);
+        const status = connection ? STATUS_BADGE[connection.status] : null;
+        return (
+          <div key={provider.key} className="kb-row">
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 500 }}>{provider.label}</div>
+              <div style={{ fontSize: ".7rem", color: "var(--text-3)" }}>
+                {connection ? (connection.account_label ?? "Account connected") : "Not connected"}
+              </div>
+            </div>
+            {status && <span className={`badge ${status.cls}`}>{status.label}</span>}
+            {canManage && (
+              <>
+                <button
+                  className="btn btn-indigo btn-sm"
+                  disabled={busy !== null}
+                  onClick={() => {
+                    if (provider.auth_kind !== "api_key") return connect(provider.key, null);
+                    onConnectClose?.();
+                    setPasting(provider);
+                    setApiKey("");
+                    setKeyError(null);
+                  }}
+                >
+                  {connection ? "Reconnect" : "Connect"}
+                </button>
+                {connection && (
+                  <button
+                    className="btn btn-danger btn-sm"
+                    disabled={busy !== null}
+                    onClick={() => disconnect(connection)}
+                  >
+                    Disconnect
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        );
+      })}
+      {DARK_ENTRIES.filter((entry) => !entry.isLive(providers, presets)).map((entry) => (
+        <div key={entry.label} className="kb-row">
+          <div style={{ flex: 1, fontWeight: 500 }}>{entry.label}</div>
+          <span className="badge gray">Not available</span>
+        </div>
+      ))}
+    </>
+  );
+
   return (
     <>
       {error && <div className="error-banner">{error}</div>}
@@ -280,60 +345,16 @@ export function ConnectorsPanel({ tenantId }: { tenantId: string }) {
         <div className="card-hdr">
           <div className="card-title">Connected accounts</div>
         </div>
-        <div className="card-body">
-          {providers.length === 0 && (
-            <div className="empty-state">
-              No account providers are configured on this platform yet. Ask a platform operator to set one up.
-            </div>
-          )}
-          {providers.map((provider) => {
-            const connection = connectionFor(provider.key);
-            const status = connection ? STATUS_BADGE[connection.status] : null;
-            return (
-              <div key={provider.key} className="kb-row">
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 500 }}>{provider.label}</div>
-                  <div style={{ fontSize: ".7rem", color: "var(--text-3)" }}>
-                    {connection ? (connection.account_label ?? "Account connected") : "Not connected"}
-                  </div>
-                </div>
-                {status && <span className={`badge ${status.cls}`}>{status.label}</span>}
-                {canManage && (
-                  <>
-                    <button
-                      className="btn btn-indigo btn-sm"
-                      disabled={busy !== null}
-                      onClick={() => {
-                        if (provider.auth_kind !== "api_key") return connect(provider.key, null);
-                        setPasting(provider);
-                        setApiKey("");
-                        setKeyError(null);
-                      }}
-                    >
-                      {connection ? "Reconnect" : "Connect"}
-                    </button>
-                    {connection && (
-                      <button
-                        className="btn btn-danger btn-sm"
-                        disabled={busy !== null}
-                        onClick={() => disconnect(connection)}
-                      >
-                        Disconnect
-                      </button>
-                    )}
-                  </>
-                )}
-              </div>
-            );
-          })}
-          {DARK_ENTRIES.filter((entry) => !entry.isLive(providers, presets)).map((entry) => (
-            <div key={entry.label} className="kb-row">
-              <div style={{ flex: 1, fontWeight: 500 }}>{entry.label}</div>
-              <span className="badge gray">Not available</span>
-            </div>
-          ))}
-        </div>
+        <div className="card-body">{providerList}</div>
       </div>
+
+      <Modal open={connectOpen && canManage} title="Connect an app" onClose={() => onConnectClose?.()}>
+        {error && <div className="error-banner">{error}</div>}
+        <div className="form-hint" style={{ marginBottom: 10 }}>
+          Most apps send you there to approve access, then bring you back here. Some ask for an API key instead.
+        </div>
+        {providerList}
+      </Modal>
 
       <div className="card">
         <div className="card-hdr">

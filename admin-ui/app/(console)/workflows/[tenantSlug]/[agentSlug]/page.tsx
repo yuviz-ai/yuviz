@@ -31,7 +31,7 @@ export default function WorkflowEditorPage() {
         systemPrompt={agent.system_prompt}
         header={{
           title: agent.name,
-          backHref: "/workflows",
+          backHref: `/agents/${tenantSlug}/${agentSlug}`,
           settingsHref: `/agents/${tenantSlug}/${agentSlug}`,
         }}
       />

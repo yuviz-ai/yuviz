@@ -5,13 +5,23 @@ Uncached: append-heavy data queried many ways would need per-filter invalidation
 
 from __future__ import annotations
 
+import asyncio
+import csv
+import re
+import tempfile
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
+
+import xlsxwriter
 
 from libs.tenancy import platform_conn, tenant_conn
 
 from . import db
+
+if TYPE_CHECKING:
+    from .schemas import CallExport
 
 
 def _status_of(row: dict[str, Any]) -> str:
@@ -70,7 +80,9 @@ async def list_calls(
 
         params.extend([limit, offset])
         rows = await conn.fetch(
-            f"SELECT c.*, a.name AS agent_name FROM calls c "
+            f"SELECT c.*, a.name AS agent_name, "
+            f"EXISTS (SELECT 1 FROM transcript_entries te WHERE te.session_id = c.session_id) AS has_transcript "
+            f"FROM calls c "
             f"LEFT JOIN agents a ON a.id = c.agent_id "
             f"WHERE {where_clause} "
             f"ORDER BY c.started_at DESC LIMIT ${len(params) - 1} OFFSET ${len(params)}",
@@ -157,6 +169,9 @@ async def get_dashboard_stats(tenant_slug: str, *, hours: int = 24 * 30) -> dict
                 WHERE started_at >= NOW() - ($2 * INTERVAL '1 hour') AND ended_at IS NOT NULL
                   AND (turn_count = 0 OR close_reason = 'TRANSFER_FAILED')
             ) AS failed_count,
+            COUNT(*) FILTER (
+                WHERE started_at >= NOW() - ($2 * INTERVAL '1 hour') AND direction = 'inbound'
+            ) AS inbound_count,
             COUNT(*) FILTER (
                 WHERE started_at >= NOW() - ($2 * INTERVAL '1 hour') AND direction = 'outbound'
             ) AS outbound_count,
@@ -275,7 +290,7 @@ async def get_usage_trend(tenant_slug: str, *, days: int = 30, tz: str = "UTC") 
 
 
 async def get_todays_activity(tenant_slug: str, *, tz: str = "UTC") -> list[dict[str, Any]]:
-    """Today's calls by local hour in `tz` and direction; 'web' is always 0 (not a persisted channel)."""
+    """Today's calls by local hour in `tz` and direction; 'web' is browser test sessions (direction 'test')."""
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         rows = await conn.fetch(
@@ -284,6 +299,7 @@ async def get_todays_activity(tenant_slug: str, *, tz: str = "UTC") -> list[dict
                 EXTRACT(HOUR FROM started_at AT TIME ZONE $2)::int AS hour,
                 COUNT(*) FILTER (WHERE direction = 'inbound') AS inbound,
                 COUNT(*) FILTER (WHERE direction = 'outbound') AS outbound,
+                COUNT(*) FILTER (WHERE direction = 'test') AS web,
                 COUNT(*) FILTER (WHERE ended_at IS NOT NULL) AS ended,
                 COUNT(*) FILTER (WHERE close_reason LIKE 'TRANSFER%') AS escalated
             FROM calls
@@ -293,7 +309,7 @@ async def get_todays_activity(tenant_slug: str, *, tz: str = "UTC") -> list[dict
             """,
             tenant_slug, tz,
         )
-    return [{**dict(r), "web": 0} for r in rows]
+    return [dict(r) for r in rows]
 
 
 async def get_latency_stats(tenant_slug: str, *, hours: int = 24) -> list[dict[str, Any]]:
@@ -328,3 +344,207 @@ async def get_latency_stats(tenant_slug: str, *, hours: int = 24) -> list[dict[s
             tenant_slug, hours,
         )
     return [dict(row) for row in rows]
+
+
+# ── Export ─────────────────────────────────────────────────────────────────
+
+EXPORT_MAX_ROWS = 50_000
+
+# Mirrors admin-ui/lib/callOutcome.ts.
+_OUTCOME_REASONS = {
+    "done": ("caller_hangup", "stream_ended", "session_destroyed"),
+    "to_person": ("TRANSFER_SUCCESS",),
+    "transfer_failed": ("TRANSFER_FAILED", "TRANSFER_TIMEOUT"),
+    "dropped": (
+        "transport_error", "close_timeout", "reconciled_inactive", "reconciled_stale", "reconciled_dead_node",
+    ),
+}
+_OUTCOME_LABELS = {
+    "done": "Ended normally", "to_person": "Sent to a person",
+    "transfer_failed": "Transfer failed", "dropped": "Call dropped",
+}
+_REASON_OUTCOME = {reason: key for key, reasons in _OUTCOME_REASONS.items() for reason in reasons}
+_DIRECTION_LABELS = {"inbound": "Inbound", "outbound": "Outbound", "test": "Test (browser)"}
+
+_EXPORT_HEADERS = {
+    "session_id": "Call ID", "started_at": "Started", "ended_at": "Ended", "account": "Account",
+    "direction": "Direction", "caller_number": "From", "called_number": "To", "agent": "Agent",
+    "duration": "Duration (s)", "status": "Status", "outcome": "Outcome", "close_reason": "Close reason",
+    "sentiment": "Sentiment", "sentiment_reason": "Sentiment reason", "turns": "Turns",
+    "disposition": "Disposition", "languages": "Languages",
+}
+_EXPORT_WIDTHS = {"session_id": 38, "started_at": 20, "ended_at": 20, "sentiment_reason": 48, "disposition": 24}
+
+_SEARCH_COLUMNS = (
+    "t.name", "a.name", "c.caller_number", "c.called_number", "c.disposition", "c.sentiment_reason", "c.session_id",
+)
+
+
+def _export_where(spec: CallExport, tenant_slugs: list[str]) -> tuple[str, list[Any]]:
+    where = ["c.tenant_id = ANY($1)"]
+    params: list[Any] = [tenant_slugs]
+
+    def add(clause: str, value: Any) -> None:
+        params.append(value)
+        where.append(clause.format(p=f"${len(params)}"))
+
+    if spec.session_ids is not None:
+        add("c.session_id = ANY({p})", spec.session_ids)
+        return " AND ".join(where), params
+
+    if spec.started_after is not None:
+        add("c.started_at >= {p}", spec.started_after)
+    if spec.started_before is not None:
+        add("c.started_at <= {p}", spec.started_before)
+    if spec.q and spec.q.strip():
+        pattern = "%" + re.sub(r"([\\%_])", r"\\\1", spec.q.strip()) + "%"
+        add("(" + " OR ".join(f"{col} ILIKE {{p}}" for col in _SEARCH_COLUMNS) + ")", pattern)
+    if spec.parties in ("inbound", "AI"):
+        where.append("c.direction = 'inbound'")
+    elif spec.parties == "outbound":
+        where.append("c.direction = 'outbound'")
+    elif spec.parties == "WebRTC":
+        where.append("c.direction <> 'inbound'")
+    if spec.agent == "__none":
+        where.append("a.name IS NULL")
+    elif spec.agent is not None:
+        add("a.name = {p}", spec.agent)
+    where.extend({
+        "short": ["c.duration_ms < 30000"],
+        "mid": ["c.duration_ms >= 30000", "c.duration_ms < 120000"],
+        "long": ["c.duration_ms >= 120000"],
+        "none": ["c.duration_ms IS NULL"],
+    }.get(spec.duration or "", []))
+    if spec.sentiment == "unscored":
+        where.append("c.sentiment IS NULL")
+    elif spec.sentiment is not None:
+        add("c.sentiment = {p}", spec.sentiment)
+    if spec.status == "live":
+        where.append("c.ended_at IS NULL")
+    elif spec.status == "completed":
+        where.append("c.ended_at IS NOT NULL")
+    elif spec.status in ("succeeded", "failed"):
+        where.append("c.ended_at IS NOT NULL")
+        add(
+            "c.close_reason = ANY({p})" if spec.status == "failed"
+            else "(c.close_reason IS NULL OR c.close_reason <> ALL({p}))",
+            [*_OUTCOME_REASONS["transfer_failed"], *_OUTCOME_REASONS["dropped"]],
+        )
+    elif spec.status is not None:
+        where.append("c.ended_at IS NOT NULL")
+        add("c.close_reason = ANY({p})", list(_OUTCOME_REASONS[spec.status]))
+    where.extend({
+        "0": ["COALESCE(c.turn_count, 0) = 0"],
+        "few": ["c.turn_count BETWEEN 1 AND 5"],
+        "many": ["c.turn_count > 5"],
+    }.get(spec.turns or "", []))
+    return " AND ".join(where), params
+
+
+def _export_value(column: str, row: dict[str, Any], tz: ZoneInfo) -> Any:
+    match column:
+        case "started_at" | "ended_at":
+            ts = row[column]
+            return ts.astimezone(tz).replace(tzinfo=None, microsecond=0) if ts else None
+        case "account":
+            return row["tenant_name"] or row["tenant_slug"]
+        case "direction":
+            return _DIRECTION_LABELS.get(row["direction"], row["direction"])
+        case "agent":
+            return row["agent_name"]
+        case "duration":
+            return round(row["duration_ms"] / 1000) if row["duration_ms"] is not None else None
+        case "status":
+            return "Live" if row["ended_at"] is None else "Completed"
+        case "outcome":
+            if row["ended_at"] is None:
+                return None
+            return _OUTCOME_LABELS.get(_REASON_OUTCOME.get(row["close_reason"], ""), "Not recorded")
+        case "sentiment":
+            return row["sentiment"].capitalize() if row["sentiment"] else None
+        case "turns":
+            return row["turn_count"] or 0
+        case "languages":
+            return ", ".join(row["detected_languages"] or []) or None
+        case _:
+            return row[column]
+
+
+_PHONE_LIKE = re.compile(r"^[+\-]?[\d\s()\-]+$")
+
+
+def _csv_safe(value: Any) -> Any:
+    """Defuse spreadsheet formula injection without mangling "+1555…" phone numbers."""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r") and not _PHONE_LIKE.match(value):
+        return "'" + value
+    return value
+
+
+def _write_csv(path: str, columns: list[str], rows: list[list[Any]]) -> None:
+    # utf-8-sig so Excel detects UTF-8 when opening the CSV directly.
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+        writer.writerow([_EXPORT_HEADERS[c] for c in columns])
+        for row in rows:
+            writer.writerow([
+                "" if v is None else v.strftime("%Y-%m-%d %H:%M:%S") if isinstance(v, datetime) else _csv_safe(v)
+                for v in row
+            ])
+
+
+def _write_xlsx(path: str, columns: list[str], rows: list[list[Any]]) -> None:
+    workbook = xlsxwriter.Workbook(path, {"constant_memory": True})
+    sheet = workbook.add_worksheet("Calls")
+    header = workbook.add_format({"bold": True, "bg_color": "#EFEAE0", "border": 1})
+    when = workbook.add_format({"num_format": "yyyy-mm-dd hh:mm:ss"})
+    for i, column in enumerate(columns):
+        sheet.set_column(i, i, _EXPORT_WIDTHS.get(column, 16))
+        sheet.write_string(0, i, _EXPORT_HEADERS[column], header)
+    for r, row in enumerate(rows, start=1):
+        for i, value in enumerate(row):
+            if value is None:
+                continue
+            if isinstance(value, datetime):
+                sheet.write_datetime(r, i, value, when)
+            elif isinstance(value, (int, float)):
+                sheet.write_number(r, i, value)
+            else:
+                sheet.write_string(r, i, str(value))
+    sheet.freeze_panes(1, 0)
+    sheet.autofilter(0, 0, len(rows), len(columns) - 1)
+    workbook.close()
+
+
+async def export_calls(spec: CallExport, *, tenant_slug: str | None) -> tuple[str, bool]:
+    """Write matching calls (newest first) to a temp file; returns (path, truncated). Caller deletes the file.
+
+    tenant_slug=None is platform-scoped (spec.tenant_slugs used as given); otherwise only that tenant is read.
+    """
+    tz = ZoneInfo(spec.timezone)
+    where_clause, params = _export_where(spec, spec.tenant_slugs if tenant_slug is None else [tenant_slug])
+    params.append(EXPORT_MAX_ROWS + 1)
+    sql = (
+        "SELECT c.session_id, c.tenant_id AS tenant_slug, t.name AS tenant_name, c.started_at, c.ended_at, "
+        "c.direction, c.caller_number, c.called_number, a.name AS agent_name, c.duration_ms, c.close_reason, "
+        "c.sentiment, c.sentiment_reason, c.turn_count, c.disposition, c.detected_languages "
+        "FROM calls c LEFT JOIN agents a ON a.id = c.agent_id LEFT JOIN tenants t ON t.slug = c.tenant_id "
+        f"WHERE {where_clause} ORDER BY c.started_at DESC LIMIT ${len(params)}"
+    )
+    pool = await db.get_pool()
+    if tenant_slug is None:
+        async with platform_conn(pool, reason="calls-platform-export") as conn:
+            records = await conn.fetch(sql, *params)
+    else:
+        async with tenant_conn(pool) as conn:
+            records = await conn.fetch(sql, *params)
+
+    truncated = len(records) > EXPORT_MAX_ROWS
+    rows = [
+        [_export_value(column, row, tz) for column in spec.columns]
+        for row in map(dict, records[:EXPORT_MAX_ROWS])
+    ]
+    with tempfile.NamedTemporaryFile(prefix="calls-export-", suffix=f".{spec.format}", delete=False) as f:
+        path = f.name
+    writer = _write_xlsx if spec.format == "xlsx" else _write_csv
+    await asyncio.to_thread(writer, path, list(spec.columns), rows)
+    return path, truncated

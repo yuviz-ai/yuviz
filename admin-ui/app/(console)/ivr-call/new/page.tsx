@@ -24,17 +24,17 @@ const DIRECTIONS: { value: Direction; label: string; blurb: string }[] = [
   {
     value: "inbound",
     label: "Inbound",
-    blurb: "Someone calls you. The flow answers, plays a menu and routes them.",
+    blurb: "Someone calls you. The menu answers, plays the options and sends them on.",
   },
   {
     value: "outbound",
     label: "Outbound",
-    blurb: "You call them. The flow runs once the call is answered — reminders, confirmations, surveys.",
+    blurb: "You call them. The menu plays once they pick up — reminders, confirmations, surveys.",
   },
   {
     value: "both",
     label: "Both",
-    blurb: "One flow used on calls in either direction.",
+    blurb: "One menu for calls in either direction.",
   },
 ];
 
@@ -111,7 +111,7 @@ export default function NewCallFlowPage() {
           ? { clone_from_id: cloneFromId }
           : { graph: scaffoldGraph(picks, direction) }),
       });
-      router.push(`/workflows/flows/${flow.id}`);
+      router.push(`/ivr-call/${flow.id}`);
     } catch (e) {
       setError(e instanceof ApiError ? e.detail : String(e));
       setCreating(false);
@@ -121,7 +121,7 @@ export default function NewCallFlowPage() {
   return (
     <>
       <div style={{ display: "flex", alignItems: "center", marginBottom: 14 }}>
-        <button className="btn btn-ghost btn-sm" onClick={() => router.push("/workflows")}>
+        <button className="btn btn-ghost btn-sm" onClick={() => router.push("/ivr-call")}>
           <ArrowLeft size={13} /> Cancel
         </button>
       </div>
@@ -163,7 +163,7 @@ export default function NewCallFlowPage() {
                 style={source === "standalone" ? { borderStyle: "solid", borderColor: "var(--text-3)" } : undefined}
                 onClick={() => setSource("standalone")}
               >
-                <div className="agent-template-title">Standalone</div>
+                <div className="agent-template-title">From scratch</div>
                 <div className="agent-template-blurb">
                   Build from scratch — pick the steps you want on the next screens.
                 </div>
@@ -174,28 +174,28 @@ export default function NewCallFlowPage() {
                 style={source === "clone" ? { borderStyle: "solid", borderColor: "var(--text-3)" } : undefined}
                 onClick={() => setSource("clone")}
                 disabled={existing.length === 0}
-                title={existing.length === 0 ? "No flows in this account to clone yet" : undefined}
+                title={existing.length === 0 ? "No menus in this account to copy yet" : undefined}
               >
-                <div className="agent-template-title">Clone an existing flow</div>
+                <div className="agent-template-title">Copy an existing menu</div>
                 <div className="agent-template-blurb">
                   {existing.length === 0
-                    ? "No flows in this account yet."
-                    : "Copy another flow in this account, then edit the copy."}
+                    ? "No menus in this account yet."
+                    : "Copy another menu in this account, then edit the copy."}
                 </div>
               </button>
             </div>
 
             {cloning && (
               <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label">Flow to clone <span className="required">*</span></label>
+                <label className="form-label">Menu to copy <span className="required">*</span></label>
                 <select className="form-select" value={cloneFromId} onChange={(e) => setCloneFromId(e.target.value)}>
-                  <option value="">— pick a flow —</option>
+                  <option value="">— pick a menu —</option>
                   {existing.map((f) => (
                     <option key={f.id} value={f.id}>{f.name} (v{f.config_version})</option>
                   ))}
                 </select>
                 <div className="form-hint">
-                  The copy starts as its own flow at v1 — editing it never touches the original.
+                  The copy is a separate menu — editing it never touches the original.
                 </div>
               </div>
             )}
@@ -207,7 +207,7 @@ export default function NewCallFlowPage() {
         <div className="card">
           <div className="card-hdr">
             <div className="card-title">Call type</div>
-            <div className="card-sub">which legs this flow is built for</div>
+            <div className="card-sub">which calls this menu is for</div>
           </div>
           <div className="card-body">
             <div className="agent-template-row" style={{ marginBottom: 0 }}>
@@ -254,7 +254,7 @@ export default function NewCallFlowPage() {
             ))}
             <div className="form-hint" style={{ marginTop: 12 }}>
               Steps are chained in the order listed above, and anything after a keypad menu becomes
-              one of its branches. A flow always ends somewhere — if you pick nothing that ends the
+              one of its branches. A menu always ends somewhere — if you pick nothing that ends the
               call, a hang up is added for you.
             </div>
           </div>
@@ -273,7 +273,7 @@ export default function NewCallFlowPage() {
                 className="form-input"
                 autoFocus
                 value={name}
-                placeholder="Main line IVR"
+                placeholder="Main line menu"
                 onChange={(e) => setName(e.target.value)}
               />
               {name.trim() !== "" && (
@@ -281,7 +281,7 @@ export default function NewCallFlowPage() {
               )}
               <div className="form-hint" style={{ marginTop: 10 }}>
                 {cloning
-                  ? `Cloning ${existing.find((f) => f.id === cloneFromId)?.name ?? "a flow"} · ${direction}`
+                  ? `Cloning ${existing.find((f) => f.id === cloneFromId)?.name ?? "a menu"} · ${direction}`
                   : `${direction} · ${picks.length} step${picks.length === 1 ? "" : "s"} picked`}
               </div>
             </div>
@@ -303,7 +303,7 @@ export default function NewCallFlowPage() {
             onClick={handleCreate}
             disabled={creating || !slugify(name) || !tenantSlug}
           >
-            {creating ? "Creating…" : "Create flow"}
+            {creating ? "Creating…" : "Create menu"}
           </button>
         )}
       </div>
