@@ -207,7 +207,7 @@ async def test_prewarm_populates_cache_for_active_dids_only(test_tenant, scoped,
     await phone_numbers.create_phone_number(tenant_id=test_tenant["id"], did=inactive_did, status="inactive")
 
     await cache.invalidate(f"did:{active_did}", f"did:{inactive_did}")
-    warmed = await phone_numbers.prewarm()
+    warmed = await phone_numbers.prewarm(overwrite=True)
 
     assert warmed >= 1  # at least this test's active DID (other tests may leave rows too)
     assert await cache.get_json(f"did:{active_did}") is not None
@@ -265,7 +265,7 @@ async def test_prewarm_never_overwrites_a_route_written_by_the_api(test_tenant, 
     newer = {"tenant_slug": "written-by-api", "agent_slug": "x", "version": 9}
     await cache.set_json(f"did:{did}", newer, ttl=None)
 
-    await phone_numbers.prewarm()
+    await phone_numbers.prewarm(overwrite=False)
 
     assert await cache.get_json(f"did:{did}") == newer
 
@@ -281,6 +281,39 @@ async def test_route_reload_survives_non_redis_failures(monkeypatch):
     failing = AsyncMock(side_effect=OSError("postgres restarting"))
     monkeypatch.setattr(config_app.phone_numbers_service, "prewarm", failing)
 
-    await config_app._prewarm_routes()
+    await config_app._prewarm_routes(overwrite=False)
 
     failing.assert_awaited_once()
+
+
+async def test_startup_prewarm_repairs_a_stale_route(test_tenant, scoped, pool):
+    # A failed write during a reassignment leaves the old tenant's route; the startup load fixes it.
+    did = f"test-did-{uuid.uuid4().hex[:8]}"
+    await phone_numbers.create_phone_number(tenant_id=test_tenant["id"], did=did)
+    await cache.set_json(f"did:{did}", {"tenant_slug": "previous-owner", "agent_slug": "x", "version": 1}, ttl=None)
+
+    await phone_numbers.prewarm(overwrite=True)
+
+    assert (await cache.get_json(f"did:{did}"))["tenant_slug"] == test_tenant["slug"]
+
+    await pool.execute("DELETE FROM phone_numbers WHERE did = $1", did)
+
+
+async def test_failed_route_write_is_logged_as_an_error(caplog, monkeypatch):
+    import logging
+
+    import redis.asyncio as redis
+
+    class Down:
+        async def set(self, *a, **k):
+            raise redis.ConnectionError("down")
+
+        async def delete(self, *a, **k):
+            raise redis.ConnectionError("down")
+
+    monkeypatch.setattr(cache, "get_client", lambda: Down())
+    with caplog.at_level(logging.ERROR, logger=phone_numbers.__name__):
+        await phone_numbers._store_route("5555", {"tenant_slug": "a", "agent_slug": "b", "version": 1})
+        await phone_numbers._drop_route("5555")
+
+    assert [r.levelno for r in caplog.records] == [logging.ERROR, logging.ERROR]

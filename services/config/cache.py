@@ -63,7 +63,7 @@ async def invalidate(*keys: str) -> None:
     try:
         await get_client().delete(*keys)
     except redis.RedisError:
-        log.warning("cache.invalidate: Redis unreachable, stale entries will expire via TTL keys=%s", keys)
+        log.warning("cache.invalidate: Redis unreachable, stale entries remain until their TTL (did:* has none) keys=%s", keys)
 
 
 async def publish(channel: str, message: str) -> None:

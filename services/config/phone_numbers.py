@@ -11,6 +11,7 @@ import logging
 from typing import Any
 
 import asyncpg
+import redis.asyncio as redis
 
 from libs.tenancy import platform_conn, tenant_conn
 
@@ -40,6 +41,21 @@ def _cache_key(did: str) -> str:
     return f"did:{did}"
 
 
+# A failed route write leaves calls on the old route until the next startup reload: say so loudly.
+async def _store_route(did: str, route: dict[str, Any]) -> None:
+    try:
+        await cache.get_client().set(_cache_key(did), json.dumps(route, default=str))
+    except redis.RedisError:
+        log.error("Route write failed did=%s: calls may use a stale route until Config restarts", did)
+
+
+async def _drop_route(did: str) -> None:
+    try:
+        await cache.get_client().delete(_cache_key(did))
+    except redis.RedisError:
+        log.error("Route delete failed did=%s: calls may use a stale route until Config restarts", did)
+
+
 async def get_by_did(did: str, *, platform_scoped: bool = False) -> dict[str, Any] | None:
     """`platform_scoped=True` only for prewarm(), which has no request tenant."""
     cached = await cache.get_json(_cache_key(did))
@@ -55,7 +71,7 @@ async def get_by_did(did: str, *, platform_scoped: bool = False) -> dict[str, An
     async with conn_cm as conn:
         result = await _load_route(conn, did)
     if result is not None:
-        await cache.set_json(_cache_key(did), result, ttl=None)
+        await _store_route(did, result)
     return result
 
 
@@ -89,9 +105,10 @@ async def _load_route(conn: Any, did: str) -> dict[str, Any] | None:
 ROUTES_READY_KEY = "routing:ready"
 
 
-async def prewarm() -> int:
+async def prewarm(*, overwrite: bool) -> int:
     """Write did:{did} for every active number, then ROUTES_READY_KEY; returns the count.
-    Raises if Redis or Postgres fails, so the marker is never set over a partial load."""
+    overwrite=True only at startup, before the API serves writes: it repairs routes a failed
+    write left stale. Raises if Redis or Postgres fails, so the marker is never set over a partial load."""
     pool = await db.get_pool()
     client = cache.get_client()
     written: list[str] = []
@@ -100,10 +117,10 @@ async def prewarm() -> int:
             "SELECT did FROM phone_numbers WHERE status = 'active' AND deleted_at IS NULL",
         )
         for row in rows:
-            # Read then write per number, NX: never overwrite a route an API write just stored.
+            # Read then write per number; without overwrite, NX keeps a route an API write just stored.
             route = await _load_route(conn, row["did"])
             if route is not None:
-                await client.set(_cache_key(row["did"]), json.dumps(route, default=str), nx=True)
+                await client.set(_cache_key(row["did"]), json.dumps(route, default=str), nx=not overwrite)
                 written.append(_cache_key(row["did"]))
     # A flush or failover mid-load loses earlier writes; only mark loaded if all are present.
     present = sum([await client.exists(*written[i:i + 500]) for i in range(0, len(written), 500)])
@@ -208,7 +225,7 @@ async def create_phone_number(
             new_value=result,
         )
     # Invalidate first: a re-added DID may still have its previous owner's route cached.
-    await cache.invalidate(_cache_key(did))
+    await _drop_route(did)
     await get_by_did(did)
     return result
 
@@ -263,8 +280,8 @@ async def update_phone_number(
 
     # Invalidate before get_by_did(), or its cache-aside read returns the stale route.
     if old["did"] != new["did"]:
-        await cache.invalidate(_cache_key(old["did"]))
-    await cache.invalidate(_cache_key(new["did"]))
+        await _drop_route(old["did"])
+    await _drop_route(new["did"])
     await get_by_did(new["did"])
     return new
 
@@ -294,4 +311,4 @@ async def soft_delete_phone_number(
             old_value=old,
         )
 
-    await cache.invalidate(_cache_key(old["did"]))
+    await _drop_route(old["did"])
