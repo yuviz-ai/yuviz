@@ -258,13 +258,29 @@ async def test_update_phone_number_rename_writes_through_new_and_clears_old(test
     await pool.execute("DELETE FROM phone_numbers WHERE did = $1", new_did)
 
 
-async def test_prewarm_overwrites_a_stale_cached_route(test_tenant, scoped, pool):
+async def test_prewarm_never_overwrites_a_route_written_by_the_api(test_tenant, scoped, pool):
+    # The API writes routes while a reload runs; the reload's older read must not win.
     did = f"test-did-{uuid.uuid4().hex[:8]}"
     await phone_numbers.create_phone_number(tenant_id=test_tenant["id"], did=did)
-    await cache.set_json(f"did:{did}", {"tenant_slug": "someone-else", "agent_slug": "x", "version": 1}, ttl=None)
+    newer = {"tenant_slug": "written-by-api", "agent_slug": "x", "version": 9}
+    await cache.set_json(f"did:{did}", newer, ttl=None)
 
     await phone_numbers.prewarm()
 
-    assert (await cache.get_json(f"did:{did}"))["tenant_slug"] == test_tenant["slug"]
+    assert await cache.get_json(f"did:{did}") == newer
 
     await pool.execute("DELETE FROM phone_numbers WHERE did = $1", did)
+
+
+async def test_route_reload_survives_non_redis_failures(monkeypatch):
+    # Redis and Postgres restarting together raises asyncpg/OSError, not RedisError.
+    from unittest.mock import AsyncMock
+
+    from services.config import app as config_app
+
+    failing = AsyncMock(side_effect=OSError("postgres restarting"))
+    monkeypatch.setattr(config_app.phone_numbers_service, "prewarm", failing)
+
+    await config_app._prewarm_routes()
+
+    failing.assert_awaited_once()

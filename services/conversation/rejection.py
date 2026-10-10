@@ -19,10 +19,13 @@ REJECTION_MESSAGES = {
     RoutingStatus.UNAVAILABLE: "We are unable to take your call right now. Please try again later.",
 }
 
-# Repeats after the first talk-over get only silence, so a noisy line can't loop the TTS.
+# After one spoken repeat, further talk-over hangs up at once: a noisy line can't hold the call.
 _MAX_SPOKEN_REPEATS = 1
 _SILENCE_MS = 300
-_HANGUP_GRACE_MS = 100
+
+
+class RejectedCallHangup(Exception):
+    """Raised to end a rejected call immediately; the servicer turns it into a fatal ServiceError."""
 
 # Synthesized once per (message, sample_rate); failures are not cached.
 _audio_cache: dict[tuple[str, int], list[bytes]] = {}
@@ -77,7 +80,7 @@ class RejectionHandler:
         self, session_id: str, audio: bytes, duration_ms: int, energy_db: float,
     ) -> AsyncIterator[HandlerResponse]:
         # Caller spoke over the message (which cancels the pending hangup): say it again once,
-        # then hang up after silence. stt_text is a placeholder the gateway FSM needs.
+        # then hang up. stt_text is a placeholder the gateway FSM needs.
         self._repeats += 1
         if self._repeats <= _MAX_SPOKEN_REPEATS:
             yield HandlerResponse(
@@ -85,11 +88,7 @@ class RejectionHandler:
                 tts_payloads=await self._speak(), end_call=True,
             )
             return
-        yield HandlerResponse(
-            stt_text="(call rejected)", stt_confidence=1.0,
-            tts_payloads=_silence(self._sample_rate), end_call=True,
-            end_call_grace_period_ms=_HANGUP_GRACE_MS,
-        )
+        raise RejectedCallHangup(f"caller kept talking over the rejection message session={session_id}")
 
     async def on_cancel(self, session_id: str) -> None:
         pass

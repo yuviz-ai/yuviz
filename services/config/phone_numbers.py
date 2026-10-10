@@ -91,19 +91,25 @@ ROUTES_READY_KEY = "routing:ready"
 
 async def prewarm() -> int:
     """Write did:{did} for every active number, then ROUTES_READY_KEY; returns the count.
-    Raises redis.RedisError if Redis is down, so the marker is never set over a partial load."""
+    Raises if Redis or Postgres fails, so the marker is never set over a partial load."""
     pool = await db.get_pool()
+    client = cache.get_client()
+    written: list[str] = []
     async with platform_conn(pool, reason="phone-numbers-prewarm") as conn:
         rows = await conn.fetch(
             "SELECT did FROM phone_numbers WHERE status = 'active' AND deleted_at IS NULL",
         )
-        routes = {r["did"]: await _load_route(conn, r["did"]) for r in rows}
-    pipe = cache.get_client().pipeline(transaction=False)
-    for did, route in routes.items():
-        if route is not None:
-            pipe.set(_cache_key(did), json.dumps(route, default=str))
-    pipe.set(ROUTES_READY_KEY, "1")
-    await pipe.execute()
+        for row in rows:
+            # Read then write per number, NX: never overwrite a route an API write just stored.
+            route = await _load_route(conn, row["did"])
+            if route is not None:
+                await client.set(_cache_key(row["did"]), json.dumps(route, default=str), nx=True)
+                written.append(_cache_key(row["did"]))
+    # A flush or failover mid-load loses earlier writes; only mark loaded if all are present.
+    present = sum([await client.exists(*written[i:i + 500]) for i in range(0, len(written), 500)])
+    if present != len(written):
+        raise RuntimeError(f"prewarm: {len(written) - present} route(s) vanished during load")
+    await client.set(ROUTES_READY_KEY, "1")
     return len(rows)
 
 

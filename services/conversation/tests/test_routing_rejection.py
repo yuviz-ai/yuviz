@@ -142,12 +142,31 @@ async def test_repeated_talk_over_hangs_up_without_speaking_again():
     handler = RejectionHandler(RoutingStatus.UNKNOWN, tts, 16000)
 
     [first] = [r async for r in handler.on_speech_ended("s1", b"", 500, -20.0)]
-    [second] = [r async for r in handler.on_speech_ended("s1", b"", 500, -20.0)]
+    with pytest.raises(rejection.RejectedCallHangup):
+        [r async for r in handler.on_speech_ended("s1", b"", 500, -20.0)]
 
-    assert first.end_call and second.end_call
+    assert first.end_call
     assert tts.spoken == [REJECTION_MESSAGES[RoutingStatus.UNKNOWN]]
-    assert second.tts_payloads and not any(any(p) for p in second.tts_payloads)
-    assert second.end_call_grace_period_ms > 0
+
+
+async def test_servicer_turns_repeat_cap_into_fatal_error():
+    async def factory(ctx):
+        handler = AsyncMock()
+        handler.out_responses = None
+        handler.greeting.return_value = [b"\x00"]
+
+        async def on_speech_ended(*_):
+            raise rejection.RejectedCallHangup("cap")
+            yield
+        handler.on_speech_ended = on_speech_ended
+        return handler
+
+    speech = pb.GatewayMessage(speech_ended=pb.SpeechEndedNotification(session_id="s1", duration_ms=500))
+    out = [m async for m in ConversationServicer(factory).Converse(
+        _stream(_open(pb.ROUTING_STATUS_UNKNOWN), speech), AsyncMock())]
+
+    [err] = [m.error for m in out if m.WhichOneof("payload") == "error"]
+    assert err.fatal and err.code == "CALL_REJECTED"
 
 
 async def test_unknown_routing_value_is_rejected_not_routed():

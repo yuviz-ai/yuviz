@@ -12,7 +12,6 @@ import time  # noqa: F401
 from contextlib import asynccontextmanager
 
 import asyncpg
-from redis import exceptions as redis_exceptions
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -130,9 +129,9 @@ async def _prewarm_routes() -> None:
     try:
         warmed = await phone_numbers_service.prewarm()
         log.info("Prewarmed %d active phone number(s) into Redis", warmed)
-    except redis_exceptions.RedisError:
-        log.error("Phone number prewarm failed: Redis unreachable; retrying every %ds",
-                  _ROUTES_CHECK_INTERVAL_S)
+    except Exception:
+        # Redis and Postgres often restart together; any failure must leave the watchdog running.
+        log.exception("Phone number prewarm failed; retrying every %ds", _ROUTES_CHECK_INTERVAL_S)
 
 
 async def _reload_routes_when_redis_empties() -> None:
@@ -142,7 +141,7 @@ async def _reload_routes_when_redis_empties() -> None:
         try:
             if await phone_numbers_service.routes_loaded():
                 continue
-        except redis_exceptions.RedisError:
+        except Exception:
             continue
         log.warning("Redis has no %s marker; reloading phone number routes",
                     phone_numbers_service.ROUTES_READY_KEY)

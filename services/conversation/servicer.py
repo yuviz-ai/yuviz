@@ -23,6 +23,7 @@ import grpc
 import grpc.aio
 
 from .event_bus import EventBus, TransferRequested
+from .rejection import RejectedCallHangup
 from .session import (
     AgentUnavailable, ConversationSession, IConversationHandler, RoutingStatus, SessionContext,
 )
@@ -664,6 +665,11 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
                     log.warning("Unknown payload_case=%s session=%s",
                                 payload_case, sid)
 
+        except RejectedCallHangup as exc:
+            log.info("Converse: hanging up rejected call: %s", exc)
+            yield pb.ServiceMessage(
+                error=pb.ServiceError(session_id=sid, code="CALL_REJECTED", message=str(exc), fatal=True)
+            )
         except Exception as exc:
             log.exception("Converse error session=%s", sid)
             yield pb.ServiceMessage(
