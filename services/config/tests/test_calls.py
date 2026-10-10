@@ -496,6 +496,16 @@ async def test_export_csv_applies_filters_and_formats_columns(test_tenant, scope
             assert [r[0] for r in list(csv.reader(f))[1:]] == [ids[0]]
         os.unlink(path)
 
+        path, _ = await _export(spec, status="failed", columns=["session_id"])
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            assert [r[0] for r in list(csv.reader(f))[1:]] == [ids[2]]
+        os.unlink(path)
+
+        path, _ = await _export(spec, status="succeeded", columns=["session_id"])
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            assert [r[0] for r in list(csv.reader(f))[1:]] == [ids[0]]
+        os.unlink(path)
+
         path, _ = await _export(spec, status="live", columns=["caller_number", "outcome"])
         with open(path, encoding="utf-8-sig", newline="") as f:
             # Formula-looking text is defused; a live call has no outcome yet.

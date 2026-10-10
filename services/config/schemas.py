@@ -258,7 +258,9 @@ class CallExport(BaseModel):
     agent: str | None = None  # agent name; "__none" = calls with no agent
     duration: Literal["short", "mid", "long", "none"] | None = None
     sentiment: Literal["positive", "neutral", "negative", "frustrated", "unscored"] | None = None
-    status: Literal["live", "completed", "done", "to_person", "transfer_failed", "dropped"] | None = None
+    status: Literal[
+        "live", "completed", "succeeded", "failed", "done", "to_person", "transfer_failed", "dropped",
+    ] | None = None
     turns: Literal["0", "few", "many"] | None = None
 
 

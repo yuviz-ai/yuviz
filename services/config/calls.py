@@ -422,6 +422,13 @@ def _export_where(spec: CallExport, tenant_slugs: list[str]) -> tuple[str, list[
         where.append("c.ended_at IS NULL")
     elif spec.status == "completed":
         where.append("c.ended_at IS NOT NULL")
+    elif spec.status in ("succeeded", "failed"):
+        where.append("c.ended_at IS NOT NULL")
+        add(
+            "c.close_reason = ANY({p})" if spec.status == "failed"
+            else "(c.close_reason IS NULL OR c.close_reason <> ALL({p}))",
+            [*_OUTCOME_REASONS["transfer_failed"], *_OUTCOME_REASONS["dropped"]],
+        )
     elif spec.status is not None:
         where.append("c.ended_at IS NOT NULL")
         add("c.close_reason = ANY({p})", list(_OUTCOME_REASONS[spec.status]))
