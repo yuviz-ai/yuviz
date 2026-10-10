@@ -261,8 +261,9 @@ async def test_startup_sealing_writes_a_redacted_audit_row(test_tenant, pool):
     try:
         await telephony_configs.seal_plaintext_credentials(tenant_id=test_tenant["id"])
         rows = await pool.fetch(
-            "SELECT old_value::text AS o, new_value::text AS n FROM audit_log "
+            "SELECT old_value::text AS o, new_value::text AS n, tenant_id::text AS t FROM audit_log "
             "WHERE entity_type = 'telephony_config' AND entity_id::text = $1", str(config_id))
         assert len(rows) == 1 and "legacy-plaintext" not in rows[0]["o"] + rows[0]["n"]
+        assert rows[0]["t"] == str(test_tenant["id"])
     finally:
         await pool.execute("DELETE FROM telephony_configs WHERE id = $1", config_id)

@@ -162,7 +162,7 @@ async def seal_plaintext_credentials(*, tenant_id: Any | None = None) -> int:
     sealed_ids = []
     async with platform_conn(pool, reason="telephony-configs-seal-plaintext") as conn:
         rows = await conn.fetch(
-            "SELECT id, provider, credentials FROM telephony_configs "
+            "SELECT id, tenant_id, provider, credentials FROM telephony_configs "
             "WHERE deleted_at IS NULL AND ($1::uuid IS NULL OR tenant_id = $1) FOR UPDATE",
             tenant_id,
         )
@@ -183,6 +183,8 @@ async def seal_plaintext_credentials(*, tenant_id: Any | None = None) -> int:
                 "UPDATE telephony_configs SET credentials = $2::jsonb, updated_at = now() WHERE id = $1",
                 row["id"], _json.dumps(sealed),
             )
+            # Stamp the owner so the entry shows in that tenant's own audit log.
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(row["tenant_id"]))
             await audit.write_audit(
                 conn, entity_type="telephony_config", entity_id=row["id"], action="updated",
                 old_value={"credentials": "<plaintext secret, redacted>"},
