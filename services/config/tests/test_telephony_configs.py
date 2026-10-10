@@ -225,3 +225,44 @@ def test_native_save_keeps_empty_secret_fields():
     creds = {"auth_id": "", "auth_token": ""}
 
     assert telephony_configs._normalize_credentials("native", creds, allow_pointer_schemes=False) == creds
+
+
+def test_quarantined_credential_shows_empty_so_the_admin_re_enters_it():
+    cfg = {"provider": "cloudonix",
+           "credentials": {"api_keys": ["quarantined", "enc:x"], "account_api_key": "quarantined"}}
+
+    out = telephony_configs.public_telephony_config(cfg, masked=True)["credentials"]
+
+    assert out == {"api_keys": ["", STORED_SENTINEL], "account_api_key": ""}
+
+
+async def test_startup_sealing_leaves_quarantined_markers_alone(test_tenant, pool):
+    # Encrypting the marker would turn "quarantined" into a working credential.
+    creds = {"account_api_key": "quarantined", "api_keys": ["quarantined"], "domain": "d"}
+    config_id = await pool.fetchval(
+        "INSERT INTO telephony_configs (tenant_id, name, provider, credentials) "
+        "VALUES ($1, 'q', 'cloudonix', $2::jsonb) RETURNING id",
+        test_tenant["id"], json.dumps(creds),
+    )
+    try:
+        assert await telephony_configs.seal_plaintext_credentials(tenant_id=test_tenant["id"]) == 0
+        stored = json.loads(await pool.fetchval("SELECT credentials FROM telephony_configs WHERE id = $1", config_id))
+        assert stored == creds
+    finally:
+        await pool.execute("DELETE FROM telephony_configs WHERE id = $1", config_id)
+
+
+async def test_startup_sealing_writes_a_redacted_audit_row(test_tenant, pool):
+    config_id = await pool.fetchval(
+        "INSERT INTO telephony_configs (tenant_id, name, provider, credentials) "
+        "VALUES ($1, 'legacy', 'vobiz', $2::jsonb) RETURNING id",
+        test_tenant["id"], json.dumps({"auth_id": "MA1", "auth_token": "legacy-plaintext"}),
+    )
+    try:
+        await telephony_configs.seal_plaintext_credentials(tenant_id=test_tenant["id"])
+        rows = await pool.fetch(
+            "SELECT old_value::text AS o, new_value::text AS n FROM audit_log "
+            "WHERE entity_type = 'telephony_config' AND entity_id::text = $1", str(config_id))
+        assert len(rows) == 1 and "legacy-plaintext" not in rows[0]["o"] + rows[0]["n"]
+    finally:
+        await pool.execute("DELETE FROM telephony_configs WHERE id = $1", config_id)

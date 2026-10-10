@@ -12,11 +12,12 @@ platform service accounts (vobiz, telephony) that read it.
 from __future__ import annotations
 
 import json as _json
+import logging
 from typing import Any
 
 import asyncpg
 
-from libs.config_sdk.secrets import encrypt_secret, is_encrypted
+from libs.config_sdk.secrets import encrypt_secret, is_encrypted, is_quarantined
 from libs.telephony_sdk.exceptions import TelephonyProviderError
 from libs.telephony_sdk import providers as _providers  # noqa: F401 — registers every built-in provider
 from libs.telephony_sdk.registry import TelephonyProviderRegistry
@@ -24,6 +25,8 @@ from libs.tenancy import platform_conn, tenant_conn
 
 from . import audit, cache, db
 from .provider_configs import STORED_SENTINEL, mask_enc
+
+log = logging.getLogger(__name__)
 
 _UPDATABLE_FIELDS = {"name", "credentials", "is_default_outbound"}
 _PLATFORM_MANAGED_CREDENTIAL_FIELDS = ("inbound_application_id",)
@@ -130,6 +133,8 @@ def _sensitive_fields(provider: str) -> frozenset[str]:
 def _mask_entry(value: Any, *, sensitive: bool) -> Any:
     if not isinstance(value, str):
         return value
+    if is_quarantined(value):
+        return mask_enc(value)   # empty: the console asks the admin to re-enter it
     # A sensitive field is masked even if it was stored before sealing existed (plaintext).
     if sensitive and value and not value.startswith(("env:", "k8s:")):
         return STORED_SENTINEL
@@ -175,12 +180,19 @@ async def seal_plaintext_credentials(*, tenant_id: Any | None = None) -> int:
                         else encrypt_secret(sealed[f]) if _is_plaintext(sealed[f]) else sealed[f]
                     )
             await conn.execute(
-                "UPDATE telephony_configs SET credentials = $2::jsonb WHERE id = $1",
+                "UPDATE telephony_configs SET credentials = $2::jsonb, updated_at = now() WHERE id = $1",
                 row["id"], _json.dumps(sealed),
+            )
+            await audit.write_audit(
+                conn, entity_type="telephony_config", entity_id=row["id"], action="updated",
+                old_value={"credentials": "<plaintext secret, redacted>"},
+                new_value={"credentials": "<sealed at startup, redacted>"},
             )
             sealed_ids.append(row["id"])
     for config_id in sealed_ids:
         await cache.invalidate(_cache_key(config_id))
+    if sealed_ids:
+        log.warning("Sealed plaintext credentials in telephony configs %s", [str(i) for i in sealed_ids])
     return len(sealed_ids)
 
 
@@ -189,7 +201,8 @@ def _is_plaintext(value: Any) -> bool:
         return any(_is_plaintext(e) for e in value)
     return (
         isinstance(value, str) and bool(value) and value != STORED_SENTINEL
-        and not is_encrypted(value) and not value.startswith(("env:", "k8s:"))
+        and not is_encrypted(value) and not is_quarantined(value)
+        and not value.startswith(("env:", "k8s:"))
     )
 
 

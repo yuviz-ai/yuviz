@@ -154,9 +154,7 @@ async def lifespan(app: FastAPI):
     await db.get_pool()
     cache.get_client()
     try:
-        sealed = await telephony_configs_service.seal_plaintext_credentials()
-        if sealed:
-            log.warning("Encrypted plaintext credentials in %d telephony config(s)", sealed)
+        await telephony_configs_service.seal_plaintext_credentials()
     except Exception:
         log.exception("Sealing plaintext telephony credentials failed; they stay masked in responses")
     await _prewarm_routes(overwrite=True)
