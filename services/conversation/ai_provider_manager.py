@@ -10,6 +10,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Iterable
 
+from libs.config_sdk.languages import KOKORO_DEFAULT_VOICE
+
 from .secret_resolver import SecretResolver
 
 log = logging.getLogger(__name__)
@@ -128,7 +130,7 @@ async def _make_kokoro_tts(cfg: ProviderConfig, _api_key: str | None) -> Any:
     from .providers.tts.kokoro import KokoroTTS
 
     return KokoroTTS(
-        voice=cfg.voice or "af_sarah",
+        voice=cfg.voice or KOKORO_DEFAULT_VOICE,
         speed=voice_speed(cfg),
         lang_code=cfg.extra.get("lang_code", "a"),
     )
@@ -290,6 +292,7 @@ async def _make_cartesia_tts(cfg: ProviderConfig, api_key: str | None) -> Any:
         voice=voice,
         model=str(extra.get("model") or "sonic-2"),
         speed=speed,
+        language=cfg.language,
     )
 
 

@@ -177,6 +177,7 @@ async def test_a_stray_cross_tenant_row_is_invisible_to_retrieval_and_listing(po
     ("get", "/knowledge-bases/{id}/documents", "kb", "knowledge_base"),
     ("get", "/documents/{id}", "document", "kb_document"),
     ("delete", "/documents/{id}", "document", "kb_document"),
+    ("post", "/documents/{id}/retry", "document", "kb_document"),
 ])
 async def test_foreign_id_is_indistinguishable_from_an_unknown_id(
     client, caller, foreign, method, path, foreign_key, kind,
@@ -245,6 +246,30 @@ async def test_oversize_upload_stops_reading_early(caller, monkeypatch):
         await documents_router._read_capped(Counting())
     assert exc.value.status_code == 413
     assert Counting.reads == 11
+
+
+async def test_retry_requeues_a_failed_document_once(client, pool, caller, doc_cleanup):
+    doc = (await _upload(client, caller, b"hello", "text/plain")).json()
+    await pool.execute("UPDATE kb_documents SET status = 'failed', error = 'boom' WHERE id = $1", doc["id"])
+
+    first = await client.post(f"/documents/{doc['id']}/retry", headers=caller["headers"])
+    second = await client.post(f"/documents/{doc['id']}/retry", headers=caller["headers"])
+
+    assert first.status_code == 200
+    assert first.json()["status"] == "pending" and first.json()["error"] is None
+    assert second.status_code == 409
+    jobs = await pool.fetch("SELECT status FROM kb_ingestion_jobs WHERE document_id = $1", doc["id"])
+    assert [j["status"] for j in jobs] == ["pending", "pending"]
+
+
+async def test_retry_is_admin_only(client, pool, caller, test_viewer, doc_cleanup):
+    doc = (await _upload(client, caller, b"hello", "text/plain")).json()
+    await pool.execute("UPDATE kb_documents SET status = 'failed' WHERE id = $1", doc["id"])
+    resp = await client.post(
+        f"/documents/{doc['id']}/retry", headers={"Authorization": f"Bearer {test_viewer['token']}"},
+    )
+    assert resp.status_code == 403
+    assert await pool.fetchval("SELECT status FROM kb_documents WHERE id = $1", doc["id"]) == "failed"
 
 
 @pytest.mark.parametrize("content_type, status", [

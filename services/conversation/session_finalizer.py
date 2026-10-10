@@ -24,7 +24,7 @@ _SUMMARY_PROMPT = (
     "Summarize this conversation in 1-2 sentences for an internal call log. "
     "Focus on what the caller wanted and how it was resolved (or why it "
     "wasn't). Do not address the caller — this is an internal note, not a "
-    "reply to them."
+    "reply to them. Write it in English, whatever language the call was in."
 )
 
 

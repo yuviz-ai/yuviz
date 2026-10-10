@@ -101,7 +101,7 @@ _CALLEES = {
     "resolve_api_key_input", "create_provider_config", "update_provider_config",
     "create_tool_provider_config", "update_tool_provider_config",
 }
-_EXPECTED_CALL_SITES = 50
+_EXPECTED_CALL_SITES = 53  # +3: test_agent_languages (_cartesia + two provider-edit tests)
 
 
 def test_every_call_site_passes_allow_pointer_schemes():

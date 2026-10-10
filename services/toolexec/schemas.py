@@ -29,6 +29,8 @@ AuthSecrets = dict[Literal["key_ref", "token_ref", "client_id_ref", "client_secr
 
 
 class CustomApiCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     description: str
     endpoint_url: str
@@ -46,6 +48,8 @@ class CustomApiCreate(BaseModel):
 
 
 class CustomApiUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = None
     description: str | None = None
     endpoint_url: str | None = None
@@ -80,6 +84,12 @@ class OAuthCallbackRequest(BaseModel):
     state: str
     code: str
     accounts_server: str | None = None
+
+
+class ApiKeyConnectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    api_key: SecretStr = Field(min_length=1, max_length=2048)
 
 
 _CLOCK_PATTERN = r"^([01]\d|2[0-3]):[0-5]\d$"
@@ -153,8 +163,28 @@ class SheetsLeadCaptureSetup(BaseModel):
     title: str = Field("Yuviz leads", min_length=1, max_length=100)
 
 
+class SalesforceCrmSetup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preset_key: Literal["salesforce_crm"]
+
+
+class HubspotCrmSetup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preset_key: Literal["hubspot_crm"]
+
+
+class ZohoCrmSetup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preset_key: Literal["zoho_crm"]
+
+
 PresetApplyRequest = Annotated[
-    CalendarBookingSetup | WhatsAppSetup | SheetsLeadCaptureSetup, Field(discriminator="preset_key"),
+    CalendarBookingSetup | WhatsAppSetup | SheetsLeadCaptureSetup
+    | SalesforceCrmSetup | HubspotCrmSetup | ZohoCrmSetup,
+    Field(discriminator="preset_key"),
 ]
 
 

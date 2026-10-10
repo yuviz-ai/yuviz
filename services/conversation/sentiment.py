@@ -35,9 +35,10 @@ Choose exactly one label:
   frustrated - the caller struggled with the AGENT: repeating themselves,
                being misunderstood, asking for a human, or giving up
 
-The reason must describe THIS call, in under 100 characters. Cite what the
-caller actually said or did. Never restate the label definitions above —
-they describe categories, not this conversation.
+The reason must describe THIS call, in under 100 characters, written in English,
+whatever language the call was in. Cite what the caller actually said or did.
+Never restate the label definitions above — they describe categories, not this
+conversation.
 
 Example of a good reply:
 {"label": "frustrated", "reason": "asked for the same refund three times before the agent understood"}

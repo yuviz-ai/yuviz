@@ -5,13 +5,12 @@ import os
 
 import uvicorn
 
+from .app import quiet_http_loggers
+
 
 def configure_logging() -> None:
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
-    # httpx logs every request URL at INFO, and executor/provider URLs carry
-    # path values (event_id, spreadsheetId, sensitive params).
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    quiet_http_loggers()
 
 
 def main() -> None:

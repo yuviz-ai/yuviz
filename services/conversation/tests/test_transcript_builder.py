@@ -568,3 +568,27 @@ async def test_close_drains_an_in_flight_sentiment_write():
 
     await _cleanup(verify._pool, session_id)
     await verify.close()
+
+
+# ── record_detected_languages (multilingual agents) ──────────────────────
+
+async def test_record_detected_languages_updates_the_column():
+    builder = await TranscriptBuilder.connect(os.environ["POSTGRES_DSN"])
+    pool = builder._pool
+    session_id = f"test-langs-{uuid.uuid4().hex[:8]}"
+    builder.begin_call(session_id, "default", "call-1")
+
+    builder.record_detected_languages(session_id, ["en", "hi"])
+    await builder._chains[session_id]
+
+    row = await pool.fetchrow("SELECT detected_languages FROM calls WHERE session_id = $1", session_id)
+    assert row["detected_languages"] == ["en", "hi"]
+
+    await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
+    await builder.close()
+
+
+async def test_record_detected_languages_is_noop_without_pool_or_languages():
+    builder = TranscriptBuilder(pool=None)
+    builder.record_detected_languages("s", ["hi"])
+    assert builder._chains == {}

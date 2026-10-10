@@ -261,7 +261,7 @@ async def test_platform_scoped_principal_can_store_a_pointer(pool, test_tenant, 
 # allowed. The count makes a new caller break this test until it is read.
 _CREDENTIAL_CALLEES = functions_taking("allow_pointer_schemes")
 _EXPECTED_CALLEES = 12
-_EXPECTED_CALL_SITES = 92
+_EXPECTED_CALL_SITES = 95  # +3: test_agent_languages (_cartesia + two provider-edit tests)
 
 
 def test_every_credential_call_site_passes_allow_pointer_schemes():

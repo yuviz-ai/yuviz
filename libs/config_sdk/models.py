@@ -92,6 +92,12 @@ class Agent:
     workflow_draft: dict[str, Any] | None = None
     # Non-null pins this agent to a call flow's IVR runtime instead of its workflow.
     call_flow_id: str | None = None
+    # None/empty = single-language agent. Set = multilingual: language switching and
+    # the per-turn "Reply in X" instruction. `language` is the default language.
+    supported_languages: tuple[str, ...] | None = None
+    # {lang: provider_configs.id} same-tenant TTS overrides; absent lang = base TTS.
+    tts_config_by_language: dict[str, str] | None = None
+    greeting_by_language: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -105,6 +111,8 @@ class ProviderConfig:
     api_key_ref: str | None
     extra: dict[str, Any] = field(default_factory=dict)
     updated_at: datetime | None = None
+    # Owning tenant, when the source row carries it; runtime re-checks overrides against it.
+    tenant_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -127,6 +135,8 @@ class ProviderConfigs:
     stt: ProviderConfig
     llm: ProviderConfig
     tts: ProviderConfig
+    # Per-language TTS overrides, already checked to belong to the agent's tenant.
+    tts_by_language: dict[str, ProviderConfig] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -141,6 +151,7 @@ class ConversationInfo:
     transfer_announcement: str | None = None
     workflow: dict[str, Any] | None = None
     workflow_draft: dict[str, Any] | None = None
+    greeting_by_language: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -148,6 +159,12 @@ class MediaInfo:
     voice: str | None            # flattened from providers.tts.voice
     language: str | None         # agent.language override, else providers.stt.language, else tts.language
     sample_rate: int = 16_000    # wire constant (gateway.yaml media.sample_rate)
+    # What the providers are actually given (see cache_aside._media_languages).
+    stt_language: str | None = None      # None = provider default / auto-detect; "multi" = Deepgram code-switching
+    tts_language: str | None = None      # base TTS language; the session language overrides it per request
+    default_language: str | None = None  # session's starting language (multilingual agents)
+    # Empty = single-language agent (no switching, no prompt injection).
+    supported_languages: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -263,6 +263,75 @@ A disconnect always returns `{"disconnected": true}` and revokes upstream after
 the response is sent. The console therefore tells the admin to also remove Yuviz
 from the connected apps in the provider account.
 
+#### CRM contact lookup and cal.com (Salesforce, HubSpot, Zoho CRM, Dynamics, cal.com)
+
+The CRM presets give an agent a read-only "look up the caller in the CRM"
+tool. They reuse the OAuth mechanism above with the same redirect URI, so
+nothing about the registrations in the previous section moves. Each provider
+follows the same env pattern, and is hidden from the console until all three
+values are set:
+
+```bash
+export TOOLEXEC_OAUTH_SALESFORCE_CLIENT_ID="..."
+export TOOLEXEC_OAUTH_SALESFORCE_CLIENT_SECRET_REF="env:TOOLEXEC_OAUTH_SALESFORCE_SECRET"
+export TOOLEXEC_OAUTH_HUBSPOT_CLIENT_ID="..."
+export TOOLEXEC_OAUTH_HUBSPOT_CLIENT_SECRET_REF="env:TOOLEXEC_OAUTH_HUBSPOT_SECRET"
+# Optional: any scope ticked as required on the HubSpot app beyond the two below.
+export TOOLEXEC_OAUTH_HUBSPOT_REQUIRED_SCOPES=""
+# Zoho CRM uses the Zoho app registered above: no new variables. The CRM
+# preset asks the tenant for one extra scope, ZohoCRM.modules.contacts.READ.
+```
+
+- **Salesforce.** Setup, App Manager, *New Connected App*, with *Enable OAuth
+  Settings* on, the callback URL set to the redirect URI above, and the OAuth
+  scopes `api` and `refresh_token` (offline access). The service sends PKCE.
+  `api` grants write as well as read, and Salesforce has no read-only API
+  scope, so the read-only guarantee has to come from the org: set the app to
+  *Admin approved users are pre-authorized* and assign it only to a read-only
+  profile or permission set. Tenants connect against their own org; the
+  service follows the `instance_url` Salesforce returns and sends the token
+  only to Salesforce hosts.
+- **HubSpot.** developers.hubspot.com, create a *public app* (not a private
+  app), add the redirect URI above, and select the scopes `oauth` and
+  `crm.objects.contacts.read`. HubSpot treats every scope ticked on the app as
+  required and shows an error on its consent page if the install URL omits
+  one, so tick only those two, or list the extras, space-separated, in
+  `TOOLEXEC_OAUTH_HUBSPOT_REQUIRED_SCOPES`. HubSpot does not support PKCE and
+  the service does not send it. A tenant installs through the *Connect* button, which sends
+  them to the install URL on `app.hubspot.com`; there is no URL to hand out
+  yourself.
+- **Zoho CRM.** Reuses the Zoho server-based application and its multi-DC
+  setting from above. Nothing to register. A tenant whose existing Zoho grant
+  lacks the CRM scope must reconnect Zoho to grant it.
+- **Dynamics 365.** Not launched. There is no preset and no env var for it, and
+  the console shows it as "Not available". It uses the Microsoft app above once
+  it is built.
+- **cal.com.** Not launched. cal.com has no consent redirect: the tenant admin
+  pastes an API key on the Integrations page. It is off unless
+  `TOOLEXEC_CALCOM_ENABLED=1` is set on toolexec; unset, `GET /oauth-providers`
+  omits it, the console shows "Not available", and the api-key route refuses
+  the connection. A cal.com key is account-wide and cannot be scoped, which the
+  card says before the paste field. **Verify before setting the flag:** the
+  service checks a pasted key with `GET https://api.cal.com/v2/me` and an
+  `Authorization: Bearer <key>` header. Neither has been confirmed against
+  cal.com's live documentation, and this build could not reach it. Confirm both
+  (and that the response carries `data.email`) before enabling it. Revoke
+  cal.com keys in cal.com: Yuviz has no upstream revoke for them.
+
+What the operator should tell tenants:
+
+- **Phone matching.** The lookup sends the caller's number as E.164 and as bare
+  digits. Zoho and HubSpot compare against the stored phone field exactly, so a
+  contact saved in national format (`098765 43210`, `(415) 555-0100`) is not
+  found. Salesforce searches on digits only; its matching of formatted numbers has not been checked. A miss is spoken as "no
+  match", not as an error.
+- **Caller identity is unverified.** The number comes from the carrier's caller
+  ID (ANI), which a caller can spoof. A call from a spoofed number matching a
+  contact receives that contact's four projected fields (contact id, name, company, account owner). The service returns no other CRM field, but the disclosure is accepted,
+  not prevented; do not point the tool at a CRM whose contact names are sensitive.
+- **API spend is not throttled.** Every call that reaches the agent can cost a
+  CRM API request against the customer's daily limit.
+
 #### Credential refs: who may use `env:` and `k8s:`
 
 `env:` and `k8s:` pointer refs are platform-operator-only input. A tenant admin

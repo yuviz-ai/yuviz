@@ -237,7 +237,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           router.push("/no-access");
           return;
         }
-        if (u.role !== "superadmin" && u.role !== "admin" && pathname.startsWith("/billing")) {
+        // Direct-URL guard matching the hidden nav item.
+        if (u.role !== "superadmin" && u.role !== "admin" && (pathname.startsWith("/billing") || pathname.startsWith("/integrations"))) {
           router.push("/no-access");
           return;
         }
@@ -322,7 +323,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const visible = (item: NavItem) =>
     matches(item.label) &&
     (isSuperadmin || !SUPERADMIN_ONLY.has(item.href)) &&
-    (item.href !== "/billing" || canManageUsers);
+    (item.href !== "/billing" || canManageUsers) &&
+    (item.href !== "/integrations" || canManageUsers);
   const visibleOverview = OVERVIEW_ITEMS.filter(visible);
   const visibleBuild = [...BUILD_ITEMS, USERS_ITEM].filter(visible);
   const visibleCalling = CALLING_ITEMS.filter(visible);

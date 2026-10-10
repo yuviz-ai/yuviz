@@ -13,7 +13,7 @@ import asyncpg
 from libs.tenancy import platform_conn, tenant_conn
 
 from . import db
-from .chunking import Chunk, chunk_text
+from .chunking import Chunk, chunk_text, count_tokens
 from .embedding_manager import EmbeddingProviderConfig, EmbeddingProviderManager
 from .storage import StorageProvider
 
@@ -74,11 +74,11 @@ async def process_one_job(
         text = await _extract_text(doc_row["content_type"], raw)
 
         if len(raw) < AUTO_INLINE_THRESHOLD_BYTES:
-            new_chunks: list[Chunk] = [Chunk(content=text, token_count=len(text.split()))]
+            new_chunks: list[Chunk] = [Chunk(content=text, token_count=count_tokens(text, doc_row["language"]))]
             vectors: list[list[float] | None] = [None]
             new_usage_mode = "prompt"
         else:
-            new_chunks = chunk_text(text)
+            new_chunks = chunk_text(text, language=doc_row["language"])
             if not new_chunks:
                 raise ValueError("document produced zero chunks (empty or unextractable content)")
             async with tenant_conn(pool, explicit_tenant=tenant_id, reason="kb-ingestion-job") as conn:

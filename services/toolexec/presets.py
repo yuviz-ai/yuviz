@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import datetime
 import re
+import unicodedata
 import zoneinfo
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -28,7 +29,9 @@ from libs.tenancy import tenant_conn
 
 from . import audit, custom_apis, db, graph, oauth, redaction
 from .custom_apis import DependentApiExists, resolve_and_validate_endpoint
-from .schemas import CalendarBookingSetup, SheetsLeadCaptureSetup, WhatsAppSetup
+from .schemas import (
+    CalendarBookingSetup, HubspotCrmSetup, SalesforceCrmSetup, SheetsLeadCaptureSetup, WhatsAppSetup, ZohoCrmSetup,
+)
 
 # Most successful sends one WhatsApp row may make per call session. A flat
 # constant written into the row at apply time: a tenant-settable cap would be
@@ -92,6 +95,8 @@ class PresetStep:
     idempotency_body_field: str | None = None
     confirmation_template: str | None = None
     session_send_cap: int | None = None
+    # "oauth_connection": endpoint_url is a path and the origin is the connection's.
+    endpoint_base_source: str = "literal"
 
 
 @dataclass(frozen=True)
@@ -111,8 +116,9 @@ def _caller(name: str, description: str, *, location: str = "body", body_path: s
     return PresetParam(name, location, "caller", description=description, required=required, body_path=body_path)
 
 
-def _literal(name: str, value: Any, *, location: str = "body", body_path: str | None = None) -> PresetParam:
-    return PresetParam(name, location, "literal", literal_value=value, body_path=body_path)
+def _literal(name: str, value: Any, *, location: str = "body", body_path: str | None = None,
+             json_type: str = "string") -> PresetParam:
+    return PresetParam(name, location, "literal", json_type=json_type, literal_value=value, body_path=body_path)
 
 
 def _caller_id(name: str, *, location: str = "body", body_path: str | None = None,
@@ -211,6 +217,85 @@ def _calendar_steps(setup: CalendarBookingSetup) -> list[PresetStep]:
             success_template="Your appointment has been cancelled.",
         ),
     ]
+
+
+# ── CRM contact lookup ────────────────────────────────────────────────────
+
+_CRM_SCOPES = {
+    "salesforce": frozenset({"api", "refresh_token"}),
+    "hubspot": frozenset({"oauth", "crm.objects.contacts.read"}),
+    "zoho": frozenset({"ZohoCRM.modules.contacts.READ"}),
+}
+
+# Scopes the account-level Connect (no preset) asks for on top of the identity
+# scopes, so a bare Connect yields a connection the CRM preset can use as-is.
+# HubSpot has no identity scope and refuses an install URL that omits a required
+# one. Salesforce returns no refresh_token unless the refresh_token scope is
+# asked for. Zoho gets its refresh token from access_type=offline (already in
+# its extra_authorize_params); the scope here is the CRM data scope it needs.
+CONNECT_SCOPES: dict[str, frozenset[str]] = {
+    "hubspot": _CRM_SCOPES["hubspot"],
+    "salesforce": _CRM_SCOPES["salesforce"],
+    "zoho": _CRM_SCOPES["zoho"],
+}
+
+
+def _crm_lookup_step(
+    provider: str, *, method: str, endpoint_url: str, params: tuple[PresetParam, ...],
+    endpoint_base_source: str,
+) -> list[PresetStep]:
+    return [PresetStep(
+        name="crm_lookup_contact",
+        description="Look up the person on this call in the CRM by their phone number.",
+        method=method, endpoint_url=endpoint_url, side_effecting=False, params=params,
+        endpoint_base_source=endpoint_base_source,
+        response_transform={"kind": "crm_contact_projection", "provider": provider},
+        success_template="Contact lookup: {{$.outcome}}.{{$.spoken}}",
+    )]
+
+
+def _salesforce_steps(setup: SalesforceCrmSetup) -> list[PresetStep]:
+    return _crm_lookup_step(
+        "salesforce", method="GET", endpoint_url="/services/data/v61.0/parameterizedSearch/",
+        endpoint_base_source="oauth_connection",
+        params=(
+            # '+' is reserved in SOSL, so the number goes in as digits.
+            _caller_id("q", location="query", digits_only=True),
+            _literal("sobject", "Contact", location="query"),
+            _literal("Contact.fields", "Id,Name,Phone", location="query"),
+            _literal("Contact.limit", "5", location="query"),
+        ),
+    )
+
+
+def _hubspot_steps(setup: HubspotCrmSetup) -> list[PresetStep]:
+    # hs_searchable_calculated_phone_number is HubSpot's normalized phone field,
+    # matches E.164, bare digits, and common formats like (555) 123-4567.
+    group = lambda i: (  # noqa: E731
+        _literal(f"group_{i}_property", "hs_searchable_calculated_phone_number", body_path=f"filterGroups.{i}.filters.0.propertyName"),
+        _literal(f"group_{i}_operator", "CONTAINS", body_path=f"filterGroups.{i}.filters.0.operator"),
+    )
+    return _crm_lookup_step(
+        "hubspot", method="POST", endpoint_url="https://api.hubapi.com/crm/v3/objects/contacts/search",
+        endpoint_base_source="literal",
+        params=(
+            _caller_id("phone_e164", body_path="filterGroups.0.filters.0.value"),
+            _caller_id("phone_digits", body_path="filterGroups.1.filters.0.value", digits_only=True),
+            *group(0), *group(1),
+            _literal("properties", ["firstname", "lastname", "company", "phone"], json_type="array"),
+            _literal("limit", 5, json_type="integer"),
+        ),
+    )
+
+
+def _zoho_steps(setup: ZohoCrmSetup) -> list[PresetStep]:
+    return _crm_lookup_step(
+        "zoho", method="GET", endpoint_url="/crm/v3/Contacts/search", endpoint_base_source="oauth_connection",
+        params=(
+            _caller_id("phone", location="query"),
+            _literal("fields", "id,Full_Name,Phone,Account_Name,Owner", location="query"),
+        ),
+    )
 
 
 # ── WhatsApp confirmation ─────────────────────────────────────────────────
@@ -316,6 +401,18 @@ PRESETS: dict[str, Preset] = {
         key="sheets_lead_capture", title="Google Sheets lead capture", setup_model=SheetsLeadCaptureSetup,
         provider="google", scopes=_SHEETS_SCOPES, steps=_sheets_steps,
     ),
+    "salesforce_crm": Preset(
+        key="salesforce_crm", title="Salesforce contact lookup", setup_model=SalesforceCrmSetup,
+        provider="salesforce", scopes=_CRM_SCOPES["salesforce"], steps=_salesforce_steps,
+    ),
+    "hubspot_crm": Preset(
+        key="hubspot_crm", title="HubSpot contact lookup", setup_model=HubspotCrmSetup,
+        provider="hubspot", scopes=_CRM_SCOPES["hubspot"], steps=_hubspot_steps,
+    ),
+    "zoho_crm": Preset(
+        key="zoho_crm", title="Zoho CRM contact lookup", setup_model=ZohoCrmSetup,
+        provider="zoho", scopes=_CRM_SCOPES["zoho"], steps=_zoho_steps,
+    ),
 }
 
 
@@ -352,7 +449,11 @@ _TRANSFORM_KEYS = {
     "google_freebusy_slots": {"kind", "timezone", "day_start", "day_end", "slot_minutes"},
     "google_booking_lookup": {"kind"},
     "google_event_projection": {"kind"},
+    "crm_contact_projection": {"kind", "provider"},
 }
+
+# The provider's envelope key: where the candidate records sit in its response.
+_CRM_ENVELOPE = {"salesforce": "searchRecords", "hubspot": "results", "zoho": "data"}
 
 
 def validate_response_transform(transform: Any) -> None:
@@ -361,14 +462,21 @@ def validate_response_transform(transform: Any) -> None:
         raise ValueError("invalid_response_transform: unknown kind")
     if set(transform) != _TRANSFORM_KEYS[kind]:
         raise ValueError("invalid_response_transform: unexpected keys")
+    if kind == "crm_contact_projection":
+        provider = transform["provider"]
+        if not isinstance(provider, str) or provider not in _CRM_ENVELOPE:
+            raise ValueError("invalid_response_transform: unknown provider")
 
 
 def apply_response_transform(
     transform: dict, response: Any, body_fields: dict, *, caller_ani: str | None = None,
 ) -> dict:
+    kind = transform["kind"]
+    if kind == "crm_contact_projection":
+        # Before the dict check: this kind is total over every response, never raises.
+        return _crm_contact_projection(transform["provider"], response, caller_ani)
     if not isinstance(response, dict):
         raise ValueError("response_transform: not a JSON object")
-    kind = transform["kind"]
     if kind == "google_freebusy_slots":
         return _freebusy_slots(transform, response, body_fields)
     if kind == "google_booking_lookup":
@@ -376,6 +484,112 @@ def apply_response_transform(
     if kind == "google_event_projection":
         return _event_projection(response)
     raise ValueError("invalid_response_transform: unknown kind")
+
+
+# ── CRM contact projection ────────────────────────────────────────────────
+
+def digits_only(value: str) -> str:
+    return re.sub(r"[^0-9]", "", value)
+
+
+def phone_suffix_match(record_phone: str, caller_ani: str) -> bool:
+    """National-significant-number comparison: the last 9 digits, or the whole
+    shorter number when either has fewer than 9, with a 7-digit floor."""
+    record, caller = digits_only(record_phone), digits_only(caller_ani)
+    if len(record) < 7 or len(caller) < 7:
+        return False
+    if min(len(record), len(caller)) >= 9:
+        return record[-9:] == caller[-9:]
+    shorter, longer = sorted((record, caller), key=len)
+    return longer.endswith(shorter)
+
+
+_CRM_FIELD_CAP = 100
+_CRM_SPOKEN_CAP = 120  # the executor truncates each template placeholder at 120
+_CRM_KEPT_PUNCTUATION = frozenset(".,'-&/()#")
+
+
+def _crm_clean(value: str | None) -> str | None:
+    """CRM text is written by outsiders (web-to-lead, public forms), so it may
+    only travel as plain words: letters, marks, digits, spaces and a little
+    punctuation. Filter first, cap second, so length cannot carry a payload past
+    the filter. Dropping `{ } " \\` and controls is what lets a value neither
+    end its JSON string in `items` nor open or close a `{{placeholder}}`."""
+    if value is None:
+        return None
+    kept = []
+    for ch in value:
+        category = unicodedata.category(ch)
+        if category == "Zs":
+            kept.append(" ")
+        elif category[0] in "LM" or category == "Nd" or ch in _CRM_KEPT_PUNCTUATION:
+            kept.append(ch)
+    return " ".join("".join(kept).split())[:_CRM_FIELD_CAP].strip() or None
+
+
+def _crm_str(record: Any, *path: str) -> str | None:
+    """The one literal path, and only if it ends on a str. Never a sibling key."""
+    for key in path:
+        if not isinstance(record, dict):
+            return None
+        record = record.get(key)
+    return record if isinstance(record, str) else None
+
+
+def _crm_extract(provider: str, record: dict) -> tuple[Any, str | None, str | None, str | None, str | None]:
+    """(contact_id, full_name, company, owner_name, record_phone), unfiltered."""
+    if provider == "salesforce":
+        return (record.get("Id"), _crm_str(record, "Name"), None, None, _crm_str(record, "Phone"))
+    if provider == "hubspot":
+        names = (_crm_str(record, "properties", "firstname"), _crm_str(record, "properties", "lastname"))
+        return (
+            record.get("id"), " ".join(filter(None, names)) or None,
+            _crm_str(record, "properties", "company"), None, _crm_str(record, "properties", "phone"),
+        )
+    return (
+        record.get("id"), _crm_str(record, "Full_Name"), _crm_str(record, "Account_Name", "name"),
+        _crm_str(record, "Owner", "name"), _crm_str(record, "Phone"),
+    )
+
+
+def _crm_result(outcome: str, items: list[dict], spoken: str) -> dict:
+    return {"outcome": outcome, "items": items, "spoken": spoken}
+
+
+def _crm_spoken(item: dict) -> str:
+    """The fixed carrier sentence, so CRM text never stands alone as a line.
+    Fields are appended in order, stopping before the first that would push it
+    past what the executor keeps, never cutting one mid-word."""
+    text = "Caller matched:"
+    for key, lead in (("full_name", " "), ("company", " at "), ("owner_name", ", account owner ")):
+        if item[key] is None:
+            continue
+        candidate = f"{text}{lead}{item[key]}"
+        if len(candidate) + 1 > _CRM_SPOKEN_CAP:
+            break
+        text = candidate
+    return "" if text == "Caller matched:" else text + "."
+
+
+def _crm_contact_projection(provider: str, response: Any, caller_ani: str | None) -> dict:
+    records = response.get(_CRM_ENVELOPE[provider]) if isinstance(response, dict) and "_raw" not in response else None
+    if not isinstance(records, list) or not all(isinstance(r, dict) for r in records) or caller_ani is None:
+        return _crm_result("no_match", [], "")
+    survivors = []
+    for record in records:
+        contact_id, full_name, company, owner_name, record_phone = _crm_extract(provider, record)
+        contact_id = _crm_clean(contact_id) if isinstance(contact_id, str) else None
+        if (contact_id is not None and record_phone is not None
+                and phone_suffix_match(record_phone, caller_ani)):
+            survivors.append({
+                "contact_id": contact_id, "full_name": _crm_clean(full_name),
+                "company": _crm_clean(company), "owner_name": _crm_clean(owner_name),
+            })
+    if not survivors:
+        return _crm_result("no_match", [], "")
+    if len(survivors) > 1:
+        return _crm_result("ambiguous", [], "")
+    return _crm_result("match", survivors, _crm_spoken(survivors[0]))
 
 
 _MAX_SLOTS = 3
@@ -561,6 +775,7 @@ async def _insert_missing_steps(
                 preset_key=preset_key, response_transform=step.response_transform,
                 idempotency_body_field=step.idempotency_body_field,
                 confirmation_template=step.confirmation_template, session_send_cap=step.session_send_cap,
+                endpoint_base_source=step.endpoint_base_source,
             )
         except asyncpg.UniqueViolationError:
             # A hand-registered API already has this name; the tenant renames or removes it.
@@ -633,6 +848,7 @@ async def apply_preset(
     pool = await db.get_pool()
 
     connection_id = None
+    api_base = None
     if preset.provider is not None:
         async with tenant_conn(pool) as conn:
             connection = await oauth.get_connected(conn, tenant_id, preset.provider)
@@ -640,7 +856,7 @@ async def apply_preset(
             raise PresetConnectorRequired("connector_required")
         if not preset.scopes <= set(connection["scopes"]):
             raise PresetConnectorRequired("connector_scope_required")
-        connection_id = connection["id"]
+        connection_id, api_base = connection["id"], connection["api_base_url"]
 
     async with tenant_conn(pool) as conn:
         async with conn.transaction():
@@ -668,7 +884,12 @@ async def apply_preset(
             steps = preset.steps(setup, **steps_kwargs)
 
             for step in steps:
-                await resolve_and_validate_endpoint(step.endpoint_url)
+                url = step.endpoint_url
+                if step.endpoint_base_source == "oauth_connection":
+                    if api_base is None:
+                        raise PresetConnectorRequired("connector_required")
+                    url = api_base + url
+                await resolve_and_validate_endpoint(url)
 
             secret_ref = None
             if preset_key == "whatsapp_confirmation":

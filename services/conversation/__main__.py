@@ -15,7 +15,9 @@ import logging
 import signal
 import socket
 import sys
+from collections.abc import Coroutine
 from datetime import datetime, timezone
+from typing import Any
 
 import grpc.aio
 import redis.asyncio as aioredis
@@ -182,6 +184,28 @@ async def _prewarm_agents(
                 "prewarm: tenant=%s agent=%s providers ready, workflow graph parsed (%d nodes)",
                 tenant_slug, agent_slug, len(graph.nodes),
             )
+
+
+def _log_task_failure(task: asyncio.Task) -> None:
+    """Done-callback for background tasks: a failed startup load or heartbeat is never silent."""
+    if not task.cancelled() and task.exception() is not None:
+        logging.getLogger(__name__).error("Background task %r failed", task.get_name(), exc_info=task.exception())
+
+
+def _spawn(coro: Coroutine[Any, Any, None], name: str) -> asyncio.Task:
+    """create_task for serve()'s background work, with failures logged."""
+    task = asyncio.create_task(coro, name=name)
+    task.add_done_callback(_log_task_failure)
+    return task
+
+
+async def _await_stopped(task: asyncio.Task) -> None:
+    """Join a cancelled background task at shutdown. Whatever it died of must not skip the
+    rest of the shutdown; a failure was already logged by _log_task_failure."""
+    try:
+        await task
+    except (asyncio.CancelledError, Exception):
+        pass
 
 
 async def serve(port: int, args: argparse.Namespace) -> None:
@@ -442,7 +466,7 @@ async def serve(port: int, args: argparse.Namespace) -> None:
         health_servicer.set(SERVICE_NAME, health_pb2.HealthCheckResponse.SERVING)
         log.info("ConversationService SERVING")
 
-    load_task = asyncio.create_task(_load_and_promote())
+    load_task = _spawn(_load_and_promote(), "startup load")
 
     # Node is considered dead after 3 missed heartbeats (45s).
     HEARTBEAT_INTERVAL_S = 15
@@ -456,7 +480,7 @@ async def serve(port: int, args: argparse.Namespace) -> None:
             await transcripts.reconcile_inactive_calls(inactive_after_seconds=INACTIVE_CALL_TIMEOUT_S)
             await asyncio.sleep(HEARTBEAT_INTERVAL_S)
 
-    heartbeat_task = asyncio.create_task(_heartbeat_loop())
+    heartbeat_task = _spawn(_heartbeat_loop(), "heartbeat")
 
     loop = asyncio.get_running_loop()
     stop = loop.create_future()
@@ -468,10 +492,7 @@ async def serve(port: int, args: argparse.Namespace) -> None:
         load_task.cancel()
         heartbeat_task.cancel()
         for task in (load_task, heartbeat_task):
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            await _await_stopped(task)
         await provider_config_subscriber.stop()
         log.info("Shutting down…")
         health_servicer.set(SERVICE_NAME, health_pb2.HealthCheckResponse.NOT_SERVING)

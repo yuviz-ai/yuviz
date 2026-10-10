@@ -89,16 +89,25 @@ export interface KbDocument {
   version: number;
   usage_mode: UsageMode;
   chunk_count: number;
+  // null for documents uploaded before sizes were recorded.
+  byte_size: number | null;
   created_at: string;
   updated_at: string;
 }
 
 export const listDocuments = (kbId: string) => request<KbDocument[]>(`/knowledge-bases/${kbId}/documents`);
 
-export const uploadDocument = (kbId: string, file: File, title: string) => {
+export const uploadDocument = (
+  kbId: string,
+  file: File,
+  title: string,
+  opts?: { language?: string | null; tags?: Record<string, unknown> },
+) => {
   const form = new FormData();
   form.append("file", file);
   form.append("title", title);
+  if (opts?.language) form.append("language", opts.language);
+  if (opts?.tags) form.append("tags", JSON.stringify(opts.tags));
   return request<KbDocument & { ingestion_job_id: string }>(`/knowledge-bases/${kbId}/documents`, {
     method: "POST",
     body: form,
@@ -116,6 +125,9 @@ export const updateDocument = (documentId: string, body: DocumentUpdate) =>
   request<KbDocument>(`/documents/${documentId}`, { method: "PATCH", body: JSON.stringify(body) });
 export const deleteDocument = (documentId: string) =>
   request<void>(`/documents/${documentId}`, { method: "DELETE" });
+
+export const retryDocument = (documentId: string) =>
+  request<KbDocument>(`/documents/${documentId}/retry`, { method: "POST" });
 
 // ── Reverse lookup: which agents use this KB ────────────────────────────
 

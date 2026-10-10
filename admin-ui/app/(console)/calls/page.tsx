@@ -1,13 +1,25 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowRight, Check, ChevronDown, ChevronLeft, ChevronRight, PhoneIncoming, PhoneOutgoing, RefreshCw, Search, X,
 } from "lucide-react";
 import { ALL_CALLS_LIMIT, ApiError, CallTimeRange, CallWithTenant, listAllCalls } from "@/lib/api";
 import { SentimentBadge, SENTIMENT_ORDER, sentimentLabel } from "@/components/SentimentBadge";
 import { useActiveTenant } from "@/lib/useActiveTenant";
+import { OUTCOMES, Tone, outcomeOf } from "@/lib/callOutcome";
+
+// Filterable outcomes of a finished call; "Not recorded" isn't one anyone looks for.
+const OUTCOME_FILTERS = [OUTCOMES.done, OUTCOMES.to_person, OUTCOMES.transfer_failed, OUTCOMES.dropped];
+const TONE_BADGE: Record<Tone, string> = { g: "green", a: "amber", r: "red", n: "gray" };
+
+// Normal endings keep the plain "Completed" badge; only outcomes that need a look stand out.
+function StatusBadge({ reason }: { reason: string | null }) {
+  const o = outcomeOf(reason);
+  if (o.key === "done" || o.key === "unrecorded") return <span className="badge gray">Completed</span>;
+  return <span className={`badge ${TONE_BADGE[o.tone]}`} title={o.label}>{o.short}</span>;
+}
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleString(undefined, {
@@ -171,6 +183,26 @@ function ColumnFilter({
   );
 }
 
+// Deep links from the dashboard, e.g. /calls?status=dropped&time=30d or ?from=2026-10-08T11:20.
+const URL_STATUS = new Set(["live", "completed", ...OUTCOME_FILTERS.map((o) => o.key)]);
+const URL_TIME = new Set(["1h", "today", "7d", "30d"]);
+const LOCAL_INPUT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;
+
+function customFromUrl(params: URLSearchParams): string {
+  const from = params.get("from") ?? "";
+  return LOCAL_INPUT.test(from) ? from : "";
+}
+
+function filtersFromUrl(params: URLSearchParams): Partial<Record<ColKey, string>> {
+  const f: Partial<Record<ColKey, string>> = {};
+  const status = params.get("status");
+  if (status && URL_STATUS.has(status)) f.status = status;
+  const time = params.get("time");
+  if (customFromUrl(params)) f.time = "custom";
+  else if (time && URL_TIME.has(time)) f.time = time;
+  return f;
+}
+
 export default function CallsPage() {
   const router = useRouter();
   const { tenant, allTenants, isAllTenants, loading: tenantLoading } = useActiveTenant();
@@ -182,9 +214,10 @@ export default function CallsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const searchParams = useSearchParams();
   const [search, setSearch] = useState("");
-  const [filters, setFilters] = useState<Partial<Record<ColKey, string>>>({});
-  const [customRange, setCustomRange] = useState<TimeRange>({ from: "", to: "" });
+  const [filters, setFilters] = useState<Partial<Record<ColKey, string>>>(() => filtersFromUrl(searchParams));
+  const [customRange, setCustomRange] = useState<TimeRange>(() => ({ from: customFromUrl(searchParams), to: "" }));
 
   const [truncated, setTruncated] = useState(false);
 
@@ -270,6 +303,10 @@ export default function CallsPage() {
         key: "status", label: "Status", options: [
           { value: "live", label: "Live", test: (c) => c.status === "live" },
           { value: "completed", label: "Completed", test: (c) => c.status === "completed" },
+          ...OUTCOME_FILTERS.map((o) => ({
+            value: o.key, label: o.label,
+            test: (c: CallWithTenant) => c.status === "completed" && outcomeOf(c.close_reason).key === o.key,
+          })),
         ],
       },
       {
@@ -489,16 +526,11 @@ export default function CallsPage() {
                     <td className="cell-num">{formatDuration(c.duration_ms)}</td>
                     <td>
                       <SentimentBadge sentiment={c.sentiment} />
-                      {c.sentiment_reason && (
-                        <span className="calls-reason" title={c.sentiment_reason}>
-                          {c.sentiment_reason}
-                        </span>
-                      )}
                     </td>
                     <td>
                       {c.status === "live"
                         ? <span className="badge green">Live</span>
-                        : <span className="badge gray">Completed</span>}
+                        : <StatusBadge reason={c.close_reason} />}
                     </td>
                     {/* turn_count stays 0 for calls reconciled after a restart; the detail page reads the real transcript. */}
                     <td className="cell-num" style={{ textAlign: "right" }}>

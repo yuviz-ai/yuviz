@@ -11,6 +11,7 @@ from typing import Any
 
 from ..exceptions import RepositoryUnavailableError
 from ..interfaces import IConfigRepository
+from ..languages import resolve_languages, same_tenant_tts_overrides
 from ..models import (
     TRANSFER_TIMEOUT_DEFAULT_MS,
     Agent,
@@ -109,6 +110,9 @@ def _agent_from_dict(row: dict[str, Any]) -> Agent:
         workflow=_parse_json(row.get("workflow")),
         workflow_draft=_parse_json(row.get("workflow_draft")),
         call_flow_id=row.get("call_flow_id"),
+        supported_languages=tuple(row["supported_languages"]) if row.get("supported_languages") else None,
+        tts_config_by_language=_parse_json(row.get("tts_config_by_language")) or None,
+        greeting_by_language=_parse_json(row.get("greeting_by_language")) or None,
     )
 
 
@@ -134,6 +138,7 @@ def _provider_config_from_dict(row: dict[str, Any]) -> ProviderConfig:
         api_key_ref=row.get("api_key_ref"),
         extra=_parse_extra(row.get("extra")),
         updated_at=_parse_dt(row.get("updated_at")),
+        tenant_id=str(row["tenant_id"]) if row.get("tenant_id") is not None else None,
     )
 
 
@@ -202,11 +207,20 @@ class CacheAsideConfigProvider:
                 return None
             providers[role] = cfg
 
+        langs = resolve_languages(agent, providers["stt"], providers["tts"])
+        tts_by_language = {}
+        if langs.supported_languages and agent.tts_config_by_language:
+            tts_by_language = same_tenant_tts_overrides(agent, langs.supported_languages, {
+                lang: await self.get_provider_config(config_id)
+                for lang, config_id in agent.tts_config_by_language.items()
+            })
+
         return RuntimeConfig(
             tenant=tenant,
             agent=agent,
             providers=ProviderConfigs(
                 stt=providers["stt"], llm=providers["llm"], tts=providers["tts"],
+                tts_by_language=tts_by_language,
             ),
             conversation=ConversationInfo(
                 greeting=agent.greeting, system_prompt=agent.system_prompt,
@@ -216,10 +230,15 @@ class CacheAsideConfigProvider:
                 transfer_announcement=agent.transfer_announcement,
                 workflow=agent.workflow,
                 workflow_draft=agent.workflow_draft,
+                greeting_by_language=agent.greeting_by_language,
             ),
             media=MediaInfo(
                 voice=providers["tts"].voice,
                 language=agent.language or providers["stt"].language or providers["tts"].language,
+                stt_language=langs.stt_language,
+                tts_language=langs.tts_language,
+                default_language=langs.default_language,
+                supported_languages=langs.supported_languages,
             ),
             policies=Policies(
                 vad_engine=tenant.vad_engine,

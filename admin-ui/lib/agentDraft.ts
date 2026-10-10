@@ -20,6 +20,10 @@ export interface AgentDraft {
   tone: string;
   languageChoice: string;
   customLanguage: string;
+  // Optional: drafts saved before multilingual agents lack them.
+  supportedLanguages?: string[];
+  ttsByLanguage?: Record<string, string>;
+  greetingByLanguage?: Record<string, string>;
   sttId: string | null;
   llmId: string | null;
   ttsId: string | null;

@@ -28,9 +28,13 @@ import json
 import logging
 import math
 import re
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 
 import httpx
+
+from libs.config_sdk.languages import normalize_language
+
+from ..interfaces import INSTANCE_LANGUAGE
 
 log = logging.getLogger(__name__)
 
@@ -66,7 +70,11 @@ class CartesiaTTS:
               generation_config.speed on sonic-3+, and as the older
               __experimental_controls.speed (-1..1, mapped linearly from the
               multiplier) on sonic-2 and earlier.
+    language — ISO 639-1 code sent as the body's `language`; None omits it
+               (Cartesia's default, English). A per-call `language=` overrides it.
     """
+
+    accepts_language = True
 
     def __init__(
         self,
@@ -76,9 +84,11 @@ class CartesiaTTS:
         base_url:  str = _DEFAULT_BASE_URL,
         timeout_s: float = 15.0,
         speed:     float | None = None,
+        language:  str | None = None,
     ) -> None:
         self._voice = voice
         self._model = model
+        self._language = language
         self._speed = None if speed is None else min(max(speed, _MIN_SPEED), _MAX_SPEED)
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
@@ -88,9 +98,9 @@ class CartesiaTTS:
             },
             timeout=timeout_s,
         )
-        log.info("CartesiaTTS voice=%s model=%s speed=%s", voice, model, self._speed)
+        log.info("CartesiaTTS voice=%s model=%s speed=%s language=%s", voice, model, self._speed, language)
 
-    def _body(self, text: str, sample_rate: int) -> dict:
+    def _body(self, text: str, sample_rate: int, language: Any = INSTANCE_LANGUAGE) -> dict:
         body = {
             "model_id": self._model,
             "transcript": text,
@@ -101,6 +111,11 @@ class CartesiaTTS:
                 "sample_rate": sample_rate,
             },
         }
+        language = self._language if language is INSTANCE_LANGUAGE else language
+        # Bare ISO 639-1: agents.language is often regional ("en-US").
+        language = normalize_language(language)
+        if language:
+            body["language"] = language
         if self._speed is not None:
             if _is_legacy_model(self._model):
                 control = min(max((self._speed - 1.0) / 0.5, -1.0), 1.0)
@@ -109,12 +124,12 @@ class CartesiaTTS:
                 body["generation_config"] = {"speed": self._speed}
         return body
 
-    async def synthesize(self, text: str, sample_rate: int) -> bytes:
+    async def synthesize(self, text: str, sample_rate: int, *, language: Any = INSTANCE_LANGUAGE) -> bytes:
         if not text.strip():
             return b""
 
         try:
-            resp = await self._client.post("/tts/bytes", json=self._body(text, sample_rate))
+            resp = await self._client.post("/tts/bytes", json=self._body(text, sample_rate, language))
             resp.raise_for_status()
         except httpx.HTTPError:
             log.exception("CartesiaTTS request failed")
@@ -122,7 +137,9 @@ class CartesiaTTS:
 
         return resp.content
 
-    async def synthesize_stream(self, text: str, sample_rate: int) -> AsyncGenerator[bytes, None]:
+    async def synthesize_stream(
+        self, text: str, sample_rate: int, *, language: Any = INSTANCE_LANGUAGE,
+    ) -> AsyncGenerator[bytes, None]:
         """Unwraps Cartesia's SSE framing into raw PCM.
 
         Each event is a JSON object; the ones carrying audio have
@@ -137,7 +154,7 @@ class CartesiaTTS:
 
         try:
             async with self._client.stream(
-                "POST", "/tts/sse", json=self._body(text, sample_rate),
+                "POST", "/tts/sse", json=self._body(text, sample_rate, language),
             ) as resp:
                 resp.raise_for_status()
                 # Same odd-byte carry as DeepgramTTS: base64 chunks decode to

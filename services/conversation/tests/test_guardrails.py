@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from ..guardrails import GuardrailDetector
 
 
@@ -113,3 +115,51 @@ def test_intensified_ridiculous_useless_variants_match():
     assert GuardrailDetector.check("your service is completely ridiculous") is not None
     assert GuardrailDetector.check("that was absolutely useless") is not None
     assert GuardrailDetector.check("The ridiculous thing about pricing is complexity.") is None
+
+
+# ── Per-language lexicons ────────────────────────────────────────────────────
+
+def test_language_none_is_english_as_before():
+    assert GuardrailDetector.check("this is useless", None) is not None
+    assert GuardrailDetector.check("this is useless", "en") is not None
+
+
+@pytest.mark.parametrize("text, category", [
+    ("यह बेकार है", "frustration"),
+    ("आप समझ नहीं रहे", "frustration"),
+    ("मैंने पहले ही बताया था", "frustration"),
+    ("bhai ye bekar hai", "frustration"),
+    ("aap samajh nahi rahe", "frustration"),
+    ("main tang aa gaya hoon", "frustration"),
+    ("चुप रहो", "abuse"),
+    ("kya bakwas hai", "abuse"),
+    ("this is useless yaar", "frustration"),  # English lexicon still applies to Hinglish
+])
+def test_hindi_session_matches_hindi_and_english(text, category):
+    v = GuardrailDetector.check(text, "hi")
+    assert v is not None and v.category == category
+
+
+@pytest.mark.parametrize("text", [
+    "मुझे कल का अपॉइंटमेंट चाहिए",
+    "haan ji, paanch baje theek hai",
+    "kaam ho gaya, dhanyavaad",
+    "bekarar hoon milne ko",  # bekar- inside a longer word must not fire
+])
+def test_hindi_lexicon_precision(text):
+    assert GuardrailDetector.check(text, "hi") is None
+
+
+def test_hindi_lexicon_not_used_for_english_sessions():
+    assert GuardrailDetector.check("यह बेकार है", "en") is None
+
+
+@pytest.mark.parametrize("language", ["fr", "ja", "xx"])
+def test_unknown_language_fails_safe(language):
+    assert not GuardrailDetector.supports(language)
+    assert GuardrailDetector.check("this is fucking useless", language) is None
+
+
+def test_romanised_hindi_abuse_does_not_flag_english_sale():
+    assert GuardrailDetector.check("kya sale abhi chal rahi hai", "hi") is None
+    assert GuardrailDetector.check("saale", "hi") is not None

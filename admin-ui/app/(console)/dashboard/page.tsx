@@ -22,6 +22,7 @@ import {
   PhoneNumberWithTenant,
 } from "@/lib/api";
 import { useActiveTenant } from "@/lib/useActiveTenant";
+import { Outcome, Tone, outcomeOf } from "@/lib/callOutcome";
 
 const RANGE_OPTIONS = [
   { label: "Today", hours: 24, days: 0, prev: "previous 24h", period: "in the last 24 hours" },
@@ -41,46 +42,27 @@ function fmtDuration(ms: number | null): string {
   return m > 0 ? `${m}m ${String(s).padStart(2, "0")}s` : `${s}s`;
 }
 
+// <input type="datetime-local"> format, in local time — what the call log's custom range takes.
+function toLocalInput(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 function maskNumber(n: string | null): string {
   if (!n) return "Unknown";
   return n.length <= 6 ? n : `${n.slice(0, Math.min(6, n.length - 4))}••• ${n.slice(-4)}`;
 }
 
-type Tone = "g" | "a" | "r" | "n";
-interface Outcome { label: string; short: string; tone: Tone }
-
 const TONE_COLOR: Record<Tone, string> = {
   g: "var(--green)", a: "var(--amber)", r: "var(--red)", n: "var(--text-3)",
 };
 
-// close_reason is a system code; group it into the few outcomes a business user cares about.
-function outcomeOf(reason: string | null): Outcome {
-  switch (reason) {
-    case "caller_hangup":
-    case "stream_ended":
-    case "session_destroyed":
-      return { label: "Ended normally", short: "Done", tone: "g" };
-    case "TRANSFER_SUCCESS":
-      return { label: "Sent to a person", short: "To person", tone: "a" };
-    case "TRANSFER_FAILED":
-    case "TRANSFER_TIMEOUT":
-      return { label: "Transfer failed", short: "Transfer failed", tone: "r" };
-    case "transport_error":
-    case "close_timeout":
-    case "reconciled_inactive":
-    case "reconciled_stale":
-    case "reconciled_dead_node":
-      return { label: "Call dropped", short: "Dropped", tone: "r" };
-    default:
-      return { label: "Not recorded", short: "—", tone: "n" };
-  }
-}
+interface ChartPoint { label: string; inbound: number; outbound: number; aiPct: number | null }
 
-interface ChartPoint { label: string; calls: number; aiPct: number | null }
-
-const toChartPoint = (label: string, calls: number, ended: number, escalated: number): ChartPoint => ({
+const toChartPoint = (label: string, inbound: number, outbound: number, ended: number, escalated: number): ChartPoint => ({
   label,
-  calls,
+  inbound,
+  outbound,
   aiPct: ended === 0 ? null : ((ended - escalated) / ended) * 100,
 });
 
@@ -88,11 +70,14 @@ function TrendChart({ points }: { points: ChartPoint[] }) {
   if (points.length === 0) return <div className="d-empty">No calls in this period yet.</div>;
   const w = 400;
   const h = 110;
-  const max = Math.max(1, ...points.map((p) => p.calls));
+  const total = points.map((p) => p.inbound + p.outbound);
+  const max = Math.max(1, ...total);
   const xAt = (i: number) => (points.length === 1 ? w / 2 : (i / (points.length - 1)) * w);
   const yAt = (frac: number) => h - 6 - frac * (h - 16);
-  const xy = points.map((p, i) => [xAt(i), yAt(p.calls / max)]);
-  const line = xy.map(([x, y]) => `${x},${y}`).join(" ");
+  const inboundXy = points.map((p, i) => [xAt(i), yAt(p.inbound / max)]);
+  const outboundXy = points.map((p, i) => [xAt(i), yAt((p.inbound + p.outbound) / max)]);
+  const inboundLine = inboundXy.map(([x, y]) => `${x},${y}`).join(" ");
+  const outboundLine = outboundXy.map(([x, y]) => `${x},${y}`).join(" ");
   const aiXy = points.flatMap((p, i) => (p.aiPct == null ? [] : [[xAt(i), yAt(p.aiPct / 100), i]]));
   const ticks = points.length <= 6 ? points.map((_, i) => i) : [0, Math.floor((points.length - 1) / 2), points.length - 1];
   return (
@@ -100,26 +85,30 @@ function TrendChart({ points }: { points: ChartPoint[] }) {
       <div className="d-chart">
         <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" role="img" aria-label="Calls over time">
           <path d={`M0 ${h * 0.25}H${w}M0 ${h * 0.5}H${w}M0 ${h * 0.75}H${w}`} stroke="var(--border)" strokeWidth="1" />
-          <path d={`M${xy[0][0]} ${h} L${line.replaceAll(" ", " L")} L${xy[xy.length - 1][0]} ${h}Z`} fill="var(--cyan-dim)" />
-          <polyline points={line} fill="none" stroke="var(--cyan)" strokeWidth="2" vectorEffect="non-scaling-stroke" />
+          <path d={`M${outboundXy[0][0]} ${h} L${outboundLine.replaceAll(" ", " L")} L${outboundXy[outboundXy.length - 1][0]} ${h}Z`} fill="#3b82f6" opacity="0.15" />
+          <polyline points={inboundLine} fill="none" stroke="#3b82f6" strokeWidth="2" vectorEffect="non-scaling-stroke" />
+          {outboundXy.some(([x, y], i) => y !== inboundXy[i][1]) && (
+            <polyline points={outboundLine} fill="none" stroke="#f97316" strokeWidth="2" vectorEffect="non-scaling-stroke" />
+          )}
           {aiXy.length > 1 && (
             <polyline
               points={aiXy.map(([x, y]) => `${x},${y}`).join(" ")}
               fill="none"
               stroke="var(--green)"
               strokeWidth="2"
-              strokeDasharray="4 3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
               vectorEffect="non-scaling-stroke"
             />
           )}
         </svg>
         {/* HTML dots: SVG circles would stretch under the non-uniform viewBox scaling. */}
-        {xy.map(([x, y], i) => (
+        {inboundXy.map(([x, y], i) => (
           <span
             key={i}
             className="d-dot"
             style={{ left: `${(x / w) * 100}%`, top: `${(y / h) * 100}%` }}
-            title={`${points[i].label}: ${points[i].calls} call${points[i].calls === 1 ? "" : "s"}`}
+            title={`${points[i].label}: ${points[i].inbound + points[i].outbound} call${points[i].inbound + points[i].outbound === 1 ? "" : "s"}`}
           />
         ))}
         {aiXy.map(([x, y, i]) => (
@@ -132,7 +121,8 @@ function TrendChart({ points }: { points: ChartPoint[] }) {
         ))}
       </div>
       <div className="d-legend">
-        <span><i style={{ background: "var(--cyan)" }} />Calls</span>
+        <span><i style={{ background: "#3b82f6" }} />Inbound</span>
+        <span><i style={{ background: "#f97316" }} />Outbound</span>
         <span><i style={{ background: "var(--green)" }} />Handled by AI (%)</span>
       </div>
       <div className="d-ticks">
@@ -214,23 +204,35 @@ export default function DashboardPage() {
     Promise.allSettled([
       listAllDashboardStats(targetTenants, range.hours),
       range.days
-        ? listAllUsageTrend(targetTenants, range.days).then((pts) =>
-            pts.map((p) => toChartPoint(
-              new Date(p.date).toLocaleDateString("en-IN", { day: "numeric", month: "short" }),
-              p.calls, p.ended, p.escalated,
-            )),
-          )
+        ? listAllUsageTrend(targetTenants, range.days).then((pts) => {
+            if (pts.length === 0) return [];
+            // API omits zero-call days; draw every day of the range so today is always the last point.
+            const byDate = new Map(pts.map((p) => [p.date.slice(0, 10), p]));
+            const dense: ChartPoint[] = [];
+            const userTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+            for (let i = range.days - 1; i >= 0; i--) {
+              const d = new Date();
+              d.setDate(d.getDate() - i);
+              const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+              const p = byDate.get(key);
+              dense.push(toChartPoint(
+                d.toLocaleDateString("en-IN", { day: "numeric", month: "short", timeZone: userTz }),
+                p?.calls ?? 0, 0, p?.ended ?? 0, p?.escalated ?? 0,
+              ));
+            }
+            return dense;
+          })
         : listAllTodaysActivity(targetTenants).then((pts) => {
             if (pts.length === 0) return [];
-            // API omits zero-call hours; fill gaps between the first and last active hour.
+            // API omits zero-call hours; draw every hour from midnight up to now.
             const byHour = new Map(pts.map((p) => [p.hour, p]));
             const hours = pts.map((p) => p.hour);
             const dense: ChartPoint[] = [];
-            for (let hr = Math.min(...hours); hr <= Math.max(...hours); hr++) {
+            for (let hr = 0; hr <= Math.max(new Date().getHours(), ...hours); hr++) {
               const p = byHour.get(hr);
               dense.push(toChartPoint(
                 `${String(hr).padStart(2, "0")}:00`,
-                p ? p.inbound + p.outbound : 0, p?.ended ?? 0, p?.escalated ?? 0,
+                p?.inbound ?? 0, p?.outbound ?? 0, p?.ended ?? 0, p?.escalated ?? 0,
               ));
             }
             return dense;
@@ -351,17 +353,21 @@ export default function DashboardPage() {
 
   const attention = useMemo(() => {
     const items: { tone: Tone; text: string; action: string; href: string }[] = [];
+    // Same window the counts came from: rolling 7/30 days, or the 24 hours before the last refresh.
+    const callsHref = (status: string) => `/calls?status=${status}&${range.days || updatedAt === null
+      ? `time=${range.days ? `${range.days}d` : "today"}`
+      : `from=${toLocalInput(new Date(updatedAt - range.hours * 3_600_000))}`}`;
     if (kpi && kpi.failedTransfers > 0) {
       items.push({
         tone: "r",
         text: `${fmtInt(kpi.failedTransfers)} transfer${kpi.failedTransfers === 1 ? "" : "s"} to a person failed`,
         action: "Review",
-        href: "/calls",
+        href: callsHref("transfer_failed"),
       });
     }
-    const dropped = outcomes.rows.find((r) => r.outcome.label === "Call dropped")?.count ?? 0;
+    const dropped = outcomes.rows.find((r) => r.outcome.key === "dropped")?.count ?? 0;
     if (dropped > 0) {
-      items.push({ tone: "r", text: `${fmtInt(dropped)} call${dropped === 1 ? "" : "s"} dropped`, action: "Review", href: "/calls" });
+      items.push({ tone: "r", text: `${fmtInt(dropped)} call${dropped === 1 ? "" : "s"} dropped`, action: "Review", href: callsHref("dropped") });
     }
     const unnumbered = agentRows.filter((r) => r.noNumber);
     if (unnumbered.length === 1) {
@@ -385,7 +391,7 @@ export default function DashboardPage() {
       items.push({ tone: "g", text: `"${finished.name}" finished`, action: "Results", href: `/campaigns/${finished.id}` });
     }
     return items;
-  }, [kpi, outcomes, agentRows, campaigns]);
+  }, [kpi, outcomes, agentRows, campaigns, range, updatedAt]);
 
   const runningCampaigns = campaigns.filter((c) => progress[c.id]);
 

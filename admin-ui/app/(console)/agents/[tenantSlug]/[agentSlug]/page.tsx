@@ -2,7 +2,7 @@
 
 // One-screen agent editor: sections on the left, test call on the right, every change auto-saved.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import {
@@ -18,7 +18,7 @@ import { KnowledgeBasePanel } from "@/components/KnowledgeBasePanel";
 import { AgentCustomApisPanel } from "@/components/AgentCustomApisPanel";
 import { Modal } from "@/components/Modal";
 import { SipPanel } from "@/components/SipPanel";
-import { AgentVoiceSettings } from "@/components/AgentVoiceSettings";
+import { AgentVoiceSettings, isLanguageError, multilingualPayload } from "@/components/AgentVoiceSettings";
 import { AgentTestPanel } from "@/components/AgentTestPanel";
 import { LANGUAGES, OTHER } from "@/lib/engineCatalog";
 import { normalizeDialTarget } from "@/lib/dialTargets";
@@ -46,7 +46,7 @@ const ESCALATION_OPTIONS = [1, 2, 3, 4, 5];
 const AUTOSAVE_DELAY_MS = 800;
 // Free text that callers hear or that steers a live call; on an active agent it waits for blur or Save.
 const LIVE_HELD_FIELDS = [
-  "greeting", "system_prompt", "end_call_prompt", "farewell_message", "transfer_prompt",
+  "greeting", "greeting_by_language", "system_prompt", "end_call_prompt", "farewell_message", "transfer_prompt",
   "transfer_announcement", "transfer_destination", "platform_did", "custom_caller_id",
 ] as const;
 const DIAL_FIELDS = ["transfer_destination", "platform_did", "custom_caller_id"] as const;
@@ -64,6 +64,18 @@ const formatLength = (ms: number | null) => {
 
 const toLanguage = (choice: string, custom: string) =>
   choice === "" ? null : choice === OTHER ? custom.trim() || null : choice;
+
+// The language-related editor state for a stored agent, in the shape the form and baseline hold it.
+function languageState(a: Agent) {
+  const known = !a.language || LANGUAGES.some((l) => l.value === a.language);
+  return {
+    languageChoice: !a.language ? "" : known ? a.language : OTHER,
+    customLanguage: known ? "" : a.language ?? "",
+    supported_languages: a.supported_languages ?? [],
+    tts_config_by_language: a.tts_config_by_language ?? {},
+    greeting_by_language: a.greeting_by_language ?? {},
+  };
+}
 
 export default function AgentDetailPage() {
   const { tenantSlug, agentSlug } = useParams<{ tenantSlug: string; agentSlug: string }>();
@@ -89,6 +101,8 @@ export default function AgentDetailPage() {
   const [saveError, setSaveError] = useState<string | null>(null);
   // The snapshot the server last rejected; autosave waits for the next edit instead of retrying it.
   const [rejected, setRejected] = useState<string | null>(null);
+  // The server's 400 for the language fields, shown next to them as well as in the banner.
+  const [languagesError, setLanguagesError] = useState<string | null>(null);
 
   const [askText, setAskText] = useState("");
   const [rewriting, setRewriting] = useState(false);
@@ -104,6 +118,11 @@ export default function AgentDetailPage() {
   const [deleteChecking, setDeleteChecking] = useState(false);
 
   const snapshot = JSON.stringify({ form, languageChoice, customLanguage });
+  // The latest edits, read when a save's reply lands (the save closure only has the sent ones).
+  const latestSnapshot = useRef(snapshot);
+  useEffect(() => {
+    latestSnapshot.current = snapshot;
+  }, [snapshot]);
   const dirty = baseline !== "" && snapshot !== baseline;
   const language = toLanguage(languageChoice, customLanguage);
 
@@ -119,6 +138,7 @@ export default function AgentDetailPage() {
     getAgent(tenantSlug, agentSlug)
       .then(async (a) => {
         setAgent(a);
+        const lang = languageState(a);
         const initialForm: AgentUpdate = {
           name: a.name,
           greeting: a.greeting,
@@ -141,14 +161,16 @@ export default function AgentDetailPage() {
           transfer_prompt: a.transfer_prompt,
           farewell_message: a.farewell_message,
           transfer_announcement: a.transfer_announcement,
+          supported_languages: lang.supported_languages,
+          tts_config_by_language: lang.tts_config_by_language,
+          greeting_by_language: lang.greeting_by_language,
         };
-        const known = !a.language || LANGUAGES.some((l) => l.value === a.language);
-        const choice = !a.language ? "" : known ? a.language : OTHER;
-        const custom = known ? "" : a.language ?? "";
         setForm(initialForm);
-        setLanguageChoice(choice);
-        setCustomLanguage(custom);
-        setBaseline(JSON.stringify({ form: initialForm, languageChoice: choice, customLanguage: custom }));
+        setLanguageChoice(lang.languageChoice);
+        setCustomLanguage(lang.customLanguage);
+        setBaseline(JSON.stringify({
+          form: initialForm, languageChoice: lang.languageChoice, customLanguage: lang.customLanguage,
+        }));
         listPhoneNumbers(a.tenant_id).then(setNumbers).catch(() => setNumbers(null));
         // Campaigns run in a separate service; if it's down the agent just counts as inbound.
         listCampaigns(a.tenant_id).then((cs) => setInCampaign(cs.some((c) => c.agent_id === a.id))).catch(() => {});
@@ -163,7 +185,8 @@ export default function AgentDetailPage() {
 
   // On a live agent these change the next real call, so half-typed edits wait for blur or Save.
   const savedForm: AgentUpdate = baseline ? JSON.parse(baseline).form : {};
-  const held = agent?.status === "active" && LIVE_HELD_FIELDS.some((k) => (form[k] ?? null) !== (savedForm[k] ?? null));
+  const held = agent?.status === "active"
+    && LIVE_HELD_FIELDS.some((k) => JSON.stringify(form[k] ?? null) !== JSON.stringify(savedForm[k] ?? null));
   const canSave = !!agent && dirty && !saving && snapshot !== rejected && !!form.name?.trim() && !!form.system_prompt?.trim();
 
   // Only changed fields are sent, so untouched values are never rewritten.
@@ -176,19 +199,57 @@ export default function AgentDetailPage() {
       if (JSON.stringify(v ?? null) !== JSON.stringify(base.form[k] ?? null)) changes[k] = v;
     }
     for (const k of DIAL_FIELDS) if (k in changes) changes[k] = normalizeDialTarget(form[k]);
-    if (language !== toLanguage(base.languageChoice, base.customLanguage)) changes.language = language;
+    const baseLanguage = toLanguage(base.languageChoice, base.customLanguage);
+    if (language !== baseLanguage) changes.language = language;
+    // The multilingual fields are one unit on the server (default language first, entries for
+    // unsupported languages dropped), so send all three, normalised, whenever any differs.
+    delete changes.supported_languages;
+    delete changes.tts_config_by_language;
+    delete changes.greeting_by_language;
+    const multilingual = multilingualPayload(
+      language, form.supported_languages, form.tts_config_by_language, form.greeting_by_language,
+    );
+    const savedMultilingual = multilingualPayload(
+      baseLanguage, base.form.supported_languages, base.form.tts_config_by_language, base.form.greeting_by_language,
+    );
+    if (JSON.stringify(multilingual) !== JSON.stringify(savedMultilingual)) Object.assign(changes, multilingual);
     if (Object.keys(changes).length === 0) {
       setBaseline(sent);
       return;
     }
     setSaving(true);
     setSaveError(null);
+    setLanguagesError(null);
     try {
-      setAgent(await updateAgent(tenantSlug, agent.id, changes as AgentUpdate));
-      setBaseline(sent);
+      const updated = await updateAgent(tenantSlug, agent.id, changes as AgentUpdate);
+      setAgent(updated);
+      const sentState = JSON.parse(sent);
+      if ("language" in changes || "supported_languages" in changes) {
+        // The server normalises the language fields (e.g. picks a default when none was set):
+        // the baseline becomes what it stored, and the page shows it for every field the user
+        // hasn't edited since sending. An edit made during the save stays, dirty, and autosaves.
+        const { languageChoice: choice, customLanguage: custom, ...stored } = languageState(updated);
+        const latest = JSON.parse(latestSnapshot.current);
+        const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+        if (latest.languageChoice === sentState.languageChoice && latest.customLanguage === sentState.customLanguage) {
+          setLanguageChoice(choice);
+          setCustomLanguage(custom);
+        }
+        const keep = (Object.keys(stored) as (keyof typeof stored)[]).filter(
+          (k) => same(latest.form[k], sentState.form[k]),
+        );
+        setForm((prev) => ({ ...prev, ...Object.fromEntries(keep.map((k) => [k, stored[k]])) }));
+        setBaseline(JSON.stringify({
+          form: { ...sentState.form, ...stored }, languageChoice: choice, customLanguage: custom,
+        }));
+      } else {
+        setBaseline(sent);
+      }
       setRejected(null);
     } catch (e) {
-      setSaveError(e instanceof ApiError ? e.detail : String(e));
+      const detail = e instanceof ApiError ? e.detail : String(e);
+      setSaveError(detail);
+      if (e instanceof ApiError && e.status === 400 && isLanguageError(detail)) setLanguagesError(detail);
       setRejected(sent);
     } finally {
       setSaving(false);
@@ -275,7 +336,10 @@ export default function AgentDetailPage() {
         }
       }
       if (!copy) throw new Error("Couldn't find a free name for the copy.");
-      await updateAgent(tenantSlug, copy.id, { ...form, ...dialTargets, name: copy.name, language, status: "inactive" });
+      await updateAgent(tenantSlug, copy.id, {
+        ...form, ...dialTargets, name: copy.name, language, status: "inactive",
+        ...multilingualPayload(language, form.supported_languages, form.tts_config_by_language, form.greeting_by_language),
+      });
       router.push(`/agents/${tenantSlug}/${copy.slug}`);
     } catch (e) {
       setSaveError(e instanceof ApiError ? e.detail : String(e));
@@ -330,6 +394,7 @@ export default function AgentDetailPage() {
   if (!agent) return null;
 
   const isActive = (form.status || "active") === "active";
+  const isDraft = !isActive && !agent.activated_at;
   const transferType = form.transfer_type || "none";
   const graceMs = form.goodbye_grace_ms ?? 0;
   const graceOptions = GRACE_OPTIONS_MS.includes(graceMs) ? GRACE_OPTIONS_MS : [...GRACE_OPTIONS_MS, graceMs].sort((a, b) => a - b);
@@ -378,16 +443,36 @@ export default function AgentDetailPage() {
           placeholder="Agent name"
           onChange={(e) => setForm({ ...form, name: e.target.value })}
         />
-        <button
-          type="button"
-          role="switch"
-          aria-checked={isActive}
-          className={`ed2-live${isActive ? " on" : ""}`}
-          title={isActive ? "Click to pause this agent" : "Click to let this agent take calls"}
-          onClick={() => setForm({ ...form, status: isActive ? "inactive" : "active" })}
-        >
-          <i /> {isActive ? "Taking calls" : "Paused"}
-        </button>
+        {isDraft ? (
+          <>
+            <span
+              className="ed2-live"
+              style={{ cursor: "default", opacity: 0.75 }}
+              title="This agent hasn't gone live yet. Configure it, then go live."
+            >
+              <i /> Draft
+            </span>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              title="Make this agent available to take calls"
+              onClick={() => setForm({ ...form, status: "active" })}
+            >
+              Go live
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            role="switch"
+            aria-checked={isActive}
+            className={`ed2-live${isActive ? " on" : ""}`}
+            title={isActive ? "Click to pause this agent" : "Click to let this agent take calls"}
+            onClick={() => setForm({ ...form, status: isActive ? "inactive" : "active" })}
+          >
+            <i /> {isActive ? "Taking calls" : "Paused"}
+          </button>
+        )}
         <span className="ed2-dir">{inCampaign ? "My agent calls people" : "People call my agent"}</span>
         <div className="ed2-top-right">
           <div className="ed2-save" aria-live="polite">{saveStatus}</div>
@@ -451,7 +536,12 @@ export default function AgentDetailPage() {
           )}
           {justCreated && (
             <div className="ed2-ready ok">
-              <Check size={14} /> Your agent is ready. Try it with a test call, then fine-tune anything here.
+              <Check size={14} />{" "}
+              {isDraft ? (
+                <>Agent created as a draft. Review the settings, then press <strong>Go live</strong> when ready.</>
+              ) : (
+                "Your agent is ready. Try it with a test call, then fine-tune anything here."
+              )}
             </div>
           )}
           {blocker && (
@@ -529,6 +619,14 @@ export default function AgentDetailPage() {
               onLanguageChoice={setLanguageChoice}
               customLanguage={customLanguage}
               onCustomLanguage={setCustomLanguage}
+              supportedLanguages={form.supported_languages ?? []}
+              onSupportedLanguages={(v) => setForm((prev) => ({ ...prev, supported_languages: v }))}
+              ttsByLanguage={form.tts_config_by_language ?? {}}
+              onTtsByLanguage={(v) => setForm((prev) => ({ ...prev, tts_config_by_language: v }))}
+              greetingByLanguage={form.greeting_by_language ?? {}}
+              onGreetingByLanguage={(v) => setForm((prev) => ({ ...prev, greeting_by_language: v }))}
+              onGreetingBlur={saveHeld}
+              languagesError={languagesError}
               sttId={form.stt_config_id}
               llmId={form.llm_config_id}
               ttsId={form.tts_config_id}
@@ -784,22 +882,24 @@ export default function AgentDetailPage() {
                 : null
             }
           />
-          <div className="card ed2-calls">
-            <div className="ed2-calls-hdr">
-              <b>This agent&apos;s recent calls</b>
-              <Link href="/calls">All calls</Link>
+          {!isDraft && (
+            <div className="card ed2-calls">
+              <div className="ed2-calls-hdr">
+                <b>This agent&apos;s recent calls</b>
+                <Link href="/calls">All calls</Link>
+              </div>
+              {recentCalls.length === 0 ? (
+                <div className="ed-test-empty">No calls yet.</div>
+              ) : (
+                recentCalls.map((c) => (
+                  <Link key={c.session_id} href={`/calls/${c.session_id}`} className="ed2-call">
+                    <span>{formatCallTime(c.started_at)}</span>
+                    <span>{c.ended_at ? formatLength(c.duration_ms) : "Live"}</span>
+                  </Link>
+                ))
+              )}
             </div>
-            {recentCalls.length === 0 ? (
-              <div className="ed-test-empty">No calls yet.</div>
-            ) : (
-              recentCalls.map((c) => (
-                <Link key={c.session_id} href={`/calls/${c.session_id}`} className="ed2-call">
-                  <span>{formatCallTime(c.started_at)}</span>
-                  <span>{c.ended_at ? formatLength(c.duration_ms) : "Live"}</span>
-                </Link>
-              ))
-            )}
-          </div>
+          )}
         </aside>
       </div>
 

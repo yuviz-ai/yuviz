@@ -85,6 +85,11 @@ class AgentCreate(BaseModel):
     tts_config_id:  str | None = None
     status:         Literal["active", "inactive"] = "active"
     workflow: dict | None = None  # None/{} → starter_graph; validated like publish
+    language:               str | None = None
+    # Multilingual agents; validated as one unit in agents._validate_languages.
+    supported_languages:    list[str] | None = None
+    tts_config_by_language: dict[str, str | None] | None = None
+    greeting_by_language:   dict[str, str] | None = None
 
     @field_validator("workflow")
     @classmethod
@@ -194,6 +199,11 @@ class AgentUpdate(BaseModel):
     max_call_duration_s:  int | None = Field(default=None, ge=30, le=7200)
     # Call flow that answers ahead of this agent; explicit null detaches it.
     call_flow_id:         str | None = None
+    # Multilingual: set = language switching + per-turn reply-language instruction;
+    # null/[] = single-language (`language` alone sets STT/TTS). See agents._validate_languages.
+    supported_languages:    list[str] | None = None
+    tts_config_by_language: dict[str, str | None] | None = None
+    greeting_by_language:   dict[str, str] | None = None
 
 
 class WorkflowDraft(BaseModel):

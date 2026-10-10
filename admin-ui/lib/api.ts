@@ -217,8 +217,14 @@ export interface Agent {
   greeting: string;
   system_prompt: string;
   goodbye_grace_ms: number;
-  // null = use the STT/TTS provider's language.
+  // Default language. null = use the STT/TTS provider's language.
   language: string | null;
+  // null/[] = single-language. Set = detect and switch per utterance; the server puts `language` first.
+  supported_languages: string[] | null;
+  // language -> tts provider_configs.id; a missing language uses the agent's base voice.
+  tts_config_by_language: Record<string, string> | null;
+  // Only the default language's entry is spoken (at call start, in place of the opening line).
+  greeting_by_language: Record<string, string> | null;
   stt_config_id: string | null;
   llm_config_id: string | null;
   tts_config_id: string | null;
@@ -254,6 +260,8 @@ export interface Agent {
   // Set only on agents created from a shipped Easy job; null for Advanced.
   template_id: string | null;
   template_version: number | null;
+  // First time the agent went active; null = still a draft.
+  activated_at: string | null;
   // True while the stored prompt still equals the one the last accepted fix
   // wrote, so "Undo last change" can be offered. Computed server-side.
   can_undo: boolean;
@@ -274,6 +282,11 @@ export interface AgentCreate {
   llm_config_id?: string | null;
   tts_config_id?: string | null;
   status?: "active" | "inactive";
+  // Validated with the rest on create, so a bad language setting creates nothing.
+  language?: string | null;
+  supported_languages?: string[] | null;
+  tts_config_by_language?: Record<string, string> | null;
+  greeting_by_language?: Record<string, string> | null;
 }
 
 export interface AgentUpdate {
@@ -282,6 +295,9 @@ export interface AgentUpdate {
   system_prompt?: string;
   goodbye_grace_ms?: number;
   language?: string | null;
+  supported_languages?: string[] | null;
+  tts_config_by_language?: Record<string, string> | null;
+  greeting_by_language?: Record<string, string> | null;
   stt_config_id?: string | null;
   llm_config_id?: string | null;
   tts_config_id?: string | null;

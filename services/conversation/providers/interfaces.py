@@ -5,6 +5,10 @@ All providers are async and designed for streaming where possible:
   ISTT  — batch transcription (receives accumulated PCM, returns transcript)
   ILLM  — streaming text generation (yields tokens)
   ITTS  — batch synthesis per sentence (receives text, returns PCM bytes)
+
+Language (multilingual agents): providers that set `accepts_language = True` take an
+optional keyword-only `language` on every call. Omitted (INSTANCE_LANGUAGE) means the
+provider row's own language, so callers and implementations that predate it are unchanged.
 """
 
 from __future__ import annotations
@@ -13,10 +17,26 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Protocol
 
 
+class _InstanceLanguage:
+    def __repr__(self) -> str:
+        return "INSTANCE_LANGUAGE"
+
+
+# Default for the `language` keyword: "use the language the provider was built with".
+# Distinct from None, which means auto-detect (STT) / provider default (TTS).
+INSTANCE_LANGUAGE: Any = _InstanceLanguage()
+
+
 @dataclass
 class SttResult:
     text:       str
     confidence: float = 1.0
+    # Detected spoken language (ISO 639-1), only when the provider actually detected it
+    # (Whisper auto-detect, Deepgram language=multi); None when the language was forced.
+    language:            str | None = None
+    language_confidence: float | None = None
+    # Share of words per language, when the provider tags words (Deepgram multi).
+    language_shares:     dict[str, float] | None = None
 
 
 @dataclass
@@ -31,7 +51,10 @@ class ChatMessage:
 
 
 class ISTT(Protocol):
-    """Transcribe accumulated PCM audio to text."""
+    """Transcribe accumulated PCM audio to text.
+
+    Implementations with `accepts_language = True` also take `*, language=` on
+    transcribe/feed_stream/finalize_stream (see module docstring)."""
 
     async def transcribe(self, audio: bytes, sample_rate: int) -> SttResult:
         """
@@ -67,7 +90,10 @@ class ILLM(Protocol):
 
 
 class ITTS(Protocol):
-    """Synthesise a text string to raw L16 PCM bytes at a given sample rate."""
+    """Synthesise a text string to raw L16 PCM bytes at a given sample rate.
+
+    Implementations with `accepts_language = True` also take `*, language=` on
+    synthesize/synthesize_stream, so one cached instance can speak each call's language."""
 
     async def synthesize(self, text: str, sample_rate: int) -> bytes:
         """Returns raw L16 PCM at sample_rate Hz, or empty bytes on error."""
