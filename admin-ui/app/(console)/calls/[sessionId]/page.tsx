@@ -9,6 +9,7 @@ import { ArrowLeft, ArrowRight, Check, ChevronRight, Copy } from "lucide-react";
 import {
   ApiError, Call, TranscriptEntry, getCall, getTranscript,
 } from "@/lib/api";
+import { CallTranscript } from "@/components/CallTranscript";
 import { SentimentBadge } from "@/components/SentimentBadge";
 
 function formatTime(iso: string): string {
@@ -236,28 +237,7 @@ export default function CallDetailPage() {
           ) : transcript.length === 0 ? (
             <div className="empty-state">No transcript was recorded for this call.</div>
           ) : (
-            <div className="transcript">
-              {transcript.map((t) => (
-                <div key={t.id} className="transcript-turn">
-                  <div className="transcript-turn-no">
-                    Turn {t.turn_number}
-                    {t.interrupted && <span className="badge amber">interrupted</span>}
-                  </div>
-                  <div className="transcript-line caller">
-                    <span className="transcript-who">Caller</span>
-                    <span className={`transcript-text${t.caller_text ? "" : " empty"}`}>
-                      {t.caller_text || "(nothing heard)"}
-                    </span>
-                  </div>
-                  <div className="transcript-line agent">
-                    <span className="transcript-who">Agent</span>
-                    <span className={`transcript-text${t.ai_response ? "" : " empty"}`}>
-                      {t.ai_response || "(no reply)"}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
+            <CallTranscript entries={transcript} />
           )}
         </div>
       </div>

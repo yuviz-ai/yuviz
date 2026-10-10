@@ -27,6 +27,17 @@ const COLUMNS: { key: CallExportColumn; label: string; on: boolean }[] = [
   { key: "session_id", label: "Call ID", on: false },
 ];
 
+const browserTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+function saveFile(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export function ExportCallsModal({
   onClose, filteredLabel, selectedCount, showAccount, request,
 }: {
@@ -61,14 +72,9 @@ export function ExportCallsModal({
         ...request(scope),
         format,
         columns: available.filter((c) => columns.has(c.key)).map((c) => c.key),
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        timezone: browserTimezone(),
       });
-      const url = URL.createObjectURL(result.blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `calls-${new Date().toISOString().slice(0, 10)}.${format}`;
-      a.click();
-      URL.revokeObjectURL(url);
+      saveFile(result.blob, `calls-${new Date().toISOString().slice(0, 10)}.${format}`);
       if (result.truncated) setTruncated(true);
       else onClose();
     } catch (e) {
@@ -164,7 +170,7 @@ export function ExportCallsModal({
           ))}
         </div>
         {columns.size === 0 && <div className="form-hint">Pick at least one column.</div>}
-        <div className="form-hint">Times are in your timezone ({Intl.DateTimeFormat().resolvedOptions().timeZone}).</div>
+        <div className="form-hint">Times are in your timezone ({browserTimezone()}).</div>
       </div>
     </Modal>
   );

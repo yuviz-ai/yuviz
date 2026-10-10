@@ -80,7 +80,9 @@ async def list_calls(
 
         params.extend([limit, offset])
         rows = await conn.fetch(
-            f"SELECT c.*, a.name AS agent_name FROM calls c "
+            f"SELECT c.*, a.name AS agent_name, "
+            f"EXISTS (SELECT 1 FROM transcript_entries te WHERE te.session_id = c.session_id) AS has_transcript "
+            f"FROM calls c "
             f"LEFT JOIN agents a ON a.id = c.agent_id "
             f"WHERE {where_clause} "
             f"ORDER BY c.started_at DESC LIMIT ${len(params) - 1} OFFSET ${len(params)}",

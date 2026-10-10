@@ -26,7 +26,15 @@ async def test_list_calls_scoped_to_tenant_and_decorated(test_tenant, scoped, po
     assert call["direction"] == "inbound"
     assert call["mode"] == "AI"       # derived: inbound -> AI
     assert call["status"] == "live"  # derived: no ended_at yet
+    assert call["has_transcript"] is False
 
+    await pool.execute(
+        "INSERT INTO transcript_entries (session_id, turn_number, caller_text, ai_response) VALUES ($1, 1, 'hi', 'hello')",
+        session_id,
+    )
+    assert (await calls.list_calls(test_tenant["slug"]))["items"][0]["has_transcript"] is True
+
+    await pool.execute("DELETE FROM transcript_entries WHERE session_id = $1", session_id)
     await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
 
 

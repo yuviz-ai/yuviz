@@ -642,6 +642,9 @@ export interface Call {
   extracted_variables: Record<string, unknown> | null;
   sentiment: CallSentiment | null;
   sentiment_reason: string | null;
+  recording_ref: string | null;
+  // List responses only.
+  has_transcript?: boolean;
 }
 
 export interface CallListResult {
