@@ -8,6 +8,9 @@
 
 namespace voiceai {
 
+// ServiceError code the Conversation Service sends to hang up a rejected call; not a failure.
+inline constexpr const char* kCallRejectedCode = "CALL_REJECTED";
+
 // Callbacks invoked by the transport when data arrives from the ConversationService.
 struct ConversationTransportCallbacks {
     std::function<void(const std::string& session_id)> on_service_ready;

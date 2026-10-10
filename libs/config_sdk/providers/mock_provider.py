@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from libs.config_sdk.workflow import starter_graph
 
+from ..languages import resolve_languages, same_tenant_tts_overrides
 from ..models import (
     Agent,
     ConversationInfo,
@@ -94,11 +95,22 @@ class MockConfigProvider:
                 return None
             providers[role] = cfg
 
+        langs = resolve_languages(agent, providers["stt"], providers["tts"])
+        tts_by_language = {}
+        if langs.supported_languages and agent.tts_config_by_language:
+            tts_by_language = same_tenant_tts_overrides(agent, langs.supported_languages, {
+                lang: await self.get_provider_config(config_id)
+                for lang, config_id in agent.tts_config_by_language.items()
+            })
+
         graph = agent.workflow or starter_graph(agent.greeting, agent.system_prompt)
         return RuntimeConfig(
             tenant=tenant,
             agent=agent,
-            providers=ProviderConfigs(stt=providers["stt"], llm=providers["llm"], tts=providers["tts"]),
+            providers=ProviderConfigs(
+                stt=providers["stt"], llm=providers["llm"], tts=providers["tts"],
+                tts_by_language=tts_by_language,
+            ),
             conversation=ConversationInfo(
                 greeting=agent.greeting, system_prompt=agent.system_prompt,
                 end_call_prompt=agent.end_call_prompt,
@@ -107,10 +119,15 @@ class MockConfigProvider:
                 transfer_announcement=agent.transfer_announcement,
                 workflow=graph,
                 workflow_draft=agent.workflow_draft or graph,
+                greeting_by_language=agent.greeting_by_language,
             ),
             media=MediaInfo(
                 voice=providers["tts"].voice,
                 language=agent.language or providers["stt"].language or providers["tts"].language,
+                stt_language=langs.stt_language,
+                tts_language=langs.tts_language,
+                default_language=langs.default_language,
+                supported_languages=langs.supported_languages,
             ),
             policies=Policies(
                 vad_engine=tenant.vad_engine,

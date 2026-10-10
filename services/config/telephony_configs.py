@@ -12,11 +12,12 @@ platform service accounts (vobiz, telephony) that read it.
 from __future__ import annotations
 
 import json as _json
+import logging
 from typing import Any
 
 import asyncpg
 
-from libs.config_sdk.secrets import encrypt_secret, is_encrypted
+from libs.config_sdk.secrets import encrypt_secret, is_encrypted, is_quarantined
 from libs.telephony_sdk.exceptions import TelephonyProviderError
 from libs.telephony_sdk import providers as _providers  # noqa: F401 — registers every built-in provider
 from libs.telephony_sdk.registry import TelephonyProviderRegistry
@@ -24,6 +25,8 @@ from libs.tenancy import platform_conn, tenant_conn
 
 from . import audit, cache, db
 from .provider_configs import STORED_SENTINEL, mask_enc
+
+log = logging.getLogger(__name__)
 
 _UPDATABLE_FIELDS = {"name", "credentials", "is_default_outbound"}
 _PLATFORM_MANAGED_CREDENTIAL_FIELDS = ("inbound_application_id",)
@@ -101,16 +104,16 @@ def _normalize_credentials(
     allow_pointer_schemes: bool,
 ) -> dict[str, Any]:
     """Provider-agnostic over `sensitive_credential_fields()` — scalar and
-    list-valued fields both seal the same way. `provider in
-    _NON_REST_PROVIDERS` (native's 5000-5009 rows) is returned verbatim:
-    there is no ITelephonyProvider to consult, and no credential to seal."""
-    if provider in _NON_REST_PROVIDERS:
-        return credentials
-    provider_cls = TelephonyProviderRegistry.get(provider)
+    list-valued fields both seal the same way. Native (5000-5009) has no
+    ITelephonyProvider, so any provider's secret field name is sealed."""
+    if provider not in _NON_REST_PROVIDERS:
+        TelephonyProviderRegistry.get(provider)   # unknown provider raises
     old = old_credentials or {}
     sealed = dict(credentials)
-    for field_name in provider_cls.sensitive_credential_fields():
-        if field_name in sealed:
+    # Native has no provider class: a secret-named field sent with it is still sealed.
+    native = provider in _NON_REST_PROVIDERS
+    for field_name in _sensitive_fields(provider):
+        if field_name in sealed and not (native and not sealed[field_name]):
             sealed[field_name] = _normalize_scalar_or_list(
                 field_name, sealed[field_name], old.get(field_name),
                 allow_pointer_schemes=allow_pointer_schemes,
@@ -118,18 +121,91 @@ def _normalize_credentials(
     return sealed
 
 
+def _sensitive_fields(provider: str) -> frozenset[str]:
+    """The provider's secret fields; for native or unknown providers, every provider's,
+    since a row's credentials may have been saved under another provider."""
+    providers = TelephonyProviderRegistry.all()
+    if provider in providers:
+        return frozenset(providers[provider].sensitive_credential_fields())
+    return frozenset(f for cls in providers.values() for f in cls.sensitive_credential_fields())
+
+
+def _mask_entry(value: Any, *, sensitive: bool) -> Any:
+    if not isinstance(value, str):
+        return value
+    if is_quarantined(value):
+        return mask_enc(value)   # empty: the console asks the admin to re-enter it
+    # A sensitive field is masked even if it was stored before sealing existed (plaintext).
+    if sensitive and value and not value.startswith(("env:", "k8s:")):
+        return STORED_SENTINEL
+    return mask_enc(value)
+
+
 def public_telephony_config(cfg: dict[str, Any], *, masked: bool) -> dict[str, Any]:
-    """Registry-independent: masks every `enc:` string in credentials, scalar
-    or list entry, so `native` rows and any field a provider adds later are
-    covered without a list to keep in sync."""
+    """Masks every `enc:` string in credentials (covers fields a provider adds later)
+    and every plaintext value of the provider's sensitive fields."""
     if not masked:
         return cfg
+    sensitive = _sensitive_fields(cfg.get("provider", ""))
     credentials = {
-        key: [mask_enc(e) if isinstance(e, str) else e for e in value] if isinstance(value, list)
-        else mask_enc(value) if isinstance(value, str) else value
+        key: [_mask_entry(e, sensitive=key in sensitive) for e in value] if isinstance(value, list)
+        else _mask_entry(value, sensitive=key in sensitive)
         for key, value in cfg["credentials"].items()
     }
     return {**cfg, "credentials": credentials}
+
+
+async def seal_plaintext_credentials(*, tenant_id: Any | None = None) -> int:
+    """Startup, idempotent: encrypts sensitive credentials stored before sealing existed
+    (2026-09-25). Returns how many configs were sealed. tenant_id narrows it (tests)."""
+    pool = await db.get_pool()
+    sealed_ids = []
+    async with platform_conn(pool, reason="telephony-configs-seal-plaintext") as conn:
+        rows = await conn.fetch(
+            "SELECT id, tenant_id, provider, credentials FROM telephony_configs "
+            "WHERE deleted_at IS NULL AND ($1::uuid IS NULL OR tenant_id = $1) FOR UPDATE",
+            tenant_id,
+        )
+        for row in rows:
+            credentials = db.json_col(row["credentials"]) or {}
+            fields = _sensitive_fields(row["provider"])
+            if not any(_is_plaintext(credentials.get(f)) for f in fields):
+                continue
+            sealed = dict(credentials)
+            for f in fields:
+                if f in sealed:
+                    sealed[f] = (
+                        [encrypt_secret(e) if _is_plaintext(e) else e for e in sealed[f]]
+                        if isinstance(sealed[f], list)
+                        else encrypt_secret(sealed[f]) if _is_plaintext(sealed[f]) else sealed[f]
+                    )
+            await conn.execute(
+                "UPDATE telephony_configs SET credentials = $2::jsonb, updated_at = now() WHERE id = $1",
+                row["id"], _json.dumps(sealed),
+            )
+            # Stamp the owner so the entry shows in that tenant's own audit log.
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", str(row["tenant_id"]))
+            await audit.write_audit(
+                conn, entity_type="telephony_config", entity_id=row["id"], action="updated",
+                old_value={"credentials": "<plaintext secret, redacted>"},
+                new_value={"credentials": "<sealed at startup, redacted>"},
+            )
+            sealed_ids.append(row["id"])
+    for config_id in sealed_ids:
+        await cache.invalidate(_cache_key(config_id))
+    if sealed_ids:
+        log.warning("Sealed plaintext credentials in telephony configs %s", [str(i) for i in sealed_ids])
+    return len(sealed_ids)
+
+
+def _is_plaintext(value: Any) -> bool:
+    if isinstance(value, list):
+        return any(_is_plaintext(e) for e in value)
+    return (
+        isinstance(value, str) and bool(value) and value != STORED_SENTINEL
+        and not is_encrypted(value) and not is_quarantined(value)
+        and not value.startswith(("env:", "k8s:"))
+    )
 
 
 def validate_credentials(provider: str, credentials: dict[str, Any]) -> None:

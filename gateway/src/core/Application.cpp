@@ -118,6 +118,10 @@ void Application::initialize() {
     // ── Config-plane cache ────────────────────────────────────────────────────
     // Connects lazily.
     redis_client_ = std::make_unique<RedisClient>(config_data_->redis, *logger_);
+    did_route_cache_.set_max_age(std::chrono::seconds{config_data_->redis.did_lkg_max_age_s});
+    if (!config_data_->redis.enabled) {
+        logger_->error("Redis is disabled: DID routing is unavailable, every phone call will be rejected");
+    }
 
     config_resolver_pool_ = std::make_unique<ThreadPool>(2, "config-resolver");
 
@@ -229,6 +233,7 @@ void Application::wire_websocket_handlers() {
                             sid, to_string(status), md.did, route.tenant_slug, route.agent_slug);
                     }
                     metrics_->increment(std::string("routing.") + to_string(status));
+                    if (md.did.empty()) metrics_->increment("routing.no_metadata");
 
                     SessionContext ctx;
                     // sid is a per-process counter that repeats across restarts, so the

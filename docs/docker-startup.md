@@ -407,7 +407,7 @@ Everything lives in `deployment/.env`, generated on first run.
 | `POSTGRES_DSN` | built by `dev.sh` from the generated `POSTGRES_PASSWORD` | Host is the compose service name |
 | `OLLAMA_BASE_URL` | `http://ollama:11434` | Set automatically from `USE_HOST_OLLAMA` |
 | `BIND_ADDR` | `127.0.0.1` | Host interface for every published port |
-| `VOICEAI_STT_MODEL` | `small.en` | Used by both conversation and the seed — they must agree |
+| `VOICEAI_STT_MODEL` | `small` | Used by both conversation and the seed — they must agree |
 | `VOICEAI_ENABLE_STT` | `1` | `0` keeps Whisper out of startup. Written by `--no-stt` |
 | `VOICEAI_ENABLE_TTS` | `1` | `0` keeps Kokoro out of startup. Written by `--no-tts` |
 | `*_PORT` (×8) | see §3 | Override on collision |

@@ -132,6 +132,46 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS workflow       JSONB;
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS workflow_draft JSONB;
 
+-- Multilingual agents. NULL/empty supported_languages = single-language (agents.language
+-- alone sets the STT/TTS language). Set = language switching + per-turn "Reply in X";
+-- agents.language is then the default language. Override ids are validated same-tenant
+-- by the Config Service (an FK can't reach into JSONB).
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS supported_languages    TEXT[];
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS tts_config_by_language JSONB;  -- {"hi": "<provider_configs.id>"}
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS greeting_by_language   JSONB;  -- {"hi": "नमस्ते ..."}
+DO $$ BEGIN
+    ALTER TABLE agents ADD CONSTRAINT agents_tts_config_by_language_object
+        CHECK (tts_config_by_language IS NULL OR jsonb_typeof(tts_config_by_language) = 'object');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+    ALTER TABLE agents ADD CONSTRAINT agents_greeting_by_language_object
+        CHECK (greeting_by_language IS NULL OR jsonb_typeof(greeting_by_language) = 'object');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- First time the agent went active; NULL = draft. Rows predating the column count as activated.
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = current_schema() AND table_name = 'agents'
+                      AND column_name = 'activated_at') THEN
+        ALTER TABLE agents ADD COLUMN activated_at TIMESTAMPTZ;
+        UPDATE agents SET activated_at = created_at;
+    END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION agents_stamp_activated_at() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.status = 'active' AND NEW.activated_at IS NULL THEN
+        NEW.activated_at := now();
+    END IF;
+    RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS agents_stamp_activated_at ON agents;
+CREATE TRIGGER agents_stamp_activated_at
+    BEFORE INSERT OR UPDATE OF status ON agents
+    FOR EACH ROW EXECUTE FUNCTION agents_stamp_activated_at();
+
 -- ── tool_provider_configs ─────────────────────────────────────────────────────
 -- api_key_ref is a reference only ('env:' | 'enc:' | 'k8s:'), never a real key.
 CREATE TABLE IF NOT EXISTS tool_provider_configs (
@@ -487,6 +527,9 @@ ALTER TABLE calls ADD COLUMN IF NOT EXISTS sentiment_reason TEXT;
 ALTER TABLE calls DROP CONSTRAINT IF EXISTS calls_sentiment_check;
 ALTER TABLE calls ADD CONSTRAINT calls_sentiment_check
     CHECK (sentiment IS NULL OR sentiment IN ('positive', 'neutral', 'negative', 'frustrated'));
+
+-- Languages the caller spoke, in order of first appearance (multilingual agents only).
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS detected_languages TEXT[];
 
 CREATE INDEX IF NOT EXISTS idx_calls_tenant   ON calls(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_calls_started  ON calls(started_at);
@@ -1044,6 +1087,47 @@ DO $$ BEGIN
   EXECUTE 'ALTER TABLE custom_apis DROP CONSTRAINT IF EXISTS custom_apis_send_cap_shape';
   EXECUTE $sql$ALTER TABLE custom_apis ADD CONSTRAINT custom_apis_send_cap_shape
     CHECK (session_send_cap IS NULL OR side_effecting)$sql$;
+END $$;
+
+-- ── CRM connectors: per-tenant API origin and a non-OAuth (API-key) connection ──
+-- Additive: every existing row is auth_kind='oauth2' / endpoint_base_source='literal'.
+-- auth_kind: a provider with no consent redirect (cal.com API key) stores a static key.
+ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS auth_kind TEXT NOT NULL DEFAULT 'oauth2'
+    CHECK (auth_kind IN ('oauth2','api_key'));
+-- The per-tenant API origin discovered at connect time (Salesforce instance_url,
+-- Zoho api_domain). Origin only: https, no path, port or userinfo. The shape floor,
+-- not the authorization: connect-time suffix + SSRF checks and the per-row host
+-- binding at call time are the controls. NULL for fixed-origin providers.
+ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS api_base_url TEXT
+    CHECK (api_base_url IS NULL OR api_base_url ~ '^https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$');
+-- 'oauth_connection': endpoint_url holds a PATH and the origin comes from the row's
+-- connection at call time. Per row, so one shared connection serves both kinds.
+ALTER TABLE custom_apis ADD COLUMN IF NOT EXISTS endpoint_base_source TEXT NOT NULL DEFAULT 'literal'
+    CHECK (endpoint_base_source IN ('literal','oauth_connection'));
+
+-- DROP and re-ADD share one block (lessons 10, 13). Every live row satisfies both
+-- widened checks, so the re-ADD cannot fail against existing data.
+DO $$ BEGIN
+  EXECUTE 'ALTER TABLE oauth_connections DROP CONSTRAINT IF EXISTS oauth_connections_provider_check';
+  EXECUTE $sql$ALTER TABLE oauth_connections ADD CONSTRAINT oauth_connections_provider_check
+    CHECK (provider IN ('google','zoho','microsoft','salesforce','hubspot','calcom'))$sql$;
+  -- start_authorization writes the new provider keys into the state table too.
+  EXECUTE 'ALTER TABLE oauth_authorization_states DROP CONSTRAINT IF EXISTS oauth_authorization_states_provider_check';
+  EXECUTE $sql$ALTER TABLE oauth_authorization_states ADD CONSTRAINT oauth_authorization_states_provider_check
+    CHECK (provider IN ('google','zoho','microsoft','salesforce','hubspot','calcom'))$sql$;
+  EXECUTE 'ALTER TABLE oauth_connections DROP CONSTRAINT IF EXISTS oauth_connections_token_shape';
+  EXECUTE $sql$ALTER TABLE oauth_connections ADD CONSTRAINT oauth_connections_token_shape CHECK (
+       (auth_kind = 'oauth2'
+         AND (status = 'connected') = (access_token_ref IS NOT NULL
+                                       AND refresh_token_ref IS NOT NULL
+                                       AND access_expires_at IS NOT NULL))
+    OR (auth_kind = 'api_key'
+         AND (status = 'connected') = (access_token_ref IS NOT NULL)
+         AND refresh_token_ref IS NULL AND access_expires_at IS NULL))$sql$;
+  EXECUTE 'ALTER TABLE custom_apis DROP CONSTRAINT IF EXISTS custom_apis_endpoint_base_shape';
+  EXECUTE $sql$ALTER TABLE custom_apis ADD CONSTRAINT custom_apis_endpoint_base_shape CHECK (
+       endpoint_base_source = 'literal'
+    OR (oauth_connection_id IS NOT NULL AND endpoint_url ~ '^/'))$sql$;
 END $$;
 
 -- One DO block per table; each re-adds the existing values unchanged plus

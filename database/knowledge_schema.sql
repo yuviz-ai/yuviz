@@ -58,6 +58,9 @@ DO $$ BEGIN
     ALTER TABLE kb_documents ADD CONSTRAINT kb_documents_usage_mode_check CHECK (usage_mode IN ('auto', 'prompt'));
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
+-- Uploaded file size; NULL for documents uploaded before it was recorded.
+ALTER TABLE kb_documents ADD COLUMN IF NOT EXISTS byte_size BIGINT;
+
 CREATE INDEX IF NOT EXISTS idx_kb_documents_kb ON kb_documents(kb_id);
 CREATE INDEX IF NOT EXISTS idx_kb_documents_tenant ON kb_documents(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_kb_documents_status ON kb_documents(status);

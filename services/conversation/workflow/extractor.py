@@ -222,7 +222,9 @@ class VariableExtractor:
                 f"Transcript so far:\n{_transcript(history)}\n\n"
                 f"Extract these values:\n{wanted}\n\n"
                 "Reply with a single JSON object whose keys are exactly the names above. "
-                "Use null for anything the caller did not actually say — never guess."
+                "Use null for anything the caller did not actually say — never guess. "
+                "Write every value in English, whatever language the call was in; "
+                "transliterate names into Latin script."
             )
             # System message suppresses the provider's voice prompt (build_chat_messages).
             raw = await _collect(

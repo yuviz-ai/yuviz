@@ -522,14 +522,15 @@ fi
 # Pull eagerly so network failures surface here, not as a confusing verification error.
 if [ "$WANT_STT" = "0" ]; then
     ok "STT disabled — skipping whisper (~500 MB)"
-elif cached '/root/.cache/huggingface/hub/models--*faster-whisper*/snapshots/*/model.bin'; then
+# Model-specific: a cached small.en must not satisfy a switch to small.
+elif cached "/root/.cache/huggingface/hub/models--*faster-whisper-${VOICEAI_STT_MODEL:-small}/snapshots/*/model.bin"; then
     ok "whisper weights cached, skipping"
 else
     dim "pulling whisper (~500 MB, first run only)"
     whisper_pulled=0
     for _ in 1 2 3; do
         if run_quiet compose "${COMPOSE_PROFILE[@]}" exec -T conversation python -c \
-            "import os;from faster_whisper.utils import download_model;download_model(os.environ.get('VOICEAI_STT_MODEL','small.en'))"; then
+            "import os;from faster_whisper.utils import download_model;download_model(os.environ.get('VOICEAI_STT_MODEL','small'))"; then
             whisper_pulled=1; break
         fi
         dim "download interrupted, retrying"
@@ -607,7 +608,7 @@ async def main():
         print("SKIP stt no sample audio (TTS is disabled)")
     else:
         from services.conversation.providers.stt.faster_whisper import FasterWhisperSTT
-        stt = FasterWhisperSTT(model_size=os.environ.get("VOICEAI_STT_MODEL", "small.en"))
+        stt = FasterWhisperSTT(model_size=os.environ.get("VOICEAI_STT_MODEL", "small"))
         await stt.load()
         res = await stt.transcribe(pcm, 16000)
         text = (getattr(res, "text", "") or "").strip()

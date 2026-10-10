@@ -53,3 +53,46 @@ async def test_factory_passes_extra_speed():
 async def test_factory_rejects_non_numeric_speed(bad):
     with pytest.raises(ValueError, match="extra.speed"):
         await _make_cartesia_tts(_cfg({"speed": bad}), "key")
+
+
+# ── Language ─────────────────────────────────────────────────────────────────
+
+def test_body_includes_instance_language():
+    assert CartesiaTTS(api_key="k", voice="v", language="hi")._body("hi", 16000)["language"] == "hi"
+
+
+def test_body_per_call_language_overrides_instance():
+    tts = CartesiaTTS(api_key="k", voice="v", language="en")
+    assert tts._body("नमस्ते", 16000, "hi")["language"] == "hi"
+
+
+def test_body_without_language_is_unchanged():
+    assert "language" not in _body()
+
+
+async def test_factory_passes_row_language():
+    cfg = ProviderConfig(id="c", role="tts", engine="cartesia", voice="v", language="hi", extra={})
+    tts = await _make_cartesia_tts(cfg, "key")
+    assert tts._body("hi", 16000)["language"] == "hi"
+
+
+async def test_synthesize_sends_per_call_language():
+    import json as _json
+
+    import httpx
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(_json.loads(request.content))
+        return httpx.Response(200, content=b"\x00\x00")
+
+    tts = CartesiaTTS(api_key="k", voice="v")
+    tts._client = httpx.AsyncClient(base_url="https://api.cartesia.ai", transport=httpx.MockTransport(handler))
+    await tts.synthesize("नमस्ते", 16000, language="hi")
+    assert seen["language"] == "hi"
+
+
+def test_body_language_is_normalised_to_iso_639_1():
+    assert CartesiaTTS(api_key="k", voice="v", language="en-US")._body("hi", 16000)["language"] == "en"
+    assert CartesiaTTS(api_key="k", voice="v")._body("hi", 16000, "hi-IN")["language"] == "hi"

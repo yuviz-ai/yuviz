@@ -7,17 +7,12 @@ import logging
 import math
 import random
 
+from .i18n import tool_fillers
+
 log = logging.getLogger(__name__)
 
-# (phrase, approx spoken seconds); lengths are estimates, not measured.
-_TOOL_FILLERS: tuple[tuple[str, float], ...] = (
-    ("One moment.", 1.0),
-    ("Just a second.", 1.0),
-    ("Let me check on that.", 1.5),
-    ("Give me a moment.", 1.5),
-    ("Sure, let me look into that.", 2.0),
-    ("One moment while I take care of that.", 2.4),
-)
+# English pool; other languages come from services/conversation/i18n.
+_TOOL_FILLERS: tuple[tuple[str, float], ...] = tool_fillers("en")
 
 # Uncalibrated tool: today's pool mid-length, not the 6s timeout ceiling.
 _DEFAULT_TARGET_S = 1.6
@@ -28,6 +23,7 @@ _FALLBACK_FILLER = "One moment."
 class FillerSelector:
     def select_tool_filler(
         self, tool_name: str, last_phrase: str | None, average_ms: float | None,
+        language: str | None = None,
     ) -> str:
         """Never returns None — a tool call always gets a spoken filler.
         Returns _FALLBACK_FILLER if anything inside raises."""
@@ -37,9 +33,10 @@ class FillerSelector:
             else:
                 target = _DEFAULT_TARGET_S
 
-            candidates = [p for p in _TOOL_FILLERS if p[0] != last_phrase]
+            pool = tool_fillers(language) if language else _TOOL_FILLERS
+            candidates = [p for p in pool if p[0] != last_phrase]
             if not candidates:
-                candidates = list(_TOOL_FILLERS)
+                candidates = list(pool)
 
             eligible = [p for p in candidates if p[1] <= target]
             if eligible:

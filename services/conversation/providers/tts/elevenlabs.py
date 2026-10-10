@@ -7,9 +7,14 @@ Only fixed PCM rates are served, so request the nearest rate >= target and downs
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import httpx
 import numpy as np
+
+from libs.config_sdk.languages import normalize_language
+
+from ..interfaces import INSTANCE_LANGUAGE
 
 log = logging.getLogger(__name__)
 
@@ -17,6 +22,11 @@ _DEFAULT_BASE_URL = "https://api.elevenlabs.io"
 
 # Ascending; pick the smallest >= requested so we only ever downsample.
 _SUPPORTED_PCM_RATES = (8000, 16000, 22050, 24000, 44100)
+
+
+def _supports_language_code(model_id: str) -> bool:
+    """Only the *_v2_5 models accept language_code; multilingual_v2 detects the language from the text."""
+    return model_id.endswith("_v2_5")
 
 
 def _nearest_supported_rate(requested: int) -> int:
@@ -29,8 +39,11 @@ def _nearest_supported_rate(requested: int) -> int:
 class ElevenLabsTTS:
     """ITTS backed by ElevenLabs' /v1/text-to-speech/{voice_id}.
 
-    language_code forces output language on multilingual models; None = auto-detect.
+    language_code forces output language on *_v2_5 models (other models ignore it and
+    auto-detect from the text); None = auto-detect. A per-call `language=` overrides it (accepts_language).
     """
+
+    accepts_language = True
 
     def __init__(
         self,
@@ -56,9 +69,14 @@ class ElevenLabsTTS:
             voice_id, model_id, language_code,
         )
 
-    async def synthesize(self, text: str, sample_rate: int) -> bytes:
+    async def synthesize(self, text: str, sample_rate: int, *, language: Any = INSTANCE_LANGUAGE) -> bytes:
         if not text.strip():
             return b""
+        language_code = self._language_code if language is INSTANCE_LANGUAGE else language
+        # language_code is ISO 639-1; agents.language is often regional ("en-US").
+        language_code = normalize_language(language_code)
+        if not _supports_language_code(self._model_id):
+            language_code = None
 
         output_rate = _nearest_supported_rate(sample_rate)
 
@@ -73,7 +91,7 @@ class ElevenLabsTTS:
                         {"voice_settings": {"speed": self._speed}}
                         if self._speed != 1.0 else {}
                     ),
-                    **({"language_code": self._language_code} if self._language_code else {}),
+                    **({"language_code": language_code} if language_code else {}),
                 },
             )
             resp.raise_for_status()
@@ -87,8 +105,8 @@ class ElevenLabsTTS:
 
         return self._resample(pcm, output_rate, sample_rate)
 
-    async def synthesize_stream(self, text: str, sample_rate: int):
-        audio = await self.synthesize(text, sample_rate)
+    async def synthesize_stream(self, text: str, sample_rate: int, *, language: Any = INSTANCE_LANGUAGE):
+        audio = await self.synthesize(text, sample_rate, language=language)
         if audio:
             yield audio
 

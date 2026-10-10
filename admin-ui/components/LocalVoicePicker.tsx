@@ -142,7 +142,7 @@ export function LocalVoicePicker({
                 </div>
                 <div style={{ fontSize: ".7rem", color: "var(--text-3)" }}>{language}</div>
               </div>
-              <audio controls src={sampleUrl} style={{ height: 30, maxWidth: 200 }} />
+              {sampleUrl && <audio controls src={sampleUrl} style={{ height: 30, maxWidth: 200 }} />}
               <button
                 type="button"
                 className={`btn btn-sm ${isSelected ? "btn-primary" : "btn-ghost"}`}

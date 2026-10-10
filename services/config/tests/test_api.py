@@ -509,6 +509,17 @@ class TestAgentEndpoints:
         bogus = await client.post(url, json={"slug": "bogus", "name": "Bogus", "status": "suspended"})
         assert bogus.status_code == 422
 
+    async def test_activated_at_is_stamped_on_first_go_live_and_kept_when_paused(self, client, test_tenant):
+        url = f"/tenants/{test_tenant['slug']}/agents"
+        assert (await client.post(url, json={"slug": "live-at", "name": "Live"})).json()["activated_at"]
+        draft = (await client.post(url, json={"slug": "draft-at", "name": "Draft", "status": "inactive"})).json()
+        assert draft["activated_at"] is None
+
+        live = (await client.patch(f"{url}/{draft['id']}", json={"status": "active"})).json()
+        paused = (await client.patch(f"{url}/{draft['id']}", json={"status": "inactive"})).json()
+        assert live["activated_at"] is not None
+        assert paused["activated_at"] == live["activated_at"]
+
     async def test_update_agent_transfer_config(self, client, test_tenant):
         create = await client.post(
             f"/tenants/{test_tenant['slug']}/agents",

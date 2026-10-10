@@ -241,3 +241,98 @@ async def test_two_sessions_get_independent_connections():
     assert len(connect_calls) == 2
     assert result1.text == "call-1"
     assert result2.text == "call-2"
+
+
+# ── Language (language=multi code-switching) ─────────────────────────────────
+
+def _words(*pairs):
+    return [{"word": w, "language": lang} for w, lang in pairs]
+
+
+async def test_transcribe_multi_reads_detected_language_from_word_tags():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["language"] == "multi"
+        return httpx.Response(200, json={"results": {"channels": [{"alternatives": [{
+            "transcript": "mujhe appointment chahiye", "confidence": 0.9,
+            "languages": ["hi", "en"],
+            "words": _words(("mujhe", "hi"), ("appointment", "en"), ("chahiye", "hi")),
+        }]}]}})
+
+    stt = _make_stt(handler)
+    result = await stt.transcribe(b"\x00\x01" * 100, 16000, language="multi")
+
+    assert result.language == "hi"
+    assert result.language_confidence == pytest.approx(2 / 3)
+    assert result.language_shares == pytest.approx({"hi": 2 / 3, "en": 1 / 3})
+
+
+async def test_transcribe_with_forced_language_reports_no_detection():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["language"] == "en"
+        return httpx.Response(200, json={"results": {"channels": [{"alternatives": [
+            {"transcript": "hello", "confidence": 0.9, "words": _words(("hello", "en"))},
+        ]}]}})
+
+    result = await _make_stt(handler).transcribe(b"\x00\x01" * 100, 16000)
+    assert result.language is None and result.language_confidence is None
+
+
+def test_default_language_is_english_not_auto_detect():
+    assert DeepgramSTT(api_key="k", language=None)._language == "en"
+    assert DeepgramSTT(api_key="k")._language == "en"
+
+
+async def test_live_multi_accumulates_word_languages_across_segments():
+    stt, _fake_ws = _make_streaming_stt([
+        {"type": "Results", "is_final": True, "channel": {"alternatives": [{
+            "transcript": "hello", "confidence": 0.9, "languages": ["en"], "words": _words(("hello", "en"))}]}},
+        {"type": "Results", "is_final": True, "channel": {"alternatives": [{
+            "transcript": "कैसे हो आप", "confidence": 0.8, "languages": ["hi"],
+            "words": _words(("कैसे", "hi"), ("हो", "hi"), ("आप", "hi"))}]}},
+    ])
+    urls: list[str] = []
+    connect = stt._ws_connect
+
+    async def _recording_connect(url, **kwargs):
+        urls.append(url)
+        return await connect(url, **kwargs)
+
+    stt._ws_connect = _recording_connect
+    await stt.feed_stream("s1", b"\x01\x02", 16000, language="multi")
+    result = await stt.finalize_stream("s1", b"unused", 16000, language="multi")
+
+    assert "language=multi" in urls[0]
+    assert result.language == "hi"
+    assert result.language_confidence == pytest.approx(0.75)
+
+
+async def test_live_without_word_tags_falls_back_to_languages_list():
+    stt, _fake_ws = _make_streaming_stt([
+        {"type": "Results", "is_final": True, "channel": {"alternatives": [{
+            "transcript": "hola", "confidence": 0.9, "languages": ["es"]}]}},
+    ])
+    await stt.feed_stream("s1", b"\x01\x02", 16000, language="multi")
+    result = await stt.finalize_stream("s1", b"unused", 16000)
+    assert result.language == "es" and result.language_confidence == 1.0
+
+
+async def test_underscore_language_tag_is_canonicalised_for_rest_and_live():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["language"] == "en-US"
+        return httpx.Response(200, json={"results": {"channels": [{"alternatives": [
+            {"transcript": "hello", "confidence": 0.9},
+        ]}]}})
+
+    await _make_stt(handler).transcribe(b"\x00\x01" * 100, 16000, language=" en_US ")
+    assert DeepgramSTT(api_key="k", language="en_US")._language == "en-US"
+
+    stt = DeepgramSTT(api_key="test-key")
+    urls = []
+
+    async def _fake_connect(url, **kwargs):
+        urls.append(url)
+        return _FakeLiveWs([])
+
+    stt._ws_connect = _fake_connect
+    await stt.feed_stream("s1", b"\x01\x02", 16000, language="en_US")
+    assert "language=en-US" in urls[0]

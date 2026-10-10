@@ -256,6 +256,13 @@ async def update_provider_config(
         new = dict(new_row)
         new["extra"] = db.json_col(new["extra"])
 
+        # What an STT/TTS row can hear or speak depends on engine/model/voice/extra; re-check the
+        # multilingual agents using it, in this transaction, so the edit is refused (400) rather
+        # than a live caller hearing Hindi read by an English-only voice.
+        if old["role"] in ("stt", "tts") and {"engine", "model", "voice", "extra"} & set(fields):
+            from .agents import revalidate_multilingual_agents  # agents imports this module
+            await revalidate_multilingual_agents(conn, old["tenant_id"], provider_id=new["id"])
+
         # Only written columns, so a redacted api_key_ref doesn't show as changed on every update.
         await audit.write_audit(
             conn,
@@ -345,6 +352,17 @@ async def soft_delete_provider_config(
             )
             if rows:
                 raise ProviderConfigInUse(resource_type, len(rows), [r["name"] for r in rows])
+
+        # Per-language voice overrides live in JSONB, out of the FK's reach.
+        if old["role"] == "tts":
+            rows = await conn.fetch(
+                "SELECT name FROM agents WHERE tenant_id = $1 AND deleted_at IS NULL "
+                "AND EXISTS (SELECT 1 FROM jsonb_each_text(tts_config_by_language) o "
+                "WHERE o.value = $2::text)",
+                old["tenant_id"], str(old["id"]),
+            )
+            if rows:
+                raise ProviderConfigInUse("agent", len(rows), [r["name"] for r in rows])
 
         await conn.execute(
             "UPDATE provider_configs SET deleted_at = now() WHERE id = $1", provider_id,

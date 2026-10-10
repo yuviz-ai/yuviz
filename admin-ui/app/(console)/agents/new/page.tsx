@@ -20,7 +20,7 @@ import {
 } from "@/lib/api";
 import { KnowledgeBase, assignKnowledgeBase, listKnowledgeBases } from "@/lib/knowledgeApi";
 import { CustomApi, listCustomApis, setAgentCustomApiEnabled } from "@/lib/toolexecApi";
-import { AgentVoiceSettings } from "@/components/AgentVoiceSettings";
+import { AgentVoiceSettings, isLanguageError, multilingualPayload } from "@/components/AgentVoiceSettings";
 import { OTHER } from "@/lib/engineCatalog";
 import { buildSystemPrompt } from "@/lib/systemPromptBuilder";
 import { templateByKey } from "@/lib/agentTemplates";
@@ -70,6 +70,10 @@ export default function NewAgentPage() {
   // Step 2 — Language & Voice
   const [languageChoice, setLanguageChoice] = useState("");
   const [customLanguage, setCustomLanguage] = useState("");
+  const [supportedLanguages, setSupportedLanguages] = useState<string[]>([]);
+  const [ttsByLanguage, setTtsByLanguage] = useState<Record<string, string>>({});
+  const [greetingByLanguage, setGreetingByLanguage] = useState<Record<string, string>>({});
+  const [languagesError, setLanguagesError] = useState<string | null>(null);
   const [sttId, setSttId] = useState<string | null>(null);
   const [llmId, setLlmId] = useState<string | null>(null);
   const [ttsId, setTtsId] = useState<string | null>(null);
@@ -101,6 +105,8 @@ export default function NewAgentPage() {
   const [generateError, setGenerateError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const createdAgent = useRef<Agent | null>(null);
+  // Set once the post-create PATCH and assignments succeed, so a retry re-sends them to the same agent.
+  const settingsApplied = useRef(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
   // Autosave: restore once on mount (never during SSR), then write on every change.
@@ -126,6 +132,10 @@ export default function NewAgentPage() {
       setTone(d.tone);
       setLanguageChoice(d.languageChoice);
       setCustomLanguage(d.customLanguage);
+      // Absent in drafts saved before multilingual agents.
+      setSupportedLanguages(d.supportedLanguages ?? []);
+      setTtsByLanguage(d.ttsByLanguage ?? {});
+      setGreetingByLanguage(d.greetingByLanguage ?? {});
       setSttId(d.sttId);
       setLlmId(d.llmId);
       setTtsId(d.ttsId);
@@ -162,7 +172,8 @@ export default function NewAgentPage() {
     const timer = setTimeout(() => {
       const draft: AgentDraft = {
         savedAt: Date.now(),
-        step, name, tenantSlug, purpose, persona, tone, languageChoice, customLanguage, sttId, llmId, ttsId,
+        step, name, tenantSlug, purpose, persona, tone, languageChoice, customLanguage,
+        supportedLanguages, ttsByLanguage, greetingByLanguage, sttId, llmId, ttsId,
         maxCallDuration, goodbyeGraceMs, escalationThreshold, transferType, transferDestination,
         transferCondition, transferAnnouncement, complianceInstructions, fallbackResponse,
         selectedKbIds: Array.from(selectedKbIds), selectedApiIds: Array.from(selectedApiIds),
@@ -174,6 +185,7 @@ export default function NewAgentPage() {
     return () => clearTimeout(timer);
   }, [
     draftReady, mode, hasContent, step, name, tenantSlug, purpose, persona, tone, languageChoice, customLanguage,
+    supportedLanguages, ttsByLanguage, greetingByLanguage,
     sttId, llmId, ttsId, maxCallDuration, goodbyeGraceMs, escalationThreshold, transferType,
     transferDestination, transferCondition, transferAnnouncement, complianceInstructions, fallbackResponse,
     selectedKbIds, selectedApiIds, greeting, systemPrompt, promptEdited,
@@ -300,14 +312,15 @@ export default function NewAgentPage() {
     if (!slug) return;
     setCreating(true);
     setCreateError(null);
+    setLanguagesError(null);
     // A restored draft can reference things deleted since it was saved.
     const known = (id: string | null) => (id && providers.some((p) => p.id === id) ? id : null);
     try {
-      // A retry after a failed execute_api step must not create a second agent.
+      // A retry after a failed settings or execute_api step must not create a second agent.
       let agent = createdAgent.current;
       const apiIds = customApis.filter((api) => selectedApiIds.has(api.id)).map((api) => api.id);
       if (!agent) {
-        const fresh = await createAgent(tenantSlug, {
+        agent = await createAgent(tenantSlug, {
           slug,
           name: name.trim(),
           greeting,
@@ -315,10 +328,22 @@ export default function NewAgentPage() {
           stt_config_id: known(sttId),
           llm_config_id: known(llmId),
           tts_config_id: known(ttsId),
+          // Sent here so a language 400 rejects the create instead of leaving a half-set-up agent.
+          language,
+          ...multilingualPayload(language, supportedLanguages, ttsByLanguage, greetingByLanguage),
+          status: "inactive",
         });
-
+        createdAgent.current = agent;
+      }
+      if (!settingsApplied.current) {
+        const fresh = agent;
+        // Voice ids are re-sent: the language check (a 400 the user fixes on the voice step) reads them.
         await updateAgent(tenantSlug, fresh.id, {
           language,
+          ...multilingualPayload(language, supportedLanguages, ttsByLanguage, greetingByLanguage),
+          stt_config_id: known(sttId),
+          llm_config_id: known(llmId),
+          tts_config_id: known(ttsId),
           max_call_duration_s: maxCallDuration === "" ? null : maxCallDuration,
           goodbye_grace_ms: goodbyeGraceMs === "" ? undefined : goodbyeGraceMs,
           transfer_type: transferType,
@@ -332,16 +357,17 @@ export default function NewAgentPage() {
           ...kbs.filter((kb) => selectedKbIds.has(kb.id)).map((kb) => assignKnowledgeBase(fresh.id, kb.id, true)),
           ...apiIds.map((apiId) => setAgentCustomApiEnabled(fresh.id, apiId, true)),
         ]);
-        agent = fresh;
-        createdAgent.current = fresh;
+        settingsApplied.current = true;
       }
       if (apiIds.length > 0) await enableExecuteApi(tenant.id, agent.id);
 
       skipAutosave.current = true;
       clearAgentDraft();
-      router.push(`/agents/${tenantSlug}/${agent.slug}?test=1`);
+      router.push(`/agents/${tenantSlug}/${agent.slug}?new=1`);
     } catch (e) {
-      setCreateError(e instanceof ApiError ? e.detail : String(e));
+      const detail = e instanceof ApiError ? e.detail : String(e);
+      setCreateError(detail);
+      if (e instanceof ApiError && e.status === 400 && isLanguageError(detail)) setLanguagesError(detail);
       setCreating(false);
     }
   };
@@ -446,6 +472,13 @@ export default function NewAgentPage() {
           onLanguageChoice={setLanguageChoice}
           customLanguage={customLanguage}
           onCustomLanguage={setCustomLanguage}
+          supportedLanguages={supportedLanguages}
+          onSupportedLanguages={setSupportedLanguages}
+          ttsByLanguage={ttsByLanguage}
+          onTtsByLanguage={setTtsByLanguage}
+          greetingByLanguage={greetingByLanguage}
+          onGreetingByLanguage={setGreetingByLanguage}
+          languagesError={languagesError}
           sttId={sttId}
           llmId={llmId}
           ttsId={ttsId}
@@ -630,7 +663,17 @@ export default function NewAgentPage() {
             <div className="card-sub">instructions written from your answers — change anything before creating</div>
           </div>
           <div className="card-body">
-            {createError && <div className="error-banner">{createError}</div>}
+            {createError && (
+              <div className="error-banner">
+                {createError}
+                {languagesError && (
+                  <>
+                    {" "}
+                    <a href="#" onClick={(e) => { e.preventDefault(); setStep("voice"); }}>Fix in Language &amp; Voice</a>
+                  </>
+                )}
+              </div>
+            )}
             <div className="form-group">
               <label className="form-label">Opening line <span className="hint">first thing the agent says</span></label>
               <input className="form-input" value={greeting} onChange={(e) => setGreeting(e.target.value)} />

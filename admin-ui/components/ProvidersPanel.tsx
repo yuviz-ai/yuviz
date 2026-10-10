@@ -18,7 +18,10 @@ import {
 import { listKnowledgeBases } from "@/lib/knowledgeApi";
 import { Modal } from "@/components/Modal";
 import { SecretRefInput, secretPayload } from "./SecretRefInput";
-import { EMBEDDING_MODELS_BY_ENGINE, ENGINES_BY_ROLE, LOCAL_ENGINES, MODELS_BY_ENGINE, OTHER, VOICES_BY_ENGINE } from "@/lib/engineCatalog";
+import {
+  DEEPGRAM_MULTI, EMBEDDING_MODELS_BY_ENGINE, ENGINES_BY_ROLE, LOCAL_ENGINES, MODELS_BY_ENGINE, OTHER, SUPPORTED_LANGUAGES,
+  VOICES_BY_ENGINE, languageLabel,
+} from "@/lib/engineCatalog";
 import { useActiveTenant } from "@/lib/useActiveTenant";
 
 const ALL_ROLES: ProviderRole[] = ["stt", "llm", "tts"];
@@ -79,7 +82,10 @@ export function ProvidersPanel({ allowedRoles = ALL_ROLES, title }: { allowedRol
   };
 
   const handleRoleChange = (role: ProviderRole) => {
-    setForm({ ...form, role, engine: ENGINES_BY_ROLE[role][0].value });
+    setForm({
+      ...form, role, engine: ENGINES_BY_ROLE[role][0].value,
+      language: form.language === DEEPGRAM_MULTI ? undefined : form.language,
+    });
     setModelChoice("");
     setCustomModel("");
     setVoiceChoice("");
@@ -87,8 +93,13 @@ export function ProvidersPanel({ allowedRoles = ALL_ROLES, title }: { allowedRol
   };
 
   const handleEngineChange = (engine: string) => {
-    // Local engines have no credential of their own.
-    setForm({ ...form, engine, api_key_ref: LOCAL_ENGINES.has(engine) ? undefined : form.api_key_ref });
+    // Local engines have no credential of their own; "multi" is valid for Deepgram STT only.
+    setForm({
+      ...form,
+      engine,
+      api_key_ref: LOCAL_ENGINES.has(engine) ? undefined : form.api_key_ref,
+      language: form.language === DEEPGRAM_MULTI && engine !== "deepgram" ? undefined : form.language,
+    });
     setModelChoice("");
     setCustomModel("");
     setVoiceChoice("");
@@ -102,7 +113,10 @@ export function ProvidersPanel({ allowedRoles = ALL_ROLES, title }: { allowedRol
 
   const openEdit = (p: ProviderConfig) => {
     setEditing(p);
-    setForm({ name: p.name, role: p.role, engine: p.engine, environment: p.environment, api_key_ref: p.api_key_ref || undefined });
+    setForm({
+      name: p.name, role: p.role, engine: p.engine, environment: p.environment,
+      api_key_ref: p.api_key_ref || undefined, language: p.language || undefined,
+    });
     const models = MODELS_BY_ENGINE[p.engine];
     if (p.model) setModelChoice(models && models.includes(p.model) ? p.model : OTHER);
     if (p.model && !(models && models.includes(p.model))) setCustomModel(p.model);
@@ -126,12 +140,17 @@ export function ProvidersPanel({ allowedRoles = ALL_ROLES, title }: { allowedRol
           environment: form.environment,
           model,
           voice,
+          // Only STT/TTS rows show the field; leave others' language untouched.
+          ...(editing.role === "stt" || editing.role === "tts" ? { language: form.language || null } : {}),
           ...secretPayload(form.api_key_ref || "", editing.api_key_ref || ""),
         };
         await updateProvider(editing.id, body);
       } else {
-        const { api_key_ref: typed, ...rest } = form;
-        await createProvider(tenantId, { ...rest, model, voice, ...secretPayload(typed || "") });
+        const { api_key_ref: typed, language, ...rest } = form;
+        const hasLanguage = form.role === "stt" || form.role === "tts";
+        await createProvider(tenantId, {
+          ...rest, model, voice, language: hasLanguage ? language || undefined : undefined, ...secretPayload(typed || ""),
+        });
       }
       setModalOpen(false);
       resetForm();
@@ -200,6 +219,16 @@ export function ProvidersPanel({ allowedRoles = ALL_ROLES, title }: { allowedRol
 
   const modelOptions = form.role === "embedding" ? EMBEDDING_MODELS_BY_ENGINE[form.engine] : MODELS_BY_ENGINE[form.engine];
   const voiceOptions = VOICES_BY_ENGINE[form.engine];
+  const languageOptions = [
+    ...(form.role === "stt" && form.engine === "deepgram"
+      ? [{ value: DEEPGRAM_MULTI, label: "multi (code-switching, nova-2/3)" }]
+      : []),
+    ...SUPPORTED_LANGUAGES.map((l) => ({ value: l.value, label: `${languageLabel(l.value)} — ${l.value}` })),
+  ];
+  // Keep a stored value outside the list (e.g. en-US) selectable rather than silently dropping it.
+  if (form.language && !languageOptions.some((o) => o.value === form.language)) {
+    languageOptions.push({ value: form.language, label: form.language });
+  }
 
   return (
     <>
@@ -353,10 +382,9 @@ export function ProvidersPanel({ allowedRoles = ALL_ROLES, title }: { allowedRol
               Model {form.role === "embedding" && <span className="hint">leave unset to use the engine&apos;s default</span>}
               {form.role === "stt" && form.engine === "faster_whisper" && (
                 <span className="hint">
-                  prefer a .en model (e.g. base.en) for English-only agents — the plain multilingual
-                  models (base, small, …) auto-detect language per utterance and can mis-hear unclear
-                  audio as a different language entirely, causing the agent to reply in the wrong
-                  language mid-call
+                  .en models are English-only and cannot detect other languages — use a plain
+                  multilingual model (e.g. small) for agents with more than one supported language;
+                  .en is fine for English-only agents
                 </span>
               )}
             </label>
@@ -422,6 +450,26 @@ export function ProvidersPanel({ allowedRoles = ALL_ROLES, title }: { allowedRol
                 placeholder="e.g. 21m00Tcm4TlvDq8ikWAM"
               />
             )}
+          </div>
+        )}
+
+        {(form.role === "stt" || form.role === "tts") && (
+          <div className="form-group">
+            <label className="form-label">
+              Language <span className="hint">used when the agent sets no language of its own</span>
+            </label>
+            <select
+              className="form-select"
+              value={form.language || ""}
+              onChange={(e) => setForm({ ...form, language: e.target.value || undefined })}
+            >
+              <option value="">— engine default —</option>
+              {languageOptions.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
           </div>
         )}
 

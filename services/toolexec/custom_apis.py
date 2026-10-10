@@ -465,9 +465,10 @@ async def _insert_custom_api(
     idempotency_body_field: str | None = None,
     confirmation_template: str | None = None,
     session_send_cap: int | None = None,
+    endpoint_base_source: str = "literal",
 ) -> dict[str, Any]:
     """The row and its params, inside the caller's per-tenant advisory-locked
-    transaction. The preset-only fields (the last six) are written only from
+    transaction. The preset-only fields (the last seven) are written only from
     presets.py; CustomApiCreate exposes none of them. The caller recomputes
     chain_levels and writes the audit row."""
     await _validate_upstream_params(conn, tenant_id, params)
@@ -477,15 +478,16 @@ async def _insert_custom_api(
         "(tenant_id, name, description, endpoint_url, method, body_style, auth_scheme, "
         " auth_config, side_effecting, idempotency_header, timeout_ms, "
         " sensitive_response_paths, success_template, oauth_connection_id, preset_key, "
-        " response_transform, idempotency_body_field, confirmation_template, session_send_cap) "
+        " response_transform, idempotency_body_field, confirmation_template, session_send_cap, "
+        " endpoint_base_source) "
         "VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12::jsonb, $13, "
-        "        $14, $15, $16::jsonb, $17, $18, $19) "
+        "        $14, $15, $16::jsonb, $17, $18, $19, $20) "
         "RETURNING *",
         tenant_id, name, description, endpoint_url, method, body_style, auth_scheme,
         _json_or_none(auth_config) or "{}", side_effecting, idempotency_header, timeout_ms,
         _json_or_none(sensitive_response_paths) or "[]", success_template, oauth_connection_id,
         preset_key, _json_or_none(response_transform), idempotency_body_field, confirmation_template,
-        session_send_cap,
+        session_send_cap, endpoint_base_source,
     )
     result = _decode_custom_api_row(row)
     await _replace_params(conn, result["id"], params)

@@ -53,9 +53,9 @@ async def upload_document(
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         row = await conn.fetchrow(
-            "INSERT INTO kb_documents (kb_id, tenant_id, title, source_ref, content_type, language, tags) "
-            "VALUES ($1, $2, $3, '', $4, $5, $6::jsonb) RETURNING *",
-            kb_id, tenant_id, title, content_type, language, json.dumps(tags or {}),
+            "INSERT INTO kb_documents (kb_id, tenant_id, title, source_ref, content_type, language, tags, byte_size) "
+            "VALUES ($1, $2, $3, '', $4, $5, $6::jsonb, $7) RETURNING *",
+            kb_id, tenant_id, title, content_type, language, json.dumps(tags or {}), len(content),
         )
         document = dict(row)
 
@@ -123,6 +123,41 @@ async def update_document(
             user_id=user_id, user_email=user_email, old_value=old, new_value=new,
         )
     return new
+
+
+async def retry_document(
+    document_id: Any,
+    *,
+    tenant_id: Any,
+    platform_scoped: bool = False,
+    stamp_tenant: Any | None = None,
+    user_id: Any | None = None,
+    user_email: str | None = None,
+) -> dict[str, Any] | None:
+    """Re-queue a failed document's stored file. None when it isn't failed (or already re-queued)."""
+    pool = await db.get_pool()
+    conn_cm = (
+        platform_conn(pool, reason="document-admin-by-id", stamp_tenant=stamp_tenant)
+        if platform_scoped else tenant_conn(pool)
+    )
+    async with conn_cm as conn:
+        row = await conn.fetchrow(
+            "UPDATE kb_documents SET status = 'pending', error = NULL, version = version + 1, updated_at = now() "
+            "WHERE id = $1 AND tenant_id = $2 AND status = 'failed' AND deleted_at IS NULL RETURNING *",
+            document_id, tenant_id,
+        )
+        if row is None:
+            return None
+        document = dict(row)
+        job_row = await conn.fetchrow(
+            "INSERT INTO kb_ingestion_jobs (document_id, kb_id) VALUES ($1, $2) RETURNING *",
+            document["id"], document["kb_id"],
+        )
+        await audit.write_audit(
+            conn, entity_type="kb_document", entity_id=document_id, action="updated",
+            user_id=user_id, user_email=user_email, new_value=document,
+        )
+    return {**document, "ingestion_job_id": job_row["id"]}
 
 
 async def soft_delete_document(

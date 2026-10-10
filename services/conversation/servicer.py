@@ -23,6 +23,7 @@ import grpc
 import grpc.aio
 
 from .event_bus import EventBus, TransferRequested
+from .rejection import RejectedCallHangup
 from .session import (
     AgentUnavailable, ConversationSession, IConversationHandler, RoutingStatus, SessionContext,
 )
@@ -34,8 +35,9 @@ log = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = "1.0"
 
-# UNSPECIFIED (and any unknown value) is a non-gateway client: webcall, vobiz, tests.
+# UNSPECIFIED is a non-gateway client: webcall, vobiz, tests.
 _ROUTING_STATUS = {
+    pb.ROUTING_STATUS_UNSPECIFIED: RoutingStatus.UNSPECIFIED,
     pb.ROUTING_STATUS_ROUTED:      RoutingStatus.ROUTED,
     pb.ROUTING_STATUS_ROUTED_LKG:  RoutingStatus.ROUTED_LKG,
     pb.ROUTING_STATUS_UNKNOWN:     RoutingStatus.UNKNOWN,
@@ -118,7 +120,12 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
             return
 
         sid = open_req.session_id
-        routing_status = _ROUTING_STATUS.get(open_req.routing_status, RoutingStatus.UNSPECIFIED)
+        routing_status = _ROUTING_STATUS.get(open_req.routing_status)
+        if routing_status is None:
+            # A status this build doesn't know must not fail open to a default agent.
+            log.warning("Converse: unknown routing_status=%d — treating as unavailable",
+                        open_req.routing_status)
+            routing_status = RoutingStatus.UNAVAILABLE
         log.info("Converse: session_open session=%s tenant=%s routing=%s",
                  sid, open_req.tenant_id, routing_status.value)
 
@@ -658,6 +665,11 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
                     log.warning("Unknown payload_case=%s session=%s",
                                 payload_case, sid)
 
+        except RejectedCallHangup as exc:
+            log.info("Converse: hanging up rejected call: %s", exc)
+            yield pb.ServiceMessage(
+                error=pb.ServiceError(session_id=sid, code="CALL_REJECTED", message=str(exc), fatal=True)
+            )
         except Exception as exc:
             log.exception("Converse error session=%s", sid)
             yield pb.ServiceMessage(

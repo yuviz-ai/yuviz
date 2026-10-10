@@ -443,6 +443,10 @@ void CallSession::wire_transport_callbacks() {
     };
 
     cbs.on_error = [this](const std::string& /*sid*/, std::string error, bool fatal) {
+        if (error.rfind(kCallRejectedCode, 0) == 0) {
+            terminate("routing_rejected");
+            return;
+        }
         log_.error("Transport error: {} fatal={}", error, fatal);
         if (fatal) terminate("transport_error");
     };

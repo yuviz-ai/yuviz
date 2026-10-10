@@ -149,7 +149,7 @@ async def test_apply_never_puts_the_ref_in_its_own_error_message():
            "tenant_id": tenant_id, "id": str(uuid.uuid4())}
 
     with pytest.raises(ValueError) as exc_info:
-        await auth_schemes.apply(api, {}, {})
+        await auth_schemes.apply(api, {}, {}, effective_url="https://example.com/x")
 
     assert missing_ref not in str(exc_info.value)
     assert str(exc_info.value) == "credential_unavailable"

@@ -127,6 +127,24 @@ async def update_document(
     )
 
 
+@router.post("/documents/{document_id}/retry")
+async def retry_document(
+    document_id: str, current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
+):
+    document = await _authorize_document(document_id, current_user)
+    platform_scoped = is_platform_scoped(current_user)
+    retried = await documents_service.retry_document(
+        document_id,
+        tenant_id=document["tenant_id"],
+        platform_scoped=platform_scoped,
+        stamp_tenant=str(document["tenant_id"]) if platform_scoped else None,
+        user_id=current_user.id, user_email=current_user.email,
+    )
+    if retried is None:
+        raise HTTPException(status_code=409, detail="only a failed document can be retried")
+    return retried
+
+
 @router.delete("/documents/{document_id}", status_code=204)
 async def delete_document(
     document_id: str, current_user: CurrentUser = Depends(require_role("superadmin", "admin")),

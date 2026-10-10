@@ -3,7 +3,11 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import pytest
+from fastapi import HTTPException
+
 from services.config import calls
+from services.config.routers.calls import _valid_tz
 
 
 async def _insert_call(pool, *, tenant_slug, session_id, direction="inbound", ended=False):
@@ -430,3 +434,32 @@ async def test_get_disposition_mix_groups_ended_calls_only(test_tenant, scoped, 
 
     for sid in (a_id, b_id, xfer_id, live_id):
         await pool.execute("DELETE FROM calls WHERE session_id = $1", sid)
+
+
+async def test_trend_and_activity_bucket_in_the_viewers_time_zone(test_tenant, scoped, pool):
+    # 00:01 today in India is the previous evening in UTC.
+    ids = [f"test-call-{uuid.uuid4().hex[:8]}" for _ in range(2)]
+    await pool.execute(
+        "INSERT INTO calls (session_id, tenant_id, direction, started_at) VALUES "
+        "($1, $3, 'inbound',  date_trunc('day', NOW() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata' + INTERVAL '1 minute'), "
+        "($2, $3, 'outbound', date_trunc('day', NOW() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata' + INTERVAL '1 minute')",
+        *ids, test_tenant["slug"],
+    )
+    try:
+        india_today = await pool.fetchval("SELECT (NOW() AT TIME ZONE 'Asia/Kolkata')::date")
+        [ist] = await calls.get_usage_trend(test_tenant["slug"], days=2, tz="Asia/Kolkata")
+        [utc] = await calls.get_usage_trend(test_tenant["slug"], days=2, tz="UTC")
+        assert ist["date"] == india_today and utc["date"] != india_today
+        assert (ist["inbound"], ist["outbound"]) == (1, 1)
+
+        activity = await calls.get_todays_activity(test_tenant["slug"], tz="Asia/Kolkata")
+        assert [(a["hour"], a["inbound"], a["outbound"]) for a in activity] == [(0, 1, 1)]
+    finally:
+        await pool.execute("DELETE FROM calls WHERE session_id = ANY($1)", ids)
+
+
+def test_unknown_time_zone_is_rejected():
+    assert _valid_tz("Asia/Kolkata") == "Asia/Kolkata"
+    for bad in ("Mars/Olympus", "../etc/passwd", ""):
+        with pytest.raises(HTTPException):
+            _valid_tz(bad)

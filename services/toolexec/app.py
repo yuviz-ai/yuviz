@@ -23,6 +23,17 @@ from .routers import (
 log = logging.getLogger(__name__)
 
 
+def quiet_http_loggers() -> None:
+    # httpx logs every request URL at INFO, and executor/provider URLs carry
+    # path values (event_id, spreadsheetId) and the CRM lookups' caller number.
+    # Runs at import so it holds however the app is launched.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+quiet_http_loggers()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Fail at startup on a broken POSTGRES_DSN or HMAC key ref, not on the first request.

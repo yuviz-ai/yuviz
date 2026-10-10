@@ -257,6 +257,15 @@ _BYPASS_REASONS = {
     "telephony-account-preload",
     "pre-auth-password-reset",
     "telephony-config-kind", "number-sync-provider-ids", "phone-numbers-provider-sync",
+    # The one deliberately cross-tenant READ in the codebase: disconnect asks
+    # whether another tenant still holds the same upstream grant, so it can
+    # skip the revoke instead of cutting them off. It is a bypass because the
+    # question is by definition about rows outside the caller's tenant. What
+    # keeps it safe is that the subject it matches on comes from the
+    # disconnecting row itself (services/toolexec/oauth.py:590), never from a
+    # request field, and the only thing that escapes the connection is a
+    # boolean the caller never sees — disconnect returns a constant body.
+    "oauth-shared-grant-check",
 }
 
 # Platform-branch mutations with genuinely no tenant to stamp.

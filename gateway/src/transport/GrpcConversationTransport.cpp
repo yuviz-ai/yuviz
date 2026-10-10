@@ -399,10 +399,17 @@ void GrpcConversationTransport::reader_loop() noexcept {
 
         case ::voiceai::v1::ServiceMessage::kError: {
             const auto& err = msg.error();
-            logger_.error("GrpcTransport: service error code={} msg={} fatal={} session={}",
-                          err.code(), err.message(), err.fatal(), session_id_);
+            if (err.code() == kCallRejectedCode) {
+                logger_.info("GrpcTransport: rejected call ended by service session={}", session_id_);
+            } else {
+                logger_.error("GrpcTransport: service error code={} msg={} fatal={} session={}",
+                              err.code(), err.message(), err.fatal(), session_id_);
+            }
+            // Code-prefixed so the session can tell a deliberate hangup from a failure.
             if (callbacks_.on_error)
-                callbacks_.on_error(session_id_, err.message(), err.fatal());
+                callbacks_.on_error(session_id_,
+                                    err.code().empty() ? err.message() : err.code() + ": " + err.message(),
+                                    err.fatal());
             break;
         }
 
