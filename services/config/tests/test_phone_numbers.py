@@ -255,3 +255,45 @@ async def test_update_phone_number_rename_writes_through_new_and_clears_old(test
     assert await cache.get_json(f"did:{new_did}") is not None
 
     await pool.execute("DELETE FROM phone_numbers WHERE did = $1", new_did)
+
+
+async def test_pausing_an_agent_moves_its_numbers_to_the_fallback_and_back(test_tenant, scoped, pool):
+    primary = await agents.create_agent(tenant_id=test_tenant["id"], slug="primary", name="Primary")
+    backup = await agents.create_agent(tenant_id=test_tenant["id"], slug="backup", name="Backup")
+    did = f"test-did-{uuid.uuid4().hex[:8]}"
+    await phone_numbers.create_phone_number(
+        tenant_id=test_tenant["id"], did=did, agent_id=primary["id"], fallback_agent_id=backup["id"],
+    )
+    assert (await cache.get_json(f"did:{did}"))["agent_slug"] == "primary"
+
+    await agents.update_agent(primary["id"], tenant_slug=test_tenant["slug"], status="inactive")
+    assert (await cache.get_json(f"did:{did}"))["agent_slug"] == "backup"
+
+    await agents.update_agent(primary["id"], tenant_slug=test_tenant["slug"], status="active")
+    assert (await cache.get_json(f"did:{did}"))["agent_slug"] == "primary"
+
+    await pool.execute("DELETE FROM phone_numbers WHERE did = $1", did)
+
+
+async def test_deleting_an_agent_stops_routing_its_numbers_to_it(test_tenant, scoped, pool):
+    agent = await agents.create_agent(tenant_id=test_tenant["id"], slug="leaving", name="Leaving")
+    did = f"test-did-{uuid.uuid4().hex[:8]}"
+    await phone_numbers.create_phone_number(tenant_id=test_tenant["id"], did=did, agent_id=agent["id"])
+
+    await agents.soft_delete_agent(agent["id"], tenant_slug=test_tenant["slug"])
+
+    assert (await cache.get_json(f"did:{did}"))["agent_slug"] != "leaving"
+
+    await pool.execute("DELETE FROM phone_numbers WHERE did = $1", did)
+
+
+async def test_agent_update_refreshes_cached_route_version(test_tenant, scoped, pool):
+    agent = await agents.create_agent(tenant_id=test_tenant["id"], slug="versioned", name="Versioned")
+    did = f"test-did-{uuid.uuid4().hex[:8]}"
+    await phone_numbers.create_phone_number(tenant_id=test_tenant["id"], did=did, agent_id=agent["id"])
+
+    await agents.update_agent(agent["id"], tenant_slug=test_tenant["slug"], greeting="Hello again")
+
+    assert (await cache.get_json(f"did:{did}"))["version"] == 2
+
+    await pool.execute("DELETE FROM phone_numbers WHERE did = $1", did)
