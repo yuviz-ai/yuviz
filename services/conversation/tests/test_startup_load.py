@@ -81,3 +81,30 @@ def test_serve_starts_its_background_tasks_only_through_spawn():
     assert bare == [], f"serve() calls create_task directly (line offsets {bare}); use _spawn"
     spawned = [n.args[1].value for n in calls if getattr(n.func, "id", None) == "_spawn"]
     assert sorted(spawned) == ["config refresh", "heartbeat", "startup load"]
+
+
+async def test_prewarm_survives_a_corrupt_call_flow(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from services.conversation import __main__ as entry
+
+    resolved = []
+
+    async def fake_resolve(tenant_slug, agent_slug, registry, config):
+        resolved.append(agent_slug)
+        rc = SimpleNamespace(agent=SimpleNamespace(call_flow_id="f1"))
+        return rc, SimpleNamespace(llm=SimpleNamespace())
+
+    monkeypatch.setattr(entry, "resolve_handler_deps", fake_resolve)
+    monkeypatch.setattr(entry, "graph_for", lambda rc: SimpleNamespace(nodes=[]))
+    repo = SimpleNamespace(
+        list_tenants=AsyncMock(return_value=[{"slug": "acme"}]),
+        list_agents=AsyncMock(return_value=[{"slug": "ivr", "status": "active"},
+                                            {"slug": "next", "status": "active"}]),
+    )
+    config = SimpleNamespace(get_call_flow=AsyncMock(side_effect=KeyError("graph")))
+
+    await entry._prewarm_agents(repo, None, config)
+
+    assert resolved == ["ivr", "next"]   # one bad flow doesn't stop the rest of startup
