@@ -51,32 +51,54 @@ async def get_by_did(did: str, *, platform_scoped: bool = False) -> dict[str, An
         if platform_scoped
         else tenant_conn(pool)
     )
+    async with conn_cm as conn:
+        result = await _load_route(conn, did)
+    if result is not None:
+        await cache.set_json(_cache_key(did), result, ttl=None)
+    return result
+
+
+async def refresh_routes_for_agent(agent_id: Any) -> None:
+    """Rebuild did:{did} for numbers whose primary or fallback is this agent. Call after the
+    agent change commits, so a paused/deleted agent stops receiving calls."""
+    pool = await db.get_pool()
+    async with tenant_conn(pool) as conn:
+        rows = await conn.fetch(
+            "SELECT did FROM phone_numbers "
+            "WHERE (agent_id = $1 OR fallback_agent_id = $1) AND deleted_at IS NULL",
+            agent_id,
+        )
+        routes = {r["did"]: await _load_route(conn, r["did"]) for r in rows}
+    for did, route in routes.items():
+        if route is None:
+            await cache.invalidate(_cache_key(did))
+        else:
+            await cache.set_json(_cache_key(did), route, ttl=None)
+
+
+async def _load_route(conn: Any, did: str) -> dict[str, Any] | None:
     # Inactive numbers route like unknown DIDs. Agent falls back primary -> fallback -> 'default',
     # matching the Gateway's PhoneRoute::from_redis().
-    async with conn_cm as conn:
-        row = await conn.fetchrow(
-            "SELECT t.slug AS tenant_slug, "
-            "       COALESCE(a.slug, fb.slug, 'default') AS agent_slug, "
-            "       COALESCE(a.config_version, fb.config_version) AS agent_config_version "
-            "FROM phone_numbers pn "
-            "JOIN tenants t ON t.id = pn.tenant_id "
-            "LEFT JOIN agents a  ON a.id = pn.agent_id AND a.deleted_at IS NULL AND a.status = 'active' "
-            "LEFT JOIN agents fb ON fb.id = pn.fallback_agent_id AND fb.deleted_at IS NULL AND fb.status = 'active' "
-            "WHERE pn.did = $1 AND pn.status = 'active' "
-            "  AND pn.deleted_at IS NULL AND t.deleted_at IS NULL",
-            did,
-        )
+    row = await conn.fetchrow(
+        "SELECT t.slug AS tenant_slug, "
+        "       COALESCE(a.slug, fb.slug, 'default') AS agent_slug, "
+        "       COALESCE(a.config_version, fb.config_version) AS agent_config_version "
+        "FROM phone_numbers pn "
+        "JOIN tenants t ON t.id = pn.tenant_id "
+        "LEFT JOIN agents a  ON a.id = pn.agent_id AND a.deleted_at IS NULL AND a.status = 'active' "
+        "LEFT JOIN agents fb ON fb.id = pn.fallback_agent_id AND fb.deleted_at IS NULL AND fb.status = 'active' "
+        "WHERE pn.did = $1 AND pn.status = 'active' "
+        "  AND pn.deleted_at IS NULL AND t.deleted_at IS NULL",
+        did,
+    )
     if row is None:
         return None
-
-    result = {
+    return {
         "tenant_slug": row["tenant_slug"],
         "agent_slug": row["agent_slug"],
         # null when agent_slug fell through to the literal 'default'.
         "version": row["agent_config_version"],
     }
-    await cache.set_json(_cache_key(did), result, ttl=None)
-    return result
 
 
 async def prewarm() -> int:
