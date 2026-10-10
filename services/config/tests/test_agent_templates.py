@@ -96,13 +96,14 @@ def test_needs_by_channel():
         assert t.needs == ({"llm"} if t.channel == "chat" else {"llm", "stt", "tts"})
 
 
-def test_existing_advanced_prefills_are_in_catalog_with_same_label():
+def test_ui_quick_create_templates_have_unique_keys_and_no_blank_text():
+    # The Agents page's cards are UI-only prefills, not this catalogue (EasyAgentFlow is unused
+    # since 2026-10-07); TypeScript checks their shape, this checks what it can't.
     src = (REPO / "admin-ui/lib/agentTemplates.ts").read_text()
-    pairs = re.findall(r'key:\s*"([^"]+)",\s*label:\s*"([^"]+)"', src)
-    assert len(pairs) == 4
-    labels = {t.id: t.label for t in CATALOG}
-    for key, label in pairs:
-        assert labels.get(key) == label
+    keys = re.findall(r'\bkey:\s*"([^"]+)"', src)
+    assert keys and len(keys) == len(set(keys))
+    for field in ("label", "blurb", "task", "purpose", "persona", "tone", "greeting", "transferCondition"):
+        assert len(re.findall(rf'\b{field}:\s*"[^"\s][^"]*"', src)) == len(keys), field
 
 
 def test_get_template_needs_exact_version():

@@ -23,7 +23,10 @@ import grpc
 import grpc.aio
 
 from .event_bus import EventBus, TransferRequested
-from .session import AgentUnavailable, ConversationSession, IConversationHandler, SessionContext
+from .rejection import RejectedCallHangup
+from .session import (
+    AgentUnavailable, ConversationSession, IConversationHandler, RoutingStatus, SessionContext,
+)
 
 from .generated.voiceai.v1 import conversation_pb2 as pb
 from .generated.voiceai.v1 import conversation_pb2_grpc as pb_grpc
@@ -31,6 +34,15 @@ from .generated.voiceai.v1 import conversation_pb2_grpc as pb_grpc
 log = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = "1.0"
+
+# UNSPECIFIED is a non-gateway client: webcall, vobiz, tests.
+_ROUTING_STATUS = {
+    pb.ROUTING_STATUS_UNSPECIFIED: RoutingStatus.ROUTED,
+    pb.ROUTING_STATUS_ROUTED:      RoutingStatus.ROUTED,
+    pb.ROUTING_STATUS_ROUTED_LKG:  RoutingStatus.ROUTED_LKG,
+    pb.ROUTING_STATUS_UNKNOWN:     RoutingStatus.UNKNOWN,
+    pb.ROUTING_STATUS_UNAVAILABLE: RoutingStatus.UNAVAILABLE,
+}
 
 
 def _consume_pending_transfer(tr, interrupted: bool, sid: str):
@@ -108,8 +120,14 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
             return
 
         sid = open_req.session_id
-        log.info("Converse: session_open session=%s tenant=%s",
-                 sid, open_req.tenant_id)
+        routing_status = _ROUTING_STATUS.get(open_req.routing_status)
+        if routing_status is None:
+            # A status this build doesn't know must not fail open to a default agent.
+            log.warning("Converse: unknown routing_status=%d — treating as unavailable",
+                        open_req.routing_status)
+            routing_status = RoutingStatus.UNAVAILABLE
+        log.info("Converse: session_open session=%s tenant=%s routing=%s",
+                 sid, open_req.tenant_id, routing_status.value)
 
         ctx = SessionContext(
             session_id=sid,
@@ -121,6 +139,7 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
             direction=open_req.direction,
             script_id=open_req.script_id,
             test_credential=open_req.test_credential,
+            routing_status=routing_status,
         )
 
         bus     = EventBus()
@@ -171,26 +190,9 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
         pending_transfer = None
         transfer_started_at: float | None = None
 
-        # ── 2b. Greeting ───────────────────────────────────────────────────────
-        async for response in session.greet():
-            if response.tts_payloads:
-                yield pb.ServiceMessage(
-                    tts_started=pb.TtsStarted(session_id=sid)
-                )
-                for i, payload in enumerate(response.tts_payloads):
-                    tts_seq += 1
-                    yield pb.ServiceMessage(
-                        tts_chunk=pb.TtsChunk(
-                            session_id=sid,
-                            sequence_num=tts_seq,
-                            codec=pb.AUDIO_CODEC_PCM_S16LE,
-                            sample_rate=16000,
-                            payload=payload,
-                            is_final=(i == len(response.tts_payloads) - 1),
-                        )
-                    )
-
-        async def _emit_response(response) -> AsyncIterator[pb.ServiceMessage]:
+        async def _emit_response(
+            response, end_reason: str = "agent_ended_call",
+        ) -> AsyncIterator[pb.ServiceMessage]:
             """Emit an out-of-band HandlerResponse (e.g. call-flow timeout).
 
             Always sends the terminal empty chunk, even with no TTS, or the gateway never consumes EndCall."""
@@ -225,7 +227,7 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
                 yield pb.ServiceMessage(
                     end_call=pb.EndCall(
                         session_id=sid,
-                        reason="agent_ended_call",
+                        reason=end_reason,
                         grace_period_ms=response.end_call_grace_period_ms,
                     )
                 )
@@ -239,10 +241,48 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
                     "(out-of-band) session=%s", sid,
                 )
 
+        # ── 2b. Greeting ───────────────────────────────────────────────────────
+        async def _greet() -> AsyncIterator[pb.ServiceMessage]:
+            nonlocal tts_seq
+            greeting_end_call = None
+            async for response in session.greet():
+                if response.end_call:
+                    greeting_end_call = response   # sent below via _emit_response
+                    continue
+                if response.tts_payloads:
+                    yield pb.ServiceMessage(
+                        tts_started=pb.TtsStarted(session_id=sid)
+                    )
+                    for i, payload in enumerate(response.tts_payloads):
+                        tts_seq += 1
+                        yield pb.ServiceMessage(
+                            tts_chunk=pb.TtsChunk(
+                                session_id=sid,
+                                sequence_num=tts_seq,
+                                codec=pb.AUDIO_CODEC_PCM_S16LE,
+                                sample_rate=16000,
+                                payload=payload,
+                                is_final=(i == len(response.tts_payloads) - 1),
+                            )
+                        )
+
+            if greeting_end_call is not None:
+                log.info("Converse: rejecting call routing=%s session=%s",
+                         routing_status.value, sid)
+                async for out in _emit_response(
+                    greeting_end_call, end_reason=f"routing_{routing_status.value}",
+                ):
+                    yield out
+
         msg_fut: asyncio.Future | None = None
         out_fut: asyncio.Future | None = None
 
         try:
+            # Inside the try: a hangup while the greeting is still synthesizing
+            # cancels the stream here, and the session must still be closed.
+            async for out in _greet():
+                yield out
+
             while True:
                 if session.out_responses is not None:
                     if msg_fut is None:
@@ -625,6 +665,11 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
                     log.warning("Unknown payload_case=%s session=%s",
                                 payload_case, sid)
 
+        except RejectedCallHangup as exc:
+            log.info("Converse: hanging up rejected call: %s", exc)
+            yield pb.ServiceMessage(
+                error=pb.ServiceError(session_id=sid, code="CALL_REJECTED", message=str(exc), fatal=True)
+            )
         except Exception as exc:
             log.exception("Converse error session=%s", sid)
             yield pb.ServiceMessage(

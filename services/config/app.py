@@ -5,6 +5,7 @@ Run: uvicorn services.config.app:app --reload
 
 from __future__ import annotations
 
+import asyncio
 import os
 import logging
 import time  # noqa: F401
@@ -121,14 +122,45 @@ def _too_many_requests(detail: str, retry_after: int) -> HTTPException:
     return HTTPException(status_code=429, detail=detail, headers={"Retry-After": str(retry_after)})
 
 
+_ROUTES_CHECK_INTERVAL_S = 15
+
+
+async def _prewarm_routes(*, overwrite: bool) -> None:
+    try:
+        warmed = await phone_numbers_service.prewarm(overwrite=overwrite)
+        log.info("Prewarmed %d active phone number(s) into Redis", warmed)
+    except Exception:
+        # Redis and Postgres often restart together; any failure must leave the watchdog running.
+        log.exception("Phone number prewarm failed; retrying every %ds", _ROUTES_CHECK_INTERVAL_S)
+
+
+async def _reload_routes_when_redis_empties() -> None:
+    """A flushed, recreated or failed-over Redis loses every did:{did}; reload them."""
+    while True:
+        await asyncio.sleep(_ROUTES_CHECK_INTERVAL_S)
+        try:
+            if await phone_numbers_service.routes_loaded():
+                continue
+        except Exception:
+            continue
+        log.warning("Redis has no %s marker; reloading phone number routes",
+                    phone_numbers_service.ROUTES_READY_KEY)
+        await _prewarm_routes(overwrite=False)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Connect eagerly so a broken POSTGRES_DSN/REDIS_URL fails at startup.
     await db.get_pool()
     cache.get_client()
-    warmed = await phone_numbers_service.prewarm()
-    log.info("Prewarmed %d active phone number(s) into Redis", warmed)
+    try:
+        await telephony_configs_service.seal_plaintext_credentials()
+    except Exception:
+        log.exception("Sealing plaintext telephony credentials failed; they stay masked in responses")
+    await _prewarm_routes(overwrite=True)
+    watchdog = asyncio.create_task(_reload_routes_when_redis_empties())
     yield
+    watchdog.cancel()
     await db.close_pool()
     await cache.close()
     email.close_smtp_executor()

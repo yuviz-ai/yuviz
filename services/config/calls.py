@@ -250,45 +250,48 @@ async def get_disposition_mix(tenant_slug: str, *, hours: int = 24 * 30) -> list
     return [dict(row) for row in rows]
 
 
-async def get_usage_trend(tenant_slug: str, *, days: int = 30) -> list[dict[str, Any]]:
-    """Calls, minutes and containment inputs (ended/escalated) per calendar day."""
+async def get_usage_trend(tenant_slug: str, *, days: int = 30, tz: str = "UTC") -> list[dict[str, Any]]:
+    """Calls by direction, minutes and containment inputs per calendar day in `tz`."""
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         rows = await conn.fetch(
             """
             SELECT
-                date_trunc('day', started_at)::date AS date,
+                date_trunc('day', started_at AT TIME ZONE $3)::date AS date,
                 COUNT(*) AS calls,
+                COUNT(*) FILTER (WHERE direction = 'inbound') AS inbound,
+                COUNT(*) FILTER (WHERE direction = 'outbound') AS outbound,
                 ROUND(COALESCE(SUM(duration_ms), 0) / 60000.0, 2) AS minutes,
                 COUNT(*) FILTER (WHERE ended_at IS NOT NULL) AS ended,
                 COUNT(*) FILTER (WHERE close_reason LIKE 'TRANSFER%') AS escalated
             FROM calls
             WHERE tenant_id = $1 AND started_at >= NOW() - ($2 * INTERVAL '1 day')
-            GROUP BY date_trunc('day', started_at)
+            GROUP BY 1
             ORDER BY date
             """,
-            tenant_slug, days,
+            tenant_slug, days, tz,
         )
     return [dict(row) for row in rows]
 
 
-async def get_todays_activity(tenant_slug: str) -> list[dict[str, Any]]:
-    """Today's calls by hour and direction; 'web' is always 0 (not a persisted channel)."""
+async def get_todays_activity(tenant_slug: str, *, tz: str = "UTC") -> list[dict[str, Any]]:
+    """Today's calls by local hour in `tz` and direction; 'web' is always 0 (not a persisted channel)."""
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         rows = await conn.fetch(
             """
             SELECT
-                EXTRACT(HOUR FROM started_at)::int AS hour,
+                EXTRACT(HOUR FROM started_at AT TIME ZONE $2)::int AS hour,
                 COUNT(*) FILTER (WHERE direction = 'inbound') AS inbound,
                 COUNT(*) FILTER (WHERE direction = 'outbound') AS outbound,
                 COUNT(*) FILTER (WHERE ended_at IS NOT NULL) AS ended,
                 COUNT(*) FILTER (WHERE close_reason LIKE 'TRANSFER%') AS escalated
             FROM calls
-            WHERE tenant_id = $1 AND started_at >= date_trunc('day', NOW())
+            WHERE tenant_id = $1
+              AND started_at >= date_trunc('day', NOW() AT TIME ZONE $2) AT TIME ZONE $2
             GROUP BY hour ORDER BY hour
             """,
-            tenant_slug,
+            tenant_slug, tz,
         )
     return [{**dict(r), "web": 0} for r in rows]
 
