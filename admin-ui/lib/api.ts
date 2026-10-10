@@ -916,13 +916,18 @@ export const listAllDispositionMix = async (
 export interface UsageTrendPoint {
   date: string;
   calls: number;
+  inbound: number;
+  outbound: number;
   minutes: number;
   ended: number;
   escalated: number;
 }
 
+// Days and hours are bucketed in the viewer's time zone, so the chart matches their clock.
+const viewerTz = () => encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+
 export const getUsageTrend = (tenantSlug: string, days: number = 30) =>
-  request<UsageTrendPoint[]>(`/tenants/${tenantSlug}/calls/usage-trend?days=${days}`);
+  request<UsageTrendPoint[]>(`/tenants/${tenantSlug}/calls/usage-trend?days=${days}&tz=${viewerTz()}`);
 
 export const listAllUsageTrend = async (tenants: Tenant[], days: number = 30): Promise<UsageTrendPoint[]> => {
   const perTenant = await Promise.all(tenants.map((t) => getUsageTrend(t.slug, days)));
@@ -933,6 +938,8 @@ export const listAllUsageTrend = async (tenants: Tenant[], days: number = 30): P
       byDate.set(p.date, {
         date: p.date,
         calls: (existing?.calls || 0) + p.calls,
+        inbound: (existing?.inbound || 0) + p.inbound,
+        outbound: (existing?.outbound || 0) + p.outbound,
         minutes: Math.round(((existing?.minutes || 0) + p.minutes) * 100) / 100,
         ended: (existing?.ended || 0) + p.ended,
         escalated: (existing?.escalated || 0) + p.escalated,
@@ -952,7 +959,7 @@ export interface TodaysActivityPoint {
 }
 
 export const getTodaysActivity = (tenantSlug: string) =>
-  request<TodaysActivityPoint[]>(`/tenants/${tenantSlug}/calls/todays-activity`);
+  request<TodaysActivityPoint[]>(`/tenants/${tenantSlug}/calls/todays-activity?tz=${viewerTz()}`);
 
 export const listAllTodaysActivity = async (tenants: Tenant[]): Promise<TodaysActivityPoint[]> => {
   const perTenant = await Promise.all(tenants.map((t) => getTodaysActivity(t.slug)));
