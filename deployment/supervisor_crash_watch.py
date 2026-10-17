@@ -1,4 +1,4 @@
-"""Restart policy for supervisord: exponential backoff, then a half-open circuit breaker. stdout is the protocol; log to stderr."""
+"""Restart policy for supervisord: heartbeat, exponential backoff, half-open circuit breaker. stdout is the protocol; log to stderr."""
 from __future__ import annotations
 
 import argparse
@@ -11,12 +11,18 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
+import uuid
 import xmlrpc.client
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 RUNNING_STATES = {"STARTING", "RUNNING", "BACKOFF"}
 FATAL = "FATAL"
+PROBE_INTERVAL_S = 10
+MISSES_TO_RESTART = 3
+STARTUP_DEADLINE_S = 300
 
 
 @dataclass
@@ -149,6 +155,112 @@ def start_service(proxy, name: str) -> None:
             raise
 
 
+def probe_http(url: str, timeout: float = 3.0) -> bool:
+    """Any HTTP response proves the event loop answered."""
+    try:
+        urllib.request.urlopen(url, timeout=timeout).close()
+        return True
+    except urllib.error.HTTPError:
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def probe_envoy_host(addr: str, admin: str = "http://127.0.0.1:9901", timeout: float = 3.0) -> bool | None:
+    """Envoy's own gRPC health check for one upstream; None when Envoy can't say."""
+    try:
+        with urllib.request.urlopen(f"{admin}/clusters", timeout=timeout) as r:
+            text = r.read().decode(errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if f"::{addr}::health_flags::" in line:
+            flags = line.rsplit("::", 1)[1]
+            if flags == "healthy":
+                return True
+            return False if "failed_active_hc" in flags else None
+    return None
+
+
+def probe_esl(host: str, port: int, timeout: float = 3.0) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            data = b""
+            while b"auth/request" not in data:
+                chunk = sock.recv(256)
+                if not chunk:
+                    return False
+                data += chunk
+        return True
+    except OSError:
+        return False
+
+
+def probe_sip(host: str, port: int, timeout: float = 3.0) -> bool:
+    """SIP OPTIONS; any SIP reply means Kamailio is processing requests."""
+    tag, call_id = uuid.uuid4().hex[:8], uuid.uuid4().hex
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.settimeout(timeout)
+            sock.bind((host, 0))
+            lport = sock.getsockname()[1]
+            msg = (f"OPTIONS sip:{host}:{port} SIP/2.0\r\nVia: SIP/2.0/UDP {host}:{lport};branch=z9hG4bK{tag}\r\n"
+                   f"Max-Forwards: 70\r\nFrom: <sip:crash-watch@{host}>;tag={tag}\r\nTo: <sip:{host}:{port}>\r\n"
+                   f"Call-ID: {call_id}\r\nCSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n")
+            sock.sendto(msg.encode(), (host, port))
+            return sock.recv(4096).startswith(b"SIP/2.0 ")
+    except OSError:
+        return False
+
+
+def kamailio_listen(cfg: Path) -> tuple[str, int] | None:
+    try:
+        for line in cfg.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("listen=udp:"):
+                host, _, port = line[len("listen=udp:"):].rpartition(":")
+                return host, int(port)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def dotenv(key: str, default: str, path: Path = Path(".env")) -> str:
+    if os.environ.get(key):
+        return os.environ[key]
+    try:
+        for line in path.read_text().splitlines():
+            if line.startswith(f"{key}=") and line.split("=", 1)[1].strip():
+                return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return default
+
+
+def default_probes() -> dict:
+    host = dotenv("LISTEN_HOST", "127.0.0.1")
+    host = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
+    esl = (dotenv("FREESWITCH_ESL_HOST", "127.0.0.1"), int(dotenv("FREESWITCH_ESL_PORT", "8022")))
+    sip = kamailio_listen(Path.home() / ".yuviz" / "kamailio" / "kamailio.cfg")
+    probes = {
+        "config": lambda: probe_http(f"http://{host}:8000/health"),
+        "knowledge": lambda: probe_http(f"http://{host}:8100/health"),
+        "campaigns": lambda: probe_http(f"http://{host}:8400/health"),
+        "toolexec": lambda: probe_http(f"http://{host}:8600/health"),
+        "telephony": lambda: probe_http(f"http://{host}:8750/health"),
+        "webcall": lambda: probe_http(f"http://{host}:8300/health"),
+        "ollama": lambda: probe_http("http://127.0.0.1:11434/api/version"),
+        "envoy": lambda: probe_http("http://127.0.0.1:9901/ready"),
+        "admin-ui": lambda: probe_http(f"http://{host}:3000/login", timeout=15),  # dev server compiles on demand
+        "conversation-1": lambda: probe_envoy_host("127.0.0.1:50051"),
+        "conversation-2": lambda: probe_envoy_host("127.0.0.1:50052"),
+        "freeswitch": lambda: probe_esl(*esl),
+    }
+    if sip:
+        probes["kamailio"] = lambda: probe_sip(*sip)
+    return probes
+
+
 class Watcher:
     def __init__(self, policy: Policy, proxy_factory, state_path: Path, schedule=None, clock=time.time):
         self.policy = policy
@@ -157,6 +269,50 @@ class Watcher:
         self.clock = clock
         self.schedule = schedule or self._timer
         self.lock = threading.RLock()
+        self.misses: dict[str, int] = {}
+        self.armed: dict[str, float] = {}  # name -> start time it first passed a probe
+        self.alerted: dict[str, float] = {}
+
+    def probe_once(self, probes: dict) -> None:
+        proxy = self.proxy()
+        for name, probe in probes.items():
+            try:
+                info = proxy.supervisor.getProcessInfo(name)
+            except xmlrpc.client.Fault:
+                continue
+            start = float(info["start"])
+            if info["statename"] != "RUNNING":
+                self.misses.pop(name, None)
+                continue
+            ok = probe()
+            if ok is None:
+                continue  # can't tell, e.g. Envoy itself is down
+            if ok:
+                self.misses[name] = 0
+                self.armed[name] = start
+                continue
+            if self.armed.get(name) != start:
+                # Never answered since start: a slow starter or a wrong probe, so alert once, never restart.
+                if self.clock() - start >= STARTUP_DEADLINE_S and self.alerted.get(name) != start:
+                    self.alerted[name] = start
+                    msg = f"{name} has not passed its heartbeat in {STARTUP_DEADLINE_S}s since start; check it"
+                    log(msg)
+                    notify(msg)
+                continue
+            n = self.misses[name] = self.misses.get(name, 0) + 1
+            log(f"{name} missed heartbeat ({n}/{MISSES_TO_RESTART})")
+            if n >= MISSES_TO_RESTART:
+                self.misses[name] = 0
+                self.armed.pop(name, None)
+                self.on_hang(name)
+
+    def probe_loop(self, probes: dict, interval_s: float) -> None:
+        while True:
+            try:
+                self.probe_once(probes)
+            except Exception as exc:  # noqa: BLE001
+                log(f"heartbeat round failed: {exc!r}")
+            time.sleep(interval_s)
 
     @staticmethod
     def _timer(delay: float, fn) -> None:
@@ -187,29 +343,38 @@ class Watcher:
                     self.schedule(s.half_open_since + self.policy.window_s - now, lambda n=name: self.check_closed(n))
 
     def on_event(self, eventname: str, name: str, expected: str) -> None:
-        now = self.clock()
         with self.lock:
             if eventname == "PROCESS_STATE_EXITED" and expected == "0":
-                action, delay = self.policy.on_exit(name, now)
+                action, delay = self.policy.on_exit(name, self.clock())
             elif eventname == "PROCESS_STATE_FATAL":
                 action, delay = self.policy.on_fatal(name)
             else:
                 return
-            s = self.policy.state(name)
             if action == "restart":
                 log(f"{name} crashed; supervisord restarts it now")
                 self.save()
                 return
-            s.pending_at, s.pending_trial = now + delay, action == "open"
-            s.stop_token = FATAL if eventname == "PROCESS_STATE_FATAL" else None
+        self._recover(name, action, delay, fatal=eventname == "PROCESS_STATE_FATAL", what="crashed again")
+
+    def on_hang(self, name: str) -> None:
+        """A hung process never exits, so it is stopped here and counted as a crash."""
+        with self.lock:
+            action, delay = self.policy.on_exit(name, self.clock())
+        self._recover(name, "delay" if action == "restart" else action, delay, fatal=False, what="hung (no heartbeat)")
+
+    def _recover(self, name: str, action: str, delay: float, *, fatal: bool, what: str) -> None:
+        with self.lock:
+            s = self.policy.state(name)
+            s.pending_at, s.pending_trial = self.clock() + delay, action == "open"
+            s.stop_token = FATAL if fatal else None
             self.save()  # intent first: a restart of this listener finds it
-        if eventname != "PROCESS_STATE_FATAL":
+        if not fatal:
             token = stop_service(self.proxy(), name)
             with self.lock:
                 s.stop_token = token
                 self.save()
         if action == "delay":
-            log(f"{name} crashed again; restarting in {delay:.0f}s")
+            log(f"{name} {what}; restarting in {delay:.0f}s")
         else:
             msg = f"{name} keeps failing; circuit open, next trial start in {delay:.0f}s"
             log(msg)
@@ -263,6 +428,7 @@ def main() -> None:
     parser.add_argument("--cooldown", type=float, default=300)
     parser.add_argument("--cooldown-cap", type=float, default=3600)
     parser.add_argument("--state", type=Path, default=Path.home() / ".yuviz" / "crash-watch.json")
+    parser.add_argument("--no-heartbeat", action="store_true")
     args = parser.parse_args()
 
     policy = Policy(args.max_crashes, args.window, args.backoff_cap, args.cooldown, args.cooldown_cap)
@@ -270,8 +436,11 @@ def main() -> None:
     watcher = Watcher(policy, lambda: rpc_proxy(url), args.state)
     watcher.load()
     watcher.resume()
+    if not args.no_heartbeat:
+        threading.Thread(target=watcher.probe_loop, args=(default_probes(), PROBE_INTERVAL_S), daemon=True).start()
     me = os.environ.get("SUPERVISOR_PROCESS_NAME")
-    log(f"watching: backoff to {args.backoff_cap:.0f}s, circuit opens at {args.max_crashes} crashes in {args.window:.0f}s")
+    log(f"watching: backoff to {args.backoff_cap:.0f}s, circuit opens at {args.max_crashes} crashes in {args.window:.0f}s, "
+        f"heartbeat {'off' if args.no_heartbeat else f'every {PROBE_INTERVAL_S}s, restart after {MISSES_TO_RESTART} misses'}")
     while True:
         sys.stdout.write("READY\n")
         sys.stdout.flush()

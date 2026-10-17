@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import time
+from http import HTTPStatus
 import uuid
 import wave
 from urllib.parse import parse_qs, urlparse
@@ -264,11 +265,18 @@ async def _handle_connection(ws: ServerConnection) -> None:
             call.cancel()
 
 
+def _health(connection: ServerConnection, request):
+    # Answered on the event loop, so a hung loop fails the probe.
+    if request.path == "/health":
+        return connection.respond(HTTPStatus.OK, "ok\n")
+    return None
+
+
 async def main() -> None:
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
     port = int(os.environ.get("PORT", "8300"))
     host = os.environ.get("LISTEN_HOST", "127.0.0.1")
-    async with serve(_handle_connection, host, port):
+    async with serve(_handle_connection, host, port, process_request=_health):
         log.info("Webcall bridge listening on ws://%s:%d", host, port)
         await asyncio.get_running_loop().create_future()
 
