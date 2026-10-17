@@ -241,6 +241,8 @@ def default_probes() -> dict:
     host = dotenv("LISTEN_HOST", "127.0.0.1")
     host = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
     esl = (dotenv("FREESWITCH_ESL_HOST", "127.0.0.1"), int(dotenv("FREESWITCH_ESL_PORT", "8022")))
+    gw_host = dotenv("GATEWAY_LISTEN_HOST", "127.0.0.1")
+    gw_host = "127.0.0.1" if gw_host in ("0.0.0.0", "::", "") else gw_host
     sip = kamailio_listen(Path.home() / ".yuviz" / "kamailio" / "kamailio.cfg")
     probes = {
         "config": lambda: probe_http(f"http://{host}:8000/health"),
@@ -255,6 +257,7 @@ def default_probes() -> dict:
         "conversation-1": lambda: probe_envoy_host("127.0.0.1:50051"),
         "conversation-2": lambda: probe_envoy_host("127.0.0.1:50052"),
         "freeswitch": lambda: probe_esl(*esl),
+        "gateway": lambda: probe_http(f"http://{gw_host}:8080/health"),
     }
     if sip:
         probes["kamailio"] = lambda: probe_sip(*sip)

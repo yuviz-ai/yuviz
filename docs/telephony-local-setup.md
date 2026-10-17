@@ -342,12 +342,12 @@ tail -f ~/.yuviz/logs/gateway.log
 - **Crash loops stop instead of flapping:**
   - **Crashes during startup:** a service that dies within its first few seconds is retried 3 times, then marked FATAL.
   - **Hangs:** a process can stay alive but stop responding, and supervisord can't see that. So `crash-watch` probes every service every 10 s:
-    - **HTTP services:** `/health`
+    - **HTTP services and the Gateway:** `/health` (the Gateway answers on its audio thread)
     - **Conversation:** Envoy's gRPC health check
     - **FreeSWITCH:** the ESL greeting
     - **Kamailio:** a SIP `OPTIONS` ping
 
-    After 3 misses in a row, it restarts the service and counts it as a crash. A service is only restarted after it has answered once and then stopped. One that never answers within 5 minutes of starting (a slow start, or a wrong probe) gets an alert, never a restart, so a bad probe can't take down a healthy service. The Gateway and the Knowledge worker aren't probed yet.
+    After 3 misses in a row, it restarts the service and counts it as a crash. A service is only restarted after it has answered once and then stopped. One that never answers within 5 minutes of starting (a slow start, or a wrong probe) gets an alert, never a restart, so a bad probe can't take down a healthy service. The Knowledge worker isn't probed; its jobs already use leases.
   - **Crashes after startup:** the `crash-watch` listener backs off. The first crash restarts at once, and the next ones wait 2, 4 and 8 s.
   - **Circuit breaker:** after 5 crashes within 10 minutes, or a FATAL, the circuit opens. The service is stopped and gets one trial start after 5 minutes, then 10, 20 and so on, up to 1 hour. If it stays up for 10 minutes, the circuit closes.
   - **Where to look:** `~/.yuviz/logs/crash-watch.log`, plus a macOS notification when the circuit opens. Install `terminal-notifier` so clicking it opens that log: `brew install terminal-notifier`, then launch it once with `open "$(brew --prefix terminal-notifier)/terminal-notifier.app"` so macOS registers it, and allow its notifications. Without it, the notification is credited to Script Editor.
