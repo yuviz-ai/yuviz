@@ -390,18 +390,6 @@ export interface AgentFromTemplateRequest {
   tts_config_id?: string | null;
 }
 
-export type TestChannel = "voice" | "chat";
-
-export interface VoiceTestSession {
-  credential: string;
-  expires_in: number;
-}
-
-export interface ChatTestSession extends VoiceTestSession {
-  session_id: string;
-  greeting: string;
-}
-
 export interface PromptRevision {
   before: string;
   after: string;
@@ -411,20 +399,6 @@ export interface PromptRevision {
 export const listAgentTemplates = () => request<AgentTemplateInfo[]>("/agent-templates");
 export const createAgentFromTemplate = (tenantSlug: string, body: AgentFromTemplateRequest) =>
   request<Agent>(`/tenants/${tenantSlug}/agents/from-template`, { method: "POST", body: JSON.stringify(body) });
-export const createTestSession = <C extends TestChannel>(tenantSlug: string, agentId: string, channel: C) =>
-  request<C extends "chat" ? ChatTestSession : VoiceTestSession>(
-    `/tenants/${tenantSlug}/agents/${agentId}/test-sessions`,
-    { method: "POST", body: JSON.stringify({ channel }) },
-  );
-export const sendTestChat = (
-  tenantSlug: string,
-  agentId: string,
-  body: { credential: string; session_id: string; message: string },
-) =>
-  request<{ reply: string }>(`/tenants/${tenantSlug}/agents/${agentId}/test-chat`, {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
 export const revisePrompt = (
   tenantSlug: string,
   agentId: string,

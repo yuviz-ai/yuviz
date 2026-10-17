@@ -722,8 +722,8 @@ export default function NewAgentPage() {
               </div>
               {!llmId && (
                 <div className="voice-missing" style={{ marginBottom: 6 }}>
-                  To write this with AI, choose an AI model first.{" "}
-                  <a href="#" onClick={(e) => { e.preventDefault(); setStep("voice"); }}>Choose an AI model</a>
+                  To write this with AI, choose how the agent thinks first.{" "}
+                  <a href="#" onClick={(e) => { e.preventDefault(); setStep("voice"); }}>Choose how it thinks</a>
                 </div>
               )}
               {generateError && <div className="error-banner">{generateError}</div>}

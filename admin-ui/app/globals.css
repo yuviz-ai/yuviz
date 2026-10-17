@@ -1091,6 +1091,10 @@ body {
   font-size: .66rem; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3);
 }
 .cf-header-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.cf-who { padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--r); background: var(--surf); }
+.cf-who-title { margin-bottom: 6px; font-size: .68rem; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--text-3); }
+.cf-who p { margin: 0 0 8px; font-size: .76rem; line-height: 1.5; color: var(--text-2); }
+.cf-who b { color: var(--text); }
 
 .cf-addbar {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 10px;
@@ -1731,6 +1735,19 @@ body {
 }
 .qc-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px; font-size: .72rem; color: var(--text-3); }
 .qc-link { padding: 0; border: 0; background: none; color: var(--cyan); font-size: inherit; cursor: pointer; text-decoration: underline; }
+.qc-toggle.three { grid-template-columns: repeat(3, 1fr); }
+.qc-tpl:disabled { opacity: .5; cursor: not-allowed; }
+.qc-steps { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; padding: 2px 12px; border: 1px solid var(--border-2); border-radius: var(--rs); background: var(--surf-2); }
+.qc-steps label { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; cursor: pointer; }
+.qc-steps input { margin-top: 3px; accent-color: var(--cyan); }
+.qc-steps b { display: block; font-size: .8rem; font-weight: 600; color: var(--text); }
+.qc-steps .form-hint { margin-top: 1px; }
+.pm-steps { display: flex; flex-direction: column; gap: 10px; margin: 16px 0 0; padding: 0; list-style: none; }
+.pm-steps li { display: flex; gap: 9px; font-size: .76rem; line-height: 1.45; color: var(--text-2); }
+.pm-steps .qc-bubble { display: block; margin-top: 4px; }
+.pm-dot, .pm-key { display: grid; place-items: center; flex-shrink: 0; width: 20px; height: 20px; border-radius: 50%; background: var(--cyan-dim); color: var(--cyan); font-size: .66rem; font-weight: 700; }
+.pm-key { border-radius: 5px; background: var(--surf-2); color: var(--text-2); }
+.pm-branch { padding-left: 29px; }
 
 /* ── Agent editor ───────────────────────────────────────────────────── */
 .ed2 { display: flex; flex-direction: column; gap: 12px; }
@@ -1833,7 +1850,7 @@ body {
   .ed-test-log { min-height: 180px; max-height: 50vh; }
   .ed-test-coming { min-height: 180px; }
   .qc-card { padding: 16px; }
-  .qc-toggle { grid-template-columns: 1fr; }
+  .qc-toggle, .qc-toggle.three, .qc-steps { grid-template-columns: 1fr; }
   .qc-foot { flex-direction: column; align-items: stretch; }
   .qc-foot .btn { justify-content: center; height: 36px; }
 }

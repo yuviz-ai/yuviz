@@ -1,7 +1,7 @@
 "use client";
 
-// Language, voice, speech recognition and AI model for one agent — shared by the
-// creation wizard and the agent page so both read the same.
+// Language, voice, hearing and thinking for one agent — shared by the creation
+// wizard and the agent page so both read the same.
 
 import { Dispatch, SetStateAction, useEffect, useState } from "react";
 import Link from "next/link";
@@ -68,6 +68,19 @@ export function multilingualPayload(
 // it can't be spoken; those belong next to the languages section, not just in the banner.
 export function isLanguageError(detail: string): boolean {
   return /language|can't be spoken/i.test(detail);
+}
+
+// Server 400s name engines and voice ids; show a short plain-language line instead.
+function friendlyLanguageError(detail: string): string {
+  const lang = detail.match(/^(.+?) \([a-z]{2}(?:-[A-Z]{2})?\) can't be spoken/i)?.[1]
+    ?? detail.match(/can't speak (.+?)\./i)?.[1];
+  if (lang) {
+    return `${lang} needs a voice that can speak it. Pick one below, or add one in AI & Voice.`;
+  }
+  if (/can't be spoken|TTS provider|voice override|multilingual TTS/i.test(detail)) {
+    return "One of these languages needs a different voice. Pick one below, or add one in AI & Voice.";
+  }
+  return detail;
 }
 
 // `ready: false` = no voice-service integration yet, shown so users know it's coming.
@@ -500,7 +513,7 @@ export function AgentVoiceSettings({
     return (
       <div className="form-group">
         <label className="form-label">
-          {label} voice{lang === primaryLanguage && multilingual && <span className="hint">default</span>}
+          {label} voice{lang === primaryLanguage && multilingual && <span className="hint">main</span>}
         </label>
         {picker}
         {!current && !workspaceVoice && !sharedVoice && (
@@ -522,8 +535,89 @@ export function AgentVoiceSettings({
       {part !== "engines" && <>
       <div className="card" style={{ marginBottom: 14 }}>
         <div className="card-hdr">
-          <div className="card-title">Voice</div>
-          <div className="card-sub">how your agent sounds on the phone</div>
+          <div className="card-title">Language</div>
+        </div>
+        <div className="card-body">
+          <div className="voice-engine-row" role="radiogroup" aria-label="Language mode" style={{ marginBottom: 14 }}>
+            {LANGUAGE_MODES.map((m) => (
+              <button
+                key={m.value}
+                type="button"
+                role="radio"
+                aria-checked={languageMode === m.value}
+                className={`voice-engine-card${languageMode === m.value ? " on" : ""}`}
+                onClick={() => changeMode(m.value)}
+              >
+                <div className="agent-template-title">{m.label}</div>
+                <div className="agent-template-blurb">{m.blurb}</div>
+              </button>
+            ))}
+          </div>
+
+          {multilingual ? (
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Languages <span className="hint">pick {MAX_LANGUAGES}</span></label>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }} role="group" aria-label="Languages">
+                {SUPPORTED_LANGUAGES.map((l) => {
+                  const on = languages.includes(l.value);
+                  const full = !on && languages.length >= MAX_LANGUAGES;
+                  return (
+                    <button
+                      key={l.value}
+                      type="button"
+                      aria-pressed={on}
+                      disabled={full}
+                      className={`btn btn-sm ${on ? "btn-primary" : "btn-ghost"}`}
+                      onClick={() => toggleLanguage(l.value)}
+                      title={full ? `maximum ${MAX_LANGUAGES} languages` : undefined}
+                    >
+                      {languageLabel(l.value)}{on && l.value === primaryLanguage ? " · main" : ""}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="form-hint">
+                The agent greets in the main language, then follows whichever of the two the caller uses.
+                {languages.length < MAX_LANGUAGES && ` Pick ${MAX_LANGUAGES - languages.length} more.`}
+                {languages.length >= MAX_LANGUAGES && ` Maximum ${MAX_LANGUAGES} languages: remove one to pick another.`}
+              </div>
+            </div>
+          ) : (
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">What language will callers speak?</label>
+              <select className="form-select" value={primaryLanguage ?? ""} onChange={(e) => changeLanguages([e.target.value])}>
+                {SUPPORTED_LANGUAGES.map((l) => (
+                  <option key={l.value} value={l.value}>{languageLabel(l.value)}</option>
+                ))}
+              </select>
+              <div className="form-hint">Callers are heard and answered in this language.</div>
+              {droppedLanguage && (
+                <div className="voice-missing">
+                  <AlertCircle size={13} />
+                  <span>
+                    {languageLabel(droppedLanguage)} will be removed when you save, along with its voice.
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div style={{ marginTop: 14 }}>
+            {languages.map((lang) => <div key={lang}>{languageVoice(lang)}</div>)}
+          </div>
+
+          {languagesError && (
+            <div className="voice-missing">
+              <AlertCircle size={13} />
+              <span>{friendlyLanguageError(languagesError)}</span>
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="card" style={{ marginBottom: 14 }}>
+        <div className="card-hdr">
+          <div className="card-title">How it sounds</div>
+          <div className="card-sub">the voice callers hear on the phone</div>
         </div>
         <div className="card-body">
           <div className="voice-engine-row" role="radiogroup" aria-label="Where the voice comes from">
@@ -663,91 +757,10 @@ export function AgentVoiceSettings({
             </div>
             <div className="form-hint">
               {voiceConfigs.length > 0
-                ? "Saved right away, and shared by every agent that uses these voices."
+                ? "Saved right away. Every agent using these voices shares the same speed."
                 : "Pick a voice first."}
             </div>
           </div>
-        </div>
-      </div>
-      <div className="card" style={{ marginBottom: 14 }}>
-        <div className="card-hdr">
-          <div className="card-title">Language</div>
-        </div>
-        <div className="card-body">
-          <div className="voice-engine-row" role="radiogroup" aria-label="Language mode" style={{ marginBottom: 14 }}>
-            {LANGUAGE_MODES.map((m) => (
-              <button
-                key={m.value}
-                type="button"
-                role="radio"
-                aria-checked={languageMode === m.value}
-                className={`voice-engine-card${languageMode === m.value ? " on" : ""}`}
-                onClick={() => changeMode(m.value)}
-              >
-                <div className="agent-template-title">{m.label}</div>
-                <div className="agent-template-blurb">{m.blurb}</div>
-              </button>
-            ))}
-          </div>
-
-          {multilingual ? (
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <label className="form-label">Languages <span className="hint">pick {MAX_LANGUAGES}</span></label>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }} role="group" aria-label="Languages">
-                {SUPPORTED_LANGUAGES.map((l) => {
-                  const on = languages.includes(l.value);
-                  const full = !on && languages.length >= MAX_LANGUAGES;
-                  return (
-                    <button
-                      key={l.value}
-                      type="button"
-                      aria-pressed={on}
-                      disabled={full}
-                      className={`btn btn-sm ${on ? "btn-primary" : "btn-ghost"}`}
-                      onClick={() => toggleLanguage(l.value)}
-                      title={full ? `maximum ${MAX_LANGUAGES} languages` : undefined}
-                    >
-                      {languageLabel(l.value)}{on && l.value === primaryLanguage ? " · default" : ""}
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="form-hint">
-                The agent greets callers in the default language, then follows whichever of the two they speak.
-                {languages.length < MAX_LANGUAGES && ` Pick ${MAX_LANGUAGES - languages.length} more.`}
-                {languages.length >= MAX_LANGUAGES && ` Maximum ${MAX_LANGUAGES} languages: remove one to pick another.`}
-              </div>
-            </div>
-          ) : (
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <label className="form-label">What language will callers speak?</label>
-              <select className="form-select" value={primaryLanguage ?? ""} onChange={(e) => changeLanguages([e.target.value])}>
-                {SUPPORTED_LANGUAGES.map((l) => (
-                  <option key={l.value} value={l.value}>{languageLabel(l.value)}</option>
-                ))}
-              </select>
-              <div className="form-hint">Used to understand callers and to speak back.</div>
-              {droppedLanguage && (
-                <div className="voice-missing">
-                  <AlertCircle size={13} />
-                  <span>
-                    {languageLabel(droppedLanguage)} will be removed when you save, along with its voice.
-                  </span>
-                </div>
-              )}
-            </div>
-          )}
-
-          <div style={{ marginTop: 14 }}>
-            {languages.map((lang) => <div key={lang}>{languageVoice(lang)}</div>)}
-          </div>
-
-          {languagesError && (
-            <div className="voice-missing">
-              <AlertCircle size={13} />
-              <span>{languagesError}</span>
-            </div>
-          )}
         </div>
       </div>
 
@@ -755,13 +768,13 @@ export function AgentVoiceSettings({
 
       {part !== "voice" && <div className="card">
         <div className="card-hdr">
-          <div className="card-title">Listening &amp; thinking</div>
+          <div className="card-title">Hearing &amp; thinking</div>
           <div className="card-sub">both are needed to take calls</div>
         </div>
         <div className="card-body">
           <div className="form-row" style={{ flexWrap: "wrap" }}>
-            {providerSelect("stt", sttId, "Speech recognition", "Turns what the caller says into text.")}
-            {providerSelect("llm", llmId, "AI model", "Decides what to say and when to use tools.")}
+            {providerSelect("stt", sttId, "How it hears callers", "Turns speech into words the agent can understand.")}
+            {providerSelect("llm", llmId, "How it thinks", "Chooses what to say next.")}
           </div>
           {sttLanguageWarning && (
             <div className="voice-missing" style={{ marginTop: 0, marginBottom: 14 }}>

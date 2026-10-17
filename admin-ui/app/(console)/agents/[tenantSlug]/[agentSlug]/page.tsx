@@ -34,9 +34,9 @@ type Section = "instructions" | "voice" | "knowledge" | "settings" | "advanced";
 
 const SECTIONS: { key: Section; label: string; hint: string; icon: typeof FileText }[] = [
   { key: "instructions", label: "Instructions", hint: "What the agent says first and how it handles the call.", icon: FileText },
-  { key: "voice", label: "Voice", hint: "The language it speaks and how it sounds.", icon: Mic },
+  { key: "voice", label: "Language & voice", hint: "What callers speak and how the agent sounds.", icon: Mic },
   { key: "knowledge", label: "Knowledge", hint: "Documents and tools the agent can use to answer.", icon: BookOpen },
-  { key: "settings", label: "Settings", hint: "Phone number, AI model, speech recognition and call behaviour.", icon: Settings2 },
+  { key: "settings", label: "Settings", hint: "Phone number, how it thinks, and call behaviour.", icon: Settings2 },
 ];
 
 const ADVANCED = { key: "advanced" as Section, label: "Advanced", hint: "Optional: transfers to a person and ending the call.", icon: SlidersHorizontal };
@@ -300,7 +300,7 @@ export default function AgentDetailPage() {
     } catch (e) {
       const detail = e instanceof ApiError ? e.detail : "";
       setRewriteError(
-        detail === "no_ai_model" ? "Choose an AI model in Advanced first."
+        detail === "no_ai_model" ? "Choose how the agent thinks in Settings first."
           : detail === "unusable_output" ? "The AI's answer couldn't be used. Try wording it differently."
           : e instanceof ApiError && e.status === 429 ? "Too many requests. Try again in a few minutes."
           : "The AI couldn't rewrite this right now. Try again.",
@@ -426,12 +426,14 @@ export default function AgentDetailPage() {
 
   // First thing still stopping the agent from taking real calls.
   const blocker: { text: string; action?: string; section: Section } | null =
-    !form.llm_config_id ? { text: "Choose an AI model so the agent can think", action: "Choose", section: "settings" }
-      : !form.stt_config_id ? { text: "Choose speech recognition so the agent can hear callers", action: "Choose", section: "settings" }
+    !form.llm_config_id ? { text: "Choose how the agent thinks", action: "Choose", section: "settings" }
+      : !form.stt_config_id ? { text: "Choose how the agent hears callers", action: "Choose", section: "settings" }
       : !form.tts_config_id ? { text: "Pick a voice so the agent can speak", action: "Pick voice", section: "voice" }
       : !form.system_prompt?.trim() ? { text: "Write instructions so the agent knows its job", section: "instructions" }
       : needsNumber ? { text: "Almost ready — add a phone number to take real calls", action: "Add number", section: "settings" }
       : null;
+  // Language & voice is only about speaking — don't put Settings tasks in that banner.
+  const showBlocker = !!blocker && (blocker.section === section || section !== "voice");
 
   const saveStatus = saveError ? (
     <span className="ed-save err" title={saveError}><AlertCircle size={13} /> Not saved</span>
@@ -585,7 +587,7 @@ export default function AgentDetailPage() {
               )}
             </div>
           )}
-          {blocker && (
+          {showBlocker && blocker && (
             <div className="ed2-ready">
               <AlertCircle size={14} /> {blocker.text}
               {blocker.action && section !== blocker.section && (

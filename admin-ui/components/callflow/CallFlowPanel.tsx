@@ -5,7 +5,8 @@
 // Validation is always server-side (libs/config_sdk/callflow.py) so it can't drift from publish.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Settings } from "lucide-react";
+import { Modal } from "@/components/Modal";
 import {
   Background,
   Controls,
@@ -24,6 +25,7 @@ import { useRouter } from "next/navigation";
 import { Agent, ApiError, ProviderConfig, listAgents, listProviders, updateAgent } from "@/lib/api";
 import {
   CallFlow,
+  CallFlowDirection,
   CallFlowGraph,
   CallFlowNodeData,
   CallFlowNodeType,
@@ -34,6 +36,7 @@ import {
   getCallFlow,
   publishCallFlow,
   saveCallFlowDraft,
+  updateCallFlow,
   validateCallFlow,
 } from "@/lib/callFlowApi";
 import { nodeTypes } from "./nodes";
@@ -42,11 +45,11 @@ import { CallFlowVersionPanel } from "./VersionPanel";
 import { VoicePreviewButton } from "./VoicePreviewButton";
 
 const ADDABLE: { type: CallFlowNodeType; label: string; hint: string }[] = [
-  { type: "play", label: "Play message", hint: "Speaks a line, then continues" },
-  { type: "menu", label: "Menu", hint: "Branches on a keypress" },
-  { type: "collect", label: "Collect digits", hint: "Gathers a number into a value" },
-  { type: "dial", label: "Transfer", hint: "Sends the call to a human" },
-  { type: "agent", label: "AI agent", hint: "Hands over to a conversational agent" },
+  { type: "play", label: "Play a message", hint: "Speaks a line, then continues" },
+  { type: "menu", label: "Keypad menu", hint: "Callers choose with a key — press 1, press 2" },
+  { type: "collect", label: "Ask for a number", hint: "Account, PIN or date of birth" },
+  { type: "dial", label: "Transfer to a person", hint: "A phone number or SIP address" },
+  { type: "agent", label: "Hand to an AI agent", hint: "Your agent takes over" },
   { type: "hangup", label: "Hang up", hint: "Ends the call" },
 ];
 
@@ -95,6 +98,16 @@ function toGraph(nodes: Node[], edges: Edge[]): CallFlowGraph {
   };
 }
 
+type FlowMeta = Pick<CallFlow, "name" | "description" | "direction">;
+
+const pickMeta = ({ name, description, direction }: CallFlow): FlowMeta => ({ name, description, direction });
+
+const DIRECTIONS: { value: CallFlowDirection; label: string; blurb: string }[] = [
+  { value: "inbound", label: "People call us", blurb: "Inbound" },
+  { value: "outbound", label: "We call people", blurb: "Outbound" },
+  { value: "both", label: "Both", blurb: "Either direction" },
+];
+
 function Canvas({ flow, tenantSlug }: { flow: CallFlow; tenantSlug: string }) {
   const router = useRouter();
   const initial = useMemo(
@@ -112,40 +125,77 @@ function Canvas({ flow, tenantSlug }: { flow: CallFlow; tenantSlug: string }) {
   const [publishing, setPublishing] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [agentsLoaded, setAgentsLoaded] = useState(false);
+  const [agentsError, setAgentsError] = useState<string | null>(null);
   const [ttsProviders, setTtsProviders] = useState<ProviderConfig[]>([]);
   const [version, setVersion] = useState(flow.config_version);
 
   const saveTimer = useRef<number | null>(null);
   const firstRender = useRef(true);
-  const [attaching, setAttaching] = useState<string | null>(null);
   const [draggingType, setDraggingType] = useState<CallFlowNodeType | null>(null);
   const [showVersions, setShowVersions] = useState(false);
   const [versionsKey, setVersionsKey] = useState(0);
   const [deleting, setDeleting] = useState(false);
   const [published, setPublished] = useState(flow.graph !== null);
+  const [savedMeta, setSavedMeta] = useState(() => pickMeta(flow));
+  const [meta, setMeta] = useState(savedMeta);
+  const [savingMeta, setSavingMeta] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [agentPicks, setAgentPicks] = useState<Set<string>>(new Set());
   const { screenToFlowPosition } = useReactFlow();
 
   useEffect(() => {
-    listAgents(tenantSlug).then(setAgents).catch(() => {});
+    let cancelled = false;
+    listAgents(tenantSlug)
+      .then((found) => {
+        if (cancelled) return;
+        setAgents(found);
+        setAgentsLoaded(true);
+        setAgentsError(null);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setAgentsError(e instanceof ApiError ? e.detail : String(e));
+      });
+    return () => { cancelled = true; };
   }, [tenantSlug]);
 
   useEffect(() => {
     listProviders(flow.tenant_id, { role: "tts" }).then(setTtsProviders).catch(() => {});
   }, [flow.tenant_id]);
 
-  // Writes agents.call_flow_id.
-  const toggleAgent = async (agent: Agent, attach: boolean) => {
-    setAttaching(agent.id);
-    setBanner(null);
+  const attached = agents.filter((a) => a.call_flow_id === flow.id);
+
+  const openSettings = () => {
+    if (!agentsLoaded) return;
+    setMeta(savedMeta);
+    setAgentPicks(new Set(attached.map((a) => a.id)));
+    setSettingsError(null);
+    setSettingsOpen(true);
+  };
+
+  // Writes call_flows for the details and agents.call_flow_id for each agent whose tick changed.
+  const saveSettings = async () => {
+    if (!agentsLoaded) return;
+    setSavingMeta(true);
+    setSettingsError(null);
     try {
-      const updated = await updateAgent(tenantSlug, agent.id, {
-        call_flow_id: attach ? flow.id : null,
-      });
-      setAgents((as) => as.map((a) => (a.id === updated.id ? updated : a)));
+      if ((Object.keys(meta) as (keyof FlowMeta)[]).some((k) => meta[k] !== savedMeta[k])) {
+        setSavedMeta(pickMeta(await updateCallFlow(flow.id, { ...meta, name: meta.name.trim() })));
+      }
+      for (const a of agents) {
+        const want = agentPicks.has(a.id);
+        if (want === (a.call_flow_id === flow.id)) continue;
+        const updated = await updateAgent(tenantSlug, a.id, { call_flow_id: want ? flow.id : null });
+        setAgents((as) => as.map((x) => (x.id === updated.id ? updated : x)));
+      }
+      setSettingsOpen(false);
+      setBanner("Settings saved.");
     } catch (e) {
-      setBanner(e instanceof ApiError ? e.detail : String(e));
+      setSettingsError(e instanceof ApiError ? e.detail : String(e));
     } finally {
-      setAttaching(null);
+      setSavingMeta(false);
     }
   };
 
@@ -302,7 +352,7 @@ function Canvas({ flow, tenantSlug }: { flow: CallFlow; tenantSlug: string }) {
 
   const handleDelete = async () => {
     const msg =
-      `Delete "${flow.name}"? Any agents attached to it go back to answering directly, ` +
+      `Delete "${savedMeta.name}"? Any agents attached to it go back to answering directly, ` +
       `and its published versions go with it.`;
     if (!window.confirm(msg)) return;
     setDeleting(true);
@@ -355,20 +405,22 @@ function Canvas({ flow, tenantSlug }: { flow: CallFlow; tenantSlug: string }) {
     <div className="wf-root">
       <div className="cf-header">
         <button className="btn btn-ghost btn-sm" onClick={() => router.push("/ivr-call")}>
-          <ArrowLeft size={13} /> IVR-Call
+          <ArrowLeft size={13} /> All IVR-Calls
         </button>
         <div className="cf-header-title">
-          <h1>{flow.name}</h1>
-          <span className="mono cf-header-ver">v{version}</span>
+          <h1>{savedMeta.name}</h1>
           <span className={`badge ${published ? "green" : "gray"}`}>
-            {published ? "Published" : "Draft"}
+            {published ? `Published · v${version}` : "Draft — not published yet"}
           </span>
-          <span className="cf-header-dir">{flow.direction}</span>
+          <span className="badge gray">{DIRECTIONS.find((d) => d.value === savedMeta.direction)?.label}</span>
         </div>
         <div className="cf-header-actions">
           <span className="wf-save-state">
             {saveState === "saving" ? "Saving…" : saveState === "saved" ? "Draft saved" : saveState === "error" ? "Save failed" : ""}
           </span>
+          <button className="btn btn-ghost btn-sm" onClick={openSettings} disabled={!agentsLoaded}>
+            <Settings size={13} /> Settings
+          </button>
           <button className="btn btn-ghost btn-sm" onClick={() => setShowVersions((v) => !v)}>
             {showVersions ? "Hide history" : "Version history"}
           </button>
@@ -443,7 +495,7 @@ function Canvas({ flow, tenantSlug }: { flow: CallFlow; tenantSlug: string }) {
           <div className="wf-inspector">
             <div className="wf-inspector-hdr">
               <span className="wf-inspector-title">
-                {selected ? "Step settings" : selectedEdge ? "Branch" : "Nothing selected"}
+                {selected ? "Step settings" : selectedEdge ? "Branch" : "Edit a step"}
               </span>
               {(selected || selectedEdge) && (
                 <button className="btn btn-danger btn-sm" style={{ marginLeft: "auto" }} onClick={deleteSelected}>
@@ -461,8 +513,11 @@ function Canvas({ flow, tenantSlug }: { flow: CallFlow; tenantSlug: string }) {
 
             {!selected && !selectedEdge && (
               <div className="wf-inspector-empty">
-                <div className="wf-inspector-empty-title">Pick a step</div>
-                Click a step or a branch to edit it, or add one from the Add step bar above.
+                <ul style={{ margin: 0 }}>
+                  <li><b>Click a step</b> on the canvas to change what it says or does.</li>
+                  <li><b>Click a line</b> between steps to pick which key leads there.</li>
+                  <li><b>Add a step</b> by clicking or dragging one from the bar above.</li>
+                </ul>
               </div>
             )}
 
@@ -692,40 +747,23 @@ function Canvas({ flow, tenantSlug }: { flow: CallFlow; tenantSlug: string }) {
           </div>
 
           {!selected && !selectedEdge && (
-          <div className="wf-problems" style={{ marginBottom: 12 }}>
-            <div className="wf-problems-hdr wf-problems-hdr-warn">
-              Agents behind this menu
-            </div>
-            <div style={{ padding: "8px 12px" }}>
-              {agents.length === 0 ? (
-                <div className="form-hint">No agents in this account yet.</div>
-              ) : (
-                agents.map((a) => {
-                  const attached = a.call_flow_id === flow.id;
-                  const onOther = !attached && !!a.call_flow_id;
-                  return (
-                    <label
-                      key={a.id}
-                      title={onOther ? "Currently behind a different menu" : undefined}
-                      style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0", fontSize: ".76rem" }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={attached}
-                        disabled={attaching === a.id}
-                        onChange={(e) => toggleAgent(a, e.target.checked)}
-                      />
-                      <span style={{ opacity: onOther ? 0.55 : 1 }}>{a.name}</span>
-                      {onOther && <span className="wf-badge" style={{ marginLeft: "auto" }}>other menu</span>}
-                    </label>
-                  );
-                })
-              )}
-              <div className="form-hint" style={{ marginTop: 8 }}>
-                Calls to a ticked agent hear this menu first. Ticking an agent that is behind another
-                menu moves it to this one.
-              </div>
-            </div>
+          <div className="cf-who">
+            <div className="cf-who-title">Who hears this menu</div>
+            {!agentsLoaded ? (
+              <p>{agentsError ? `Could not load agents: ${agentsError}` : "Loading agents…"}</p>
+            ) : savedMeta.direction !== "inbound" ? (
+              <p>Calls only play menus set to People call us, so no caller hears this yet.</p>
+            ) : attached.length > 0 && published ? (
+              <p>Callers to <b>{attached.map((a) => a.name).join(", ")}</b> hear this menu first.</p>
+            ) : attached.length > 0 ? (
+              <p>This menu is attached to <b>{attached.map((a) => a.name).join(", ")}</b>, but callers cannot hear it until it is published.</p>
+            ) : (
+              <p>No agent uses this menu yet, so no caller hears it.</p>
+            )}
+            {!published && <p>Publish it once the steps look right — until then callers don&apos;t hear it.</p>}
+            <button className="btn btn-ghost btn-sm" onClick={openSettings} disabled={!agentsLoaded}>
+              {attached.length > 0 ? "Change agents" : "Choose agents"}
+            </button>
           </div>
           )}
 
@@ -759,6 +797,96 @@ function Canvas({ flow, tenantSlug }: { flow: CallFlow; tenantSlug: string }) {
           onRolledBack={handleRolledBack}
         />
       )}
+
+      <Modal
+        open={settingsOpen}
+        title="IVR-Call settings"
+        onClose={() => !savingMeta && setSettingsOpen(false)}
+        footer={
+          <>
+            <button className="btn btn-ghost btn-sm" onClick={() => setSettingsOpen(false)} disabled={savingMeta}>
+              Cancel
+            </button>
+            <button className="btn btn-primary btn-sm" onClick={saveSettings} disabled={!meta.name.trim() || savingMeta || !agentsLoaded}>
+              {savingMeta ? "Saving…" : "Save"}
+            </button>
+          </>
+        }
+      >
+        <div className="form-group">
+          <label className="form-label">Name</label>
+          <input
+            className="form-input"
+            value={meta.name}
+            maxLength={80}
+            onChange={(e) => setMeta({ ...meta, name: e.target.value })}
+          />
+        </div>
+        <div className="form-group">
+          <label className="form-label">Description <span className="qc-opt">(optional)</span></label>
+          <textarea
+            className="form-textarea"
+            rows={2}
+            value={meta.description}
+            placeholder="e.g. Main line — sends callers to sales or support"
+            onChange={(e) => setMeta({ ...meta, description: e.target.value })}
+          />
+        </div>
+        <div className="form-group">
+          <label className="form-label">Which calls is it for?</label>
+          <div className="qc-toggle three" role="radiogroup" aria-label="Which calls is it for?">
+            {DIRECTIONS.map((d) => (
+              <button
+                key={d.value}
+                type="button"
+                role="radio"
+                aria-checked={meta.direction === d.value}
+                className={meta.direction === d.value ? "on" : ""}
+                onClick={() => setMeta({ ...meta, direction: d.value })}
+              >
+                <b>{d.label}</b>
+                <span>{d.blurb}</span>
+              </button>
+            ))}
+          </div>
+          {meta.direction !== "inbound" && (
+            <div className="form-hint">Calls only play menus set to &ldquo;People call us&rdquo; for now.</div>
+          )}
+        </div>
+        <div className="form-group" style={{ marginBottom: 0 }}>
+          <label className="form-label">Agents that use this menu</label>
+          <div className="form-hint" style={{ marginBottom: 6 }}>
+            Callers to a ticked agent hear this menu before the agent answers.
+          </div>
+          {agents.length === 0 ? (
+            <div className="form-hint">No agents in this account yet.</div>
+          ) : (
+            <div className="qc-steps">
+              {agents.map((a) => {
+                const onOther = !!a.call_flow_id && a.call_flow_id !== flow.id;
+                return (
+                  <label key={a.id}>
+                    <input
+                      type="checkbox"
+                      checked={agentPicks.has(a.id)}
+                      onChange={(e) => {
+                        const next = new Set(agentPicks);
+                        if (e.target.checked) next.add(a.id); else next.delete(a.id);
+                        setAgentPicks(next);
+                      }}
+                    />
+                    <span>
+                      <b>{a.name}</b>
+                      {onOther && <span className="form-hint">Uses another menu — ticking moves it here.</span>}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        {settingsError && <div className="error-banner" style={{ marginTop: 12 }}>{settingsError}</div>}
+      </Modal>
     </div>
   );
 }

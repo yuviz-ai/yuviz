@@ -97,8 +97,8 @@ def test_needs_by_channel():
 
 
 def test_ui_quick_create_templates_have_unique_keys_and_no_blank_text():
-    # The Agents page's cards are UI-only prefills, not this catalogue (EasyAgentFlow is unused
-    # since 2026-10-07); TypeScript checks their shape, this checks what it can't.
+    # The Agents page's cards are UI-only prefills, not this catalogue; TypeScript checks
+    # their shape, this checks what it can't.
     src = (REPO / "admin-ui/lib/agentTemplates.ts").read_text()
     keys = re.findall(r'\bkey:\s*"([^"]+)"', src)
     assert keys and len(keys) == len(set(keys))
@@ -122,7 +122,7 @@ def test_public_catalog_exposes_only_display_fields():
         assert isinstance(e["needs"], list)
 
 
-# ---- criterion 7 copy scan (catalog side; easyCopy.ts is scanned from T13) -------------------
+# ---- criterion 7 copy scan (catalog side) ---------------------------------------------------
 
 def test_no_banned_word_in_catalog_display_fields():
     scanned = [getattr(t, f) for t in CATALOG for f in DISPLAY_FIELDS]
@@ -425,59 +425,6 @@ def test_enforce_raises_when_a_heading_is_missing_or_job_is_short():
 )
 def test_slugify(name, slug):
     assert slugify(name) == slug
-
-
-# ---- criterion 7 copy scan, easyCopy.ts side --------------------------------------------------
-
-EASY_COPY = REPO / "admin-ui/lib/easyCopy.ts"
-_TS_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.S)
-_TS_STRING = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
-_TS_STRING_OR_LINE_COMMENT = re.compile(r'"(?:[^"\\\n]|\\.)*"|//[^\n]*')
-
-
-def _easy_copy_source() -> str:
-    """easyCopy.ts without comments; a // inside a double-quoted string is kept."""
-    text = _TS_BLOCK_COMMENT.sub("", EASY_COPY.read_text())
-    return _TS_STRING_OR_LINE_COMMENT.sub(lambda m: m.group(0) if m.group(0)[0] == '"' else "", text)
-
-
-def _easy_copy_strings() -> list[str]:
-    return _TS_STRING.findall(_easy_copy_source())
-
-
-def test_easy_copy_has_only_double_quoted_strings():
-    # the scan reads only double-quoted literals, so any other quote style would escape it
-    rest = _TS_STRING.sub("", _easy_copy_source())
-    assert "'" not in rest and "`" not in rest
-
-
-def test_no_banned_word_in_easy_copy():
-    scanned = _easy_copy_strings()
-    assert len(scanned) > 0
-    assert [s for s in scanned if BANNED.search(s)] == []
-
-
-E2E_SPEC = REPO / "admin-ui/e2e/easy-create.spec.ts"
-
-
-def test_e2e_banned_list_matches():
-    # the Playwright spec keeps its own copy of the banned list; it must not drift
-    m = re.search(r"^const BANNED = /(.+)/gi;$", E2E_SPEC.read_text(), re.M)
-    assert m is not None
-    assert m.group(1) == BANNED.pattern
-
-
-def test_easy_copy_has_the_messages_the_design_fixes_verbatim():
-    scanned = _easy_copy_strings()
-    assert "Please remove double curly brackets {{ }} from this text." in scanned
-    assert (
-        "These instructions were changed by hand, so they can't be fixed automatically here. "
-        "You can still edit them on the receptionist's page."
-    ) in scanned
-    assert (
-        "That fix would copy details from a specific customer into the instructions. "
-        "Describe the problem in general terms and try again."
-    ) in scanned
 
 
 # ---- caller identity: act on existing records only for a caller the system identified -------

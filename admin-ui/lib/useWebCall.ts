@@ -39,14 +39,9 @@ export interface WebCall {
   reset: () => void;
 }
 
-// `testCredential` is for testing an agent that is not live yet: a one-shot
-// credential minted by Config for this call. It travels as the first WebSocket
-// frame, never in the URL. It is spent by the connection that sends it, so the
-// caller must pass a freshly minted one before every start().
-export function useWebCall(tenantSlug: string, agentSlug: string, testCredential?: string): WebCall {
+export function useWebCall(tenantSlug: string, agentSlug: string): WebCall {
   const [state, setState] = useState<CallState>("idle");
   const [transcript, setTranscript] = useState<{ role: "user" | "assistant"; text: string; ts: number }[]>([]);
-  const [transcriptOpen, setTranscriptOpen] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [micLevelPct, setMicLevelPct] = useState(0);
@@ -55,12 +50,6 @@ export function useWebCall(tenantSlug: string, agentSlug: string, testCredential
 
   // Bumped per call so a delayed end_call teardown can't tear down a newer call.
   const sessionGenRef = useRef<number>(0);
-  // undefined: not a test call. "": the credential was sent and is spent.
-  // Refilled only when the caller passes a different credential.
-  const testCredentialRef = useRef<string | undefined>(testCredential);
-  useEffect(() => {
-    testCredentialRef.current = testCredential;
-  }, [testCredential]);
   const wsRef = useRef<WebSocket | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -113,19 +102,11 @@ export function useWebCall(tenantSlug: string, agentSlug: string, testCredential
     audioCtxRef.current = null;
   };
 
-  // Reset when the modal closes and tear down on unmount so no mic/WS outlives it.
+  // Tear down on unmount so no mic or WebSocket outlives the test UI.
   useEffect(() => {
-    if (!open) {
-      teardown();
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setState("idle");
-      setTranscript([]);
-      setErrorMsg(null);
-      setMicLevelPct(0);
-    }
     return () => teardown();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, []);
 
   const playPcmChunk = (buf: ArrayBuffer) => {
     const ctx = audioCtxRef.current;
@@ -193,12 +174,6 @@ export function useWebCall(tenantSlug: string, agentSlug: string, testCredential
     setMutedState(false);
     setSessionId(null);
     setTranscript([]);
-    const credential = testCredentialRef.current;
-    if (credential === "") {
-      setState("error");
-      setErrorMsg("This test credential was already used. Start a new test.");
-      return;
-    }
     setState("connecting");
     setErrorMsg(null);
     try {
@@ -220,19 +195,12 @@ export function useWebCall(tenantSlug: string, agentSlug: string, testCredential
       // Not connected to ctx.destination, to avoid echoing the mic back.
 
       const ws = new WebSocket(
-        `${WEBCALL_URL}/webcall?tenant=${encodeURIComponent(tenantSlug)}&agent=${encodeURIComponent(agentSlug)}` +
-          (credential ? "&test=1" : ""),
+        `${WEBCALL_URL}/webcall?tenant=${encodeURIComponent(tenantSlug)}&agent=${encodeURIComponent(agentSlug)}`,
       );
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
 
-      ws.onopen = () => {
-        if (credential) {
-          ws.send(JSON.stringify({ type: "test_credential", credential }));
-          testCredentialRef.current = "";
-        }
-        // Talk is enabled on service_ready, not on open.
-      };
+      // Talk is enabled on service_ready, not on open.
       ws.onerror = () => {
         setState("error");
         setErrorMsg("Connection to the agent failed. Is the webcall bridge running?");

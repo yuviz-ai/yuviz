@@ -140,8 +140,8 @@ export const LANGUAGES = [
 export const OTHER = "__other__";
 
 export const LANGUAGE_MODES = [
-  { value: "monolingual", label: "Monolingual", blurb: "One language, spoken and answered throughout." },
-  { value: "multilingual", label: "Multilingual", blurb: "Two languages; the agent follows the caller between them." },
+  { value: "monolingual", label: "One language", blurb: "Callers speak and hear one language throughout." },
+  { value: "multilingual", label: "Two languages", blurb: "Callers may switch; the agent follows them." },
 ] as const;
 
 // Mirrors the server's cap on a multilingual agent's languages.
