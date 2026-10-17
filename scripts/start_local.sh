@@ -132,6 +132,13 @@ start_telephony_service() {
   python3 -m services.telephony
 }
 
+# ── Block 8d: DID Service (REST API, port 8200) — carrier number purchase/release ─
+start_did_service() {
+  _require JWT_SECRET SECRET_ENCRYPTION_KEY || return 0
+  cd "$REPO"
+  python3 -m uvicorn services.did.app:app --host "$LISTEN_HOST" --port 8200
+}
+
 # ── Block 9/10: Python ConversationService instances (ports 50051/50052) ─────
 _conv_env() {
   _require CONFIG_SERVICE_EMAIL CONFIG_SERVICE_PASSWORD SECRET_ENCRYPTION_KEY
@@ -183,7 +190,7 @@ start_admin_ui() {
 # ── Verify: check all services are healthy ───────────────────────────────────
 verify() {
   echo "=== Port check ==="
-  for port in 3306 5060 5080 5432 6379 11434 8000 8100 8400 8600 8750 50051 50052 10000 8080 3000; do
+  for port in 3306 5060 5080 5432 6379 11434 8000 8100 8200 8400 8600 8750 50051 50052 10000 8080 3000; do
     nc -z localhost "$port" 2>/dev/null && echo "  :$port  OPEN" || echo "  :$port  CLOSED"
   done
 
@@ -219,6 +226,7 @@ portmap() {
   :11434  Ollama     — local LLM + embedding provider
   :8000   Config Service    — REST API
   :8100   Knowledge Service — REST API (RAG)
+  :8200   DID Service       — REST API (carrier number purchase/release)
   :8400   Campaigns Service — REST API (outbound calling)
   :8600   Tool Execution Service — REST API (custom API chains)
   :8750   Telephony Service — REST API (Vobiz/Cloudonix webhooks + outbound)
@@ -226,7 +234,7 @@ portmap() {
   :50052  ConvSvc-2  — gRPC ConversationService
   :10000  Envoy      — gRPC load balancer (upstream -> 50051, 50052)
   :9901   Envoy admin — http://localhost:9901
-  :8080   C++ Gateway — WebSocket (FreeSWITCH mod_audio_fork -> here)
+  :8080   C++ Gateway — WebSocket (FreeSWITCH mod_audio_fork -> here), GET /health
   :9090   Gateway metrics — http://localhost:9090/metrics
   :3000   Admin UI   — Next.js
 EOF

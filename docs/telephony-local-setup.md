@@ -318,7 +318,7 @@ A few gotchas with `start_local.sh`:
 
 ### Or: one tab with supervisord (macOS)
 
-`deployment/supervisord.conf` runs every service above, plus Ollama, Knowledge, Campaigns, Toolexec, Telephony, Webcall and the Admin UI, from one terminal tab. It restarts any service that crashes. It calls the same `start_*` helpers, so settings still come from `.env`. MySQL, PostgreSQL and Redis stay under `brew services` (`start_mysql`, `start_data`).
+`deployment/supervisord.conf` runs every service above, plus Ollama, Knowledge, Campaigns, Toolexec, Telephony, DID, Webcall and the Admin UI, from one terminal tab. It restarts any service that crashes. It calls the same `start_*` helpers, so settings still come from `.env`. MySQL, PostgreSQL and Redis stay under `brew services` (`start_mysql`, `start_data`).
 
 ```bash
 brew install supervisor
@@ -329,15 +329,16 @@ supervisord -c deployment/supervisord.conf    # stays in the foreground; Ctrl-C 
 From any other tab:
 
 ```bash
-supervisorctl -c deployment/supervisord.conf status
-supervisorctl -c deployment/supervisord.conf restart gateway
+deployment/svc status
+deployment/svc restart gateway      # refused while calls are live; --force overrides
 tail -f ~/.yuviz/logs/gateway.log
 ```
 
+- **Or start it at login:** `deployment/autostart.sh install` (opt-in; macOS LaunchAgent, `ProcessType=Interactive`, restarted if it dies). Stop the terminal-tab supervisord first. `deployment/autostart.sh uninstall` removes it and stops every service.
 - **Run it in a normal foreground tab.** Every service inherits supervisord's CPU priority, so starting it with `&` or from a background launchd job slows call audio.
 - **Stop it with Ctrl-C, not by closing the tab.** Closing the tab sends SIGHUP, which supervisord treats as "reload and restart every service".
-- **Check for live calls before restarting** FreeSWITCH, the Gateway or the Conversation Services. `restart` doesn't check.
-- **After editing the config,** `supervisorctl -c deployment/supervisord.conf update` restarts only the services whose section changed.
+- **Use `deployment/svc`, not bare `supervisorctl`.** It takes the same commands, but refuses to stop or restart a call-path service (Kamailio, FreeSWITCH, Gateway, Envoy, Conversation, Webcall, Telephony), or run `update`/`reload`/`all`, while any call is live. It counts SIP channels on FreeSWITCH plus open `calls` rows, which covers Vobiz/Cloudonix and browser calls. If it can't count, it refuses too. `--force` cuts the calls off.
+- **After editing the config,** `deployment/svc update` restarts only the services whose section changed.
 - **Logs:** each service writes its own log to `~/.yuviz/logs/<service>.log`. `<service>.supervisor.log` holds only errors from starting it. The `log-rotate` listener checks hourly and rotates any log over 20 MB, keeping 3 (`.1`–`.3`).
 - **Crash loops stop instead of flapping:**
   - **Crashes during startup:** a service that dies within its first few seconds is retried 3 times, then marked FATAL.

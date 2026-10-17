@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# supervisorctl for this repo, but stop/restart of a call-path service is refused while calls are live (--force overrides).
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+CONF="$REPO/deployment/supervisord.conf"
+CALL_PATH=" kamailio freeswitch gateway envoy conversation-1 conversation-2 webcall telephony "
+# These act on every service at once.
+ALL_COMMANDS=" reload shutdown update "
+
+. "$REPO/scripts/lib/env.sh"
+. "$REPO/scripts/lib/sip.sh"
+[ -f "$REPO/.env" ] && _load_env
+POSTGRES_DSN="${POSTGRES_DSN:-postgresql://$USER@localhost:5432/voiceai}"
+
+force=0
+args=()
+for a in "$@"; do
+  if [ "$a" = "--force" ]; then force=1; else args+=("$a"); fi
+done
+[ ${#args[@]} -gt 0 ] || args=(status)
+cmd="${args[0]}"
+
+# SIP calls on FreeSWITCH; prints nothing when FreeSWITCH is down (then it carries no calls).
+fs_calls() {
+  local fs_cli
+  fs_cli="$(_fs_prefix 2>/dev/null || true)/bin/fs_cli"
+  [ -x "$fs_cli" ] || return 0
+  "$fs_cli" -H "${FREESWITCH_ESL_HOST:-127.0.0.1}" -P "${FREESWITCH_ESL_PORT:-8022}" -p "${FREESWITCH_ESL_PASSWORD:-}" \
+    -x "show calls count" 2>/dev/null | grep -oE '^[0-9]+ total' | cut -d' ' -f1 || true
+}
+
+# Every path (SIP, Vobiz/Cloudonix, browser) records a calls row; stale ones are reconciled.
+db_calls() {
+  psql "$POSTGRES_DSN" -Atc "SELECT count(*) FROM calls WHERE ended_at IS NULL AND started_at > now() - interval '2 hours'" 2>/dev/null
+}
+
+touches_call_path() {
+  [[ "$ALL_COMMANDS" == *" $cmd "* ]] && return 0
+  local t
+  for t in "${args[@]:1}"; do
+    [ "$t" = all ] && return 0
+    [[ "$CALL_PATH" == *" ${t#*:} "* ]] && return 0
+  done
+  return 1
+}
+
+if [ "$force" = 0 ] && [[ " stop restart $ALL_COMMANDS " == *" $cmd "* ]] && touches_call_path; then
+  sip=$(fs_calls)
+  db=$(db_calls) || db=""
+  if [ -z "$db" ]; then
+    echo "Refusing to $cmd: could not count live calls (is PostgreSQL up?). Re-run with --force to go ahead anyway." >&2
+    exit 1
+  fi
+  if [ "${sip:-0}" != 0 ] || [ "$db" != 0 ]; then
+    echo "Refusing to $cmd: ${sip:-0} SIP call(s) on FreeSWITCH, $db open call(s) in the database." >&2
+    echo "Wait for them to end, or re-run with --force to cut them off." >&2
+    exit 1
+  fi
+fi
+
+exec supervisorctl -c "$CONF" "${args[@]}"
