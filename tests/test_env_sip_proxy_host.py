@@ -122,3 +122,21 @@ def test_launchers_check_for_a_stale_sip_proxy_host(path, func):
 def test_update_kamailio_ip_warns_about_the_calling_shell():
     text = (REPO / "scripts" / "update_kamailio_ip.sh").read_text()
     assert text.index("_warn_env_drift SIP_PROXY_HOST") > text.index("_env_put SIP_PROXY_HOST")
+
+
+# Under supervisord the launching tab's exports would otherwise outlive every .env edit.
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("file_wins, expected", [("", "https://old.example"), ("1", "https://new.example")])
+def test_load_env_lets_a_non_blank_env_value_win_only_under_supervisord(shell, scratch_repo, file_wins, expected):
+    (scratch_repo / ".env").write_text("TELEPHONY_PUBLIC_BASE_URL=https://new.example\n")
+    out = _run(shell, scratch_repo, '_load_env; printf "%s" "$TELEPHONY_PUBLIC_BASE_URL"',
+               TELEPHONY_PUBLIC_BASE_URL="https://old.example", YUVIZ_ENV_FILE_WINS=file_wins)
+    assert out == expected
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_load_env_keeps_a_shell_value_for_a_key_blank_in_env_even_under_supervisord(shell, scratch_repo):
+    (scratch_repo / ".env").write_text("OPENAI_API_KEY=\n")
+    out = _run(shell, scratch_repo, '_load_env; printf "%s" "$OPENAI_API_KEY"',
+               OPENAI_API_KEY="sk-from-shell", YUVIZ_ENV_FILE_WINS="1")
+    assert out == "sk-from-shell"

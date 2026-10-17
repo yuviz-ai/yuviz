@@ -168,6 +168,12 @@ start_freeswitch() {
   _fs_start || return 0
 }
 
+# ── Block 13b: Webcall bridge (browser test calls, port 8300) ────────────────
+start_webcall() {
+  cd "$REPO"
+  python3 -m services.webcall
+}
+
 # ── Block 14: Admin UI (Next.js, port 3000) ───────────────────────────────────
 start_admin_ui() {
   cd "$REPO/admin-ui"

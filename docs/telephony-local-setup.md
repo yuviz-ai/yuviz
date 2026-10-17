@@ -316,6 +316,37 @@ A few gotchas with `start_local.sh`:
 - Settings come from the repo's `.env` (template `.env.example`), which sourcing the script creates and fills with generated secrets on first run. Each `start_*` names any setting it still needs, such as `FREESWITCH_ESL_PASSWORD`.
 - After rebuilding `mod_audio_fork`, **restart FreeSWITCH fully**. `reload mod_audio_fork` breaks the module's WebSocket layer, and FreeSWITCH exits on the next call.
 
+### Or: one tab with supervisord (macOS)
+
+`deployment/supervisord.conf` runs every service above, plus Ollama, Knowledge, Campaigns, Toolexec, Telephony, Webcall and the Admin UI, from one terminal tab. It restarts any service that crashes. It calls the same `start_*` helpers, so settings still come from `.env`, and a `.env` edit takes effect on the next `restart` even if the tab you started supervisord from had exported an older value. A key left blank in `.env` still comes from that tab. MySQL, PostgreSQL and Redis stay under `brew services` (`start_mysql`, `start_data`).
+
+```bash
+brew install supervisor
+mkdir -p ~/.yuviz/logs
+supervisord -c deployment/supervisord.conf    # stays in the foreground; Ctrl-C stops everything
+```
+
+From any other tab:
+
+```bash
+supervisorctl -c deployment/supervisord.conf status
+supervisorctl -c deployment/supervisord.conf restart gateway
+tail -f ~/.yuviz/logs/gateway.log
+```
+
+- **Run it in a normal foreground tab.** Every service inherits supervisord's CPU priority, so starting it with `&` or from a background launchd job slows call audio.
+- **Stop it with Ctrl-C, not by closing the tab.** Closing the tab sends SIGHUP, which supervisord treats as "reload and restart every service".
+- **Check for live calls before restarting** FreeSWITCH, the Gateway or the Conversation Services. `restart` doesn't check.
+- **After editing the config,** `supervisorctl -c deployment/supervisord.conf update` restarts only the services whose section changed.
+- **Network sync** (`install_network_sync`, `SIP_IP=auto`) works alongside it: `update_kamailio_ip.sh` restarts Kamailio, FreeSWITCH, the Gateway and Campaigns through `supervisorctl` while supervisord runs them.
+- **Logs:** each service writes its own log to `~/.yuviz/logs/<service>.log`. `<service>.supervisor.log` holds only errors from starting it. The `log-rotate` listener checks hourly and rotates any log over 20 MB, keeping 3 (`.1`–`.3`).
+- **Crash loops stop instead of flapping:**
+  - **Crashes during startup:** a service that dies within its first few seconds is retried 3 times, then marked FATAL.
+  - **Crashes after startup:** the `crash-watch` listener backs off. The first crash restarts at once, and the next ones wait 2, 4 and 8 s.
+  - **Circuit breaker:** after 5 crashes within 10 minutes, or a FATAL, the circuit opens. The service is stopped and gets one trial start after 5 minutes, then 10, 20 and so on, up to 1 hour. If it stays up for 10 minutes, the circuit closes.
+  - **Where to look:** `~/.yuviz/logs/crash-watch.log`, plus a macOS notification when the circuit opens. Install `terminal-notifier` so clicking it opens that log: `brew install terminal-notifier`, then launch it once with `open "$(brew --prefix terminal-notifier)/terminal-notifier.app"` so macOS registers it, and allow its notifications. Without it, the notification is credited to Script Editor.
+  - **Safe to restart:** state is saved in `~/.yuviz/crash-watch.json`, so a restart of crash-watch resumes pending restarts. A service you stop by hand is never restarted.
+
 ## Softphone
 
 Use **Zoiper 5** (free, zoiper.com). Linphone Desktop 6.2.1 registered fine

@@ -52,7 +52,20 @@ _env_put() {
 
 # Creates .env from .env.example, adds keys added to the example since, and
 # fills any blank platform secret. Never touches a value already set.
+# Serialised: concurrent starts (supervisord runs 15 at once) would each generate a different secret.
 _env_init() {
+  local lock="$REPO/.env.lock" waited=0 rc
+  until mkdir "$lock" 2>/dev/null; do
+    waited=$((waited + 1))
+    [ "$waited" -ge 100 ] && { rmdir "$lock" 2>/dev/null; waited=0; }
+    sleep 0.1
+  done
+  _env_init_locked; rc=$?
+  rmdir "$lock" 2>/dev/null
+  return $rc
+}
+
+_env_init_locked() {
   [ -f "$REPO/.env" ] || { (umask 077; cp "$REPO/.env.example" "$REPO/.env"); echo "✓ created .env from .env.example"; }
   local line key
   while IFS= read -r line; do
@@ -80,13 +93,14 @@ _env_init() {
 }
 
 # Exports every non-blank .env value, except variables already set in the
-# shell (so a one-off override still works).
+# shell (so a one-off override still works). Under supervisord (YUVIZ_ENV_FILE_WINS=1) a non-blank .env value wins.
 _load_env() {
   local line key value
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|'#'*) continue ;; esac
     key=${line%%=*}; value=${line#*=}
-    [ -n "$value" ] && [ -z "$(printenv "$key")" ] && export "$key=$value"
+    [ -n "$value" ] || continue
+    if [ "${YUVIZ_ENV_FILE_WINS:-}" = 1 ] || [ -z "$(printenv "$key")" ]; then export "$key=$value"; fi
   done < "$REPO/.env"
   export POSTGRES_DSN="${POSTGRES_DSN:-postgresql://$USER@localhost:5432/voiceai}"
   export LISTEN_HOST="${LISTEN_HOST:-127.0.0.1}"

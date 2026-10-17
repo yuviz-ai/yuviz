@@ -88,6 +88,13 @@ _stop() {
   kill -KILL "$@" 2>/dev/null || true
 }
 
+# Restarts go through supervisord when it runs the program, else a detached copy fights the supervised one.
+_sv() { supervisorctl -c "$REPO/deployment/supervisord.conf" "$@"; }
+_supervised() {
+  command -v supervisorctl >/dev/null 2>&1 &&
+    _sv status "$1" 2>/dev/null | grep -qE "^$1[[:space:]]+(RUNNING|STARTING|BACKOFF)"
+}
+
 # ── 2. Kamailio config ───────────────────────────────────────────────────────
 sed_escape() { printf '%s' "$1" | sed -e 's/[\\|&]/\\&/g'; }
 changed=0
@@ -115,6 +122,14 @@ elif ! kamailio -c -f "$KAMAILIO_DIR/kamailio.cfg" -Y "$KAMAILIO_DIR/run" >/dev/
   echo "  WARNING: new kamailio config does not check; the running one is left alone." >&2
   echo "    kamailio -c -f $KAMAILIO_DIR/kamailio.cfg -Y $KAMAILIO_DIR/run" >&2
   ok=0
+elif _supervised kamailio; then
+  # Its start reruns this script, which finds $LOCK held and starts Kamailio; this run does steps 3-5.
+  if _sv restart kamailio >/dev/null; then
+    echo "  kamailio: restarted by supervisord on $IP"
+  else
+    echo "  WARNING: supervisorctl restart kamailio failed; see supervisorctl status kamailio" >&2
+    ok=0
+  fi
 else
   _stop 10 "${kam_pids[@]}"
   (cd "$REPO" && nohup bash -c '. scripts/lib/sip.sh; _kamailio_start' >>"$YUVIZ_LOGS/kamailio.log" 2>&1 &)
@@ -164,9 +179,13 @@ else
   elif [[ "$running" == "$IP" ]]; then
     echo "  freeswitch: already on $IP"
   else
-    _fs 'fsctl shutdown' >/dev/null
-    _stop 20 $(pgrep -u "$(id -u)" -x freeswitch || true)
-    (cd "$REPO" && _fs_start -nc >>"$YUVIZ_LOGS/freeswitch.log" 2>&1) || true
+    if _supervised freeswitch; then
+      _sv restart freeswitch >/dev/null || { echo "  WARNING: supervisorctl restart freeswitch failed" >&2; ok=0; }
+    else
+      _fs 'fsctl shutdown' >/dev/null
+      _stop 20 $(pgrep -u "$(id -u)" -x freeswitch || true)
+      (cd "$REPO" && _fs_start -nc >>"$YUVIZ_LOGS/freeswitch.log" 2>&1) || true
+    fi
     for _ in $(seq 1 30); do [[ "$(_fs 'eval ${local_ip_v4}')" == "$IP" ]] && break; sleep 1; done
     echo "  freeswitch: restarted ($running -> $IP)"
   fi
@@ -201,6 +220,15 @@ _restart_stale() {
     [[ "$current" == "$IP" ]] || stale+=("$pid")
   done
   [[ ${#stale[@]} -gt 0 ]] || return 0
+  if _supervised "$label"; then
+    if _sv restart "$label" >/dev/null; then
+      echo "  $label: restarted by supervisord for SIP_PROXY_HOST=$IP"
+    else
+      echo "  WARNING: supervisorctl restart $label failed; it still has the old SIP_PROXY_HOST" >&2
+      ok=0
+    fi
+    return 0
+  fi
   _stop 40 "${stale[@]}"
   # env -u: else this shell's old value wins over .env.
   (cd "$REPO" && env -u SIP_PROXY_HOST nohup bash -c ". scripts/start_local.sh >/dev/null && $start" \
