@@ -385,7 +385,7 @@ export function ConnectorsPanel({
   };
 
   const searchInput = <label className="connected-apps-search"><Search size={16} aria-hidden="true" />
-    <input type="search" aria-label="Search apps" placeholder="Search apps…" value={query} onChange={(e) => setQuery(e.target.value)} />
+    <input type="search" aria-label="Search apps" placeholder="Connect an app" value={query} onChange={(e) => setQuery(e.target.value)} />
   </label>;
   const catalog = <>
     <div className="connected-apps-heading">

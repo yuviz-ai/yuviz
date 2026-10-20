@@ -1881,6 +1881,7 @@ body {
 .connected-apps-search { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 999px; padding: 9px 14px; background: var(--surf); color: var(--text-3); min-width: 0; flex-shrink: 0; }
 .connected-apps-search input { background: transparent; border: 0; outline: none; font: inherit; font-size: .8rem; color: var(--text); min-width: 0; width: 200px; }
 .connected-apps-search:focus-within { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.connected-apps-search input:focus-visible { outline: none; box-shadow: none; }
 .connected-apps-categories { display: flex; gap: 7px; flex-wrap: wrap; }
 .connected-apps-categories button { border: 1px solid var(--border); background: var(--surf); color: var(--text-2); padding: 5px 13px; border-radius: 999px; font: inherit; font-size: .75rem; cursor: pointer; }
 .connected-apps-categories button.on { border-color: var(--cyan); color: var(--cyan); background: var(--cyan-dim); font-weight: 600; }
@@ -1904,7 +1905,7 @@ body {
 .connected-app-setup-hint { font-size: .68rem; color: var(--text-3); line-height: 1.4; margin-top: -6px; }
 .connected-app-connect:hover:not(:disabled), .connected-app-add:hover:not(:disabled) { border-color: var(--cyan); color: var(--cyan); }
 .connected-app-actions button:disabled { opacity: .5; cursor: default; }
-.connected-apps-grid button:focus-visible, .connected-apps-heading input:focus-visible, .connected-apps-toolbar button:focus-visible, .connected-app-dialog button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+.connected-apps-grid button:focus-visible, .connected-apps-toolbar button:focus-visible, .connected-app-dialog button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
 .connected-app-dialog { display: flex; flex-direction: column; max-height: min(85vh, 760px); max-height: min(85dvh, 760px); overflow: hidden; }
 .connected-app-dialog .modal-hdr, .connected-app-dialog .modal-footer { flex-shrink: 0; }
 .connected-app-dialog .modal-body { overflow-y: auto; overscroll-behavior: contain; }
