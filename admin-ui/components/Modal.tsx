@@ -36,14 +36,19 @@ export function Modal({
       const elements = focusables();
       if (!elements.length) { event.preventDefault(); panel?.focus(); return; }
       const first = elements[0], last = elements[elements.length - 1];
+      if (!panel?.contains(document.activeElement)) {
+        event.preventDefault(); (event.shiftKey ? last : first).focus(); return;
+      }
       if (event.shiftKey && (document.activeElement === first || document.activeElement === panel)) {
         event.preventDefault(); last.focus();
       } else if (!event.shiftKey && document.activeElement === last) {
         event.preventDefault(); first.focus();
       }
     };
-    panel?.addEventListener("keydown", handleKey);
-    return () => { panel?.removeEventListener("keydown", handleKey); if (previous?.isConnected) previous.focus(); };
+    // A button can lose focus as it becomes disabled during a request. Keep
+    // Escape and focus trapping active even if focus falls back to the body.
+    document.addEventListener("keydown", handleKey);
+    return () => { document.removeEventListener("keydown", handleKey); if (previous?.isConnected) previous.focus(); };
   }, [open, className]);
 
   if (!open) return null;

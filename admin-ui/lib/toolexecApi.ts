@@ -137,10 +137,11 @@ export interface OAuthConnection {
 export const listOAuthProviders = () => request<OAuthProvider[]>("/oauth-providers");
 export const listOAuthConnections = (tenantId: string) =>
   request<OAuthConnection[]>(`/tenants/${tenantId}/oauth-connections`);
-export const authorizeOAuthConnection = (tenantId: string, provider: string, presetKey: string | null) =>
+export const authorizeOAuthConnection = (tenantId: string, provider: string, presetKey: string | null, signal?: AbortSignal) =>
   request<{ authorize_url: string }>(`/tenants/${tenantId}/oauth-connections/${provider}/authorize`, {
     method: "POST",
     body: JSON.stringify({ preset_key: presetKey }),
+    signal,
   });
 // A provider with no consent redirect (cal.com): the key is sent once, sealed by the server, never returned.
 export const connectApiKey = (tenantId: string, provider: string, apiKey: string) =>

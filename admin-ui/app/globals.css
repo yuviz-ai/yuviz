@@ -1951,3 +1951,9 @@ body {
   .connected-app-dialog .connected-app-manage-row > div:first-child { flex-basis: 100%; }
   .connected-app-dialog .connected-app-manage-row .btn { min-height: 40px; flex: 1; justify-content: center; }
 }
+
+/* Plivo's monochrome mark follows the console's dark surfaces. */
+:root[data-theme="dark"] .connected-app-icon img[src$="/plivo.svg"] { filter: invert(1); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .connected-app-icon img[src$="/plivo.svg"] { filter: invert(1); }
+}

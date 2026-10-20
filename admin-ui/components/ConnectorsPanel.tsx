@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Check, Plus, Search } from "lucide-react";
 import { ApiError, getCurrentUser, listCarriers, listTelephonyConfigs, listPhoneNumbers, deleteCarrier, deleteTelephonyConfig } from "@/lib/api";
@@ -139,6 +139,7 @@ export function ConnectorsPanel({
   const [formError, setFormError] = useState<string | null>(null);
 
   const [oauthIntro, setOauthIntro] = useState<{ provider: OAuthProvider; presetKey: string | null; changing: boolean } | null>(null);
+  const oauthRequest = useRef<AbortController | null>(null);
   const [whatsAppStep, setWhatsAppStep] = useState<"key" | "messaging">("key");
   const [pasting, setPasting] = useState<OAuthProvider | null>(null);
   const [apiKey, setApiKey] = useState("");
@@ -190,19 +191,59 @@ export function ConnectorsPanel({
     document.getElementById(whatsAppStep === "key" ? "preset-api_key" : "preset-provider")?.focus();
   }, [applying?.key, whatsAppStep]);
 
+  useEffect(() => {
+    // Back/forward cache can restore the page exactly as it was while leaving
+    // for Google. Reset that transient request state when the browser returns.
+    const resetOAuth = () => {
+      oauthRequest.current?.abort();
+      oauthRequest.current = null;
+      setBusy((current) => current?.startsWith("connect:") ? null : current);
+    };
+    window.addEventListener("pageshow", resetOAuth);
+    return () => {
+      window.removeEventListener("pageshow", resetOAuth);
+      oauthRequest.current?.abort();
+      oauthRequest.current = null;
+    };
+  }, []);
+
+  const closeOAuth = () => {
+    oauthRequest.current?.abort();
+    oauthRequest.current = null;
+    setBusy((current) => current?.startsWith("connect:") ? null : current);
+    setOauthIntro(null);
+    setError(null);
+  };
+
   const rowsFor = (presetKey: string) => apis.filter((a) => a.preset_key === presetKey);
   const providerLabel = (key: string) => providers.find((p) => p.key === key)?.label ?? key;
   const connect = async (provider: string, presetKey: string | null, chooseAccount = false) => {
+    oauthRequest.current?.abort();
+    const request = new AbortController();
+    oauthRequest.current = request;
+    let timedOut = false;
+    const timeout = window.setTimeout(() => { timedOut = true; request.abort(); }, 15_000);
     setBusy(`connect:${provider}`);
     setError(null);
     try {
-      const { authorize_url } = await authorizeOAuthConnection(tenantId, provider, presetKey);
+      const { authorize_url } = await authorizeOAuthConnection(tenantId, provider, presetKey, request.signal);
+      if (request.signal.aborted || oauthRequest.current !== request) return;
       const context: OAuthContext = { tenantId, provider, returnTo: "/integrations" };
       window.sessionStorage.setItem(OAUTH_CONTEXT_KEY, JSON.stringify(context));
       window.location.assign(oauthAuthorizationUrl(authorize_url, provider, chooseAccount));
     } catch (e) {
-      setError(errorText(e));
-      setBusy(null);
+      if (oauthRequest.current !== request) return;
+      if (!request.signal.aborted || timedOut) {
+        setError(timedOut ? "Opening this app took too long. Please try again." : errorText(e));
+      }
+    } finally {
+      window.clearTimeout(timeout);
+      // location.assign starts navigation synchronously. Never save a stuck
+      // "Opening…" state in the page that the Back button will restore.
+      if (oauthRequest.current === request) {
+        oauthRequest.current = null;
+        setBusy((current) => current === `connect:${provider}` ? null : current);
+      }
     }
   };
 
@@ -476,7 +517,8 @@ export function ConnectorsPanel({
 
       <Modal className="connected-app-dialog connected-app-oauth-dialog" open={oauthIntro !== null}
         title={oauthIntro?.changing ? `Change ${oauthIntro.provider.label} account` : `Connect ${oauthIntro?.provider.label ?? "app"}`}
-        onClose={() => { if (!busy) setOauthIntro(null); }}>
+        onClose={closeOAuth}
+        footer={<button className="btn btn-ghost btn-sm" onClick={closeOAuth}>Cancel</button>}>
         {error && <div className="error-banner" role="alert">{error}</div>}
         <div className="connected-app-oauth">
           {/* eslint-disable-next-line @next/next/no-img-element */}
