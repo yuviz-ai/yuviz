@@ -395,13 +395,13 @@ export function ConnectorsPanel({
     <div className="connected-apps-toolbar">
       <div className="connected-apps-segments" aria-label="Connection status">
         {["All", "Connected", "Not connected"].map((value) => <button key={value} type="button" aria-pressed={segment === value}
-          className={segment === value ? "on" : ""} onClick={() => setSegment(value)}>
+          className={segment === value ? "on" : ""} onClick={() => { setSegment(value); if (value === "All") setCategory("All"); }}>
           {value} · {cards.filter((app) => value === "All" || (value === "Connected" ? app.connected : !app.connected)).length}
         </button>)}
       </div>
       <div className="connected-apps-categories" aria-label="App category">
-        {["All", "Calling", "Work", "Messaging"].map((value) => <button key={value} type="button" aria-pressed={category === value}
-          className={category === value ? "on" : ""} onClick={() => setCategory(value)}>{value}</button>)}
+        {["Calling", "Work", "Messaging"].map((value) => <button key={value} type="button" aria-pressed={category === value}
+          className={category === value ? "on" : ""} onClick={() => setCategory((current) => current === value ? "All" : value)}>{value}</button>)}
       </div>
     </div>
     <div className="connected-apps-grid">

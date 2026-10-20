@@ -1,1 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="5" fill="#2B6DE5"/><path fill="#fff" d="M8.2 14.8c-1.7 0-3.1-1.4-3.1-3.1S6.5 8.6 8.2 8.6c.4 0 .8.1 1.2.2.6-1.6 2.1-2.7 3.9-2.7 2.3 0 4.1 1.8 4.1 4.1 0 .2 0 .4-.1.6 1.3.3 2.2 1.5 2.2 2.9 0 1.7-1.4 3.1-3.1 3.1H8.2z"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <title>Cloudonix</title>
+  <defs><clipPath id="circle"><circle cx="256" cy="256" r="256"/></clipPath></defs>
+  <g clip-path="url(#circle)">
+    <circle cx="256" cy="256" r="256" fill="#009A96"/>
+    <path fill="#FFF" d="M174 13.5A256 256 0 0 0 66 84l125 168L61 424a256 256 0 0 0 105 71.5L277 336V178L174 13.5Z"/>
+    <path fill="#FFF" d="M390 85.5h56a256 256 0 0 1 28 35.5l-96 127 102 134a256 256 0 0 1-25 33h-57L319 306V198l71-112.5Z"/>
+  </g>
+</svg>
