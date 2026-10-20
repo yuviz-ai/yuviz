@@ -27,18 +27,19 @@ function Integrations() {
           Connected Apps
         </h1>
         <div className="form-hint" style={{ marginTop: 4 }}>
-          {tenant ? `Connected accounts and ready-made tools for ${tenant.name}.` : "Connected accounts and ready-made tools."}
+          Link the phone lines and work tools your agents use.
         </div>
       </div>
 
       {loading ? (
         <div className="card">
-          <div className="empty-state">Loading integrations…</div>
+          <div className="empty-state">Loading apps…</div>
         </div>
       ) : tenant ? (
         <ConnectorsPanel
           key={tenant.id}
           tenantId={tenant.id}
+          manageApp={searchParams.get("manage") ?? undefined}
           connectOpen={searchParams.get("add") === "1"}
           onConnectClose={() => router.replace("/integrations")}
         />

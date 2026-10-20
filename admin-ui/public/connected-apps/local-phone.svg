@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <title>Local phone</title>
+  <rect width="24" height="24" rx="5" fill="#8A5A3B"/>
+  <path d="M17.5 14.6v2a1.4 1.4 0 0 1-1.5 1.4A12.7 12.7 0 0 1 6 8a1.4 1.4 0 0 1 1.4-1.5h2a.7.7 0 0 1 .7.6l.4 2a.7.7 0 0 1-.2.7l-1 1a10 10 0 0 0 4 4l1-1a.7.7 0 0 1 .7-.2l2 .4a.7.7 0 0 1 .5.6Z" stroke="#FFF" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

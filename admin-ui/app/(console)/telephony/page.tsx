@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, ExternalLink } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import {
   Agent,
   ApiError,
@@ -16,9 +16,7 @@ import {
   PurchasedNumber,
   Tenant,
   TelephonyConfig,
-  createCarrier,
   createPhoneNumber,
-  createTelephonyConfig,
   deletePhoneNumber,
   getCurrentUser,
   ProviderSync,
@@ -33,12 +31,9 @@ import {
   purchaseNumber,
   releaseNumber,
   searchAvailableNumbers,
-  updateCarrier,
   updatePhoneNumber,
-  updateTelephonyConfig,
 } from "@/lib/api";
 import { Modal } from "@/components/Modal";
-import { secretPayload } from "@/components/SecretRefInput";
 import { useActiveTenant } from "@/lib/useActiveTenant";
 
 const CARRIER_PROVIDER_LABEL: Record<CarrierProvider, string> = {
@@ -46,14 +41,11 @@ const CARRIER_PROVIDER_LABEL: Record<CarrierProvider, string> = {
   plivo: "Plivo",
   vonage: "Vonage",
 };
-const CARRIER_PROVIDERS: CarrierProvider[] = ["twilio", "plivo", "vonage"];
 const TELEPHONY_PROVIDER_LABEL: Record<string, string> = {
-  cloudonix: "Cloudonix", vobiz: "Vobiz", native: "Native (local SIP)",
+  cloudonix: "Cloudonix", vobiz: "Vobiz", native: "Local phone",
 };
-const TELEPHONY_PROVIDERS = ["cloudonix", "vobiz"] as const;
 // The platform's own Kamailio + FreeSWITCH: no credentials, superadmin-only.
 const NATIVE = "native" as const;
-type NewConfigProvider = CarrierProvider | (typeof TELEPHONY_PROVIDERS)[number] | typeof NATIVE;
 
 // Recent calls per account used for activity columns; there's no per-DID aggregate endpoint.
 const CALL_WINDOW = 200;
@@ -213,7 +205,6 @@ export default function TelephonyPage() {
   const [reloadKey, setReloadKey] = useState(0);
   const refresh = () => setReloadKey((k) => k + 1);
 
-  const [addOpen, setAddOpen] = useState(false);
   const [numberSearch, setNumberSearch] = useState("");
   const [editNumber, setEditNumber] = useState<NumberRow | null>(null);
   // Lives here, not in ConfigDetail: a refresh briefly unmounts the detail view.
@@ -384,17 +375,15 @@ export default function TelephonyPage() {
     if (target) {
       router.replace(`/telephony?config=${encodeURIComponent(target.key)}&add=1`);
     } else {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setAddOpen(true);
-      router.replace("/telephony");
+      router.replace("/integrations?add=1");
     }
   }, [wantsAdd, loading, selectedKey, configs, isSuperadmin, router]);
 
   const accountLine = isAllTenants
-    ? `SIP trunks, DID numbers and routing across ${allTenants.length} account${allTenants.length === 1 ? "" : "s"}.`
+    ? `Phone numbers, call activity and routing across ${allTenants.length} account${allTenants.length === 1 ? "" : "s"}.`
     : tenant
-      ? `SIP trunks, DID numbers and routing for ${tenant.name}.${isPlatformScoped ? " Switch accounts from the header." : ""}`
-      : "SIP trunks, DID numbers and routing.";
+      ? `Phone numbers, call activity and routing for ${tenant.name}.${isPlatformScoped ? " Switch accounts from the header." : ""}`
+      : "Phone numbers, call activity and routing.";
 
   if (selectedKey && !loading) {
     return selectedConfig ? (
@@ -417,7 +406,7 @@ export default function TelephonyPage() {
           selection.
         </div>
         <button className="btn btn-ghost btn-sm" onClick={() => router.push("/telephony")} style={{ marginTop: 10 }}>
-          Back to Configurations
+          Back to Phone Numbers
         </button>
       </div>
     );
@@ -445,30 +434,24 @@ export default function TelephonyPage() {
         <>
           <div className="card">
             <div className="card-hdr">
-              <span className="card-title">Configurations</span>
+              <span className="card-title">Connected calling apps</span>
               <span className="card-sub" style={{ marginLeft: "auto" }}>
                 {fmtInt(visibleConfigs.length)} of {fmtInt(configs.length)} configured
               </span>
               <input
                 className="form-input"
                 style={{ width: 200 }}
-                placeholder="Search configurations"
+                placeholder="Search calling apps"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
-              <button
-                className="btn btn-primary btn-sm"
-                onClick={() => setAddOpen(true)}
-                disabled={allTenants.length === 0}
-              >
-                + Add configuration
-              </button>
+              <Link className="btn btn-ghost btn-sm" href="/integrations">Manage connected apps</Link>
             </div>
 
             {visibleConfigs.length === 0 ? (
               <div className="empty-state">
                 {configs.length === 0
-                  ? "No telephony configurations yet — add a carrier (Twilio/Plivo/Vonage), a webhook provider (Cloudonix/Vobiz), or Native (local SIP)."
+                  ? "No calling apps connected yet. Connect an app on Connected Apps, then come back to buy or add a number."
                   : `No configurations match "${search}".`}
               </div>
             ) : (
@@ -507,7 +490,7 @@ export default function TelephonyPage() {
             {visibleNumbers.length === 0 ? (
               <div className="empty-state">
                 {numbers.length === 0
-                  ? "No numbers yet. Open a configuration above and add one."
+                  ? "No numbers yet. Choose a connected calling app above to buy or add one."
                   : `No numbers match "${numberSearch}".`}
               </div>
             ) : (
@@ -517,7 +500,7 @@ export default function TelephonyPage() {
                     <tr>
                       <th>Number</th>
                       {isAllTenants && <th>Account</th>}
-                      <th>Configuration</th>
+                      <th>Calling app</th>
                       <th>Routes to</th>
                       <th>Status</th>
                       <th>Provider routing</th>
@@ -571,298 +554,7 @@ export default function TelephonyPage() {
         onChanged={refresh}
       />
 
-      <AddConfigModal
-        open={addOpen}
-        onClose={() => setAddOpen(false)}
-        allTenants={allTenants}
-        defaultTenantId={tenant?.id ?? allTenants[0]?.id ?? ""}
-        isSuperadmin={isSuperadmin}
-        onCreated={() => {
-          setAddOpen(false);
-          refresh();
-        }}
-      />
     </>
-  );
-}
-
-// The API never returns a saved credential: it sends "[stored]" in its place.
-// An edit form therefore starts these inputs empty, and an untouched one
-// submits "[stored]" so the server keeps what it already holds; a typed value
-// is plaintext for the server to encrypt (never an `enc:` ref).
-const STORED = "[stored]";
-const STORED_PLACEHOLDER = "Stored — type to replace";
-const isMasked = (v: unknown): boolean => typeof v === "string" && v === STORED;
-
-/** auth_token_ref/auth_token fields for a carrier from what was typed. */
-function carrierTokenFields(typed: string, stored: boolean): { auth_token_ref?: string; auth_token?: string } {
-  if (!typed) return stored ? { auth_token_ref: STORED } : {};
-  const { api_key_ref, api_key } = secretPayload(typed);
-  return { auth_token_ref: api_key_ref, auth_token: api_key };
-}
-
-function AddConfigModal({
-  open, onClose, allTenants, defaultTenantId, isSuperadmin, onCreated,
-}: {
-  open: boolean; onClose: () => void; allTenants: Tenant[]; defaultTenantId: string; isSuperadmin: boolean;
-  onCreated: () => void;
-}) {
-  const [tenantId, setTenantId] = useState(defaultTenantId);
-  const [provider, setProvider] = useState<NewConfigProvider>("twilio");
-  const [name, setName] = useState("");
-  const [authId, setAuthId] = useState("");
-  const [authTokenRef, setAuthTokenRef] = useState("");
-  const [carrierAccountRef, setCarrierAccountRef] = useState("");
-  const [domain, setDomain] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [vobizAuthId, setVobizAuthId] = useState("");
-  const [vobizAuthToken, setVobizAuthToken] = useState("");
-  const [isDefaultOutbound, setIsDefaultOutbound] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setTenantId(defaultTenantId);
-    setProvider("twilio");
-    setName("");
-    setAuthId("");
-    setAuthTokenRef("");
-    setCarrierAccountRef("");
-    setDomain("");
-    setApiKey("");
-    setVobizAuthId("");
-    setVobizAuthToken("");
-    setIsDefaultOutbound(false);
-    setFormError(null);
-  }, [open, defaultTenantId]);
-
-  const isCarrier = (CARRIER_PROVIDERS as string[]).includes(provider);
-  const isNative = provider === NATIVE;
-
-  const handleSubmit = async () => {
-    setSubmitting(true);
-    setFormError(null);
-    try {
-      if (isCarrier) {
-        await createCarrier(tenantId, {
-          name,
-          provider: provider as CarrierProvider,
-          auth_id: authId || undefined,
-          ...carrierTokenFields(authTokenRef, false),
-          carrier_account_ref: carrierAccountRef || undefined,
-        });
-      } else if (isNative) {
-        await createTelephonyConfig(tenantId, { name, provider: NATIVE, credentials: {}, is_default_outbound: false });
-      } else if (provider === "cloudonix") {
-        await createTelephonyConfig(tenantId, {
-          name,
-          provider: "cloudonix",
-          credentials: { domain, api_keys: [apiKey] },
-          is_default_outbound: isDefaultOutbound,
-        });
-      } else {
-        await createTelephonyConfig(tenantId, {
-          name,
-          provider: "vobiz",
-          credentials: { auth_id: vobizAuthId, auth_token: vobizAuthToken },
-          is_default_outbound: isDefaultOutbound,
-        });
-      }
-      onCreated();
-    } catch (e) {
-      setFormError(e instanceof ApiError ? e.detail : String(e));
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const canSubmit =
-    !!name &&
-    (isCarrier || isNative
-      ? true
-      : provider === "cloudonix"
-        ? !!domain && !!apiKey
-        : !!vobizAuthId && !!vobizAuthToken);
-
-  const allProviders: NewConfigProvider[] = [
-    ...CARRIER_PROVIDERS, ...TELEPHONY_PROVIDERS, ...(isSuperadmin ? [NATIVE] : []),
-  ];
-  const providerLabel = (p: NewConfigProvider) =>
-    (CARRIER_PROVIDER_LABEL as Record<string, string>)[p] ?? (TELEPHONY_PROVIDER_LABEL as Record<string, string>)[p] ?? p;
-  const docsUrl: Record<string, string> = {
-    twilio: "https://www.twilio.com/docs",
-    plivo: "https://www.plivo.com/docs/",
-    vonage: "https://developer.vonage.com/",
-    cloudonix: "https://developers.cloudonix.com",
-    // vobiz has no public docs — it's this platform's own internal provider, not a third-party product.
-  };
-
-  return (
-    <Modal
-      open={open}
-      title="Add telephony configuration"
-      onClose={onClose}
-      footer={
-        <>
-          <button className="btn btn-ghost btn-sm" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary btn-sm" onClick={handleSubmit} disabled={submitting || !canSubmit}>
-            {submitting ? "Adding…" : "Create"}
-          </button>
-        </>
-      }
-    >
-      <div className="hint" style={{ display: "block", marginBottom: 14, lineHeight: 1.5 }}>
-        Connect a telephony provider account. Phone numbers are added after the configuration is created.
-      </div>
-
-      {formError && <div className="error-banner">{formError}</div>}
-
-      {allTenants.length > 1 && (
-        <div className="form-group">
-          <label className="form-label">Account</label>
-          <select className="form-select" value={tenantId} onChange={(e) => setTenantId(e.target.value)}>
-            {allTenants.map((t) => (
-              <option key={t.id} value={t.id}>{t.name}</option>
-            ))}
-          </select>
-        </div>
-      )}
-
-      <div className="form-group">
-        <label className="form-label">
-          Name <span className="required">*</span>
-        </label>
-        <input className="form-input" value={name} onChange={(e) => setName(e.target.value)} />
-      </div>
-
-      <div className="form-group">
-        <label className="form-label">Provider</label>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {allProviders.map((p) => (
-            <button
-              key={p}
-              type="button"
-              className={`btn btn-sm ${provider === p ? "btn-primary" : "btn-ghost"}`}
-              onClick={() => setProvider(p)}
-            >
-              {providerLabel(p)}
-            </button>
-          ))}
-        </div>
-        {docsUrl[provider] && (
-          <a href={docsUrl[provider]} target="_blank" rel="noreferrer" className="hint" style={{ display: "inline-flex", alignItems: "center", gap: 4, marginTop: 6 }}>
-            {providerLabel(provider)} docs <ExternalLink size={12} />
-          </a>
-        )}
-      </div>
-
-      <div className="form-group">
-        <label className="form-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <input
-            type="checkbox"
-            checked={isDefaultOutbound && !isNative}
-            disabled={isCarrier || isNative}
-            onChange={(e) => setIsDefaultOutbound(e.target.checked)}
-          />
-          Set as default for outbound calls
-        </label>
-        <div
-          style={{
-            fontSize: ".7rem", color: "var(--text-3)", lineHeight: 1.5, marginTop: 6,
-            padding: "8px 10px", borderLeft: "2px solid var(--cyan-border)", background: "var(--surf-2)",
-          }}
-        >
-          {isCarrier ? (
-            <>Carriers (Twilio/Plivo/Vonage) don&apos;t have a default-outbound column yet — this stays disabled
-              until that&apos;s added, rather than silently accepting a setting that won&apos;t save.</>
-          ) : isNative ? (
-            <>Not available for Native: the default is used to place calls through a REST provider, and native
-              numbers dial through the platform&apos;s FreeSWITCH.</>
-          ) : (
-            <>Used by test calls and campaigns when no specific configuration is selected.</>
-          )}
-        </div>
-      </div>
-
-      <div style={{ borderTop: "1px solid var(--border)", margin: "4px 0 14px" }} />
-
-      {isCarrier && (
-        <>
-          <div className="form-group">
-            <label className="form-label">
-              Account SID / Auth ID <span className="hint">e.g. AC... for Twilio, Auth ID for Plivo</span>
-            </label>
-            <input className="form-input" value={authId} onChange={(e) => setAuthId(e.target.value)} />
-          </div>
-          <div className="form-group">
-            <label className="form-label">
-              Auth Token <span className="hint">encrypted before it is stored</span>
-            </label>
-            <input
-              className="form-input"
-              style={{ fontFamily: "var(--mono)" }}
-              type="password"
-              autoComplete="off"
-              value={authTokenRef}
-              onChange={(e) => setAuthTokenRef(e.target.value)}
-            />
-          </div>
-          <div className="form-group">
-            <label className="form-label">Carrier Account Ref <span className="hint">optional</span></label>
-            <input className="form-input" value={carrierAccountRef} onChange={(e) => setCarrierAccountRef(e.target.value)} />
-          </div>
-        </>
-      )}
-
-      {provider === "cloudonix" && (
-        <>
-          <div className="form-group">
-            <label className="form-label">
-              Domain <span className="required">*</span>
-            </label>
-            <input className="form-input" value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="myaccount.cloudonix.net" />
-          </div>
-          <div className="form-group">
-            <label className="form-label">
-              API Key <span className="required">*</span>
-            </label>
-            <input className="form-input" type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
-          </div>
-        </>
-      )}
-
-      {isNative && (
-        <div className="hint" style={{ display: "block", lineHeight: 1.6, marginBottom: 14 }}>
-          Local SIP numbers on this platform&apos;s own Kamailio + FreeSWITCH — no provider account or credentials.
-          Calls reach an agent when the platform&apos;s SIP proxy routes the dialed number to FreeSWITCH; each
-          number you add here is matched to its inbound agent. One Native configuration per account.
-        </div>
-      )}
-
-      {provider === "vobiz" && (
-        <>
-          <div className="form-group">
-            <label className="form-label">
-              Auth ID <span className="required">*</span>
-            </label>
-            <input className="form-input" value={vobizAuthId} onChange={(e) => setVobizAuthId(e.target.value)} />
-          </div>
-          <div className="form-group">
-            <label className="form-label">
-              Auth Token <span className="required">*</span>
-            </label>
-            <input className="form-input" type="password" value={vobizAuthToken} onChange={(e) => setVobizAuthToken(e.target.value)} />
-          </div>
-        </>
-      )}
-
-      <div className="form-group">
-        <div className="form-label" style={{ color: "var(--text-3)", fontWeight: 500 }}>Phone Numbers</div>
-        <div className="hint" style={{ display: "block" }}>Managed separately, on the configuration page after it&apos;s created.</div>
-      </div>
-    </Modal>
   );
 }
 
@@ -916,7 +608,6 @@ function ConfigDetail({
     }
   };
   const [error, setError] = useState<string | null>(null);
-  const [editing, setEditing] = useState(false);
   const [addOpen, setAddOpen] = useState(openAddNumber);
   const [purchased, setPurchased] = useState<PurchasedNumber[]>([]);
   const [editTarget, setEditTarget] = useState<NumberRow | null>(null);
@@ -937,12 +628,10 @@ function ConfigDetail({
   const purchasedFor = (n: NumberRow) =>
     purchased.find((p) => p.carrier_id === config.id && digits(p.phone_number) === digits(n.did));
 
-  const webhookUrl = webhookUrlFor(config);
-
   return (
     <>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18, flexWrap: "wrap" }}>
-        <button className="btn btn-ghost btn-sm" onClick={onBack}><ArrowLeft size={13} /> Configurations</button>
+        <button className="btn btn-ghost btn-sm" onClick={onBack}><ArrowLeft size={13} /> Phone Numbers</button>
         <h1 style={{ fontSize: "1.3rem", fontWeight: 600, letterSpacing: "-.025em", margin: 0, color: "var(--text)" }}>
           {config.name}
         </h1>
@@ -953,33 +642,9 @@ function ConfigDetail({
       {error && <div className="error-banner">{error}</div>}
       {syncNotice && <div className={syncNotice.ok ? "info-banner" : "error-banner"}>{syncNotice.text}</div>}
 
-      {isNative ? (
-        <div className="card" style={{ marginBottom: 16 }}>
-          <div className="card-hdr">
-            <span className="card-title">Connection</span>
-            <span className="card-sub">managed by the platform</span>
-          </div>
-          <div className="card-body" style={{ fontSize: ".82rem", color: "var(--text-2)", lineHeight: 1.6 }}>
-            Local SIP on the platform&apos;s own Kamailio + FreeSWITCH — there are no credentials or webhook to set.
-            An inbound call reaches its agent when the SIP proxy routes the dialed number to FreeSWITCH, and the number
-            below is matched to its inbound agent. Numbers here are assigned by the platform; account admins can change
-            each number&apos;s agent and status.
-          </div>
-        </div>
-      ) : (
-        <div className="card" style={{ marginBottom: 16 }}>
-          <div className="card-hdr">
-            <span className="card-title">Credentials</span>
-            <span className="card-sub">masked — use Edit to change</span>
-            <button className="btn btn-ghost btn-sm" style={{ marginLeft: "auto" }} onClick={() => setEditing(true)}>
-              Edit credentials
-            </button>
-          </div>
-          <div className="card-body" style={{ padding: "0 16px" }}>
-            <CredentialsRows config={config} webhookUrl={webhookUrl} />
-          </div>
-        </div>
-      )}
+      <div className="info-banner" style={{ marginBottom: 16 }}>
+        {config.providerLabel} is connected. <Link href={`/integrations?manage=calling:${config.provider}`}>Manage this app on Connected Apps</Link>.
+      </div>
 
       <div className="card">
         <div className="card-hdr">
@@ -1051,7 +716,6 @@ function ConfigDetail({
         )}
       </div>
 
-      <EditCredentialsModal open={editing} onClose={() => setEditing(false)} config={config} onSaved={() => { setEditing(false); onChanged(); }} />
 
       {tenant && (
         <AddNumberModal
@@ -1077,237 +741,6 @@ function ConfigDetail({
         onChanged={onChanged}
       />
     </>
-  );
-}
-
-function CredentialsRows({ config, webhookUrl }: { config: ConfigRow; webhookUrl: string | null }) {
-  const rowStyle = { display: "flex", gap: 10, padding: "6px 0", borderBottom: "1px solid var(--border)", fontSize: ".82rem" } as const;
-  const labelStyle = { color: "var(--text-3)", width: 190, flexShrink: 0 } as const;
-  const valueStyle = { fontFamily: "var(--mono)", color: "var(--text)", wordBreak: "break-all" } as const;
-  const mask = (v: string | null | undefined) => (v ? "•".repeat(Math.min(20, Math.max(8, v.length))) : "—");
-
-  if (config.kind === "carrier" && config.carrier) {
-    const c = config.carrier;
-    return (
-      <>
-        <div style={rowStyle}><div style={labelStyle}>Configuration ID</div><div style={valueStyle}>{c.id}</div></div>
-        <div style={rowStyle}><div style={labelStyle}>Provider</div><div style={valueStyle}>{config.providerLabel}</div></div>
-        <div style={rowStyle}><div style={labelStyle}>Account SID / Auth ID</div><div style={valueStyle}>{c.auth_id ?? "—"}</div></div>
-        <div style={rowStyle}><div style={labelStyle}>Auth Token</div><div style={valueStyle}>{mask(c.auth_token_ref)}</div></div>
-        <div style={{ ...rowStyle, borderBottom: "none" }}>
-          <div style={labelStyle}>Carrier Account Ref</div><div style={valueStyle}>{c.carrier_account_ref ?? "—"}</div>
-        </div>
-      </>
-    );
-  }
-  if (config.kind === "telephony_config" && config.telephonyConfig) {
-    const tc = config.telephonyConfig;
-    const creds = tc.credentials as Record<string, unknown>;
-    return (
-      <>
-        <div style={rowStyle}><div style={labelStyle}>Configuration ID</div><div style={valueStyle}>{tc.id}</div></div>
-        <div style={rowStyle}><div style={labelStyle}>Provider</div><div style={valueStyle}>{config.providerLabel}</div></div>
-        {tc.provider === "cloudonix" && (
-          <>
-            <div style={rowStyle}><div style={labelStyle}>Domain</div><div style={valueStyle}>{String(creds.domain ?? "—")}</div></div>
-            <div style={rowStyle}><div style={labelStyle}>API Key</div><div style={valueStyle}>{mask(Array.isArray(creds.api_keys) ? String(creds.api_keys[0]) : null)}</div></div>
-          </>
-        )}
-        {tc.provider === "vobiz" && (
-          <>
-            <div style={rowStyle}><div style={labelStyle}>Auth ID</div><div style={valueStyle}>{String(creds.auth_id ?? "—")}</div></div>
-            <div style={rowStyle}><div style={labelStyle}>Auth Token</div><div style={valueStyle}>{mask(creds.auth_token as string | undefined)}</div></div>
-          </>
-        )}
-        {webhookUrl && (
-          <div style={{ ...rowStyle, borderBottom: "none", flexDirection: "column", gap: 4 }}>
-            <div style={{ display: "flex", gap: 10 }}>
-              <div style={labelStyle}>Inbound webhook URL</div><div style={valueStyle}>{webhookUrl}</div>
-            </div>
-            {webhookUrl.startsWith("/") && (
-              <div style={{ fontSize: ".68rem", color: "var(--text-3)", marginLeft: 200 }}>
-                Shown as a relative path — set{" "}
-                {tc.provider === "cloudonix" ? "NEXT_PUBLIC_CLOUDONIX_SERVICE_URL" : "NEXT_PUBLIC_VOBIZ_SERVICE_URL"}{" "}
-                to show the full, copyable URL.
-              </div>
-            )}
-          </div>
-        )}
-      </>
-    );
-  }
-  return null;
-}
-
-function EditCredentialsModal({
-  open, onClose, config, onSaved,
-}: { open: boolean; onClose: () => void; config: ConfigRow; onSaved: () => void }) {
-  const [name, setName] = useState("");
-  const [authId, setAuthId] = useState("");
-  const [authTokenRef, setAuthTokenRef] = useState("");
-  const [carrierAccountRef, setCarrierAccountRef] = useState("");
-  const [domain, setDomain] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [vobizAuthId, setVobizAuthId] = useState("");
-  const [vobizAuthToken, setVobizAuthToken] = useState("");
-  const [isDefaultOutbound, setIsDefaultOutbound] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
-
-  const creds = (config.telephonyConfig?.credentials ?? {}) as Record<string, unknown>;
-  const carrierTokenStored = isMasked(config.carrier?.auth_token_ref);
-  const secretStored = config.provider === "cloudonix"
-    ? Array.isArray(creds.api_keys) && isMasked(creds.api_keys[0])
-    : isMasked(creds.auth_token);
-
-  useEffect(() => {
-    if (!open) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setFormError(null);
-    if (config.kind === "carrier" && config.carrier) {
-      setName(config.carrier.name);
-      setAuthId(config.carrier.auth_id ?? "");
-      setAuthTokenRef(isMasked(config.carrier.auth_token_ref) ? "" : config.carrier.auth_token_ref ?? "");
-      setCarrierAccountRef(config.carrier.carrier_account_ref ?? "");
-    } else if (config.kind === "telephony_config" && config.telephonyConfig) {
-      const tc = config.telephonyConfig;
-      const creds = tc.credentials as Record<string, unknown>;
-      setName(tc.name);
-      setIsDefaultOutbound(tc.is_default_outbound);
-      if (tc.provider === "cloudonix") {
-        setDomain(String(creds.domain ?? ""));
-        setApiKey(Array.isArray(creds.api_keys) && !isMasked(creds.api_keys[0]) ? String(creds.api_keys[0]) : "");
-      } else {
-        setVobizAuthId(String(creds.auth_id ?? ""));
-        setVobizAuthToken(isMasked(creds.auth_token) ? "" : String(creds.auth_token ?? ""));
-      }
-    }
-  }, [open, config]);
-
-  const handleSave = async () => {
-    setSubmitting(true);
-    setFormError(null);
-    try {
-      if (config.kind === "carrier") {
-        await updateCarrier(config.id, {
-          name,
-          auth_id: authId || undefined,
-          // An untouched pointer is left out: only a platform operator may
-          // submit one, and renaming the carrier should not need that.
-          ...(authTokenRef === (config.carrier?.auth_token_ref ?? "")
-            ? {}
-            : carrierTokenFields(authTokenRef, carrierTokenStored)),
-          carrier_account_ref: carrierAccountRef || undefined,
-        });
-      } else {
-        const secret = (typed: string) => typed || (secretStored ? STORED : typed);
-        const credentials = config.provider === "cloudonix"
-          ? { domain, api_keys: [secret(apiKey)] }
-          : { auth_id: vobizAuthId, auth_token: secret(vobizAuthToken) };
-        await updateTelephonyConfig(config.id, { name, credentials, is_default_outbound: isDefaultOutbound });
-      }
-      onSaved();
-    } catch (e) {
-      setFormError(e instanceof ApiError ? e.detail : String(e));
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <Modal
-      open={open}
-      title={`Edit Credentials — ${config.name}`}
-      onClose={onClose}
-      footer={
-        <>
-          <button className="btn btn-ghost btn-sm" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary btn-sm" onClick={handleSave} disabled={submitting || !name}>
-            {submitting ? "Saving…" : "Save Changes"}
-          </button>
-        </>
-      }
-    >
-      {formError && <div className="error-banner">{formError}</div>}
-      <div className="form-group">
-        <label className="form-label">Name <span className="required">*</span></label>
-        <input className="form-input" value={name} onChange={(e) => setName(e.target.value)} />
-      </div>
-
-      {config.kind === "carrier" && (
-        <>
-          <div className="form-group">
-            <label className="form-label">Account SID / Auth ID</label>
-            <input className="form-input" value={authId} onChange={(e) => setAuthId(e.target.value)} />
-          </div>
-          <div className="form-group">
-            <label className="form-label">Auth Token</label>
-            <input
-              className="form-input"
-              style={{ fontFamily: "var(--mono)" }}
-              type="password"
-              autoComplete="off"
-              value={authTokenRef}
-              placeholder={carrierTokenStored ? STORED_PLACEHOLDER : undefined}
-              onChange={(e) => setAuthTokenRef(e.target.value)}
-            />
-          </div>
-          <div className="form-group">
-            <label className="form-label">Carrier Account Ref</label>
-            <input className="form-input" value={carrierAccountRef} onChange={(e) => setCarrierAccountRef(e.target.value)} />
-          </div>
-        </>
-      )}
-
-      {config.kind === "telephony_config" && config.provider === "cloudonix" && (
-        <>
-          <div className="form-group">
-            <label className="form-label">Domain</label>
-            <input className="form-input" value={domain} onChange={(e) => setDomain(e.target.value)} />
-          </div>
-          <div className="form-group">
-            <label className="form-label">API Key</label>
-            <input
-              className="form-input"
-              type="password"
-              autoComplete="off"
-              value={apiKey}
-              placeholder={secretStored ? STORED_PLACEHOLDER : undefined}
-              onChange={(e) => setApiKey(e.target.value)}
-            />
-          </div>
-        </>
-      )}
-
-      {config.kind === "telephony_config" && config.provider === "vobiz" && (
-        <>
-          <div className="form-group">
-            <label className="form-label">Auth ID</label>
-            <input className="form-input" value={vobizAuthId} onChange={(e) => setVobizAuthId(e.target.value)} />
-          </div>
-          <div className="form-group">
-            <label className="form-label">Auth Token</label>
-            <input
-              className="form-input"
-              type="password"
-              autoComplete="off"
-              value={vobizAuthToken}
-              placeholder={secretStored ? STORED_PLACEHOLDER : undefined}
-              onChange={(e) => setVobizAuthToken(e.target.value)}
-            />
-          </div>
-        </>
-      )}
-
-      {config.kind === "telephony_config" && (
-        <div className="form-group">
-          <label className="form-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <input type="checkbox" checked={isDefaultOutbound} onChange={(e) => setIsDefaultOutbound(e.target.checked)} />
-            Set as default for outbound calls
-          </label>
-        </div>
-      )}
-    </Modal>
   );
 }
 

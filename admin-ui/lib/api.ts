@@ -556,6 +556,8 @@ export interface CarrierUpdate {
 export const listCarriers = (tenantId: string) => request<Carrier[]>(`/tenants/${tenantId}/carriers`);
 export const createCarrier = (tenantId: string, body: CarrierCreate) =>
   request<Carrier>(`/tenants/${tenantId}/carriers`, { method: "POST", body: JSON.stringify(body) });
+export const deleteCarrier = (carrierId: string) =>
+  request<void>(`/carriers/${carrierId}`, { method: "DELETE" });
 export const updateCarrier = (carrierId: string, body: CarrierUpdate) =>
   request<Carrier>(`/carriers/${carrierId}`, { method: "PATCH", body: JSON.stringify(body) });
 
@@ -593,6 +595,8 @@ export const listTelephonyConfigs = (tenantId: string) =>
   request<TelephonyConfig[]>(`/tenants/${tenantId}/telephony-configs`);
 export const createTelephonyConfig = (tenantId: string, body: TelephonyConfigCreate) =>
   request<TelephonyConfig>(`/tenants/${tenantId}/telephony-configs`, { method: "POST", body: JSON.stringify(body) });
+export const deleteTelephonyConfig = (configId: string) =>
+  request<void>(`/telephony-configs/${configId}`, { method: "DELETE" });
 export const getTelephonyConfig = (configId: string) =>
   request<TelephonyConfig>(`/telephony-configs/${configId}`);
 export const syncTelephonyNumbers = (configId: string) =>
