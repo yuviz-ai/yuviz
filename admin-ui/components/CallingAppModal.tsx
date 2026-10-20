@@ -74,7 +74,7 @@ export function CallingAppModal({ tenantId, provider, account, onClose, onSaved 
   };
 
   return (
-    <Modal open title={`${account ? "Manage" : "Connect"} ${label}`} onClose={() => { if (!busy) onClose(); }} footer={
+    <Modal className="connected-app-dialog" open title={`${account ? "Manage" : "Connect"} ${label}`} onClose={() => { if (!busy) onClose(); }} footer={
       <>
         <button className="btn btn-ghost btn-sm" disabled={busy} onClick={onClose}>Cancel</button>
         <button className="btn btn-primary btn-sm" disabled={busy || !valid} onClick={save}>

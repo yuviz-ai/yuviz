@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { filterApps, workAppCards } from "./connectedApps.ts";
+import { availabilityLabel, filterApps, oauthAuthorizationUrl, workAppCards } from "./connectedApps.ts";
 
 const providers = [{ key: "google", label: "Google", auth_kind: "oauth2" }, { key: "zoho", label: "Zoho", auth_kind: "oauth2" }];
 const presets = [
@@ -9,10 +9,14 @@ const presets = [
   { key: "whatsapp_confirmation", title: "WhatsApp confirmation", provider: null },
 ];
 
-test("catalog keeps deployment providers, nests calendar under Google, and marks unavailable apps coming soon", () => {
+test("catalog keeps deployment providers, nests calendar under Google, and distinguishes setup from upcoming apps", () => {
   const cards = workAppCards(providers, [], presets, []);
   assert.equal(cards.find((c) => c.id === "zoho").available, true);
   assert.equal(cards.find((c) => c.id === "calcom").available, false);
+  assert.equal(availabilityLabel(cards.find((c) => c.id === "calcom")), "Needs setup");
+  assert.equal(availabilityLabel(cards.find((c) => c.id === "salesforce")), "Needs setup");
+  assert.equal(availabilityLabel(cards.find((c) => c.id === "dynamics_crm")), "Coming soon");
+  assert.equal(cards.find((c) => c.id === "hubspot").available, false);
   assert.equal(cards.find((c) => c.id === "dynamics_crm").available, false);
   assert.equal(cards.some((c) => c.id === "calendar_booking"), false);
   assert.equal(cards.find((c) => c.id === "whatsapp_confirmation").available, true);
@@ -43,4 +47,30 @@ test("search, category and connection filters intersect without changing the cat
   assert.equal(filterApps(cards, "google", "Not connected", "Work").some((c) => c.id === "google"), false);
   assert.equal(filterApps(cards, "no such app", "All", "All").length, 0);
   assert.equal(cards.length, workAppCards(providers, [], presets, []).length);
+});
+
+
+test("connected account details are searchable without exposing disconnected accounts", () => {
+  const connection = { id: "g1", provider: "google", status: "connected", account_label: "admin@example.com" };
+  const cards = workAppCards(providers, [connection, { ...connection, id: "old", status: "disconnected", account_label: "old@example.com" }], presets, []);
+  assert.deepEqual(cards.find((c) => c.id === "google").accounts, [connection]);
+  assert.deepEqual(filterApps(cards, "admin@example.com", "Connected", "Work").map((c) => c.id), ["google"]);
+  assert.equal(filterApps(cards, "old@example.com", "All", "All").length, 0);
+});
+
+test("CRM tools stay inside their account's Manage dialog", () => {
+  const cards = workAppCards(providers, [], [...presets, { key: "salesforce_crm", title: "Contact lookup", provider: "salesforce" }], []);
+  assert.equal(cards.filter((c) => c.id === "salesforce").length, 1);
+  assert.equal(cards.some((c) => c.id === "salesforce_crm"), false);
+});
+
+test("changing Google accounts requests its chooser while retaining the server's OAuth parameters", () => {
+  const original = "https://accounts.google.com/o/oauth2/v2/auth?state=single-use&code_challenge=pkce&redirect_uri=https%3A%2F%2Fconsole.test%2Fintegrations%2Fcallback&prompt=consent";
+  const result = new URL(oauthAuthorizationUrl(original, "google", true));
+  assert.equal(result.searchParams.get("prompt"), "consent select_account");
+  assert.equal(result.searchParams.get("state"), "single-use");
+  assert.equal(result.searchParams.get("code_challenge"), "pkce");
+  assert.equal(result.searchParams.get("redirect_uri"), "https://console.test/integrations/callback");
+  assert.equal(oauthAuthorizationUrl(original, "google", false), original);
+  assert.equal(oauthAuthorizationUrl(original, "salesforce", true), original);
 });

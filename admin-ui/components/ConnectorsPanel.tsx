@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Check, Plus, Search } from "lucide-react";
 import { ApiError, getCurrentUser, listCarriers, listTelephonyConfigs, listPhoneNumbers, deleteCarrier, deleteTelephonyConfig } from "@/lib/api";
 import { CallingAppModal, CALLING_APPS, CallingAccount } from "@/components/CallingAppModal";
-import { AppCard, filterApps, workAppCards } from "@/lib/connectedApps";
+import { AppCard, availabilityLabel, filterApps, oauthAuthorizationUrl, workAppCards } from "@/lib/connectedApps";
 import {
   ConnectorPreset,
   CustomApi,
@@ -138,6 +138,8 @@ export function ConnectorsPanel({
   const [values, setValues] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState<string | null>(null);
 
+  const [oauthIntro, setOauthIntro] = useState<{ provider: OAuthProvider; presetKey: string | null; changing: boolean } | null>(null);
+  const [whatsAppStep, setWhatsAppStep] = useState<"key" | "messaging">("key");
   const [pasting, setPasting] = useState<OAuthProvider | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [keyError, setKeyError] = useState<string | null>(null);
@@ -183,16 +185,21 @@ export function ConnectorsPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenantId]);
 
+  useEffect(() => {
+    if (applying?.key !== "whatsapp_confirmation") return;
+    document.getElementById(whatsAppStep === "key" ? "preset-api_key" : "preset-provider")?.focus();
+  }, [applying?.key, whatsAppStep]);
+
   const rowsFor = (presetKey: string) => apis.filter((a) => a.preset_key === presetKey);
   const providerLabel = (key: string) => providers.find((p) => p.key === key)?.label ?? key;
-  const connect = async (provider: string, presetKey: string | null) => {
+  const connect = async (provider: string, presetKey: string | null, chooseAccount = false) => {
     setBusy(`connect:${provider}`);
     setError(null);
     try {
       const { authorize_url } = await authorizeOAuthConnection(tenantId, provider, presetKey);
       const context: OAuthContext = { tenantId, provider, returnTo: "/integrations" };
       window.sessionStorage.setItem(OAUTH_CONTEXT_KEY, JSON.stringify(context));
-      window.location.assign(authorize_url);
+      window.location.assign(oauthAuthorizationUrl(authorize_url, provider, chooseAccount));
     } catch (e) {
       setError(errorText(e));
       setBusy(null);
@@ -239,6 +246,7 @@ export function ConnectorsPanel({
     setApplying(preset);
     setValues(presetDefaults(preset.key));
     setFormError(null);
+    setWhatsAppStep("key");
   };
 
   const apply = async () => {
@@ -246,7 +254,8 @@ export function ConnectorsPanel({
     setBusy(`apply:${applying.key}`);
     setFormError(null);
     try {
-      await applyConnectorPreset(tenantId, setupFor(applying.key, values));
+      const setup = setupFor(applying.key, values);
+      await applyConnectorPreset(tenantId, setup);
       setApplying(null);
       setShowPhoneNumbersLink(false);
       setValues({});
@@ -255,7 +264,9 @@ export function ConnectorsPanel({
     } catch (e) {
       if (e instanceof ApiError && e.status === 409 && CONNECTOR_REQUIRED.has(e.detail) && applying.provider) {
         // Authorize with this preset's scopes; the admin applies again on return.
-        await connect(applying.provider, applying.key);
+        const provider = providers.find((p) => p.key === applying.provider);
+        if (provider) { setApplying(null); setValues({}); setOauthIntro({ provider, presetKey: applying.key, changing: false }); }
+        else setFormError("This app needs setup by a platform admin before you can connect.");
         return;
       }
       setFormError(errorText(e));
@@ -300,6 +311,7 @@ export function ConnectorsPanel({
     }),
     ...workAppCards(providers, connections, presets, apis),
   ];
+  const choosingApp = connectOpen && canManage && !oauthIntro && !applying && !pasting && !callingForm;
   const visible = filterApps(cards, query, segment, category);
   const managed = cards.find((app) => app.id === managing);
   const canEdit = (app: AppCard) => canManage && (app.calling !== "native" || isSuperadmin);
@@ -310,7 +322,7 @@ export function ConnectorsPanel({
     else if (app.preset) openApply(app.preset);
     else if (app.provider?.auth_kind === "api_key") {
       setPasting(app.provider); setApiKey(""); setKeyError(null);
-    } else if (app.provider) void connect(app.provider.key, null);
+    } else if (app.provider) setOauthIntro({ provider: app.provider, presetKey: null, changing: app.id === "google" && !!app.accounts?.length });
   };
   const disconnectCalling = async (account: CallingAccount) => {
     if (!window.confirm(`Disconnect “${account.record.name}”? You can connect it again later.`)) return;
@@ -331,7 +343,14 @@ export function ConnectorsPanel({
     finally { setBusy(null); }
   };
 
+  const searchInput = <label className="connected-apps-search"><Search size={16} aria-hidden="true" />
+    <input type="search" aria-label="Search apps" placeholder="Search apps…" value={query} onChange={(e) => setQuery(e.target.value)} />
+  </label>;
   const catalog = <>
+    <div className="connected-apps-heading">
+      <div><h1>Connected Apps</h1><p>Link the phone lines and work tools your agents use.</p></div>
+      {searchInput}
+    </div>
     <div className="connected-apps-toolbar">
       <div className="connected-apps-segments" aria-label="Connection status">
         {["All", "Connected", "Not connected"].map((value) => <button key={value} type="button" aria-pressed={segment === value}
@@ -339,33 +358,34 @@ export function ConnectorsPanel({
           {value} · {cards.filter((app) => value === "All" || (value === "Connected" ? app.connected : !app.connected)).length}
         </button>)}
       </div>
-      <label className="connected-apps-search"><Search size={16} aria-hidden="true" />
-        <input aria-label="Search apps" placeholder="Search apps…" value={query} onChange={(e) => setQuery(e.target.value)} />
-      </label>
-    </div>
-    <div className="connected-apps-categories" aria-label="App category">
-      {["All", "Calling", "Work", "Messaging"].map((value) => <button key={value} type="button" aria-pressed={category === value}
-        className={category === value ? "on" : ""} onClick={() => setCategory(value)}>{value}</button>)}
+      <div className="connected-apps-categories" aria-label="App category">
+        {["All", "Calling", "Work", "Messaging"].map((value) => <button key={value} type="button" aria-pressed={category === value}
+          className={category === value ? "on" : ""} onClick={() => setCategory(value)}>{value}</button>)}
+      </div>
     </div>
     <div className="connected-apps-grid">
       {visible.map((app) => <article key={app.id} className={`connected-app-card${app.connected ? " connected" : ""}`}>
         {/* Brand assets are local and retain their original colors. */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <div className="connected-app-icon"><img src={`/connected-apps/${app.icon}.svg`} alt="" width={28} height={28} /></div>
-        <div><h2>{app.label}</h2><p>{app.description}</p></div>
+        <div className="connected-app-copy"><h2>{app.label}</h2><p>{app.description}</p></div>
+        {!!app.accounts?.length && <div className="connected-app-account" title={app.accounts.map((a) => a.account_label ?? "Account connected").join(", ")}>
+          {app.accounts.length === 1 ? app.accounts[0].account_label ?? "Account connected" : `${app.accounts[0].account_label ?? "Account connected"} +${app.accounts.length - 1} more`}
+        </div>}
+        {!app.available && !app.comingSoon && !app.connected && <span className="connected-app-setup-hint">{app.calling ? "Try refreshing to load this app." : "A platform admin needs to enable this app."}</span>}
+        {app.calling === "native" && !isSuperadmin && !app.connected && <span className="form-hint">Ask a platform admin to connect.</span>}
         <div className="connected-app-actions">
           {app.connected || app.reconnect ? <>
             <button type="button" className={`connected-app-status${app.reconnect ? " reconnect" : ""}`} onClick={() => setManaging(app.id)} aria-label={`Manage ${app.label}`}>
-              {app.reconnect ? "Reconnect needed" : <><Check size={14} />{app.count ? `${app.count} connected` : "Connected"}</>}
+              {app.reconnect ? "Reconnect needed" : <><Check size={14} />{app.count && (app.calling || app.count > 1) ? `${app.count} connected` : "Connected"}</>}
             </button>
-            {canEdit(app) && app.available && app.calling !== "native" && <button type="button" className="connected-app-add" disabled={busy !== null}
-              aria-label={app.calling ? `Connect another ${app.label} account` : `Manage ${app.label}`} onClick={() => app.calling ? startConnect(app) : setManaging(app.id)}><Plus size={16} /></button>}
-          </> : !app.available ? <span className="connected-app-soon">{app.calling ? "Unavailable" : "Coming soon"}</span>
+            {canEdit(app) && app.available && app.calling !== "native" && <button type="button" className="connected-app-add" disabled={busy !== null} title={app.id === "google" ? "Change Google account" : app.calling ? `Connect another ${app.label} account` : `Manage ${app.label}`}
+              aria-label={app.calling || app.id === "google" ? (app.id === "google" ? "Change Google account" : `Connect another ${app.label} account`) : `Manage ${app.label}`} onClick={() => app.calling || app.id === "google" ? startConnect(app) : setManaging(app.id)}><Plus size={16} /></button>}
+          </> : !app.available ? <span className="connected-app-soon">{availabilityLabel(app)}</span>
           : <button type="button" className="connected-app-connect" disabled={!canEdit(app) || busy !== null} onClick={() => startConnect(app)}>
             <Plus size={14} />{app.preset && app.id !== "whatsapp_confirmation" ? "Turn on" : "Connect"}
           </button>}
         </div>
-        {app.calling === "native" && !isSuperadmin && !app.connected && <span className="form-hint">Ask a platform admin to connect.</span>}
       </article>)}
     </div>
     {visible.length === 0 && <div className="empty-state">No apps match your search and filters.<button className="btn btn-ghost btn-sm" onClick={() => { setQuery(""); setSegment("All"); setCategory("All"); }}>Clear filters</button></div>}
@@ -375,16 +395,16 @@ export function ConnectorsPanel({
     <>
       {error && <div className="error-banner" role="alert">{error} <button className="btn btn-ghost btn-sm" disabled={busy !== null} onClick={() => void refresh()}>Retry</button></div>}
       {notice && <div className="info-banner" role="status">{notice} {showPhoneNumbersLink && <Link href="/telephony">Go to Phone Numbers</Link>}</div>}
-      {!(connectOpen && canManage) && catalog}
-      <Modal open={connectOpen && canManage} title="Connect an app" onClose={() => onConnectClose?.()}>
+      {!choosingApp && catalog}
+      <Modal className="connected-app-dialog" open={choosingApp} title="Connect an app" onClose={() => onConnectClose?.()}>
         <p className="form-hint" style={{ marginBottom: 12 }}>Choose an app to connect your account.</p>
         {catalog}
       </Modal>
-      <Modal open={!!managed} title={`Manage ${managed?.label ?? "app"}`} onClose={() => { if (!busy) setManaging(null); }}>
+      <Modal className="connected-app-dialog" open={!!managed} title={`Manage ${managed?.label ?? "app"}`} onClose={() => { if (!busy) setManaging(null); }}>
         {error && <div className="error-banner" role="alert">{error}</div>}
         {managed?.calling ? <>
           <p className="form-hint">Manage your connected accounts here. Go to Phone Numbers to buy, add or route numbers.</p>
-          {callingAccounts.filter((a) => a.record.provider === managed.calling).map((account) => <div className="kb-row" key={`${account.kind}:${account.record.id}`}>
+          {callingAccounts.filter((a) => a.record.provider === managed.calling).map((account) => <div className="kb-row connected-app-manage-row" key={`${account.kind}:${account.record.id}`}>
             <div style={{ flex: 1, minWidth: 0 }}><b>{account.record.name}</b><div className="form-hint">Connected</div></div>
             {canEdit(managed) && <>
               <button className="btn btn-ghost btn-sm" disabled={busy !== null} onClick={() => { setManaging(null); setCallingForm({ provider: managed.calling!, account }); }}>Manage</button>
@@ -395,13 +415,14 @@ export function ConnectorsPanel({
           {canEdit(managed) && managed.available && managed.calling !== "native" && <button className="btn btn-primary btn-sm" disabled={busy !== null} onClick={() => startConnect(managed)}>+ Connect another account</button>}
         </> : managed && <>
           {managed.provider && <>
-            {connections.filter((c) => c.provider === managed.provider?.key && c.status !== "disconnected").map((c) => <div className="kb-row" key={c.id}>
-              <div style={{ flex: 1 }}><b>{c.account_label ?? managed.label}</b><div className="form-hint">{c.status === "connected" ? "Connected" : "Reconnect needed"}</div></div>
+            {connections.filter((c) => c.provider === managed.provider?.key && c.status !== "disconnected").map((c) => <div className="kb-row connected-app-manage-row" key={c.id}>
+              <div className="connected-app-manage-identity" style={{ flex: 1 }}><b>{c.account_label ?? managed.label}</b><div className="form-hint">{c.status === "connected" ? "Connected" : "Reconnect needed"}</div></div>
+              {canManage && managed.available && <button className="btn btn-ghost btn-sm" disabled={busy !== null} onClick={() => startConnect(managed)}>Reconnect</button>}
               {canManage && <button className="btn btn-danger btn-sm" disabled={busy !== null} onClick={() => disconnect(c)}>Disconnect</button>}
             </div>)}
-            {canManage && <button className="btn btn-ghost btn-sm" disabled={busy !== null} onClick={() => startConnect(managed)}>Reconnect {managed.label}</button>}
+            {canManage && managed.available && <button className="btn btn-ghost btn-sm" disabled={busy !== null} onClick={() => startConnect(managed)}>{managed.id === "google" ? "Change Google account" : `Reconnect ${managed.label}`}</button>}
           </>}
-          {presets.filter((p) => managed.preset ? p.key === managed.preset.key : p.provider === managed.provider?.key).map((preset) => <div className="kb-row" key={preset.key}>
+          {presets.filter((p) => managed.preset ? p.key === managed.preset.key : p.provider === managed.provider?.key).map((preset) => <div className="kb-row connected-app-manage-row" key={preset.key}>
             <div style={{ flex: 1 }}><b>{preset.title}</b><div className="form-hint">{rowsFor(preset.key).length ? "Turned on" : "Not turned on"}</div></div>
             {canManage && <>
               <button className="btn btn-primary btn-sm" disabled={busy !== null} onClick={() => { setManaging(null); openApply(preset); }}>{rowsFor(preset.key).length ? "Update" : "Turn on"}</button>
@@ -418,6 +439,7 @@ export function ConnectorsPanel({
         }} />}
 
       <Modal
+        className="connected-app-dialog"
         open={pasting !== null}
         title={pasting ? `Connect ${pasting.label}` : ""}
         onClose={() => setPasting(null)}
@@ -452,27 +474,51 @@ export function ConnectorsPanel({
         </div>
       </Modal>
 
+      <Modal className="connected-app-dialog connected-app-oauth-dialog" open={oauthIntro !== null}
+        title={oauthIntro?.changing ? `Change ${oauthIntro.provider.label} account` : `Connect ${oauthIntro?.provider.label ?? "app"}`}
+        onClose={() => { if (!busy) setOauthIntro(null); }}>
+        {error && <div className="error-banner" role="alert">{error}</div>}
+        <div className="connected-app-oauth">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={`/connected-apps/${oauthIntro?.provider.key ?? "google"}.svg`} alt="" width={44} height={44} />
+          <h2>Continue with {oauthIntro?.provider.label}</h2>
+          <p>{oauthIntro?.provider.key === "google" ? "Yuviz wants to use Google Calendar and Sheets for this account." : `Connect your ${oauthIntro?.provider.label} account to use it with your agents.`} You’ll approve access on {oauthIntro?.provider.label}, then return here.</p>
+          {oauthIntro?.changing && <p>One Google account can be connected at a time. Choose the same account to reconnect, or choose another to replace it. Calendar and Sheets tools will use the account you choose.</p>}
+          <button className="btn btn-primary" disabled={busy !== null} onClick={() => { if (oauthIntro) void connect(oauthIntro.provider.key, oauthIntro.presetKey, oauthIntro.changing); }}>
+            {busy?.startsWith("connect:") ? "Opening…" : `Continue with ${oauthIntro?.provider.label}`}
+          </button>
+          <span className="form-hint">Opens in this window · cancel anytime</span>
+        </div>
+      </Modal>
+
       <Modal
+        className="connected-app-dialog"
         open={applying !== null}
-        title={applying ? (applying.key === "whatsapp_confirmation" ? "Connect WhatsApp" : `Turn on ${applying.title}`) : ""}
-        onClose={() => setApplying(null)}
+        title={applying ? (applying.key === "whatsapp_confirmation" ? (whatsAppStep === "key" ? "Connect WhatsApp" : "Turn on WhatsApp messaging") : `Turn on ${applying.title}`) : ""}
+        onClose={() => { if (!busy) { setApplying(null); setValues({}); } }}
         footer={
           <>
-            <button className="btn btn-ghost btn-sm" onClick={() => setApplying(null)}>
-              Cancel
-            </button>
+            {applying?.key === "whatsapp_confirmation" && whatsAppStep === "messaging" && <button className="btn btn-ghost btn-sm" disabled={busy !== null} onClick={() => setWhatsAppStep("key")}>Back</button>}
+            <button className="btn btn-ghost btn-sm" disabled={busy !== null} onClick={() => { setApplying(null); setValues({}); }}>Cancel</button>
             <button
               className="btn btn-primary btn-sm"
-              onClick={apply}
-              disabled={busy !== null || missingRequired}
+              onClick={() => applying?.key === "whatsapp_confirmation" && whatsAppStep === "key" ? setWhatsAppStep("messaging") : void apply()}
+              disabled={busy !== null || (applying?.key === "whatsapp_confirmation" && whatsAppStep === "key" ? !values.api_key?.trim() : missingRequired)}
             >
-              {busy?.startsWith("apply:") ? "Saving…" : applying?.key === "whatsapp_confirmation" ? "Connect WhatsApp" : "Turn on"}
+              {busy?.startsWith("apply:") ? "Saving…" : applying?.key === "whatsapp_confirmation" ? (whatsAppStep === "key" ? "Continue" : "Turn on messaging") : "Turn on"}
             </button>
           </>
         }
       >
         {formError && <div className="error-banner">{formError}</div>}
-        {applying?.key === "whatsapp_confirmation" && <div className="info-banner">This key can act as the whole WhatsApp account. Revoke it with your messaging provider to cut access.</div>}
+        {applying?.key === "whatsapp_confirmation" && <>
+          <ol className="connected-app-steps" aria-label="WhatsApp setup progress">
+            <li aria-current={whatsAppStep === "key" ? "step" : undefined}>1 · Enter secret key</li>
+            <li aria-current={whatsAppStep === "messaging" ? "step" : undefined}>2 · Turn on messaging</li>
+          </ol>
+          {whatsAppStep === "key" ? <div className="info-banner">This key can act as the whole WhatsApp account. Revoke it with your messaging provider to cut access.</div>
+            : <div className="info-banner">Key entered. Choose your messaging service and approved template below. Your key and settings are saved when you turn on messaging.</div>}
+        </>}
         {applying?.provider && (
           <div className="form-hint" style={{ marginBottom: 10 }}>
             {applying.provider
@@ -480,8 +526,11 @@ export function ConnectorsPanel({
               : "Enter the details below to connect and turn on messaging."}
           </div>
         )}
+        {applying?.provider === "google" && <p className="connected-app-selected-account">
+          Google account: <strong>{connections.find((c) => c.provider === "google" && c.status === "connected")?.account_label ?? "Connect Google to choose an account"}</strong>
+        </p>}
         {(PRESET_FIELDS[applying?.key ?? ""] ?? [])
-          .filter((f) => !f.when || f.when(values))
+          .filter((f) => (!f.when || f.when(values)) && (applying?.key !== "whatsapp_confirmation" || (whatsAppStep === "key" ? f.name === "api_key" : f.name !== "api_key")))
           .map((f) => (
             <div key={f.name} className="form-group">
               <label className="form-label" htmlFor={`preset-${f.name}`}>
