@@ -48,14 +48,14 @@ export function workAppCards(providers: OAuthProvider[], connections: OAuthConne
     const rows = apis.filter((a) => a.preset_key === preset.key);
     cards.push({ id: preset.key, label: whatsapp ? "WhatsApp" : sheets ? "Google Sheets" : preset.title,
       description: whatsapp ? "Send a confirmation message after a call." : sheets ? "Save leads from calls into a spreadsheet." : `Use ${preset.title} with your agents.`,
-      icon: whatsapp ? "whatsapp" : sheets ? "sheets" : preset.key === "dynamics_crm" ? "microsoft" : preset.provider ?? "calendar",
+      icon: whatsapp ? "whatsapp" : sheets ? "sheets" : preset.key === "dynamics_crm" ? "dynamics365" : preset.provider ?? "calendar",
       category: whatsapp ? "Messaging" : "Work", connected: rows.length > 0,
       reconnect: rows.length > 0 && !!preset.provider && !connections.some((c) => c.provider === preset.provider && c.status === "connected"
         && rows.some((r) => !r.oauth_connection_id || r.oauth_connection_id === c.id)),
       available: !preset.provider || providers.some((p) => p.key === preset.provider), preset });
   }
   if (!cards.some((c) => c.id === "whatsapp_confirmation")) cards.push({ id: "whatsapp_confirmation", label: "WhatsApp", description: "Send a confirmation message after a call.", icon: "whatsapp", category: "Messaging", connected: false, reconnect: false, available: false });
-  if (!cards.some((c) => c.id === "dynamics_crm")) cards.push({ id: "dynamics_crm", label: "Dynamics 365", description: "Customer records from Microsoft Dynamics.", icon: "microsoft", category: "Work", connected: false, reconnect: false, available: false, comingSoon: true });
+  if (!cards.some((c) => c.id === "dynamics_crm")) cards.push({ id: "dynamics_crm", label: "Dynamics 365", description: "Customer records from Microsoft Dynamics.", icon: "dynamics365", category: "Work", connected: false, reconnect: false, available: false, comingSoon: true });
   return cards;
 }
 

@@ -18,6 +18,8 @@ test("catalog keeps deployment providers, nests calendar under Google, and disti
   assert.equal(availabilityLabel(cards.find((c) => c.id === "dynamics_crm")), "Coming soon");
   assert.equal(cards.find((c) => c.id === "hubspot").available, false);
   assert.equal(cards.find((c) => c.id === "dynamics_crm").available, false);
+  assert.equal(cards.find((c) => c.id === "dynamics_crm").icon, "dynamics365");
+  assert.equal(cards.find((c) => c.id === "microsoft").icon, "microsoft");
   assert.equal(cards.some((c) => c.id === "calendar_booking"), false);
   assert.equal(cards.find((c) => c.id === "whatsapp_confirmation").available, true);
 });

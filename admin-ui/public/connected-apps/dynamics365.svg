@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="96 52 312 408" fill="none">
+  <title>Dynamics 365</title>
+  <defs>
+    <linearGradient id="top" x1="112" y1="67" x2="332" y2="263" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0054D3"/>
+      <stop offset="1" stop-color="#73509F"/>
+    </linearGradient>
+    <linearGradient id="bottom" x1="355" y1="225" x2="237" y2="445" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A492F1"/>
+      <stop offset="1" stop-color="#1964E5"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#top)" d="M134 68c-11-5-22 4-22 17v123c0 8 4 14 12 17l101 35c12 5 23-3 23-16v-69c0-7 5-11 12-8l21 8c20 7 31 21 31 41v31l54-21c17-7 26-22 26-42 0-16-9-30-25-36L134 68Z"/>
+  <path fill="url(#bottom)" d="m196 289 170-63c17-7 26-22 26-42v163c0 18-10 31-28 38l-157 59c-12 5-23-3-23-16V306c0-8 4-14 12-17Z"/>
+  <path fill="#A398F5" fill-opacity=".62" d="m248 269 64-24v77c0 19-10 32-28 39l-25 9c-6 3-11-1-11-8v-93Z"/>
+</svg>
