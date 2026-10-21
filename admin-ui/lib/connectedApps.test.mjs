@@ -82,3 +82,8 @@ test("changing Google accounts requests its chooser while retaining the server's
   assert.equal(oauthAuthorizationUrl(original, "google", false), original);
   assert.equal(oauthAuthorizationUrl(original, "salesforce", true), original);
 });
+
+test("the account chooser is added to whatever prompt the server already asked for", () => {
+  const original = "https://accounts.google.com/o/oauth2/v2/auth?state=s&prompt=login";
+  assert.equal(new URL(oauthAuthorizationUrl(original, "google", true)).searchParams.get("prompt"), "login consent select_account");
+});

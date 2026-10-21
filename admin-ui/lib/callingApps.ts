@@ -18,6 +18,10 @@ export function carrierAccountLabel(value: string, editing: boolean): string | n
   return value.trim() || (editing ? null : undefined);
 }
 
+// A stored Account ID can't be cleared; a legacy carrier saved without one stays editable.
+export const hasAccountId = (accountId: string, storedAuthId: string | null | undefined, editing: boolean) =>
+  !!accountId.trim() || (editing && !storedAuthId);
+
 export function cloudonixCredentials(domain: string, secret: string, existingKeys: unknown[] = []) {
   const replacement = secret.trim();
   return { domain: domain.trim(), api_keys: existingKeys.length

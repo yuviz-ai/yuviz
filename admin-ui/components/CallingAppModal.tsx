@@ -8,7 +8,7 @@ import {
 import { secretPayload } from "@/components/SecretRefInput";
 import { Modal } from "@/components/Modal";
 
-import { callingAppLabel, CARRIER_PROVIDERS, carrierAccountLabel, cloudonixCredentials } from "@/lib/callingApps";
+import { callingAppLabel, CARRIER_PROVIDERS, carrierAccountLabel, cloudonixCredentials, hasAccountId } from "@/lib/callingApps";
 
 export type CallingAccount = { kind: "carrier"; record: Carrier } | { kind: "telephony_config"; record: TelephonyConfig };
 
@@ -34,7 +34,7 @@ export function CallingAppModal({ tenantId, provider, account, onClose, onSaved 
   const storedSecret = isCarrier ? carrier?.auth_token_ref : provider === "cloudonix"
     ? (config?.credentials.api_keys as unknown[] | undefined)?.[0] : config?.credentials.auth_token;
   const hasSecret = typeof storedSecret === "string" && storedSecret.length > 0;
-  const hasIdentity = provider === "cloudonix" ? !!domain.trim() : !!accountId.trim() || !!carrier;
+  const hasIdentity = provider === "cloudonix" ? !!domain.trim() : hasAccountId(accountId, carrier?.auth_id, !!carrier);
   const valid = !!name.trim() && (isNative || ((!!secret.trim() || hasSecret || !!carrier) && hasIdentity));
 
   const save = async () => {
@@ -48,7 +48,7 @@ export function CallingAppModal({ tenantId, provider, account, onClose, onSaved 
           name: name.trim(),
           ...(secret.trim() ? { auth_token: key.api_key, auth_token_ref: key.api_key_ref } : {}),
         };
-        if (carrier) await updateCarrier(carrier.id, { ...body, auth_id: accountId.trim() || null, carrier_account_ref: carrierAccountLabel(extraLabel, true) });
+        if (carrier) await updateCarrier(carrier.id, { ...body, ...(accountId.trim() ? { auth_id: accountId.trim() } : {}), carrier_account_ref: carrierAccountLabel(extraLabel, true) });
         else await createCarrier(tenantId, { ...body, auth_id: accountId.trim(), provider: provider as CarrierProvider, carrier_account_ref: carrierAccountLabel(extraLabel, false) });
       } else {
         const credentials = isNative ? {} : provider === "cloudonix"

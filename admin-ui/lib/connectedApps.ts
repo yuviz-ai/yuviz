@@ -76,7 +76,10 @@ export function workAppCards(providers: OAuthProvider[], connections: OAuthConne
 export function oauthAuthorizationUrl(authorizeUrl: string, provider: string, chooseAccount: boolean): string {
   if (provider !== "google" || !chooseAccount) return authorizeUrl;
   const url = new URL(authorizeUrl);
-  url.searchParams.set("prompt", "consent select_account");
+  const prompts = new Set((url.searchParams.get("prompt") ?? "").split(" ").filter(Boolean));
+  prompts.add("consent");
+  prompts.add("select_account");
+  url.searchParams.set("prompt", [...prompts].join(" "));
   return url.href;
 }
 
