@@ -21,6 +21,12 @@ from .provider_configs import mask_enc, resolve_api_key_input
 _UPDATABLE_FIELDS = {"name", "auth_id", "auth_token_ref", "carrier_account_ref"}
 
 
+class CarrierHasNumbers(Exception):
+    def __init__(self, count: int) -> None:
+        self.count = count
+        super().__init__(f"{count} number(s) still use this carrier; remove or move them on Phone Numbers before disconnecting it")
+
+
 def public_carrier(carrier: dict[str, Any], *, masked: bool) -> dict[str, Any]:
     if not masked:
         return carrier
@@ -157,6 +163,12 @@ async def soft_delete_carrier(
         if old_row is None:
             raise LookupError(f"carrier {carrier_id} not found")
         old = dict(old_row)
+
+        numbers = await conn.fetchval(
+            "SELECT count(*) FROM phone_numbers WHERE carrier_id = $1 AND deleted_at IS NULL", carrier_id,
+        )
+        if numbers:
+            raise CarrierHasNumbers(numbers)
 
         await conn.execute(
             "UPDATE carriers SET deleted_at = now() WHERE id = $1", carrier_id,

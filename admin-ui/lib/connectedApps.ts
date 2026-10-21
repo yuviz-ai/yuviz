@@ -15,6 +15,7 @@ export interface AppCard {
   preset?: ConnectorPreset;
   calling?: string;
   count?: number;
+  tools?: { key: string; label: string; configured: boolean }[];
 }
 
 type WorkAppDefinition = { key: string; label: string; description: string; category: AppCard["category"]; icon: string; presetKey?: string; comingSoon?: boolean };
@@ -51,7 +52,10 @@ export function workAppCards(providers: OAuthProvider[], connections: OAuthConne
     return { id: entry.key, label: entry.label, description: entry.description, icon: catalog?.icon ?? entry.key, category: "Work",
       available: !!provider, connected: active.some((c) => c.status === "connected"),
       reconnect: active.length > 0 && active.every((c) => c.status === "reconnect_needed"),
-      accounts: active, count: active.length, provider };
+      accounts: active, count: active.length, provider,
+      tools: presets.filter((preset) => preset.provider === entry.key).map((preset) => ({
+        key: preset.key, label: preset.title, configured: apis.some((api) => api.preset_key === preset.key),
+      })) };
   });
   // Account tools live in Manage; Sheets also has a shortcut card in the catalog.
   for (const preset of presets.filter((p) => !["calendar_booking", "salesforce_crm", "hubspot_crm", "zoho_crm", ...WORK_APPS.map((app) => app.presetKey).filter(Boolean)].includes(p.key))) {

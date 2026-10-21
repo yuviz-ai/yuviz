@@ -3,8 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { completeOAuthCallback } from "@/lib/toolexecApi";
+import { applyConnectorPreset, completeOAuthCallback } from "@/lib/toolexecApi";
 import { OAUTH_CONTEXT_KEY, OAuthContext } from "@/components/ConnectorsPanel";
+import { draftSetup, presetDraftKey, readPresetDraft } from "@/lib/connectorDraft";
 
 // Whatever went wrong, the page says the same thing: the provider's error text
 // and the server's reason are never shown (the server answers every failure
@@ -35,7 +36,18 @@ export default function OAuthCallbackPage() {
       params.get("error") || !code || !state || !context
         ? Promise.reject(new Error("callback_unusable"))
         : completeOAuthCallback(context.tenantId, { state, code, accounts_server: params.get("accounts-server") }).then(
-            () => router.replace(context.returnTo),
+            async () => {
+              const draft = readPresetDraft(window.sessionStorage, context.tenantId);
+              if (draft && context.provider === "google" && context.presetKey === draft.presetKey) {
+                try {
+                  await applyConnectorPreset(context.tenantId, draftSetup(draft));
+                  window.sessionStorage.removeItem(presetDraftKey(context.tenantId));
+                } catch {
+                  // Restore the saved form on return if applying still fails.
+                }
+              }
+              router.replace(context.returnTo);
+            },
           );
     redeemed.catch(() => setFailed(true));
   }, [router]);

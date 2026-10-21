@@ -109,6 +109,9 @@ async def delete_carrier(
     )
     await assert_tenant_access(carrier["tenant_id"], current_user)
     set_target_tenant(carrier["tenant_id"])
-    await carriers_service.soft_delete_carrier(
-        carrier_id, user_id=current_user.id, user_email=current_user.email,
-    )
+    try:
+        await carriers_service.soft_delete_carrier(
+            carrier_id, user_id=current_user.id, user_email=current_user.email,
+        )
+    except carriers_service.CarrierHasNumbers as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

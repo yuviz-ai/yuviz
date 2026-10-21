@@ -26,6 +26,16 @@ _UPDATABLE_FIELDS = {"did", "agent_id", "fallback_agent_id", "carrier_id", "tele
 # so any expiry misroutes calls. Every write path updates Redis; prewarm() covers a flushed Redis.
 
 
+async def _lock_live_carrier(conn: Any, carrier_id: Any) -> None:
+    if carrier_id is None:
+        return
+    exists = await conn.fetchval(
+        "SELECT 1 FROM carriers WHERE id = $1 AND deleted_at IS NULL FOR SHARE", carrier_id,
+    )
+    if exists is None:
+        raise LookupError(f"carrier {carrier_id} not found")
+
+
 async def _lock_live_telephony_config(conn: Any, telephony_config_id: Any) -> None:
     """FOR SHARE conflicts with a config delete's FOR UPDATE, so a number
     can't land on a config deleted under it."""
@@ -237,6 +247,7 @@ async def create_phone_number(
     did = _canonical_did(did)
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
+        await _lock_live_carrier(conn, carrier_id)
         await _lock_live_telephony_config(conn, telephony_config_id)
         try:
             row = await conn.fetchrow(
@@ -294,6 +305,7 @@ async def update_phone_number(
         if old_row is None:
             raise LookupError(f"phone_number {phone_number_id} not found")
         old = dict(old_row)
+        await _lock_live_carrier(conn, fields.get("carrier_id"))
         await _lock_live_telephony_config(conn, fields.get("telephony_config_id"))
 
         columns = list(fields.keys())

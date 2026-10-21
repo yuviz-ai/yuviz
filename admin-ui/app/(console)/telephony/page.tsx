@@ -10,7 +10,6 @@ import {
   AvailableNumber,
   Call,
   Carrier,
-  CarrierProvider,
   PhoneNumber,
   PhoneNumberCreate,
   PurchasedNumber,
@@ -18,7 +17,6 @@ import {
   TelephonyConfig,
   createPhoneNumber,
   deletePhoneNumber,
-  getCurrentUser,
   ProviderSync,
   syncPhoneNumber,
   syncTelephonyNumbers,
@@ -34,16 +32,11 @@ import {
   updatePhoneNumber,
 } from "@/lib/api";
 import { Modal } from "@/components/Modal";
+import { CallingAppChooser } from "@/components/CallingAppChooser";
+import { callingAppLabel } from "@/lib/callingApps";
+import { useConnectionAccess } from "@/lib/useConnectionAccess";
 import { useActiveTenant } from "@/lib/useActiveTenant";
 
-const CARRIER_PROVIDER_LABEL: Record<CarrierProvider, string> = {
-  twilio: "Twilio",
-  plivo: "Plivo",
-  vonage: "Vonage",
-};
-const TELEPHONY_PROVIDER_LABEL: Record<string, string> = {
-  cloudonix: "Cloudonix", vobiz: "Vobiz", native: "Local phone",
-};
 // The platform's own Kamailio + FreeSWITCH: no credentials, superadmin-only.
 const NATIVE = "native" as const;
 
@@ -52,8 +45,7 @@ const CALL_WINDOW = 200;
 
 const fmtInt = (n: number) => n.toLocaleString("en-IN");
 const digits = (s: string | null | undefined) => (s ?? "").replace(/\D/g, "");
-const providerLabelFor = (kind: "carrier" | "telephony_config", provider: string) =>
-  kind === "carrier" ? CARRIER_PROVIDER_LABEL[provider as CarrierProvider] ?? provider : TELEPHONY_PROVIDER_LABEL[provider] ?? provider;
+const providerLabelFor = (_kind: "carrier" | "telephony_config", provider: string) => callingAppLabel(provider);
 
 type SyncNotice = { ok: boolean; text: string };
 
@@ -209,11 +201,8 @@ export default function TelephonyPage() {
   const [editNumber, setEditNumber] = useState<NumberRow | null>(null);
   // Lives here, not in ConfigDetail: a refresh briefly unmounts the detail view.
   const [syncNotice, setSyncNotice] = useState<SyncNotice | null>(null);
-  // Gates Native controls only; the server enforces the same rule regardless.
-  const [isSuperadmin, setIsSuperadmin] = useState(false);
-  useEffect(() => {
-    getCurrentUser().then((me) => setIsSuperadmin(me.role === "superadmin")).catch(() => setIsSuperadmin(false));
-  }, []);
+  const access = useConnectionAccess();
+  const { isSuperadmin } = access;
 
   // Each account's fetch settles independently so one failing tenant doesn't blank the page.
   useEffect(() => {
@@ -361,10 +350,12 @@ export default function TelephonyPage() {
 
   const selectedConfig = selectedKey ? configs.find((c) => c.key === `${selectedKey.kind}:${selectedKey.id}`) ?? null : null;
   const wantsAdd = searchParams.get("add") === "1";
+  const connectCalling = wantsAdd && !selectedKey && !loading && !access.loading
+    && !configs.some((config) => isSuperadmin || !(config.kind === "telephony_config" && config.provider === NATIVE));
 
   // "+ Add Number" from the top bar: open the first connection's add-number dialog, or connect a carrier first.
   useEffect(() => {
-    if (!wantsAdd || loading) return;
+    if (!wantsAdd || loading || access.loading) return;
     if (selectedKey) {
       router.replace(`/telephony?config=${encodeURIComponent(`${selectedKey.kind}:${selectedKey.id}`)}`);
       return;
@@ -374,10 +365,8 @@ export default function TelephonyPage() {
     );
     if (target) {
       router.replace(`/telephony?config=${encodeURIComponent(target.key)}&add=1`);
-    } else {
-      router.replace("/integrations?add=1");
     }
-  }, [wantsAdd, loading, selectedKey, configs, isSuperadmin, router]);
+  }, [wantsAdd, loading, selectedKey, configs, isSuperadmin, access.loading, router]);
 
   const accountLine = isAllTenants
     ? `Phone numbers, call activity and routing across ${allTenants.length} account${allTenants.length === 1 ? "" : "s"}.`
@@ -415,6 +404,13 @@ export default function TelephonyPage() {
   return (
     <>
       {error && <div className="error-banner">{error}</div>}
+      {syncNotice && <div className={syncNotice.ok ? "info-banner" : "error-banner"} role="status">{syncNotice.text}</div>}
+      {access.error && !connectCalling && <div className="error-banner" role="alert">{access.error} <button className="btn btn-ghost btn-sm" disabled={access.loading} onClick={() => void access.retry()}>Retry permissions</button></div>}
+      {connectCalling && <CallingAppChooser tenants={allTenants} tenantId={tenant?.id} access={access} onClose={() => router.replace("/telephony")} onSaved={(name) => {
+        router.replace("/telephony");
+        setSyncNotice({ ok: true, text: `${name} connected. Open the connection below to buy or add a phone number.` });
+        refresh();
+      }} />}
 
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
         <div>

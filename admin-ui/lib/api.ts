@@ -550,7 +550,7 @@ export interface CarrierUpdate {
   auth_id?: string;
   auth_token_ref?: string;
   auth_token?: string;
-  carrier_account_ref?: string;
+  carrier_account_ref?: string | null;
 }
 
 export const listCarriers = (tenantId: string) => request<Carrier[]>(`/tenants/${tenantId}/carriers`);

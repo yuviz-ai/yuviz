@@ -66,6 +66,12 @@ test("CRM tools stay inside their account's Manage dialog", () => {
   assert.equal(cards.some((c) => c.id === "salesforce_crm"), false);
 });
 
+test("Google shows calendar tool state on its account card", () => {
+  const card = workAppCards(providers, [], presets, [{ preset_key: "calendar_booking" }]).find((app) => app.id === "google");
+  assert.equal(card.tools.find((tool) => tool.key === "calendar_booking").configured, true);
+  assert.equal(card.tools.find((tool) => tool.key === "sheets_lead_capture").configured, false);
+});
+
 test("changing Google accounts requests its chooser while retaining the server's OAuth parameters", () => {
   const original = "https://accounts.google.com/o/oauth2/v2/auth?state=single-use&code_challenge=pkce&redirect_uri=https%3A%2F%2Fconsole.test%2Fintegrations%2Fcallback&prompt=consent";
   const result = new URL(oauthAuthorizationUrl(original, "google", true));

@@ -8,16 +8,7 @@ import {
 import { secretPayload } from "@/components/SecretRefInput";
 import { Modal } from "@/components/Modal";
 
-export const CALLING_APPS = [
-  { key: "twilio", label: "Twilio", description: "Buy and use phone numbers from Twilio." },
-  { key: "plivo", label: "Plivo", description: "Buy and use phone numbers from Plivo." },
-  { key: "vonage", label: "Vonage", description: "Buy and use phone numbers from Vonage." },
-  { key: "cloudonix", label: "Cloudonix", description: "Route calls through your Cloudonix account." },
-  { key: "vobiz", label: "Vobiz", description: "Route calls through your Vobiz account." },
-  { key: "native", label: "Local phone", description: "Use this platform’s own phone system — no outside account." },
-];
-
-export const CARRIER_PROVIDERS = ["twilio", "plivo", "vonage"] as const satisfies readonly CarrierProvider[];
+import { CALLING_APPS, CARRIER_PROVIDERS, carrierAccountLabel } from "@/lib/callingApps";
 
 export type CallingAccount = { kind: "carrier"; record: Carrier } | { kind: "telephony_config"; record: TelephonyConfig };
 
@@ -29,7 +20,7 @@ export function CallingAppModal({ tenantId, provider, account, onClose, onSaved 
   const carrier = account?.kind === "carrier" ? account.record : null;
   const config = account?.kind === "telephony_config" ? account.record : null;
   const label = CALLING_APPS.find((app) => app.key === provider)?.label ?? provider;
-  const isCarrier = CARRIER_PROVIDERS.includes(provider as (typeof CARRIER_PROVIDERS)[number]);
+  const isCarrier = CARRIER_PROVIDERS.includes(provider);
   const isNative = provider === "native";
   const [name, setName] = useState(account?.record.name ?? "");
   const [accountId, setAccountId] = useState(carrier?.auth_id ?? String(config?.credentials.auth_id ?? ""));
@@ -54,11 +45,11 @@ export function CallingAppModal({ tenantId, provider, account, onClose, onSaved 
       if (isCarrier) {
         const key = secretPayload(secret.trim());
         const body = {
-          name: name.trim(), auth_id: accountId.trim(), carrier_account_ref: extraLabel.trim() || undefined,
+          name: name.trim(), auth_id: accountId.trim(),
           ...(secret.trim() ? { auth_token: key.api_key, auth_token_ref: key.api_key_ref } : {}),
         };
-        if (carrier) await updateCarrier(carrier.id, body);
-        else await createCarrier(tenantId, { ...body, provider: provider as CarrierProvider });
+        if (carrier) await updateCarrier(carrier.id, { ...body, carrier_account_ref: carrierAccountLabel(extraLabel, true) });
+        else await createCarrier(tenantId, { ...body, provider: provider as CarrierProvider, carrier_account_ref: carrierAccountLabel(extraLabel, false) });
       } else {
         const credentials = isNative ? {} : provider === "cloudonix"
           ? { domain: domain.trim(), api_keys: [secret.trim() || "[stored]"] }
