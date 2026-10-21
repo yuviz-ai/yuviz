@@ -42,12 +42,17 @@ function Integrations() {
           manageApp={searchParams.get("manage") ?? undefined}
           connectOpen={searchParams.get("add") === "1"}
           onConnectClose={() => router.replace("/integrations")}
+          onManageClose={() => router.replace("/integrations")}
         />
       ) : (
         <div className="empty-state">
           {isAllTenants
-            ? "Pick a single tenant from the header switcher to manage its integrations."
-            : "No account selected."}
+            ? searchParams.get("add") === "1"
+              ? "Pick a single tenant from the header switcher before connecting a calling app to add a phone number."
+              : "Pick a single tenant from the header switcher to manage its integrations."
+            : searchParams.get("add") === "1"
+              ? "Select an account before connecting a calling app to add a phone number."
+              : "No account selected."}
         </div>
       )}
     </>

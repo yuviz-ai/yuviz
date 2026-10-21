@@ -17,6 +17,8 @@ export const CALLING_APPS = [
   { key: "native", label: "Local phone", description: "Use this platform’s own phone system — no outside account." },
 ];
 
+export const CARRIER_PROVIDERS = ["twilio", "plivo", "vonage"] as const satisfies readonly CarrierProvider[];
+
 export type CallingAccount = { kind: "carrier"; record: Carrier } | { kind: "telephony_config"; record: TelephonyConfig };
 
 // Mount a fresh form for each account so secrets never carry across dialogs.
@@ -27,7 +29,7 @@ export function CallingAppModal({ tenantId, provider, account, onClose, onSaved 
   const carrier = account?.kind === "carrier" ? account.record : null;
   const config = account?.kind === "telephony_config" ? account.record : null;
   const label = CALLING_APPS.find((app) => app.key === provider)?.label ?? provider;
-  const isCarrier = ["twilio", "plivo", "vonage"].includes(provider);
+  const isCarrier = CARRIER_PROVIDERS.includes(provider as (typeof CARRIER_PROVIDERS)[number]);
   const isNative = provider === "native";
   const [name, setName] = useState(account?.record.name ?? "");
   const [accountId, setAccountId] = useState(carrier?.auth_id ?? String(config?.credentials.auth_id ?? ""));
@@ -37,8 +39,7 @@ export function CallingAppModal({ tenantId, provider, account, onClose, onSaved 
   const [defaultOutbound, setDefaultOutbound] = useState(config?.is_default_outbound ?? false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // The server's mask preserves an existing key. Never copy a returned secret
-  // or operator-only pointer into an input or resubmit it during a rename.
+  // Keep stored secret references out of editable fields and rename requests.
   const storedSecret = isCarrier ? carrier?.auth_token_ref : provider === "cloudonix"
     ? (config?.credentials.api_keys as unknown[] | undefined)?.[0] : config?.credentials.auth_token;
   const hasSecret = typeof storedSecret === "string" && storedSecret.length > 0;
@@ -53,7 +54,7 @@ export function CallingAppModal({ tenantId, provider, account, onClose, onSaved 
       if (isCarrier) {
         const key = secretPayload(secret.trim());
         const body = {
-          name: name.trim(), auth_id: accountId.trim(), carrier_account_ref: extraLabel.trim(),
+          name: name.trim(), auth_id: accountId.trim(), carrier_account_ref: extraLabel.trim() || undefined,
           ...(secret.trim() ? { auth_token: key.api_key, auth_token_ref: key.api_key_ref } : {}),
         };
         if (carrier) await updateCarrier(carrier.id, body);
@@ -74,7 +75,7 @@ export function CallingAppModal({ tenantId, provider, account, onClose, onSaved 
   };
 
   return (
-    <Modal className="connected-app-dialog" open title={`${account ? "Manage" : "Connect"} ${label}`} onClose={() => { if (!busy) onClose(); }} footer={
+    <Modal className="connected-app-dialog" trapFocus open title={`${account ? "Manage" : "Connect"} ${label}`} onClose={() => { if (!busy) onClose(); }} footer={
       <>
         <button className="btn btn-ghost btn-sm" disabled={busy} onClick={onClose}>Cancel</button>
         <button className="btn btn-primary btn-sm" disabled={busy || !valid} onClick={save}>

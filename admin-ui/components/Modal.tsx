@@ -10,6 +10,7 @@ export function Modal({
   children,
   footer,
   className = "",
+  trapFocus = false,
 }: {
   open: boolean;
   title: string;
@@ -17,13 +18,14 @@ export function Modal({
   children: React.ReactNode;
   footer?: React.ReactNode;
   className?: string;
+  trapFocus?: boolean;
 }) {
   const titleId = useId();
   const dialog = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
   useEffect(() => { close.current = onClose; }, [onClose]);
   useEffect(() => {
-    if (!open || !className.includes("connected-app-dialog")) return;
+    if (!open || !trapFocus) return;
     const previous = document.activeElement as HTMLElement | null;
     const panel = dialog.current;
     const focusables = () => Array.from(panel?.querySelectorAll<HTMLElement>(
@@ -45,11 +47,9 @@ export function Modal({
         event.preventDefault(); first.focus();
       }
     };
-    // A button can lose focus as it becomes disabled during a request. Keep
-    // Escape and focus trapping active even if focus falls back to the body.
     document.addEventListener("keydown", handleKey);
     return () => { document.removeEventListener("keydown", handleKey); if (previous?.isConnected) previous.focus(); };
-  }, [open, className]);
+  }, [open, trapFocus]);
 
   if (!open) return null;
 

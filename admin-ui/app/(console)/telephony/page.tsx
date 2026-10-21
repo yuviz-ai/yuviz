@@ -643,7 +643,8 @@ function ConfigDetail({
       {syncNotice && <div className={syncNotice.ok ? "info-banner" : "error-banner"}>{syncNotice.text}</div>}
 
       <div className="info-banner" style={{ marginBottom: 16 }}>
-        {config.providerLabel} is connected. <Link href={`/integrations?manage=calling:${config.provider}`}>Manage this app on Connected Apps</Link>.
+        {config.providerLabel} is connected. {isNative && "Phone numbers are assigned by the platform; account admins can manage each number’s agent and status. "}
+        <Link href={`/integrations?manage=calling:${config.provider}`}>Manage this app on Connected Apps</Link>.
       </div>
 
       <div className="card">
