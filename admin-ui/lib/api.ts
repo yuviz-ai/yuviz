@@ -547,7 +547,7 @@ export interface CarrierCreate {
 
 export interface CarrierUpdate {
   name?: string;
-  auth_id?: string;
+  auth_id?: string | null;
   auth_token_ref?: string;
   auth_token?: string;
   carrier_account_ref?: string | null;

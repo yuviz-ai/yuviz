@@ -641,6 +641,9 @@ function ConfigDetail({
       <div className="info-banner" style={{ marginBottom: 16 }}>
         {config.providerLabel} is connected. {isNative && "Phone numbers are assigned by the platform; account admins can manage each number’s agent and status. "}
         <Link href={`/integrations?manage=calling:${config.provider}`}>Manage this app on Connected Apps</Link>.
+        {webhookUrlFor(config) && <div style={{ marginTop: 8 }}>
+          <strong>Inbound webhook (POST): </strong><code style={{ overflowWrap: "anywhere" }}>{webhookUrlFor(config)}</code>
+        </div>}
       </div>
 
       <div className="card">

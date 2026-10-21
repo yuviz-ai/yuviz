@@ -38,7 +38,7 @@ export default function OAuthCallbackPage() {
         : completeOAuthCallback(context.tenantId, { state, code, accounts_server: params.get("accounts-server") }).then(
             async () => {
               const draft = readPresetDraft(window.sessionStorage, context.tenantId);
-              if (draft && context.provider === "google" && context.presetKey === draft.presetKey) {
+              if (draft && context.presetKey === draft.presetKey) {
                 try {
                   await applyConnectorPreset(context.tenantId, draftSetup(draft));
                   window.sessionStorage.removeItem(presetDraftKey(context.tenantId));

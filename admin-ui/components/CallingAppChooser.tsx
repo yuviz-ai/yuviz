@@ -35,7 +35,7 @@ export function CallingAppChooser({ tenants, tenantId, access, onClose, onSaved 
             </div>}
             <div className="connected-apps-grid" style={{ marginTop: 16 }}>
               {CALLING_APPS.filter((app) => app.key !== "native" || access.isSuperadmin).map((app) => <button key={app.key} className="btn btn-ghost" style={{ minHeight: 64 }} disabled={!selectedTenant} onClick={() => setProvider(app.key)}>
-                <AppIcon icon={app.key === "native" ? "local-phone" : app.key} />{app.label}
+                <AppIcon icon={app.icon} />{app.label}
               </button>)}
             </div>
           </>}

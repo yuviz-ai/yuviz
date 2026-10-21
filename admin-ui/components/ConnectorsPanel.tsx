@@ -25,7 +25,7 @@ import {
 import { Modal } from "@/components/Modal";
 import { AppIcon } from "@/components/AppIcon";
 import { ConnectedAppsHeading } from "@/components/ConnectedAppsHeading";
-import { CALLING_APPS, CARRIER_PROVIDERS } from "@/lib/callingApps";
+import { CALLING_APPS, CARRIER_PROVIDERS, callingAppLabel } from "@/lib/callingApps";
 import { useConnectionAccess } from "@/lib/useConnectionAccess";
 import { makePresetDraft, presetDraftKey, readPresetDraft } from "@/lib/connectorDraft";
 
@@ -40,6 +40,11 @@ export interface OAuthContext {
 
 // The preset 409s the server uses to say a Google grant is missing or too narrow.
 const CONNECTOR_REQUIRED = new Set(["connector_required", "connector_scope_required"]);
+type AppResource = "providers" | "presets" | "connections" | "apis" | "carrier" | "telephony_config";
+const RESOURCE_LABELS: Record<AppResource, string> = {
+  providers: "Available apps", presets: "App tools", connections: "Connected work accounts",
+  apis: "Configured tools", carrier: "Carrier connections", telephony_config: "Calling connections",
+};
 
 type FieldDef = {
   name: string;
@@ -133,6 +138,8 @@ export function ConnectorsPanel({
   const [presets, setPresets] = useState<ConnectorPreset[]>([]);
   const [apis, setApis] = useState<CustomApi[]>([]);
   const [loading, setLoading] = useState(true);
+  const [presetsLoaded, setPresetsLoaded] = useState(false);
+  const [loadErrors, setLoadErrors] = useState<Partial<Record<AppResource, string>>>({});
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [showPhoneNumbersLink, setShowPhoneNumbersLink] = useState(false);
@@ -144,45 +151,46 @@ export function ConnectorsPanel({
 
   const [oauthIntro, setOauthIntro] = useState<{ provider: OAuthProvider; presetKey: string | null; changing: boolean } | null>(null);
   const oauthRequest = useRef<AbortController | null>(null);
+  const oauthLeaving = useRef(false);
   const [whatsAppStep, setWhatsAppStep] = useState<"key" | "messaging">("key");
   const [pasting, setPasting] = useState<OAuthProvider | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [keyError, setKeyError] = useState<string | null>(null);
 
-  // Keep results from successful reads when another request fails.
-  const refresh = async () => {
-    const [p, c, pr, a, carriers, configs] = await Promise.allSettled([
-      listOAuthProviders(),
-      listOAuthConnections(tenantId),
-      listConnectorPresets(),
-      listCustomApis(tenantId),
-      listCarriers(tenantId),
-      listTelephonyConfigs(tenantId),
-    ]);
-    if (p.status === "fulfilled") setProviders(p.value);
-    if (c.status === "fulfilled") setConnections(c.value);
-    if (pr.status === "fulfilled") setPresets(pr.value);
-    if (a.status === "fulfilled") setApis(a.value);
-    setCallingAccounts((previous) => [
-      ...(carriers.status === "fulfilled"
-        ? carriers.value.map((record): CallingAccount => ({ kind: "carrier", record }))
-        : previous.filter((a) => a.kind === "carrier")),
-      ...(configs.status === "fulfilled"
-        ? configs.value.map((record): CallingAccount => ({ kind: "telephony_config", record }))
-        : previous.filter((a) => a.kind === "telephony_config")),
-    ]);
-    setCallingLoaded((previous) => ({
-      carrier: previous.carrier || carriers.status === "fulfilled",
-      telephony_config: previous.telephony_config || configs.status === "fulfilled",
-    }));
-    const failed = [p, c, pr, a, carriers, configs].find((r) => r.status === "rejected");
-    setError(failed ? errorText(failed.reason) : null);
-    setLoading(false);
+  const refresh = async (resources: AppResource[]) => {
+    const requests: Record<AppResource, () => Promise<void>> = {
+      providers: async () => setProviders(await listOAuthProviders()),
+      presets: async () => { setPresets(await listConnectorPresets()); setPresetsLoaded(true); },
+      connections: async () => setConnections(await listOAuthConnections(tenantId)),
+      apis: async () => setApis(await listCustomApis(tenantId)),
+      carrier: async () => {
+        const records = await listCarriers(tenantId);
+        setCallingAccounts((previous) => [...previous.filter((account) => account.kind !== "carrier"),
+          ...records.map((record): CallingAccount => ({ kind: "carrier", record }))]);
+        setCallingLoaded((previous) => ({ ...previous, carrier: true }));
+      },
+      telephony_config: async () => {
+        const records = await listTelephonyConfigs(tenantId);
+        setCallingAccounts((previous) => [...previous.filter((account) => account.kind !== "telephony_config"),
+          ...records.map((record): CallingAccount => ({ kind: "telephony_config", record }))]);
+        setCallingLoaded((previous) => ({ ...previous, telephony_config: true }));
+      },
+    };
+    const results = await Promise.allSettled(resources.map((resource) => requests[resource]()));
+    setLoadErrors((previous) => {
+      const next = { ...previous };
+      results.forEach((result, index) => {
+        const resource = resources[index];
+        if (result.status === "fulfilled") delete next[resource];
+        else next[resource] = errorText(result.reason);
+      });
+      return next;
+    });
   };
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    refresh();
+    void refresh(["providers", "presets", "connections", "apis", "carrier", "telephony_config"]).finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenantId]);
 
@@ -194,6 +202,7 @@ export function ConnectorsPanel({
   useEffect(() => {
     // Clear pending OAuth state when the browser returns from the provider.
     const resetOAuth = () => {
+      oauthLeaving.current = false;
       oauthRequest.current?.abort();
       oauthRequest.current = null;
       setBusy((current) => current?.startsWith("connect:") ? null : current);
@@ -207,6 +216,8 @@ export function ConnectorsPanel({
   }, []);
 
   const closeOAuth = () => {
+    if (oauthLeaving.current) window.stop();
+    oauthLeaving.current = false;
     oauthRequest.current?.abort();
     oauthRequest.current = null;
     setBusy((current) => current?.startsWith("connect:") ? null : current);
@@ -223,7 +234,7 @@ export function ConnectorsPanel({
   const rowsFor = (presetKey: string) => apis.filter((a) => a.preset_key === presetKey);
   const providerLabel = (key: string) => providers.find((p) => p.key === key)?.label ?? key;
   const connect = async (provider: string, presetKey: string | null, chooseAccount = false) => {
-    oauthRequest.current?.abort();
+    if (oauthRequest.current || oauthLeaving.current) return;
     const request = new AbortController();
     oauthRequest.current = request;
     let timedOut = false;
@@ -237,16 +248,17 @@ export function ConnectorsPanel({
       const draft = presetKey ? makePresetDraft(presetKey, values) : null;
       if (draft) window.sessionStorage.setItem(presetDraftKey(tenantId), JSON.stringify(draft));
       window.sessionStorage.setItem(OAUTH_CONTEXT_KEY, JSON.stringify(context));
+      oauthLeaving.current = true;
       window.location.assign(oauthAuthorizationUrl(authorize_url, provider, chooseAccount));
     } catch (e) {
+      oauthLeaving.current = false;
       if (oauthRequest.current !== request) return;
       if (!request.signal.aborted || timedOut) {
         setError(timedOut ? "Opening this app took too long. Please try again." : errorText(e));
       }
     } finally {
       window.clearTimeout(timeout);
-      // Clear the opening state before the browser navigates away.
-      if (oauthRequest.current === request) {
+      if (!oauthLeaving.current && oauthRequest.current === request) {
         oauthRequest.current = null;
         setBusy((current) => current === `connect:${provider}` ? null : current);
       }
@@ -261,7 +273,7 @@ export function ConnectorsPanel({
       await connectApiKey(tenantId, pasting.key, apiKey.trim());
       setPasting(null);
       setApiKey("");
-      await refresh();
+      await refresh(["connections"]);
     } catch (e) {
       setKeyError(errorText(e));
     } finally {
@@ -281,7 +293,7 @@ export function ConnectorsPanel({
       setNotice(
         `${providerLabel(connection.provider)} disconnected. To finish, also remove Yuviz from the connected apps in that provider account.`,
       );
-      await refresh();
+      await refresh(["connections", "apis"]);
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -307,7 +319,7 @@ export function ConnectorsPanel({
       setShowPhoneNumbersLink(false);
       setValues({});
       setNotice(`${applying.title} is on. Add it to an agent from the agent’s Tools tab.`);
-      await refresh();
+      await refresh(["apis"]);
     } catch (e) {
       if (e instanceof ApiError && e.status === 409 && CONNECTOR_REQUIRED.has(e.detail) && applying.provider) {
         // Request this preset's scopes before it is applied.
@@ -329,7 +341,7 @@ export function ConnectorsPanel({
     try {
       await removeConnectorPreset(tenantId, preset.key);
       setNotice(null);
-      await refresh();
+      await refresh(["apis"]);
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -339,7 +351,7 @@ export function ConnectorsPanel({
 
   const restoredDraft = useRef(false);
   useEffect(() => {
-    if (loading || restoredDraft.current) return;
+    if (loading || !presetsLoaded || restoredDraft.current) return;
     restoredDraft.current = true;
     const draft = readPresetDraft(window.sessionStorage, tenantId);
     const preset = draft && presets.find((entry) => entry.key === draft.presetKey);
@@ -349,7 +361,7 @@ export function ConnectorsPanel({
     setApplying(preset);
     setValues(draft.values);
     setFormError("Your settings were restored. Review them and try turning on the tool again.");
-  }, [loading, presets, tenantId]);
+  }, [loading, presetsLoaded, presets, tenantId]);
 
   if (loading) {
     return (
@@ -368,7 +380,7 @@ export function ConnectorsPanel({
     ...CALLING_APPS.map((app): AppCard => {
       const count = callingAccounts.filter((a) => a.record.provider === app.key).length;
       return { id: `calling:${app.key}`, label: app.label, description: app.description,
-        icon: app.key === "native" ? "local-phone" : app.key, category: "Calling", connected: count > 0,
+        icon: app.icon, category: "Calling", connected: count > 0,
         reconnect: false, available: callingLoaded[CARRIER_PROVIDERS.includes(app.key) ? "carrier" : "telephony_config"], calling: app.key, count };
     }),
     ...workAppCards(providers, connections, presets, apis),
@@ -396,7 +408,7 @@ export function ConnectorsPanel({
       else await deleteTelephonyConfig(account.record.id);
       setShowPhoneNumbersLink(false);
       setNotice(`${account.record.name} disconnected.`);
-      await refresh();
+      await refresh([account.kind]);
     } catch (e) { setError(errorText(e)); }
     finally { setBusy(null); }
   };
@@ -447,7 +459,10 @@ export function ConnectorsPanel({
 
   return (
     <>
-      {error && <div className="error-banner" role="alert">{error} <button className="btn btn-ghost btn-sm" disabled={busy !== null} onClick={() => void refresh()}>Retry</button></div>}
+      {error && <div className="error-banner" role="alert">{error}</div>}
+      {Object.entries(loadErrors).map(([resource, message]) => <div key={resource} className="error-banner" role="alert">
+        {RESOURCE_LABELS[resource as AppResource]} could not be loaded: {message} <button className="btn btn-ghost btn-sm" disabled={busy !== null} onClick={() => void refresh([resource as AppResource])}>Retry</button>
+      </div>)}
       {access.error && <div className="error-banner" role="alert">{access.error} <button className="btn btn-ghost btn-sm" disabled={access.loading} onClick={() => void access.retry()}>{access.loading ? "Checking…" : "Retry permissions"}</button></div>}
       {notice && <div className="info-banner" role="status">{notice} {showPhoneNumbersLink && <Link href="/telephony">Go to Phone Numbers</Link>}</div>}
       {!choosingApp && catalog}
@@ -495,8 +510,8 @@ export function ConnectorsPanel({
       {callingForm && <CallingAppModal key={callingForm.account?.record.id ?? callingForm.provider} tenantId={tenantId} {...callingForm}
         onClose={() => setCallingForm(null)} onSaved={(name) => {
           setShowPhoneNumbersLink(true);
-          setNotice(`${CALLING_APPS.find((app) => app.key === callingForm.provider)?.label} is connected as “${name}”. Next, buy or add a number on Phone Numbers.`);
-          setCallingForm(null); void refresh();
+          setNotice(`${callingAppLabel(callingForm.provider)} is connected as “${name}”. Next, buy or add a number on Phone Numbers.`);
+          setCallingForm(null); void refresh([CARRIER_PROVIDERS.includes(callingForm.provider) ? "carrier" : "telephony_config"]);
         }} />}
 
       <Modal

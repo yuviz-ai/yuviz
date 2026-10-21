@@ -8,7 +8,7 @@ import {
 import { secretPayload } from "@/components/SecretRefInput";
 import { Modal } from "@/components/Modal";
 
-import { CALLING_APPS, CARRIER_PROVIDERS, carrierAccountLabel } from "@/lib/callingApps";
+import { callingAppLabel, CARRIER_PROVIDERS, carrierAccountLabel, cloudonixCredentials } from "@/lib/callingApps";
 
 export type CallingAccount = { kind: "carrier"; record: Carrier } | { kind: "telephony_config"; record: TelephonyConfig };
 
@@ -19,7 +19,7 @@ export function CallingAppModal({ tenantId, provider, account, onClose, onSaved 
 }) {
   const carrier = account?.kind === "carrier" ? account.record : null;
   const config = account?.kind === "telephony_config" ? account.record : null;
-  const label = CALLING_APPS.find((app) => app.key === provider)?.label ?? provider;
+  const label = callingAppLabel(provider);
   const isCarrier = CARRIER_PROVIDERS.includes(provider);
   const isNative = provider === "native";
   const [name, setName] = useState(account?.record.name ?? "");
@@ -34,8 +34,8 @@ export function CallingAppModal({ tenantId, provider, account, onClose, onSaved 
   const storedSecret = isCarrier ? carrier?.auth_token_ref : provider === "cloudonix"
     ? (config?.credentials.api_keys as unknown[] | undefined)?.[0] : config?.credentials.auth_token;
   const hasSecret = typeof storedSecret === "string" && storedSecret.length > 0;
-  const valid = !!name.trim() && (isNative || ((!!secret.trim() || hasSecret) &&
-    (provider === "cloudonix" ? !!domain.trim() : !!accountId.trim())));
+  const hasIdentity = provider === "cloudonix" ? !!domain.trim() : !!accountId.trim() || !!carrier;
+  const valid = !!name.trim() && (isNative || ((!!secret.trim() || hasSecret || !!carrier) && hasIdentity));
 
   const save = async () => {
     if (!valid || busy) return;
@@ -45,14 +45,14 @@ export function CallingAppModal({ tenantId, provider, account, onClose, onSaved 
       if (isCarrier) {
         const key = secretPayload(secret.trim());
         const body = {
-          name: name.trim(), auth_id: accountId.trim(),
+          name: name.trim(),
           ...(secret.trim() ? { auth_token: key.api_key, auth_token_ref: key.api_key_ref } : {}),
         };
-        if (carrier) await updateCarrier(carrier.id, { ...body, carrier_account_ref: carrierAccountLabel(extraLabel, true) });
-        else await createCarrier(tenantId, { ...body, provider: provider as CarrierProvider, carrier_account_ref: carrierAccountLabel(extraLabel, false) });
+        if (carrier) await updateCarrier(carrier.id, { ...body, auth_id: accountId.trim() || null, carrier_account_ref: carrierAccountLabel(extraLabel, true) });
+        else await createCarrier(tenantId, { ...body, auth_id: accountId.trim(), provider: provider as CarrierProvider, carrier_account_ref: carrierAccountLabel(extraLabel, false) });
       } else {
         const credentials = isNative ? {} : provider === "cloudonix"
-          ? { domain: domain.trim(), api_keys: [secret.trim() || "[stored]"] }
+          ? cloudonixCredentials(domain, secret, config?.credentials.api_keys as unknown[] | undefined)
           : { auth_id: accountId.trim(), auth_token: secret.trim() || "[stored]" };
         if (config) await updateTelephonyConfig(config.id, { name: name.trim(), credentials, is_default_outbound: defaultOutbound });
         else await createTelephonyConfig(tenantId, { name: name.trim(), provider, credentials, is_default_outbound: defaultOutbound });
@@ -86,7 +86,7 @@ export function CallingAppModal({ tenantId, provider, account, onClose, onSaved 
       </div>
       {!isNative && <>
         <div className="form-group">
-          <label className="form-label" htmlFor="calling-account">{provider === "cloudonix" ? "Domain" : "Account ID"} <span className="required">*</span></label>
+          <label className="form-label" htmlFor="calling-account">{provider === "cloudonix" ? "Domain" : "Account ID"} {carrier ? <span className="hint">optional</span> : <span className="required">*</span>}</label>
           <input id="calling-account" className="form-input" value={provider === "cloudonix" ? domain : accountId}
             onChange={(e) => provider === "cloudonix" ? setDomain(e.target.value) : setAccountId(e.target.value)} />
         </div>
@@ -94,6 +94,7 @@ export function CallingAppModal({ tenantId, provider, account, onClose, onSaved 
           <label className="form-label" htmlFor="calling-secret">Secret key <span className="hint">kept private — never shown again</span></label>
           <input id="calling-secret" className="form-input" type="password" autoComplete="new-password" value={secret}
             placeholder={hasSecret ? "Saved — leave blank to keep" : ""} onChange={(e) => setSecret(e.target.value)} />
+          {provider === "cloudonix" && config && <div className="form-hint">A new key replaces the first key. Other existing keys are kept.</div>}
         </div>
         {isCarrier && <div className="form-group">
           <label className="form-label" htmlFor="calling-extra">Extra account label <span className="hint">optional</span></label>
