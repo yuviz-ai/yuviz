@@ -20,7 +20,7 @@ from . import audit, cache, db
 
 log = logging.getLogger(__name__)
 
-_UPDATABLE_FIELDS = {"did", "agent_id", "fallback_agent_id", "carrier_id", "telephony_config_id", "region", "status"}
+_UPDATABLE_FIELDS = {"did", "agent_id", "carrier_id", "telephony_config_id", "region", "status"}
 
 # did:{did} routes have no TTL: the Gateway never falls back to Postgres on a miss,
 # so any expiry misroutes calls. Every write path updates Redis; prewarm() covers a flushed Redis.
@@ -95,7 +95,7 @@ async def get_by_did(did: str, *, platform_scoped: bool = False) -> dict[str, An
 
 
 async def refresh_routes_for_agent(agent_id: Any) -> None:
-    """Rebuild did:{did} for numbers whose primary or fallback is this agent. Call after the
+    """Rebuild did:{did} for numbers that this agent answers. Call after the
     agent change commits, so a paused/deleted agent stops receiving calls.
 
     FOR UPDATE + writing Redis before the transaction commits: every other route-mutating
@@ -106,7 +106,7 @@ async def refresh_routes_for_agent(agent_id: Any) -> None:
     async with tenant_conn(pool) as conn:
         rows = await conn.fetch(
             "SELECT did FROM phone_numbers "
-            "WHERE (agent_id = $1 OR fallback_agent_id = $1) AND deleted_at IS NULL "
+            "WHERE agent_id = $1 AND deleted_at IS NULL "
             "ORDER BY did FOR UPDATE",
             agent_id,
         )
@@ -119,16 +119,14 @@ async def refresh_routes_for_agent(agent_id: Any) -> None:
 
 
 async def _load_route(conn: Any, did: str) -> dict[str, Any] | None:
-    # Inactive numbers route like unknown DIDs. Agent falls back primary -> fallback -> 'default',
-    # matching the Gateway's PhoneRoute::from_redis().
+    # Inactive numbers route like unknown DIDs. A paused or deleted agent falls through to 'default'.
     row = await conn.fetchrow(
         "SELECT t.slug AS tenant_slug, "
-        "       COALESCE(a.slug, fb.slug, 'default') AS agent_slug, "
-        "       COALESCE(a.config_version, fb.config_version) AS agent_config_version "
+        "       COALESCE(a.slug, 'default') AS agent_slug, "
+        "       a.config_version AS agent_config_version "
         "FROM phone_numbers pn "
         "JOIN tenants t ON t.id = pn.tenant_id "
-        "LEFT JOIN agents a  ON a.id = pn.agent_id AND a.deleted_at IS NULL AND a.status = 'active' "
-        "LEFT JOIN agents fb ON fb.id = pn.fallback_agent_id AND fb.deleted_at IS NULL AND fb.status = 'active' "
+        "LEFT JOIN agents a ON a.id = pn.agent_id AND a.deleted_at IS NULL AND a.status = 'active' "
         "WHERE pn.did = $1 AND pn.status = 'active' "
         "  AND pn.deleted_at IS NULL AND t.deleted_at IS NULL",
         did,
@@ -236,7 +234,6 @@ async def create_phone_number(
     tenant_id: Any,
     did: str,
     agent_id: Any | None = None,
-    fallback_agent_id: Any | None = None,
     carrier_id: Any | None = None,
     telephony_config_id: Any | None = None,
     region: str | None = None,
@@ -252,9 +249,9 @@ async def create_phone_number(
         try:
             row = await conn.fetchrow(
                 "INSERT INTO phone_numbers "
-                "(tenant_id, did, agent_id, fallback_agent_id, carrier_id, telephony_config_id, region, status) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *",
-                tenant_id, did, agent_id, fallback_agent_id, carrier_id, telephony_config_id, region, status,
+                "(tenant_id, did, agent_id, carrier_id, telephony_config_id, region, status) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *",
+                tenant_id, did, agent_id, carrier_id, telephony_config_id, region, status,
             )
         except asyncpg.UniqueViolationError as exc:
             _raise_if_did_taken(exc, did)

@@ -21,3 +21,12 @@ class WebhookRejected(TelephonyProviderError):
     """Raised by normalize_inbound_webhook() for a vendor-specific
     rejection (e.g. Cloudonix's domain mismatch) — the orchestrator turns
     this into a 403 before any call-context work."""
+
+
+class TelephonyRateLimited(TelephonyProviderError):
+    """Raised when the provider answers 429; `retry_after` is the provider's
+    Retry-After in seconds, or None when it sent none."""
+
+    def __init__(self, message: str, retry_after: int | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after

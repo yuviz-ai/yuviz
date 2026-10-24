@@ -31,6 +31,15 @@ tenant_scoped_router = APIRouter(
 router = APIRouter(prefix="/numbers", tags=["numbers"])
 
 
+async def _require_buying_enabled(tenant_id: str, current_user: CurrentUser) -> None:
+    if current_user.role == "superadmin":
+        return
+    if not await purchased_numbers_service.buying_enabled(tenant_id):
+        raise HTTPException(
+            status_code=403, detail="Buying numbers isn't turned on for this account. Ask your platform admin.",
+        )
+
+
 async def _resolve_carrier(carrier_id: str) -> dict:
     carrier = await get_carrier_by_id(carrier_id)
     if carrier is None:
@@ -48,6 +57,7 @@ async def search_available_numbers(
     current_user: CurrentUser = Depends(get_current_user),
     provider_manager: DidProviderManager = Depends(get_provider_manager),
 ):
+    await _require_buying_enabled(tenant_id, current_user)
     carrier = await _resolve_carrier(carrier_id)
     try:
         provider = await provider_manager.get(carrier)
@@ -72,6 +82,7 @@ async def purchase_number(
     current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
     provider_manager: DidProviderManager = Depends(get_provider_manager),
 ):
+    await _require_buying_enabled(tenant_id, current_user)
     carrier = await _resolve_carrier(body.carrier_id)
     try:
         provider = await provider_manager.get(carrier)

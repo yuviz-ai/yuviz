@@ -23,6 +23,7 @@ class CallRoute:
     provider_call_id: str
     issued_at: float  # time.monotonic()
     direction: str = "inbound"
+    idempotency_key: str | None = None
 
 
 class CallContextStore:

@@ -151,7 +151,7 @@ and define `gateway_host` in autoload_configs/acl.conf.xml as HOST_IP/32.
 
 **sip_profiles/external.xml** — `sip-port 5080`. Do not rename the profile:
 `external` is baked into the ESL dial strings in
-gateway/src/telephony/EslClient.cpp and services/campaigns/originate.py.
+gateway/src/telephony/EslClient.cpp.
 
 **dialplan** — match `^(788|500\d)$`, answer, run the Lua below.
 
@@ -249,8 +249,8 @@ Triage order when it fails:
 ## Known repo gaps this setup runs into
 
   - SIP_PROXY_HOST in .env must be VM_IP. update_kamailio_ip.sh writes it;
-    while it is blank the Gateway refuses transfers to numbers and
-    Campaigns refuses to originate, both with an explicit error. An old
+    while it is blank the Gateway refuses transfers to numbers with an
+    explicit error. An old
     .env holding 127.0.0.1 is wrong here: rerun the script, then restart
     from a new tab (see section 8).
 

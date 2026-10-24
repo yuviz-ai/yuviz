@@ -86,8 +86,10 @@ export function CallRowActions({ call, onOpen }: { call: CallWithTenant; onOpen:
     setPanel("transcript");
   };
 
+  // A campaign call that never connected has no transcript or conversation page.
+  const isCampaignCall = call.session_id.startsWith("campaign:");
   const items: { icon: LucideIcon; label: string; run: () => void }[] = [
-    { icon: FileText, label: "Transcript & summary", run: openTranscript },
+    ...(isCampaignCall ? [] : [{ icon: FileText, label: "Transcript & summary", run: openTranscript }]),
     { icon: Eye, label: "View details", run: onOpen },
   ];
 
@@ -144,7 +146,7 @@ export function CallRowActions({ call, onOpen }: { call: CallWithTenant; onOpen:
           open
           title={panel === "transcript" ? "Transcript & summary" : "Something went wrong"}
           onClose={() => setPanel(null)}
-          footer={panel !== "error" && (
+          footer={panel !== "error" && !isCampaignCall && (
             <Link href={`/calls/${call.session_id}`} className="btn btn-ghost btn-sm">Open full details</Link>
           )}
         >

@@ -102,4 +102,4 @@ def test_route_enumeration_size(monkeypatch):
             continue
         if any(dep.call is require_telephony_caller for dep in dependant.dependencies):
             paths.add(route.path)
-    assert len(paths) == 3
+    assert len(paths) == 6

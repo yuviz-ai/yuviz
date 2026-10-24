@@ -1,6 +1,6 @@
 import type { Agent, Campaign, PhoneNumber } from "./api";
 
-// Mirror the primary → fallback → default choice used by _load_route. The
+// Mirror the agent → default choice used by _load_route. The
 // selected agent's status is overridden to model either side of the switch.
 function routeFor(agents: Agent[], selected: Agent, selectedActive: boolean) {
   const byId = new Map(agents.map((row) => [row.id, row]));
@@ -12,7 +12,7 @@ function routeFor(agents: Agent[], selected: Agent, selectedActive: boolean) {
     return row && (row.id === selected.id ? selectedActive : row.status === "active") ? row : null;
   };
   return (number: PhoneNumber): Agent | null =>
-    active(number.agent_id) ?? active(number.fallback_agent_id) ?? active(defaultAgent?.id ?? null);
+    active(number.agent_id) ?? active(defaultAgent?.id ?? null);
 }
 
 // Phone-shaped identifiers match stored digits-only DIDs; SIP URIs and named
@@ -30,12 +30,8 @@ export function pauseOutcomes(agent: Agent, agents: Agent[], numbers: PhoneNumbe
     // A failed later sync does not prove the carrier stopped sending calls.
     if (number.status !== "active") return [];
     const current = before(number);
-    const assigned = number.agent_id === agent.id || number.fallback_agent_id === agent.id;
-    if (current?.id !== agent.id && !assigned) return [];
+    if (current?.id !== agent.id && number.agent_id !== agent.id) return [];
     const next = after(number);
-    if (current && current.id !== agent.id && next?.id === current.id) {
-      return [`${number.did}: continues to ${current.name}; this agent will no longer be its backup.`];
-    }
     return [next
       ? `${number.did}: calls go to ${next.name}.`
       : `${number.did}: calls won't reach an agent.`];

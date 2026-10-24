@@ -12,6 +12,8 @@ from typing import Any
 
 import redis.asyncio as redis
 
+from libs.telephony_sdk import campaign_events
+
 log = logging.getLogger("telephony.idempotency")
 
 IDEM_TTL_S = 120
@@ -54,6 +56,15 @@ async def finalize(provider: str, tenant_id: uuid.UUID, key: str, outcome: dict[
         log.warning("idempotency.finalize: Redis unreachable key=%s", redis_key)
 
 
+async def release(provider: str, tenant_id: uuid.UUID, key: str) -> None:
+    """Drop the claim so the same key can dial again; only for a vendor refusal that created no call."""
+    redis_key = _key("idem", provider, tenant_id, key)
+    try:
+        await _get_client().delete(redis_key)
+    except redis.RedisError:
+        log.warning("idempotency.release: Redis unreachable key=%s", redis_key)
+
+
 async def read(provider: str, tenant_id: uuid.UUID, key: str) -> dict[str, Any] | None:
     """No poll, no claim — a plain read of whatever's currently stored."""
     redis_key = _key("idem", provider, tenant_id, key)
@@ -92,3 +103,13 @@ async def observed_call_id(provider: str, tenant_id: uuid.UUID, key: str) -> str
     except redis.RedisError:
         log.warning("idempotency.observed_call_id: Redis unreachable key=%s", redis_key)
         return None
+
+
+async def claim_webhook_nonce(provider: str, account_ref: str, nonce: str, ttl_s: int) -> bool:
+    """False when this nonce was already seen for the account (a replay)."""
+    key = campaign_events.WEBHOOK_NONCE_KEY.format(provider=provider, account_ref=account_ref, nonce=nonce)
+    return bool(await _get_client().set(key, "1", nx=True, ex=ttl_s))
+
+
+async def publish_event(stream: str, fields: dict[str, str]) -> None:
+    await _get_client().xadd(stream, fields)

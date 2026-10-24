@@ -1,257 +1,277 @@
+"""CampaignWorker dial path on a scratch database: dispatch, pre-checks, send results and outcome recording."""
+
 from __future__ import annotations
 
+import asyncio
+import logging
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
-import pytest_asyncio
 
-from libs.telephony_sdk.did_format import normalize_did
-from services.campaigns import campaign_contacts, campaigns, dnc, originate, telephony_originate
-from services.campaigns.worker import CampaignWorker, _idempotency_key, _within_calling_hours
-
-_DEFAULT_CALLER_ID = "+14155550100"
+from libs.telephony_sdk import campaign_events
+from services.campaigns import campaigns, outcome_events, telephony_originate
+from services.campaigns.tests import seed, world as w
+from services.campaigns.worker import _within_calling_hours
 
 
-@pytest_asyncio.fixture(autouse=True)
-async def _provision_default_caller_id(test_tenant, pool):
-    """Provision the default caller_id; the worker refuses unowned caller_ids."""
-    await pool.execute(
-        "INSERT INTO phone_numbers (did, tenant_id) VALUES ($1, $2) ON CONFLICT (did) WHERE deleted_at IS NULL DO NOTHING",
-        normalize_did(_DEFAULT_CALLER_ID), test_tenant["id"],
-    )
-    yield
-    await pool.execute("DELETE FROM phone_numbers WHERE did = $1", normalize_did(_DEFAULT_CALLER_ID))
+async def _world(pool, *, contacts=1, **kwargs):
+    async with pool.acquire() as conn:
+        world = await w.make(conn, **kwargs)
+        for _ in range(contacts):
+            await seed.contact(conn, world["campaign"]["id"])
+    return world
 
 
-async def _make_running_campaign(test_tenant, test_agent, **overrides):
-    defaults = dict(
-        agent_id=test_agent["id"], name="Worker test", caller_id=_DEFAULT_CALLER_ID,
-        max_concurrent_calls=1, pacing_seconds=100, max_attempts=1,
-    )
-    defaults.update(overrides)
-    row = await campaigns.create_campaign(test_tenant["id"], **defaults)
-    return await campaigns.set_status(row["id"], "running")
+async def _dial(pool, worker, world):
+    await worker._dial_next(await w.refreshed(pool, world["campaign"]["id"]))
 
 
-async def test_tick_campaign_originates_a_pending_contact(test_tenant, test_agent, monkeypatch, scoped):
-    campaign = await _make_running_campaign(test_tenant, test_agent)
-    await campaign_contacts.bulk_insert_contacts(campaign["id"], [{"phone_number": "+14155551111", "name": ""}])
-
-    calls = []
-
-    async def fake_originate(phone_number, caller_id):
-        calls.append((phone_number, caller_id))
-        return "job-1"
-
-    monkeypatch.setattr(originate, "originate_call", fake_originate)
-    worker = CampaignWorker()
-
-    await worker._tick_campaign(campaign)
-
-    assert calls == [("+14155551111", "+14155550100")]
-    contacts = await campaign_contacts.list_contacts(campaign["id"])
-    assert contacts[0]["status"] == "calling"
+async def _attempts(pool, world):
+    return await w.attempt_rows(pool, world["campaign"]["id"])
 
 
-async def test_tick_campaign_respects_pacing(test_tenant, test_agent, monkeypatch, scoped):
-    campaign = await _make_running_campaign(test_tenant, test_agent, pacing_seconds=9999)
-    await campaign_contacts.bulk_insert_contacts(
-        campaign["id"], [{"phone_number": "+14155551111", "name": ""}, {"phone_number": "+14155552222", "name": ""}],
-    )
-
-    calls = []
-
-    async def fake_originate(phone_number, caller_id):
-        calls.append(phone_number)
-        return "job-1"
-
-    monkeypatch.setattr(originate, "originate_call", fake_originate)
-    worker = CampaignWorker()
-
-    await worker._tick_campaign(campaign)
-    await worker._tick_campaign(campaign)  # immediately again — pacing should block this
-
-    assert len(calls) == 1
+async def test_path_a_dial_creates_an_attempt_sends_with_first_true_and_marks_sent(scratch_pool, scratch_redis_raw):
+    world = await _world(scratch_pool)
+    dial, billing = w.FakeDial(), w.FakeBilling()
+    await _dial(scratch_pool, w.worker(scratch_redis_raw, dial, billing), world)
+    [attempt] = await _attempts(scratch_pool, world)
+    assert [(i.key, first) for i, first in dial.sent] == [(attempt["idempotency_key"], True)]
+    assert (attempt["path"], attempt["state"], attempt["send_count"], attempt["billing_state"]) == ("sip", "sent", 1, "off")
+    assert billing.calls == []
 
 
-async def test_first_dial_is_not_paced_on_a_freshly_booted_host(test_tenant, test_agent, monkeypatch, scoped):
-    campaign = await _make_running_campaign(test_tenant, test_agent, pacing_seconds=9999)
-    await campaign_contacts.bulk_insert_contacts(campaign["id"], [{"phone_number": "+14155551111", "name": ""}])
+async def test_pacing_blocks_a_second_dial_and_reports_the_wait(scratch_pool, scratch_redis_raw):
+    world = await _world(scratch_pool, contacts=2)
+    await scratch_pool.execute("UPDATE campaigns SET pacing_seconds = 9999 WHERE id = $1", world["campaign"]["id"])
+    worker = w.worker(scratch_redis_raw)
+    await _dial(scratch_pool, worker, world)
+    await _dial(scratch_pool, worker, world)
+    assert len(await _attempts(scratch_pool, world)) == 1
+    assert (await w.refreshed(scratch_pool, world["campaign"]["id"]))["wait_reason"] == "pacing"
 
-    calls = []
 
-    async def fake_originate(phone_number, caller_id):
-        calls.append(phone_number)
-        return "job-1"
-
-    monkeypatch.setattr(originate, "originate_call", fake_originate)
+async def test_first_dial_is_not_paced_on_a_freshly_booted_host(scratch_pool, scratch_redis_raw, monkeypatch):
+    world = await _world(scratch_pool)
+    await scratch_pool.execute("UPDATE campaigns SET pacing_seconds = 9999 WHERE id = $1", world["campaign"]["id"])
     # time.monotonic() is host uptime; a host up for 5s is far below pacing_seconds.
     monkeypatch.setattr("services.campaigns.worker.time", SimpleNamespace(monotonic=lambda: 5.0))
-    worker = CampaignWorker()
-
-    await worker._tick_campaign(campaign)
-
-    assert calls == ["+14155551111"]
+    await _dial(scratch_pool, w.worker(scratch_redis_raw), world)
+    assert len(await _attempts(scratch_pool, world)) == 1
 
 
-async def test_tick_campaign_respects_concurrency_cap(test_tenant, test_agent, monkeypatch, scoped):
-    campaign = await _make_running_campaign(test_tenant, test_agent, max_concurrent_calls=1, pacing_seconds=0)
-    await campaign_contacts.bulk_insert_contacts(
-        campaign["id"], [{"phone_number": "+14155551111", "name": ""}, {"phone_number": "+14155552222", "name": ""}],
-    )
-
-    async def fake_originate(phone_number, caller_id):
-        return "job-1"
-
-    monkeypatch.setattr(originate, "originate_call", fake_originate)
-    worker = CampaignWorker()
-
-    await worker._tick_campaign(campaign)  # one contact now 'calling', in_flight=1
-    await worker._tick_campaign(campaign)  # at cap — should not claim the second contact
-
-    contacts = await campaign_contacts.list_contacts(campaign["id"], status="calling")
-    assert len(contacts) == 1
+async def test_campaign_cap_leaves_the_second_contact_pending(scratch_pool, scratch_redis_raw):
+    world = await _world(scratch_pool, contacts=2, max_concurrent_calls=1)
+    worker = w.worker(scratch_redis_raw)
+    await _dial(scratch_pool, worker, world)
+    await _dial(scratch_pool, worker, world)
+    assert len(await _attempts(scratch_pool, world)) == 1
+    assert (await w.refreshed(scratch_pool, world["campaign"]["id"]))["wait_reason"] == "campaign_cap"
 
 
-async def test_tick_campaign_marks_completed_when_no_contacts_remain(test_tenant, test_agent, scoped):
-    campaign = await _make_running_campaign(test_tenant, test_agent)
-    worker = CampaignWorker()
-
-    await worker._tick_campaign(campaign)
-
-    updated = await campaigns.get_campaign(campaign["id"])
-    assert updated["status"] == "completed"
+async def test_campaign_completes_when_no_contacts_remain(scratch_pool, scratch_redis_raw):
+    world = await _world(scratch_pool, contacts=0)
+    await _dial(scratch_pool, w.worker(scratch_redis_raw), world)
+    assert (await w.refreshed(scratch_pool, world["campaign"]["id"]))["status"] == "completed"
 
 
-async def test_tick_campaign_skips_when_no_caller_id(test_tenant, test_agent, monkeypatch, scoped):
-    campaign = await _make_running_campaign(test_tenant, test_agent, caller_id=None, pacing_seconds=0)
-    await campaign_contacts.bulk_insert_contacts(campaign["id"], [{"phone_number": "+14155551111", "name": ""}])
-
-    called = False
-
-    async def fake_originate(phone_number, caller_id):
-        nonlocal called
-        called = True
-        return "job-1"
-
-    monkeypatch.setattr(originate, "originate_call", fake_originate)
-    worker = CampaignWorker()
-    await worker._tick_campaign(campaign)
-
-    assert called is False
+async def test_a_campaign_without_a_caller_id_dials_nothing(scratch_pool, scratch_redis_raw):
+    world = await _world(scratch_pool)
+    await scratch_pool.execute("UPDATE campaigns SET caller_id = NULL WHERE id = $1", world["campaign"]["id"])
+    dial = w.FakeDial()
+    await _dial(scratch_pool, w.worker(scratch_redis_raw, dial), world)
+    assert dial.sent == [] and await _attempts(scratch_pool, world) == []
 
 
-async def test_originate_failure_marks_contact_failed(test_tenant, test_agent, monkeypatch, scoped):
-    campaign = await _make_running_campaign(test_tenant, test_agent)
-    await campaign_contacts.bulk_insert_contacts(campaign["id"], [{"phone_number": "+14155551111", "name": ""}])
-
-    async def failing_originate(phone_number, caller_id):
-        raise originate.OriginateError("boom")
-
-    monkeypatch.setattr(originate, "originate_call", failing_originate)
-    worker = CampaignWorker()
-
-    await worker._tick_campaign(campaign)
-
-    contacts = await campaign_contacts.list_contacts(campaign["id"])
-    assert contacts[0]["status"] == "failed"
+async def test_a_malformed_caller_id_pauses_the_campaign_and_spends_nothing(scratch_pool, scratch_redis_raw):
+    world = await _world(scratch_pool)
+    bad = "+91-80-4567-8900"
+    async with scratch_pool.acquire() as conn:
+        await conn.execute("UPDATE phone_numbers SET did = '918045678900' WHERE tenant_id = $1", world["tenant_id"])
+        await conn.execute("UPDATE campaigns SET caller_id = $2 WHERE id = $1", world["campaign"]["id"], bad)
+    await _dial(scratch_pool, w.worker(scratch_redis_raw), world)
+    assert (await w.refreshed(scratch_pool, world["campaign"]["id"]))["status"] == "paused"
+    assert await _attempts(scratch_pool, world) == []
 
 
-async def test_malformed_owned_caller_id_pauses_campaign_without_spending_attempts(
-    test_tenant, test_agent, monkeypatch, scoped, pool,
+async def test_a_malformed_stored_contact_fails_without_an_attempt(scratch_pool, scratch_redis_raw):
+    world = await _world(scratch_pool, contacts=0)
+    async with scratch_pool.acquire() as conn:
+        contact = await seed.contact(conn, world["campaign"]["id"], phone="1001\n\napi hupall")
+    dial = w.FakeDial()
+    await _dial(scratch_pool, w.worker(scratch_redis_raw, dial), world)
+    assert dial.sent == [] and await _attempts(scratch_pool, world) == []
+    assert (await w.contact_row(scratch_pool, contact["id"]))["status"] == "failed"
+
+
+async def test_an_unowned_caller_id_pauses_and_dials_nothing(scratch_pool, scratch_redis_raw):
+    world = await _world(scratch_pool)
+    await scratch_pool.execute("DELETE FROM phone_numbers WHERE tenant_id = $1", world["tenant_id"])
+    dial = w.FakeDial()
+    await _dial(scratch_pool, w.worker(scratch_redis_raw, dial), world)
+    assert dial.sent == [] and await _attempts(scratch_pool, world) == []
+    assert (await w.refreshed(scratch_pool, world["campaign"]["id"]))["status"] == "paused"
+
+
+async def test_an_unavailable_agent_is_refused(scratch_pool, scratch_redis_raw):
+    world = await _world(scratch_pool)
+    await scratch_pool.execute("UPDATE agents SET status = 'inactive' WHERE id = $1", world["campaign"]["agent_id"])
+    dial = w.FakeDial()
+    await _dial(scratch_pool, w.worker(scratch_redis_raw, dial), world)
+    assert dial.sent == [] and (await w.refreshed(scratch_pool, world["campaign"]["id"]))["status"] == "paused"
+
+
+async def test_an_unregistered_provider_is_refused_never_sent_down_path_a(scratch_pool, scratch_redis_raw, monkeypatch):
+    world = await _world(scratch_pool, provider="not-a-provider")
+    dial = w.FakeDial()
+    originated = []
+
+    async def originate(**kw):
+        originated.append(kw)
+
+    monkeypatch.setattr(telephony_originate, "originate_call", originate)
+    await _dial(scratch_pool, w.worker(scratch_redis_raw, dial), world)
+    assert dial.sent == [] and originated == [] and await _attempts(scratch_pool, world) == []
+    assert (await w.refreshed(scratch_pool, world["campaign"]["id"]))["status"] == "paused"
+
+
+async def test_a_registered_provider_takes_path_b(scratch_pool, scratch_redis_raw, monkeypatch):
+    world = await _world(scratch_pool, provider="fake")
+    seen = []
+
+    async def originate(**kw):
+        seen.append(kw)
+        return "vendor-1"
+
+    monkeypatch.setattr(telephony_originate, "originate_call", originate)
+    dial = w.FakeDial()
+    await _dial(scratch_pool, w.worker(scratch_redis_raw, dial), world)
+    [attempt] = await _attempts(scratch_pool, world)
+    assert dial.sent == [] and seen[0]["idempotency_key"] == attempt["idempotency_key"]
+    assert (attempt["path"], attempt["state"], attempt["provider_call_id"]) == ("cpaas", "sent", "vendor-1")
+    assert attempt["cps_scope"] == f"provider_account:{world['config_id']}"
+
+
+async def test_a_dnc_listed_contact_is_blocked_and_the_log_masks_the_number(scratch_pool, scratch_redis_raw, caplog):
+    world = await _world(scratch_pool, contacts=0)
+    async with scratch_pool.acquire() as conn:
+        contact = await seed.contact(conn, world["campaign"]["id"], phone="+14155551111")
+        await conn.execute(
+            "INSERT INTO dnc_numbers (tenant_id, phone_number) VALUES ($1, '+14155551111')", world["tenant_id"],
+        )
+    dial = w.FakeDial()
+    with caplog.at_level(logging.INFO, logger="services.campaigns.worker"):
+        await _dial(scratch_pool, w.worker(scratch_redis_raw, dial), world)
+    assert dial.sent == [] and (await w.contact_row(scratch_pool, contact["id"]))["status"] == "blocked"
+    text = caplog.text
+    assert "DNC" in text and "1111" in text and "+14155551111" not in text and "4155551111" not in text
+
+
+class _Registry:
+    def __init__(self, verdict=None, exc=None):
+        self.verdict, self.exc = verdict, exc
+
+    async def check(self, e164, purpose, tenant_id):
+        if self.exc:
+            raise self.exc
+        return self.verdict
+
+
+async def test_a_registry_timeout_waits_with_no_attempt_and_nothing_consumed(scratch_pool, scratch_redis_raw):
+    world = await _world(scratch_pool)
+    worker = w.worker(scratch_redis_raw, registry=_Registry(exc=asyncio.TimeoutError()))
+    await _dial(scratch_pool, worker, world)
+    assert await _attempts(scratch_pool, world) == []
+    assert (await w.refreshed(scratch_pool, world["campaign"]["id"]))["wait_reason"] == "registry"
+    [contact] = await scratch_pool.fetch("SELECT * FROM campaign_contacts WHERE campaign_id = $1", world["campaign"]["id"])
+    assert (contact["status"], contact["attempt_count"]) == ("pending", 0)
+
+
+async def test_a_registry_denial_blocks_the_contact(scratch_pool, scratch_redis_raw):
+    world = await _world(scratch_pool)
+    await _dial(scratch_pool, w.worker(scratch_redis_raw, registry=_Registry("deny")), world)
+    [contact] = await scratch_pool.fetch("SELECT * FROM campaign_contacts WHERE campaign_id = $1", world["campaign"]["id"])
+    assert contact["status"] == "blocked" and await _attempts(scratch_pool, world) == []
+
+
+@pytest.mark.parametrize("result, failure_reason", [("rejected", "dial_rejected"), ("no_node", "no_sip_node")])
+async def test_a_send_that_sent_nothing_fails_the_attempt_and_requeues_after_the_gap(
+    scratch_pool, scratch_redis_raw, result, failure_reason,
 ):
-    bad_did = "+91-80-4567-8900"
-    await pool.execute("INSERT INTO phone_numbers (did, tenant_id) VALUES ($1, $2)", normalize_did(bad_did), test_tenant["id"])
-    try:
-        campaign = await _make_running_campaign(test_tenant, test_agent, caller_id=bad_did, max_attempts=3)
-        await campaign_contacts.bulk_insert_contacts(campaign["id"], [{"phone_number": "+14155551111", "name": ""}])
-        calls = []
-
-        async def fake_originate(phone_number, caller_id):
-            calls.append(phone_number)
-            return "job-1"
-
-        monkeypatch.setattr(originate, "originate_call", fake_originate)
-        worker = CampaignWorker()
-
-        await worker._tick_campaign(campaign)
-
-        assert calls == []
-        contacts = await campaign_contacts.list_contacts(campaign["id"])
-        assert (contacts[0]["status"], contacts[0]["attempt_count"]) == ("pending", 0)
-        assert (await campaigns.get_campaign(campaign["id"]))["status"] == "paused"
-        assert worker._in_flight[str(campaign["id"])] == 0
-    finally:
-        await pool.execute("DELETE FROM phone_numbers WHERE did = $1", normalize_did(bad_did))
+    world = await _world(scratch_pool, retry_gap_minutes=5, max_attempts=2)
+    await _dial(scratch_pool, w.worker(scratch_redis_raw, w.FakeDial(result)), world)
+    [attempt] = await _attempts(scratch_pool, world)
+    assert (attempt["outcome"], attempt["failure_reason"]) == ("failed", failure_reason)
+    [contact] = await scratch_pool.fetch("SELECT * FROM campaign_contacts WHERE campaign_id = $1", world["campaign"]["id"])
+    assert contact["status"] == "pending" and contact["next_attempt_at"] > datetime.now(ZoneInfo("UTC")) + timedelta(minutes=4)
 
 
-async def test_malformed_stored_contact_fails_without_retry(test_tenant, test_agent, monkeypatch, scoped):
-    campaign = await _make_running_campaign(test_tenant, test_agent, max_attempts=3)
-    await campaign_contacts.bulk_insert_contacts(
-        campaign["id"], [{"phone_number": "1001\n\napi hupall", "name": ""}],
+async def test_a_timed_out_send_stays_pending_for_reconcile(scratch_pool, scratch_redis_raw):
+    world = await _world(scratch_pool)
+    await _dial(scratch_pool, w.worker(scratch_redis_raw, w.FakeDial("timeout")), world)
+    [attempt] = await _attempts(scratch_pool, world)
+    assert (attempt["state"], attempt["send_count"]) == ("pending", 1)
+
+
+async def _hangup(redis_client, attempt, cause):
+    await outcome_events.ensure_groups(redis_client)
+    await redis_client.xadd(campaign_events.STREAM_FS, campaign_events.encode(
+        source="fs", kind="hangup", key=attempt["idempotency_key"], tenant_id=str(attempt["tenant_id"]),
+        provider_call_id=None, call_session_id=attempt["call_session_id"], cause=cause, answered=False, billable_ms=None,
+    ))
+
+
+@pytest.mark.parametrize("cause, counter", [("USER_BUSY", "busy"), ("CALL_REJECTED", "declined")])
+async def test_busy_and_declined_move_the_progress_counters(scratch_pool, scratch_redis_raw, cause, counter):
+    world = await _world(scratch_pool, max_attempts=1)
+    worker = w.worker(scratch_redis_raw)
+    await _dial(scratch_pool, worker, world)
+    [attempt] = await _attempts(scratch_pool, world)
+    await _hangup(scratch_redis_raw, attempt, cause)
+    await worker._drain_events()
+    progress = await campaigns.get_progress(world["campaign"]["id"], platform_scoped=True)
+    assert (progress[counter], progress["calling"]) == (1, 0)
+
+
+async def test_a_no_answer_contact_is_not_redialed_before_the_retry_gap(scratch_pool, scratch_redis_raw):
+    world = await _world(scratch_pool, retry_gap_minutes=60, max_attempts=3)
+    dial = w.FakeDial()
+    worker = w.worker(scratch_redis_raw, dial)
+    await _dial(scratch_pool, worker, world)
+    [attempt] = await _attempts(scratch_pool, world)
+    await _hangup(scratch_redis_raw, attempt, "NO_ANSWER")
+    await worker._drain_events()
+    await _dial(scratch_pool, worker, world)
+    assert len(dial.sent) == 1 and len(await _attempts(scratch_pool, world)) == 1
+    await scratch_pool.execute(
+        "UPDATE campaign_contacts SET next_attempt_at = now() - interval '1 minute' WHERE campaign_id = $1",
+        world["campaign"]["id"],
     )
-    calls = []
-
-    async def fake_originate(phone_number, caller_id):
-        calls.append(phone_number)
-        return "job-1"
-
-    monkeypatch.setattr(originate, "originate_call", fake_originate)
-    worker = CampaignWorker()
-
-    await worker._tick_campaign(campaign)
-
-    assert calls == []
-    contacts = await campaign_contacts.list_contacts(campaign["id"])
-    assert (contacts[0]["status"], contacts[0]["attempt_count"]) == ("failed", 1)
-    assert (await campaigns.get_campaign(campaign["id"]))["status"] == "running"
-    assert worker._in_flight[str(campaign["id"])] == 0
+    await _dial(scratch_pool, worker, world)
+    assert len(dial.sent) == 2
 
 
-async def test_on_job_complete_resolves_contact_and_decrements_in_flight(test_tenant, test_agent, monkeypatch, scoped):
-    campaign = await _make_running_campaign(test_tenant, test_agent)
-    await campaign_contacts.bulk_insert_contacts(campaign["id"], [{"phone_number": "+14155551111", "name": ""}])
-
-    async def fake_originate(phone_number, caller_id):
-        return "job-42"
-
-    monkeypatch.setattr(originate, "originate_call", fake_originate)
-    worker = CampaignWorker()
-    await worker._tick_campaign(campaign)
-    assert worker._in_flight[str(campaign["id"])] == 1
-
-    await worker._on_job_complete("job-42", True, "+OK channel-uuid-xyz")
-
-    assert worker._in_flight[str(campaign["id"])] == 0
-    contacts = await campaign_contacts.list_contacts(campaign["id"])
-    assert contacts[0]["status"] == "completed"
-    # The channel UUID is the Gateway's calls.session_id for that leg.
-    assert contacts[0]["call_session_id"] == "channel-uuid-xyz"
+async def test_tick_holds_no_transaction_between_scan_iterations(scratch_pool, scratch_redis_raw):
+    worker = w.worker(scratch_redis_raw)
+    for _ in range(3):
+        await worker._tick()
+        idle = await scratch_pool.fetch("SELECT pid FROM pg_stat_activity WHERE state = 'idle in transaction'")
+        assert idle == []
 
 
-async def test_on_job_complete_failure_does_not_set_call_session_id(test_tenant, test_agent, monkeypatch, scoped):
-    campaign = await _make_running_campaign(test_tenant, test_agent)
-    await campaign_contacts.bulk_insert_contacts(campaign["id"], [{"phone_number": "+14155551111", "name": ""}])
-
-    async def fake_originate(phone_number, caller_id):
-        return "job-43"
-
-    monkeypatch.setattr(originate, "originate_call", fake_originate)
-    worker = CampaignWorker()
-    await worker._tick_campaign(campaign)
-
-    await worker._on_job_complete("job-43", False, "-ERR USER_BUSY")
-
-    contacts = await campaign_contacts.list_contacts(campaign["id"])
-    assert contacts[0]["status"] == "failed"
-    assert contacts[0]["call_session_id"] is None
-
-
-async def test_on_job_complete_ignores_unknown_job_uuid(test_tenant, test_agent):
-    worker = CampaignWorker()
-    await worker._on_job_complete("not-tracked", True, "+OK")  # must not raise
+async def test_tick_starts_a_scheduled_campaign_only_once_its_time_has_passed(scratch_pool, scratch_redis_raw):
+    due = await _world(scratch_pool, status="scheduled")
+    later = await _world(scratch_pool, status="scheduled")
+    await scratch_pool.execute(
+        "UPDATE campaigns SET scheduled_start_at = now() - interval '1 minute' WHERE id = $1", due["campaign"]["id"],
+    )
+    await scratch_pool.execute(
+        "UPDATE campaigns SET scheduled_start_at = now() + interval '1 hour' WHERE id = $1", later["campaign"]["id"],
+    )
+    await w.worker(scratch_redis_raw)._tick()
+    assert (await w.refreshed(scratch_pool, due["campaign"]["id"]))["status"] == "running"
+    assert (await w.refreshed(scratch_pool, later["campaign"]["id"]))["status"] == "scheduled"
 
 
 # ── calling-hours guardrail ──────────────────────────────────────────────
@@ -282,246 +302,34 @@ def test_within_calling_hours_overnight_window_wraps_midnight():
     assert _within_calling_hours({**window}) in (True, False)  # always defined, never raises
 
 
-async def test_tick_campaign_skips_outside_calling_hours(test_tenant, test_agent, monkeypatch, scoped):
-    tz = "UTC"
-    now = datetime.now(ZoneInfo(tz))
-    campaign = await _make_running_campaign(
-        test_tenant, test_agent, pacing_seconds=0,
-        calling_hours_start=(now + timedelta(hours=1)).strftime("%H:%M"),
-        calling_hours_end=(now + timedelta(hours=2)).strftime("%H:%M"),
-        calling_hours_timezone=tz,
+async def test_outside_calling_hours_the_contact_is_untouched_and_the_wait_is_reported(scratch_pool, scratch_redis_raw):
+    world = await _world(scratch_pool)
+    now = datetime.now(ZoneInfo("UTC"))
+    await scratch_pool.execute(
+        "UPDATE campaigns SET calling_hours_start = $2, calling_hours_end = $3, calling_hours_timezone = 'UTC' WHERE id = $1",
+        world["campaign"]["id"], (now + timedelta(hours=1)).strftime("%H:%M"), (now + timedelta(hours=2)).strftime("%H:%M"),
     )
-    await campaign_contacts.bulk_insert_contacts(campaign["id"], [{"phone_number": "+14155551111", "name": ""}])
-
-    called = False
-
-    async def fake_originate(phone_number, caller_id):
-        nonlocal called
-        called = True
-        return "job-1"
-
-    monkeypatch.setattr(originate, "originate_call", fake_originate)
-    worker = CampaignWorker()
-    await worker._tick_campaign(campaign)
-
-    assert called is False
-    contacts = await campaign_contacts.list_contacts(campaign["id"])
-    assert contacts[0]["status"] == "pending"  # untouched — never claimed
+    dial = w.FakeDial()
+    await _dial(scratch_pool, w.worker(scratch_redis_raw, dial), world)
+    assert dial.sent == [] and await _attempts(scratch_pool, world) == []
+    assert (await w.refreshed(scratch_pool, world["campaign"]["id"]))["wait_reason"] == "calling_hours"
 
 
-# ── do-not-call guardrail ────────────────────────────────────────────────
-
-async def test_tick_campaign_blocks_dnc_listed_contact(test_tenant, test_agent, monkeypatch, scoped):
-    campaign = await _make_running_campaign(test_tenant, test_agent, pacing_seconds=0)
-    await campaign_contacts.bulk_insert_contacts(campaign["id"], [{"phone_number": "+14155551111", "name": ""}])
-    await dnc.add_number(test_tenant["id"], "+14155551111", reason="opted out")
-
-    called = False
-
-    async def fake_originate(phone_number, caller_id):
-        nonlocal called
-        called = True
-        return "job-1"
-
-    monkeypatch.setattr(originate, "originate_call", fake_originate)
-    worker = CampaignWorker()
-    await worker._tick_campaign(campaign)
-
-    assert called is False
-    contacts = await campaign_contacts.list_contacts(campaign["id"])
-    assert contacts[0]["status"] == "blocked"
+async def test_set_wait_reason_writes_only_on_change(scratch_pool):
+    world = await _world(scratch_pool)
+    campaign_id = world["campaign"]["id"]
+    await campaigns.set_wait_reason(campaign_id, "pacing")
+    since = (await w.refreshed(scratch_pool, campaign_id))["wait_since"]
+    await campaigns.set_wait_reason(campaign_id, "pacing")
+    assert (await w.refreshed(scratch_pool, campaign_id))["wait_since"] == since
 
 
-# ── max_attempts retry-then-exhaust ──────────────────────────────────────
-
-async def test_failed_contact_retried_until_max_attempts_then_exhausted(test_tenant, test_agent, monkeypatch, scoped):
-    campaign = await _make_running_campaign(test_tenant, test_agent, pacing_seconds=0, max_attempts=2)
-    await campaign_contacts.bulk_insert_contacts(campaign["id"], [{"phone_number": "+14155551111", "name": ""}])
-
-    job_counter = 0
-
-    async def fake_originate(phone_number, caller_id):
-        nonlocal job_counter
-        job_counter += 1
-        return f"job-{job_counter}"
-
-    monkeypatch.setattr(originate, "originate_call", fake_originate)
-    worker = CampaignWorker()
-
-    # Attempt 1 of 2: fails, must be requeued to 'pending', not left 'failed'.
-    await worker._tick_campaign(campaign)
-    await worker._on_job_complete("job-1", False, "-ERR USER_BUSY")
-    contacts = await campaign_contacts.list_contacts(campaign["id"])
-    assert contacts[0]["status"] == "pending"
-    assert contacts[0]["attempt_count"] == 1
-
-    # Attempt 2 of 2: fails again, now exhausted — stays 'failed'.
-    await worker._tick_campaign(campaign)
-    await worker._on_job_complete("job-2", False, "-ERR USER_BUSY")
-    contacts = await campaign_contacts.list_contacts(campaign["id"])
-    assert contacts[0]["status"] == "failed"
-    assert contacts[0]["attempt_count"] == 2
-
-
-# ── REST provider dispatch + idempotency-key minting ─────────────────────
-
-async def _make_and_wire_rest_route(monkeypatch, test_tenant, test_agent, provider="vobiz", **overrides):
-    campaign = await _make_running_campaign(test_tenant, test_agent, pacing_seconds=0, **overrides)
-    await campaign_contacts.bulk_insert_contacts(campaign["id"], [{"phone_number": "+14155551111", "name": ""}])
-
-    async def fake_resolve_route(tenant_id, agent_id, caller_id, **kwargs):
-        return {"tenant_slug": "acme", "agent_slug": "sales", "provider": provider, "caller_id_owned": True}
-
-    monkeypatch.setattr(campaigns, "resolve_outbound_route", fake_resolve_route)
-    return campaign
-
-
-async def test_same_attempt_retried_through_http_hop_reuses_one_key(monkeypatch):
-    keys_used = []
-
-    class FakeResponse:
-        status_code = 500
-        text = "boom"
-
-    async def fake_post_with_auth(path, json_body):
-        keys_used.append(json_body["idempotency_key"])
-        return FakeResponse()
-
-    monkeypatch.setattr(telephony_originate, "_post_with_auth", fake_post_with_auth)
-    monkeypatch.setattr(telephony_originate, "_RETRY_BACKOFFS_S", (0.0, 0.0, 0.0))
-
-    with pytest.raises(telephony_originate.TelephonyOriginateError):
-        await telephony_originate.originate_call(
-            provider="vobiz", phone_number="+15551234567", caller_id="+15557654321",
-            tenant_slug="acme", agent_slug="sales", idempotency_key="fixed-key",
-        )
-
-    assert len(set(keys_used)) == 1  # same idempotency_key every retry
-    assert len(keys_used) == 4  # initial attempt + 3 backoff retries
-
-
-async def test_requeued_attempt_mints_a_different_key(test_tenant, test_agent, monkeypatch, scoped):
-    campaign = await _make_and_wire_rest_route(monkeypatch, test_tenant, test_agent, max_attempts=2)
-    keys_used = []
-
-    async def fake_originate_call(*, provider, phone_number, caller_id, tenant_slug, agent_slug, idempotency_key):
-        keys_used.append(idempotency_key)
-        raise telephony_originate.TelephonyOriginateError("boom")
-
-    monkeypatch.setattr(telephony_originate, "originate_call", fake_originate_call)
-    worker = CampaignWorker()
-
-    await worker._tick_campaign(campaign)  # attempt 1 -> failed -> requeued to pending
-    await worker._tick_campaign(campaign)  # attempt 2 -> different attempt_count
-
-    assert len(keys_used) == 2
-    assert keys_used[0] != keys_used[1]
-    assert keys_used[0] == _idempotency_key(str(campaign["id"]), str((await campaign_contacts.list_contacts(campaign["id"]))[0]["id"]), 1)
-
-
-async def test_202_leaves_contact_calling_and_resolves_via_poll_on_next_tick(test_tenant, test_agent, monkeypatch, scoped):
-    campaign = await _make_and_wire_rest_route(monkeypatch, test_tenant, test_agent)
-
-    async def fake_originate_call(*, provider, phone_number, caller_id, tenant_slug, agent_slug, idempotency_key):
-        raise telephony_originate.TelephonyOriginatePending(idempotency_key)
-
-    monkeypatch.setattr(telephony_originate, "originate_call", fake_originate_call)
-    worker = CampaignWorker()
-    await worker._tick_campaign(campaign)
-
-    contacts = await campaign_contacts.list_contacts(campaign["id"])
-    assert contacts[0]["status"] == "calling"
-    assert (str(campaign["id"]), str(contacts[0]["id"])) in worker._pending_idem
-
-    async def fake_poll(*, provider, tenant_slug, idempotency_key):
-        return "vendor-call-1"
-
-    monkeypatch.setattr(telephony_originate, "poll_idempotency", fake_poll)
-    await worker._resolve_pending_idem()
-
-    contacts = await campaign_contacts.list_contacts(campaign["id"])
-    assert contacts[0]["status"] == "completed"
-    assert contacts[0]["call_session_id"] == "vendor-call-1"
-    assert worker._pending_idem == {}
-
-
-async def test_unowned_caller_id_refuses_to_dial_never_falls_back_to_esl(test_tenant, test_agent, monkeypatch, scoped):
-    """An unprovisioned caller_id is refused on both the REST and ESL paths."""
-    campaign = await _make_running_campaign(
-        test_tenant, test_agent, pacing_seconds=0, caller_id="+19995551234",  # never provisioned
+async def test_a_scheduled_campaign_that_is_not_ready_at_its_time_waits_and_is_not_paused(scratch_pool, scratch_redis_raw):
+    async with scratch_pool.acquire() as conn:
+        world = await w.make(conn, status="scheduled")
+    await scratch_pool.execute(
+        "UPDATE campaigns SET scheduled_start_at = now() - interval '1 minute' WHERE id = $1", world["campaign"]["id"],
     )
-    await campaign_contacts.bulk_insert_contacts(campaign["id"], [{"phone_number": "+14155551111", "name": ""}])
-
-    esl_called = rest_called = False
-
-    async def fake_esl_originate(phone_number, caller_id):
-        nonlocal esl_called
-        esl_called = True
-        return "job-esl-1"
-
-    async def fake_telephony_originate(**kwargs):
-        nonlocal rest_called
-        rest_called = True
-        return "call-1"
-
-    monkeypatch.setattr(originate, "originate_call", fake_esl_originate)
-    monkeypatch.setattr(telephony_originate, "originate_call", fake_telephony_originate)
-    worker = CampaignWorker()
-    await worker._tick_campaign(campaign)
-
-    assert esl_called is False
-    assert rest_called is False
-    contacts = await campaign_contacts.list_contacts(campaign["id"])
-    assert contacts[0]["status"] == "failed"
-
-
-async def test_owned_did_with_no_rest_binding_still_takes_esl_path(test_tenant, test_agent, monkeypatch, scoped):
-    """An owned DID with no REST binding (provider None) still dials over ESL."""
-    campaign = await _make_running_campaign(test_tenant, test_agent, pacing_seconds=0)  # default caller_id, provisioned, no telephony_config
-    await campaign_contacts.bulk_insert_contacts(campaign["id"], [{"phone_number": "+14155551111", "name": ""}])
-
-    esl_called = False
-
-    async def fake_esl_originate(phone_number, caller_id):
-        nonlocal esl_called
-        esl_called = True
-        return "job-esl-1"
-
-    monkeypatch.setattr(originate, "originate_call", fake_esl_originate)
-    worker = CampaignWorker()
-    await worker._tick_campaign(campaign)
-
-    assert esl_called is True
-
-
-async def test_native_or_none_provider_still_takes_esl_path(test_tenant, test_agent, monkeypatch, scoped):
-    campaign = await _make_and_wire_rest_route(monkeypatch, test_tenant, test_agent, provider="native")
-    esl_called = False
-
-    async def fake_esl_originate(phone_number, caller_id):
-        nonlocal esl_called
-        esl_called = True
-        return "job-esl-1"
-
-    async def fail_if_called_telephony_originate(**kwargs):
-        raise AssertionError("REST originate must not be reached for a 'native' route")
-
-    monkeypatch.setattr(originate, "originate_call", fake_esl_originate)
-    monkeypatch.setattr(telephony_originate, "originate_call", fail_if_called_telephony_originate)
-    worker = CampaignWorker()
-    await worker._tick_campaign(campaign)
-
-    assert esl_called is True
-
-
-# ── due-campaign scan holds no transaction between ticks ─────────────────
-
-async def test_tick_holds_no_transaction_between_scan_iterations(pool):
-    worker = CampaignWorker()
-
-    for _ in range(3):
-        await worker._tick()
-        idle_in_txn = await pool.fetch(
-            "SELECT pid, query FROM pg_stat_activity WHERE state = 'idle in transaction'",
-        )
-        assert idle_in_txn == []
+    await w.worker(scratch_redis_raw)._tick()
+    campaign = await w.refreshed(scratch_pool, world["campaign"]["id"])
+    assert campaign["status"] == "scheduled"

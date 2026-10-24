@@ -105,3 +105,15 @@ async def test_get_progress_counts_by_status(test_tenant, test_agent, pool, scop
     assert progress["pending"] == 1
     assert progress["completed"] == 1
     assert progress["failed"] == 1
+
+
+async def test_started_at_is_set_on_the_first_run_and_kept_after_pause_and_resume(test_tenant, test_agent, scoped):
+    row = await campaigns.create_campaign(
+        test_tenant["id"], agent_id=test_agent["id"], name="S",
+        caller_id="+14155550100", max_concurrent_calls=1, pacing_seconds=5, max_attempts=1,
+    )
+    assert row["started_at"] is None
+    first = (await campaigns.set_status(row["id"], "running"))["started_at"]
+    await campaigns.set_status(row["id"], "paused")
+    resumed = await campaigns.set_status(row["id"], "running")
+    assert first is not None and resumed["started_at"] == first

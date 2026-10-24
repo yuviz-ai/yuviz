@@ -53,6 +53,28 @@ remove_network_sync() {
   echo "✓ network sync removed"
 }
 
+# ── Redis ACL: one user per client; blank REDIS_<CLIENT>_PASSWORD means ACL is off ──
+_REDIS_CLIENTS="gateway config did knowledge conversation telephony campaigns freeswitch"
+_redis_password_of() { printenv "REDIS_$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')_PASSWORD"; }
+_redis_url_for() {
+  local pw hostport=${REDIS_URL:-redis://localhost:6379/0}
+  pw=$(_redis_password_of "$1")
+  if [ -z "$pw" ]; then printf '%s' "$hostport"; return; fi
+  hostport=${hostport#redis://}; hostport=${hostport##*@}
+  printf 'redis://%s@%s' "$1:$pw" "$hostport"
+}
+# AUTH+PING as every client before anything starts; names the first client that fails.
+_check_redis_auth() {
+  local client
+  for client in $_REDIS_CLIENTS; do
+    [ -n "$(_redis_password_of "$client")" ] || continue
+    [ "$(redis-cli -u "$(_redis_url_for "$client")" --no-auth-warning ping 2>&1)" = PONG ] || {
+      echo "Redis AUTH failed for client '$client' — check its REDIS_*_PASSWORD in $REPO/.env and re-run scripts/render_redis_acl.sh" >&2
+      return 1
+    }
+  done
+}
+
 # ── Block 3: Data layer (Postgres/Redis; run once, may already be running) ──
 start_data() {
   brew services start postgresql@14 2>/dev/null || true
@@ -76,6 +98,7 @@ start_data() {
   # RLS is inert here: every start_* block uses the superuser POSTGRES_DSN.
   _require YUVIZ_APP_PASSWORD || return 0
   psql voiceai -v yuviz_app_password="$YUVIZ_APP_PASSWORD" -f "$REPO/database/rls.sql" 2>/dev/null || true
+  _check_redis_auth || return 1
   echo "✓ PostgreSQL + Redis running"
 }
 
@@ -90,29 +113,29 @@ start_config_service() {
   # are saved with a "not synced" warning (number_sync.py).
   _require SECRET_ENCRYPTION_KEY JWT_SECRET || return 0
   cd "$REPO"
-  python3 -m uvicorn services.config.app:app --host "$LISTEN_HOST" --port "$(_url_port "${CONFIG_SERVICE_URL:-}" 8000)"
+  REDIS_URL="$(_redis_url_for config)" python3 -m uvicorn services.config.app:app --host "$LISTEN_HOST" --port "$(_url_port "${CONFIG_SERVICE_URL:-}" 8000)"
 }
 
 # ── Block 6: Knowledge Service (REST API, port 8100) ──────────────────────────
 start_knowledge_service() {
   _require JWT_SECRET || return 0
   cd "$REPO"
-  python3 -m uvicorn services.knowledge.app:app --host "$LISTEN_HOST" --port "$(_url_port "${KNOWLEDGE_SERVICE_URL:-}" 8100)"
+  REDIS_URL="$(_redis_url_for knowledge)" python3 -m uvicorn services.knowledge.app:app --host "$LISTEN_HOST" --port "$(_url_port "${KNOWLEDGE_SERVICE_URL:-}" 8100)"
 }
 
 # ── Block 7: Knowledge ingestion worker (background job-queue poller) ────────
 start_knowledge_worker() {
   cd "$REPO"
-  python3 -m services.knowledge --log-level INFO
+  REDIS_URL="$(_redis_url_for knowledge)" python3 -m services.knowledge --log-level INFO
 }
 
 # ── Block 8: Campaigns Service (REST API, port 8400) — outbound calling ──────
 # The pacing worker runs in-process; no separate block.
 start_campaigns_service() {
-  _require JWT_SECRET FREESWITCH_ESL_PASSWORD || return 0
+  _require JWT_SECRET || return 0
   _warn_env_drift SIP_PROXY_HOST
   cd "$REPO"
-  python3 -m uvicorn services.campaigns.app:app --host "$LISTEN_HOST" --port "$(_url_port "${CAMPAIGNS_SERVICE_URL:-}" 8400)"
+  REDIS_URL="$(_redis_url_for campaigns)" python3 -m uvicorn services.campaigns.app:app --host "$LISTEN_HOST" --port "$(_url_port "${CAMPAIGNS_SERVICE_URL:-}" 8400)"
 }
 
 # ── Block 8b: Tool Execution Service (REST API, port 8600) — custom API chains ─
@@ -129,14 +152,14 @@ start_telephony_service() {
   # TELEPHONY_PUBLIC_BASE_URL: your public tunnel URL — see docs/telephony.md.
   _require JWT_SECRET SECRET_ENCRYPTION_KEY TELEPHONY_PUBLIC_BASE_URL || return 0
   cd "$REPO"
-  python3 -m services.telephony
+  REDIS_URL="$(_redis_url_for telephony)" python3 -m services.telephony
 }
 
 # ── Block 8d: DID Service (REST API, port 8200) — carrier number purchase/release ─
 start_did_service() {
   _require JWT_SECRET SECRET_ENCRYPTION_KEY || return 0
   cd "$REPO"
-  python3 -m uvicorn services.did.app:app --host "$LISTEN_HOST" --port "$(_url_port "${NEXT_PUBLIC_DID_SERVICE_URL:-}" 8200)"
+  REDIS_URL="$(_redis_url_for did)" python3 -m uvicorn services.did.app:app --host "$LISTEN_HOST" --port "$(_url_port "${NEXT_PUBLIC_DID_SERVICE_URL:-}" 8200)"
 }
 
 # ── Block 9/10: Python ConversationService instances (ports 50051/50052) ─────
@@ -146,12 +169,12 @@ _conv_env() {
 start_conv1() {
   _conv_env || return 0
   cd "$REPO"
-  python3 -m services.conversation --port 50051 --mode pipeline --log-level INFO
+  REDIS_URL="$(_redis_url_for conversation)" python3 -m services.conversation --port 50051 --mode pipeline --log-level INFO
 }
 start_conv2() {
   _conv_env || return 0
   cd "$REPO"
-  python3 -m services.conversation --port 50052 --mode pipeline --log-level INFO
+  REDIS_URL="$(_redis_url_for conversation)" python3 -m services.conversation --port 50052 --mode pipeline --log-level INFO
 }
 
 # ── Block 11: Envoy gRPC proxy ────────────────────────────────────────────────

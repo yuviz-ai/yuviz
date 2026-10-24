@@ -1,5 +1,5 @@
 # Local dev stack. Run ./dev.sh rather than `docker compose up` directly.
-# Ports bind to 127.0.0.1 — default credentials, and no auth on redis/ollama.
+# Ports bind to 127.0.0.1 — default credentials, and no auth on ollama.
 
 x-python-service: &python-service
   build:
@@ -34,10 +34,16 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--aclfile", "/etc/redis/users.acl", "--protected-mode", "yes"]
+    environment:
+      REDIS_CONFIG_PASSWORD: ${REDIS_CONFIG_PASSWORD:?run scripts/render_redis_acl.sh; see .env.example}
     ports:
       - "${BIND_ADDR:-127.0.0.1}:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - ${REDIS_ACLFILE:-./deployment/docker/redis/users.acl}:/etc/redis/users.acl:ro
+      - redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli --user config --pass \"$$REDIS_CONFIG_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -72,7 +78,7 @@ services:
     environment:
       POSTGRES_DSN: ${POSTGRES_DSN}
       YUVIZ_APP_PASSWORD: ${YUVIZ_APP_PASSWORD}
-      REDIS_URL: ${REDIS_URL}
+      REDIS_URL: redis://config:${REDIS_CONFIG_PASSWORD}@redis:6379/0
       JWT_SECRET: ${JWT_SECRET}
       CONFIG_SERVICE_EMAIL: ${CONFIG_SERVICE_EMAIL}
       CONFIG_SERVICE_PASSWORD: ${CONFIG_SERVICE_PASSWORD}
@@ -95,7 +101,7 @@ services:
               "--host", "0.0.0.0", "--port", "8000"]
     environment:
       POSTGRES_DSN: ${POSTGRES_DSN}
-      REDIS_URL: ${REDIS_URL}
+      REDIS_URL: redis://config:${REDIS_CONFIG_PASSWORD}@redis:6379/0
       JWT_SECRET: ${JWT_SECRET}
       SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:-}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
@@ -132,7 +138,7 @@ services:
               "--host", "0.0.0.0", "--port", "8100"]
     environment:
       POSTGRES_DSN: ${POSTGRES_DSN}
-      REDIS_URL: ${REDIS_URL}
+      REDIS_URL: redis://knowledge:${REDIS_KNOWLEDGE_PASSWORD}@redis:6379/0
       JWT_SECRET: ${JWT_SECRET}
       KNOWLEDGE_STORAGE_ROOT: /app/data/knowledge_documents
       # Embedding providers resolve api_key_ref too (embedding_manager.py).
@@ -158,7 +164,6 @@ services:
       TOOLEXEC_SERVICE_URL: http://toolexec:8600
       LISTEN_HOST: "0.0.0.0"   # inside the container; the host port is bounded by BIND_ADDR
       POSTGRES_DSN: ${POSTGRES_DSN}
-      REDIS_URL: ${REDIS_URL}
       JWT_SECRET: ${JWT_SECRET}
       SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:-}
       ADMIN_UI_ORIGINS: ${ADMIN_UI_URL:-http://localhost:3000}
@@ -222,7 +227,7 @@ services:
     environment:
       POSTGRES_DSN: ${POSTGRES_DSN}
       VOICEAI_BUSINESS_TIMEZONE: ${VOICEAI_BUSINESS_TIMEZONE:-}
-      REDIS_URL: ${REDIS_URL}
+      REDIS_URL: redis://conversation:${REDIS_CONVERSATION_PASSWORD}@redis:6379/0
       CONFIG_SERVICE_URL: http://config:8000
       CONFIG_SERVICE_EMAIL: ${CONFIG_SERVICE_EMAIL}
       CONFIG_SERVICE_PASSWORD: ${CONFIG_SERVICE_PASSWORD}
@@ -293,7 +298,7 @@ services:
       LISTEN_HOST: "0.0.0.0"   # inside the container; the host port is bounded by BIND_ADDR
       TELEPHONY_PUBLIC_BASE_URL: ${TELEPHONY_PUBLIC_BASE_URL:-}
       JWT_SECRET: ${JWT_SECRET}
-      REDIS_URL: ${REDIS_URL}
+      REDIS_URL: redis://telephony:${REDIS_TELEPHONY_PASSWORD}@redis:6379/0
       CONFIG_SERVICE_URL: http://config:8000
       CONFIG_SERVICE_EMAIL: ${CONFIG_SERVICE_EMAIL}
       CONFIG_SERVICE_PASSWORD: ${CONFIG_SERVICE_PASSWORD}
@@ -347,6 +352,7 @@ services:
 
 volumes:
   pgdata:
+  redis-data:
   ollama-models:
   hf-cache:
   knowledge-docs:

@@ -107,3 +107,9 @@ async def record_release(
             new_value=new,
         )
     return new
+
+
+async def buying_enabled(tenant_id: Any) -> bool:
+    pool = await db.get_pool()
+    async with tenant_conn(pool) as conn:
+        return bool(await conn.fetchval("SELECT number_purchase_enabled FROM tenants WHERE id = $1", tenant_id))

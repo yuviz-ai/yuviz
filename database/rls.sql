@@ -376,6 +376,17 @@ END $$;
 
 DO $$
 BEGIN
+    DROP POLICY IF EXISTS campaign_attempts_tenant_isolation ON campaign_attempts;
+    CREATE POLICY campaign_attempts_tenant_isolation ON campaign_attempts
+        FOR ALL TO yuviz_app
+        USING      (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+        WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+    ALTER TABLE campaign_attempts ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE campaign_attempts FORCE  ROW LEVEL SECURITY;
+END $$;
+
+DO $$
+BEGIN
     DROP POLICY IF EXISTS custom_api_params_tenant_isolation ON custom_api_params;
     CREATE POLICY custom_api_params_tenant_isolation ON custom_api_params
         FOR ALL TO yuviz_app

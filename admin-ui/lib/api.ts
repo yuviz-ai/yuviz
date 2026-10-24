@@ -67,6 +67,7 @@ export interface Tenant {
   default_tts_config_id: string | null;
   // NULL = not configured; never default it client-side (drives the utilization KPI).
   max_concurrent_calls: number | null;
+  number_purchase_enabled?: boolean;
   config_version: number;
   created_at: string;
   updated_at: string;
@@ -83,6 +84,7 @@ export interface TenantUpdate {
   region?: string;
   transfer_timeout_ms?: number | null;
   no_speech_timeout_ms?: number | null;
+  number_purchase_enabled?: boolean;
 }
 
 export const listTenants = () => request<Tenant[]>("/tenants");
@@ -266,6 +268,7 @@ export interface Agent {
   caller_id_policy: "original" | "platform" | "custom";
   platform_did: string | null;      // used when caller_id_policy = "platform"
   custom_caller_id: string | null;  // used when caller_id_policy = "custom"
+  outbound_caller_id: string | null;
   // What the caller hears while a warm transfer's agent leg rings.
   transfer_waiting_experience: "announcement_moh" | "announcement_silence";
   // Published graph on agent GET/cache (call-setup). List responses omit
@@ -342,6 +345,7 @@ export interface AgentUpdate {
   caller_id_policy?: "original" | "platform" | "custom";
   platform_did?: string | null;
   custom_caller_id?: string | null;
+  outbound_caller_id?: string | null;
   transfer_waiting_experience?: "announcement_moh" | "announcement_silence";
   end_call_prompt?: string | null;
   transfer_prompt?: string | null;
@@ -471,7 +475,6 @@ export interface PhoneNumber {
   tenant_id: string;
   did: string;
   agent_id: string | null;
-  fallback_agent_id: string | null;
   carrier_id: string | null;
   telephony_config_id: string | null;
   status: PhoneNumberStatus;
@@ -492,7 +495,6 @@ export interface ProviderSync {
 export interface PhoneNumberCreate {
   did: string;
   agent_id?: string;
-  fallback_agent_id?: string;
   carrier_id?: string;
   telephony_config_id?: string;
   region?: string;
@@ -502,7 +504,6 @@ export interface PhoneNumberCreate {
 export interface PhoneNumberUpdate {
   did?: string;
   agent_id?: string | null;
-  fallback_agent_id?: string | null;
   carrier_id?: string | null;
   telephony_config_id?: string | null;
   region?: string;
@@ -1518,33 +1519,40 @@ async function campaignsRequest<T>(path: string, options?: RequestInit): Promise
   });
   if (!res.ok) {
     let detail = res.statusText;
+    let body: Record<string, unknown> | undefined;
     try {
-      const body = await res.json();
-      detail = body.detail || detail;
+      body = await res.json();
+      const raw = body?.detail;
+      if (typeof raw === "string") detail = raw;
+      else if (Array.isArray(raw)) detail = raw.map((d) => d?.msg).filter(Boolean).join("; ") || detail;
     } catch {
       // response body wasn't JSON — fall back to statusText
     }
-    throw new ApiError(res.status, detail);
+    throw new ApiError(res.status, detail, body);
   }
   if (res.status === 204) return undefined as T;
   return res.json();
 }
 
-export type CampaignStatus = "draft" | "running" | "paused" | "completed";
+export type CampaignStatus = "draft" | "scheduled" | "running" | "paused" | "completed" | "cancelled";
 
 export interface Campaign {
   id: string;
   tenant_id: string;
   agent_id: string;
   name: string;
+  description?: string | null;
   status: CampaignStatus;
   caller_id: string | null;
   max_concurrent_calls: number;
   pacing_seconds: number;
   max_attempts: number;
+  retry_gap_minutes?: number;
   calling_hours_start: string | null;
   calling_hours_end: string | null;
   calling_hours_timezone: string;
+  scheduled_start_at?: string | null;
+  started_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -1552,10 +1560,12 @@ export interface Campaign {
 export interface CampaignCreate {
   agent_id: string;
   name: string;
-  caller_id?: string | null;
+  description?: string | null;
+  scheduled_start_at?: string | null;
   max_concurrent_calls?: number;
   pacing_seconds?: number;
   max_attempts?: number;
+  retry_gap_minutes?: number;
   calling_hours_start?: string | null;
   calling_hours_end?: string | null;
   calling_hours_timezone?: string;
@@ -1563,10 +1573,12 @@ export interface CampaignCreate {
 
 export interface CampaignUpdate {
   name?: string;
-  caller_id?: string | null;
+  description?: string;
   max_concurrent_calls?: number;
   pacing_seconds?: number;
   max_attempts?: number;
+  retry_gap_minutes?: number;
+  calling_hours_timezone?: string;
 }
 
 export interface CampaignProgress {
@@ -1577,9 +1589,17 @@ export interface CampaignProgress {
   failed: number;
   no_answer: number;
   blocked: number;
+  busy: number;
+  declined: number;
+  status: CampaignStatus;
+  wait_reason: string | null;
+  wait_since: string | null;
+  tenant_cap: number | null;
+  effective_limit: number;
+  waiting_count: number;
 }
 
-export type ContactStatus = "pending" | "calling" | "completed" | "failed" | "no_answer" | "blocked";
+export type ContactStatus = "pending" | "calling" | "completed" | "failed" | "no_answer" | "busy" | "declined" | "blocked";
 
 export interface CampaignContact {
   id: string;
@@ -1627,6 +1647,109 @@ export const pauseCampaign = (campaignId: string) =>
 export const resumeCampaign = (campaignId: string) =>
   campaignsRequest<Campaign>(`/campaigns/${campaignId}/resume`, { method: "POST" });
 
+export interface ReadinessCheck {
+  id: string;
+  level: "block" | "warn";
+  field: string;
+  message: string;
+  count: number | null;
+}
+
+export interface CostEstimate {
+  currency: string;
+  calls: number;
+  per_call_minor: number;
+  total_minor: number;
+  avg_billable_s: number;
+  avg_source: string;
+}
+
+export interface CampaignReadiness {
+  ready: boolean;
+  checks: ReadinessCheck[];
+  estimate: CostEstimate | null;
+}
+
+export interface CampaignAttempt {
+  id: string;
+  contact_id: string;
+  attempt: number;
+  state: string;
+  outcome: string | null;
+  disposition: string | null;
+  callee_masked: string | null;
+  created_at: string;
+  answered_at: string | null;
+  ended_at: string | null;
+  failure_reason: string | null;
+}
+
+export interface CallerIdOption {
+  did: string;
+  path: string;
+}
+
+export const getCampaignReadiness = (campaignId: string) =>
+  campaignsRequest<CampaignReadiness>(`/campaigns/${campaignId}/readiness`);
+
+export const listCampaignAttempts = (campaignId: string) =>
+  campaignsRequest<CampaignAttempt[]>(`/campaigns/${campaignId}/attempts`);
+
+export const listCampaignCallerIds = (tenantId: string) =>
+  campaignsRequest<CallerIdOption[]>(`/tenants/${tenantId}/campaigns/caller-ids`);
+
+// ── Outbound capacity (platform operator only) ───────────────────────────
+
+export interface CpsLimit {
+  scope: string;
+  cps: number;
+  updated_at: string;
+}
+
+export interface PlatformLimits {
+  total_call_capacity: number | null;
+  inbound_reserve: number;
+  max_outbound_concurrent_calls: number | null;
+  updated_at: string;
+  cps_limits: CpsLimit[];
+}
+
+export interface CapacityUsage {
+  platform_in_flight: number;
+  cps: { scope: string; cps: number | null; sends_last_second: number }[];
+}
+
+export interface TenantCap {
+  tenant_id: string;
+  name: string;
+  slug: string;
+  max_outbound_concurrent_calls: number | null;
+  in_flight: number;
+}
+
+export type PlatformLimitsUpdate = Pick<
+  PlatformLimits,
+  "total_call_capacity" | "inbound_reserve" | "max_outbound_concurrent_calls"
+>;
+
+export const getPlatformLimits = () => campaignsRequest<PlatformLimits>("/capacity/platform");
+
+export const updatePlatformLimits = (body: PlatformLimitsUpdate) =>
+  campaignsRequest<PlatformLimits>("/capacity/platform", { method: "PUT", body: JSON.stringify(body) });
+
+export const updateCpsLimit = (scope: string, cps: number) =>
+  campaignsRequest<CpsLimit>(`/capacity/cps/${encodeURIComponent(scope)}`, { method: "PUT", body: JSON.stringify({ cps }) });
+
+export const getCapacityUsage = () => campaignsRequest<CapacityUsage>("/capacity/usage");
+
+export const listTenantCaps = () => campaignsRequest<TenantCap[]>("/capacity/tenants");
+
+export const updateTenantCap = (tenantId: string, cap: number | null) =>
+  campaignsRequest<TenantCap>(`/capacity/tenants/${tenantId}`, {
+    method: "PUT",
+    body: JSON.stringify({ max_outbound_concurrent_calls: cap }),
+  });
+
 export interface CampaignWithTenant extends Campaign {
   tenantName: string;
 }
@@ -1661,4 +1784,45 @@ export const addDncNumber = (tenantId: string, phoneNumber: string, reason?: str
 
 export const removeDncNumber = (dncId: string) =>
   campaignsRequest<void>(`/dnc/${dncId}`, { method: "DELETE" });
+
+export const cancelCampaign = (campaignId: string) =>
+  campaignsRequest<Campaign>(`/campaigns/${campaignId}/cancel`, { method: "POST" });
+
+export const deleteCampaign = (campaignId: string) =>
+  campaignsRequest<void>(`/campaigns/${campaignId}`, { method: "DELETE" });
+
+export const recallCampaign = (campaignId: string, body: { contact_ids: string[]; name?: string }) =>
+  campaignsRequest<Campaign>(`/campaigns/${campaignId}/recall`, { method: "POST", body: JSON.stringify(body) });
+
+export type CampaignCallOutcome =
+  | "answered" | "ended" | "no_answer" | "busy" | "declined" | "failed" | "blocked" | "in_progress";
+
+export interface CampaignCallAttempt {
+  id: string;
+  contact_id: string;
+  campaign_id: string;
+  campaign_name: string;
+  attempt: number;
+  state: string;
+  outcome: CampaignCallOutcome | null;
+  failure_reason: string | null;
+  callee_masked: string;
+  caller_id: string | null;
+  agent_name: string | null;
+  can_call_again: boolean;
+  created_at: string;
+  answered_at: string | null;
+  ended_at: string | null;
+}
+
+export const listCallAttempts = (
+  tenantId: string,
+  params: { direction?: "outbound" | "inbound" | "all"; status?: string; q?: string; limit?: number; offset?: number },
+) => {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== "") query.set(key, String(value));
+  }
+  return campaignsRequest<CampaignCallAttempt[]>(`/tenants/${tenantId}/campaigns/call-attempts?${query}`);
+};
 

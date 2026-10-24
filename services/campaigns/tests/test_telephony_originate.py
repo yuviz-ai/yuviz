@@ -1,12 +1,18 @@
-"""T21: retry/backoff reuses one idempotency key across attempts, and a
+"""T21/T23: retry/backoff reuses one idempotency key across attempts, and a
 202 raises TelephonyOriginatePending carrying that key."""
 
 from __future__ import annotations
 
+import logging
+import re
+from datetime import datetime, timezone
+from uuid import uuid4
+
 import httpx
 import pytest
 
-from services.campaigns import telephony_originate as mod
+from libs.telephony_sdk.exceptions import TelephonyRateLimited
+from services.campaigns import attempts, telephony_originate as mod
 
 
 class _Response:
@@ -135,3 +141,86 @@ async def test_poll_idempotency_done_returns_call_id(monkeypatch):
 
     result = await mod.poll_idempotency(provider="vobiz", tenant_slug="tenant-a", idempotency_key="k")
     assert result == "call-999"
+
+
+_TELEPHONY_KEY_RE = re.compile(r"^[A-Za-z0-9_\-]{1,128}$")
+
+
+def test_dial_key_passes_the_telephony_validator():
+    key = attempts.idempotency_key(uuid4(), 3)
+    assert key.endswith("_3")
+    assert _TELEPHONY_KEY_RE.match(key)
+
+
+@pytest.mark.asyncio
+async def test_429_raises_rate_limited_with_retry_after_without_retrying(monkeypatch):
+    client = _ScriptedClient([_Response(429, {"error": "rate_limited", "retry_after": 7})])
+    _wire(monkeypatch, client)
+
+    with pytest.raises(TelephonyRateLimited) as exc_info:
+        await mod.originate_call(
+            provider="vobiz", phone_number="+15551234567", caller_id="+15559999999",
+            tenant_slug="tenant-a", agent_slug="sales", idempotency_key="k",
+        )
+    assert exc_info.value.retry_after == 7
+    assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_full_call_logs_no_callee_digits(monkeypatch, caplog):
+    client = _ScriptedClient([_Response(201, {"ok": True, "call_uuid": "call-123"})])
+    _wire(monkeypatch, client)
+
+    with caplog.at_level(logging.DEBUG):
+        await mod.originate_call(
+            provider="vobiz", phone_number="+15551234567", caller_id="+15559999999",
+            tenant_slug="tenant-a", agent_slug="sales", idempotency_key="k",
+        )
+    assert caplog.records
+    assert "5551234567" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_reconcile_call_posts_the_contract_body(monkeypatch):
+    client = _ScriptedClient([_Response(200, {"outcome": "placed", "provider_call_id": "c1"})])
+    _wire(monkeypatch, client)
+    after = datetime(2026, 10, 23, 9, 0, tzinfo=timezone.utc)
+
+    result = await mod.reconcile_call(
+        provider="vobiz", tenant_slug="tenant-a", idempotency_key="k_1",
+        to="+15551234567", caller_id="+15559999999", created_after=after,
+    )
+    assert result == {"outcome": "placed", "provider_call_id": "c1"}
+    assert client.calls[0]["url"].endswith("/vobiz/call/reconcile")
+    assert client.calls[0]["json"] == {
+        "tenant_slug": "tenant-a", "idempotency_key": "k_1",
+        "to": "+15551234567", "from": "+15559999999", "created_after": after.isoformat(),
+    }
+
+
+@pytest.mark.asyncio
+async def test_call_status_and_readiness_hit_their_routes(monkeypatch):
+    client = _ScriptedClient([
+        _Response(200, {"status": "busy", "to": "+1", "from": "+2", "billable_ms": None}),
+        _Response(200, {"ready": False, "reason": "provider_not_campaign_capable"}),
+    ])
+    _wire(monkeypatch, client)
+
+    status = await mod.call_status(provider="vobiz", tenant_slug="tenant-a", call_id="c1")
+    ready = await mod.outbound_readiness(provider="cloudonix", tenant_slug="tenant-a")
+    assert status["status"] == "busy"
+    assert ready["ready"] is False
+    assert client.calls[0]["url"].endswith("/vobiz/call/c1/status")
+    assert client.calls[0]["params"] == {"tenant_slug": "tenant-a"}
+    assert client.calls[1]["url"].endswith("/cloudonix/outbound-readiness")
+
+
+@pytest.mark.asyncio
+async def test_status_error_raises_originate_error(monkeypatch):
+    client = _ScriptedClient([_Response(500, text="boom"), httpx.ConnectError("down")])
+    _wire(monkeypatch, client)
+
+    with pytest.raises(mod.TelephonyOriginateError):
+        await mod.call_status(provider="vobiz", tenant_slug="t", call_id="c1")
+    with pytest.raises(mod.TelephonyOriginateError):
+        await mod.call_status(provider="vobiz", tenant_slug="t", call_id="c1")

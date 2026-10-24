@@ -433,8 +433,6 @@ CREATE TABLE IF NOT EXISTS phone_numbers (
     did                TEXT NOT NULL,  -- unique among live rows only (phone_numbers_did_live_key)
     tenant_id          UUID NOT NULL REFERENCES tenants(id),
     agent_id           UUID REFERENCES agents(id),  -- nullable: unassigned number
-    -- Used when agent_id is null or unavailable; resolved by config, not the Gateway.
-    fallback_agent_id  UUID REFERENCES agents(id),
     carrier_id         UUID REFERENCES carriers(id),
     status             TEXT NOT NULL DEFAULT 'active'
                            CHECK (status IN ('active', 'inactive', 'suspended')),
@@ -445,7 +443,7 @@ CREATE TABLE IF NOT EXISTS phone_numbers (
 );
 
 -- Columns added after the original CREATE TABLE, for existing databases.
-ALTER TABLE phone_numbers ADD COLUMN IF NOT EXISTS fallback_agent_id UUID REFERENCES agents(id);
+ALTER TABLE phone_numbers DROP COLUMN IF EXISTS fallback_agent_id;  -- backup agents were removed
 ALTER TABLE phone_numbers ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
 DO $$ BEGIN
     ALTER TABLE phone_numbers ADD CONSTRAINT phone_numbers_status_check CHECK (status IN ('active', 'inactive', 'suspended'));
@@ -630,6 +628,170 @@ CREATE TABLE IF NOT EXISTS campaign_contacts (
 CREATE INDEX IF NOT EXISTS idx_campaign_contacts_campaign ON campaign_contacts(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_campaign_contacts_pending
     ON campaign_contacts(campaign_id, status) WHERE status = 'pending';
+
+-- ── outbound campaign calling: retry gap, attempts, capacity limits, billing seam ──
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS retry_gap_minutes INT NOT NULL DEFAULT 60;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'campaigns_retry_gap_check') THEN
+    ALTER TABLE campaigns ADD CONSTRAINT campaigns_retry_gap_check CHECK (retry_gap_minutes >= 1);
+  END IF;
+  -- NOT VALID: legacy rows are not re-checked; new writes are.
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'campaigns_max_attempts_check') THEN
+    ALTER TABLE campaigns ADD CONSTRAINT campaigns_max_attempts_check CHECK (max_attempts >= 1) NOT VALID;
+  END IF;
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS campaigns_id_tenant_key ON campaigns(id, tenant_id);
+
+ALTER TABLE campaign_contacts ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ;
+DO $$ BEGIN
+  -- Drop and re-add in one block; the new set is a superset of the old one, so no existing row can violate it.
+  ALTER TABLE campaign_contacts DROP CONSTRAINT IF EXISTS campaign_contacts_status_check;
+  ALTER TABLE campaign_contacts ADD CONSTRAINT campaign_contacts_status_check CHECK (status IN
+    ('pending','calling','completed','failed','no_answer','busy','declined','blocked'));
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS campaign_contacts_id_campaign_key ON campaign_contacts(id, campaign_id);
+DROP INDEX IF EXISTS idx_campaign_contacts_pending;
+CREATE INDEX IF NOT EXISTS idx_campaign_contacts_due
+    ON campaign_contacts(campaign_id, next_attempt_at) WHERE status = 'pending';
+
+CREATE TABLE IF NOT EXISTS campaign_attempts (
+    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id          UUID NOT NULL REFERENCES tenants(id),
+    campaign_id        UUID NOT NULL,
+    contact_id         UUID NOT NULL,
+    attempt            INT  NOT NULL CHECK (attempt >= 1),
+    -- f"{contact_id}_{attempt}"; contact ids are globally unique UUIDs, so a global UNIQUE cannot collide across tenants.
+    idempotency_key    TEXT NOT NULL UNIQUE,
+    path               TEXT NOT NULL CHECK (path IN ('sip', 'cpaas')),
+    provider           TEXT,
+    callee             TEXT,            -- E.164 snapshot for provider recovery
+    caller_id          TEXT,
+    state              TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'sent', 'resolved')),
+    outcome            TEXT CHECK (outcome IS NULL OR outcome IN
+                         ('answered', 'ended', 'busy', 'no_answer', 'declined', 'failed')),
+    closed_by_deadline BOOLEAN NOT NULL DEFAULT false,
+    failure_reason     TEXT,
+    call_session_id    TEXT,            -- path A: pre-generated FS uuid (= calls.session_id); path B: from the answered event
+    provider_call_id   TEXT,
+    send_count         INT  NOT NULL DEFAULT 0,
+    not_before         TIMESTAMPTZ,     -- path B rate-limit backoff
+    deadline_at        TIMESTAMPTZ NOT NULL,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    sent_at            TIMESTAMPTZ,
+    answered_at        TIMESTAMPTZ,
+    resolved_at        TIMESTAMPTZ,
+    ended_at           TIMESTAMPTZ,
+    UNIQUE (contact_id, attempt),
+    FOREIGN KEY (campaign_id, tenant_id) REFERENCES campaigns(id, tenant_id),
+    FOREIGN KEY (contact_id, campaign_id) REFERENCES campaign_contacts(id, campaign_id),
+    CHECK ((state = 'resolved') = (outcome IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_campaign_attempts_open
+    ON campaign_attempts(campaign_id) WHERE state <> 'resolved' OR outcome = 'answered';
+CREATE INDEX IF NOT EXISTS idx_campaign_attempts_open_tenant
+    ON campaign_attempts(tenant_id) WHERE state <> 'resolved' OR outcome = 'answered';
+
+-- CPS scope of each dial start: 'sip_trunk:pstn' or 'provider_account:<telephony_configs.id>'.
+ALTER TABLE campaign_attempts ADD COLUMN IF NOT EXISTS cps_scope    TEXT NOT NULL DEFAULT 'sip_trunk:pstn';
+ALTER TABLE campaign_attempts ADD COLUMN IF NOT EXISTS last_send_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_campaign_attempts_cps ON campaign_attempts(cps_scope, last_send_at);
+
+-- Outbound-only tenant cap, superadmin-set. NULL = only the platform cap applies.
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS max_outbound_concurrent_calls INT;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'tenants_max_outbound_concurrent_calls_check') THEN
+    ALTER TABLE tenants ADD CONSTRAINT tenants_max_outbound_concurrent_calls_check
+      CHECK (max_outbound_concurrent_calls IS NULL OR max_outbound_concurrent_calls >= 1);
+  END IF;
+END $$;
+
+-- Platform singleton (no tenant_id, no RLS; read via platform_conn).
+CREATE TABLE IF NOT EXISTS platform_outbound_limits (
+    singleton                     BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton),
+    total_call_capacity           INT CHECK (total_call_capacity IS NULL OR total_call_capacity >= 1),
+    inbound_reserve               INT NOT NULL DEFAULT 0 CHECK (inbound_reserve >= 0),
+    max_outbound_concurrent_calls INT CHECK (max_outbound_concurrent_calls IS NULL OR max_outbound_concurrent_calls >= 1),
+    CONSTRAINT platform_outbound_cap_fits CHECK (max_outbound_concurrent_calls IS NULL OR
+        (total_call_capacity IS NOT NULL AND max_outbound_concurrent_calls <= total_call_capacity - inbound_reserve)),
+    updated_at                    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by                    UUID
+);
+INSERT INTO platform_outbound_limits (singleton, total_call_capacity, inbound_reserve, max_outbound_concurrent_calls)
+    VALUES (true, 300, 75, 225) ON CONFLICT DO NOTHING;
+
+-- Platform-wide CPS per scope; no row = no CPS limit for that scope.
+CREATE TABLE IF NOT EXISTS outbound_cps_limits (
+    scope      TEXT PRIMARY KEY CHECK (scope ~ '^(sip_trunk:[a-z0-9_-]{1,40}|provider_account:[0-9a-f-]{36})$'),
+    cps        INT  NOT NULL CHECK (cps >= 1),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by UUID
+);
+
+-- A superadmin turns on number buying per tenant; superadmins can always buy.
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS number_purchase_enabled BOOLEAN NOT NULL DEFAULT false;
+
+-- Outbound caller ID lives on the agent; a campaign copies it when created.
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS outbound_caller_id TEXT;
+
+-- "Schedule for later": the worker promotes scheduled -> running once scheduled_start_at has passed.
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS scheduled_start_at TIMESTAMPTZ;
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;  -- first time it ran
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS description TEXT;
+DO $$ BEGIN
+  ALTER TABLE campaigns DROP CONSTRAINT IF EXISTS campaigns_status_check;
+  ALTER TABLE campaigns ADD CONSTRAINT campaigns_status_check
+    CHECK (status IN ('draft', 'scheduled', 'running', 'paused', 'completed', 'cancelled'));
+END $$;
+
+-- Live wait reason, written only when it changes.
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS wait_reason TEXT;
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS wait_since  TIMESTAMPTZ;
+DO $$ BEGIN
+  ALTER TABLE campaigns DROP CONSTRAINT IF EXISTS campaigns_wait_reason_check;
+  ALTER TABLE campaigns ADD CONSTRAINT campaigns_wait_reason_check CHECK (wait_reason IS NULL OR wait_reason IN
+    ('campaign_cap','tenant_cap','platform_cap','trunk_cps','provider_cps','calling_hours','pacing','registry',
+     'insufficient_credit','budget_reached','billing_unavailable'));
+END $$;
+
+-- Billing seam: billing_state is the outbox for billing calls ('off' = NullBillingAdmission). Money is minor units.
+ALTER TABLE campaign_attempts ADD COLUMN IF NOT EXISTS billing_state    TEXT NOT NULL DEFAULT 'off';
+ALTER TABLE campaign_attempts ADD COLUMN IF NOT EXISTS max_call_s       INT;
+ALTER TABLE campaign_attempts ADD COLUMN IF NOT EXISTS budget_cap_minor BIGINT;
+ALTER TABLE campaign_attempts ADD COLUMN IF NOT EXISTS hold_minor       BIGINT;
+ALTER TABLE campaign_attempts ADD COLUMN IF NOT EXISTS billable_ms      BIGINT;
+ALTER TABLE campaign_attempts ADD COLUMN IF NOT EXISTS billing_source   TEXT;
+ALTER TABLE campaign_attempts ADD COLUMN IF NOT EXISTS cost_minor       BIGINT;
+ALTER TABLE campaign_attempts ADD COLUMN IF NOT EXISTS cost_currency    TEXT;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'campaign_attempts_billing_check') THEN
+    ALTER TABLE campaign_attempts ADD CONSTRAINT campaign_attempts_billing_check CHECK (
+      billing_state IN ('off','reserving','held','authorized','settle_due','release_due','settled','released')
+      AND (billing_source IS NULL OR billing_source IN ('fs_billmsec','provider_api','calls_row','cap'))
+      AND (max_call_s IS NULL OR max_call_s BETWEEN 30 AND 7200)
+      AND (billable_ms IS NULL OR billable_ms >= 0)
+      AND (billable_ms IS NULL OR max_call_s IS NULL OR billable_ms <= max_call_s::bigint * 1000)
+      AND (cost_currency IS NULL OR cost_currency ~ '^[A-Z]{3}$')
+      AND (billing_state NOT IN ('settle_due','settled') OR billable_ms IS NOT NULL)
+      AND (billing_state <> 'settled' OR cost_minor IS NOT NULL));
+  END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_campaign_attempts_billing_open
+    ON campaign_attempts(campaign_id) WHERE billing_state IN ('reserving','held','authorized','settle_due','release_due');
+
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS budget_limit_minor BIGINT;
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS spent_minor        BIGINT NOT NULL DEFAULT 0;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'campaigns_budget_check') THEN
+    ALTER TABLE campaigns ADD CONSTRAINT campaigns_budget_check
+      CHECK ((budget_limit_minor IS NULL OR budget_limit_minor >= 1) AND spent_minor >= 0);
+  END IF;
+END $$;
+
+-- Pre-attempts rows stuck in 'calling' with no attempt: resolve them. Re-applying changes nothing.
+UPDATE campaign_contacts c
+   SET status = CASE WHEN c.call_session_id IS NOT NULL THEN 'completed' ELSE 'failed' END
+ WHERE c.status = 'calling'
+   AND NOT EXISTS (SELECT 1 FROM campaign_attempts a WHERE a.contact_id = c.id);
 
 -- ── dnc_numbers — per-tenant do-not-call list (services/campaigns/) ────────
 -- Stored as given; matched on the last 10 digits (dnc.py _normalize_phone).
@@ -1384,4 +1546,13 @@ DO $$ BEGIN
     ALTER TABLE agents ADD CONSTRAINT agents_direction_check
       CHECK (direction IN ('inbound', 'outbound', 'both'));
   END IF;
+END $$;
+
+-- Backfill legacy campaign_contacts phone numbers to E.164 format.
+-- Numbers without a leading + are prepended with +, so they become valid E.164.
+-- This allows the worker to dial them instead of marking them failed.
+DO $$ BEGIN
+  UPDATE campaign_contacts
+  SET phone_number = '+' || phone_number
+  WHERE phone_number NOT LIKE '+%' AND phone_number ~ '^[0-9]{7,15}$';
 END $$;

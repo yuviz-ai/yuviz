@@ -1,0 +1,21 @@
+<!--
+  Campaign dial trigger, in the public context ahead of 00_voice_ai.xml. Kamailio's own INVITE (from the `kamailio`
+  acl) carries X-Call-Direction and runs start_campaign_call.lua. The acl is only defence in depth: a spoofed source
+  passes it, and the real control is the single-use dial intent that script consumes.
+  Installed into dialplan/public/ by scripts/freeswitch/setup_macos.sh.
+-->
+<include>
+  <extension name="campaign_header_guard">
+    <condition field="${sip_h_X-Call-Direction}" expression="^.+$"/>
+    <condition field="${acl(${network_addr} kamailio)}" expression="^false$">
+      <action application="respond" data="403"/>
+    </condition>
+  </extension>
+  <extension name="campaign_trigger">
+    <condition field="${acl(${network_addr} kamailio)}" expression="^true$"/>
+    <condition field="${sip_h_X-Call-Direction}" expression="^outbound$"/>
+    <condition field="destination_number" expression="^outbound-trigger$">
+      <action application="lua" data="start_campaign_call.lua"/>
+    </condition>
+  </extension>
+</include>

@@ -7,11 +7,14 @@ import {
   updateTenant, updateTenantConcurrency,
 } from "@/lib/api";
 import { ACTIVE_TENANT_STORAGE_KEY } from "@/components/AppShell";
+import { CapacityCard } from "@/components/CapacityCard";
 import { Modal } from "@/components/Modal";
 import { useActiveTenant } from "@/lib/useActiveTenant";
+import { useConnectionAccess } from "@/lib/useConnectionAccess";
 
 export default function TenantsPage() {
   const { tenant: activeTenant, isAllTenants } = useActiveTenant();
+  const { checked, isPlatformOperator } = useConnectionAccess();
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [agentCounts, setAgentCounts] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
@@ -146,6 +149,7 @@ export default function TenantsPage() {
       region: t.region,
       transfer_timeout_ms: t.transfer_timeout_ms,
       no_speech_timeout_ms: t.no_speech_timeout_ms,
+      number_purchase_enabled: !!t.number_purchase_enabled,
     });
     setMaxConcurrentCalls(t.max_concurrent_calls ?? "");
     setEditError(null);
@@ -163,7 +167,8 @@ export default function TenantsPage() {
       editForm.name !== editTarget.name ||
       editForm.region !== editTarget.region ||
       editForm.transfer_timeout_ms !== editTarget.transfer_timeout_ms ||
-      editForm.no_speech_timeout_ms !== editTarget.no_speech_timeout_ms;
+      editForm.no_speech_timeout_ms !== editTarget.no_speech_timeout_ms ||
+      !!editForm.number_purchase_enabled !== !!editTarget.number_purchase_enabled;
 
     const errors: string[] = [];
     if (concurrencyChanged) {
@@ -200,6 +205,8 @@ export default function TenantsPage() {
       </div>
 
       {error && <div className="error-banner">{error}</div>}
+
+      {checked && isPlatformOperator && <CapacityCard />}
 
       <div className="card">
         {loading ? (
@@ -374,6 +381,23 @@ export default function TenantsPage() {
             placeholder="Not set"
           />
         </div>
+        {isPlatformOperator && (
+          <div className="form-group">
+            <label className="form-label" htmlFor="tenant-number-buying">Allow buying numbers</label>
+            <label className="toggle-switch">
+              <input
+                id="tenant-number-buying"
+                type="checkbox"
+                checked={!!editForm.number_purchase_enabled}
+                onChange={(e) => setEditForm({ ...editForm, number_purchase_enabled: e.target.checked })}
+              />
+              <span className="toggle-slider" />
+            </label>
+            <div className="form-hint">
+              Lets this account&apos;s admins search for and buy numbers through their connected Twilio or Plivo account. Superadmins can always buy.
+            </div>
+          </div>
+        )}
         <div className="form-hint">Slug can&apos;t be changed after creation — it&apos;s used in Redis routing keys.</div>
       </Modal>
 

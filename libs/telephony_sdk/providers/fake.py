@@ -6,7 +6,7 @@ import asyncio
 import itertools
 from typing import Any
 
-from ..exceptions import TelephonyProviderError
+from ..exceptions import TelephonyProviderError, TelephonyRateLimited
 from ..interface import (
     InboundSyncResult, InboundUrls, ISmsProvider, ITelephonyProvider, NormalizedInboundCall, ReconcileResult,
 )
@@ -22,6 +22,8 @@ SYNC_LOG: list[tuple[str, str, Any]] = []
 
 class FakeProvider(ITelephonyProvider, ISmsProvider):
     PROVIDER_NAME = "fake"
+    supports_campaign_outbound = True
+    signature_covers_fields = True
 
     def __init__(self, credentials: dict[str, Any]) -> None:
         super().__init__(credentials)
@@ -29,6 +31,8 @@ class FakeProvider(ITelephonyProvider, ISmsProvider):
         self.send_count = 0
         # Scripted per instance via credentials, so instances never share state.
         self._initiate_should_timeout: bool = bool(credentials.get("initiate_should_timeout", False))
+        self._rate_limited_calls: int = int(credentials.get("initiate_rate_limited_calls", 0))
+        self._call_statuses: dict[str, dict[str, Any]] = credentials.get("call_statuses", {})
         self._initiate_should_fail: bool = bool(credentials.get("initiate_should_fail", False))
         self._reconcile_outcome: str = credentials.get("reconcile_outcome", "indeterminate")
         self._check_health_result: bool = bool(credentials.get("check_health_result", True))
@@ -50,6 +54,8 @@ class FakeProvider(ITelephonyProvider, ISmsProvider):
         answer_url: str, hangup_url: str | None = None, ring_url: str | None = None,
     ) -> str:
         self.dial_count += 1
+        if self.dial_count <= self._rate_limited_calls:
+            raise TelephonyRateLimited("fake: scripted rate limit", retry_after=7)
         if self._initiate_should_fail:
             raise TelephonyProviderError("fake: scripted initiate_call failure")
         if self._initiate_should_timeout:
@@ -60,7 +66,11 @@ class FakeProvider(ITelephonyProvider, ISmsProvider):
         return None
 
     async def get_call_status(self, call_id: str) -> dict[str, Any]:
-        return {"call_id": call_id, "status": "answered"}
+        if not self._call_statuses:
+            return {"call_id": call_id, "status": "answered"}
+        if call_id not in self._call_statuses:
+            raise TelephonyProviderError(f"fake: unknown call {call_id}")
+        return self._call_statuses[call_id]
 
     def verify_webhook_signature(self, url: str, headers: dict[str, str]) -> bool:
         return headers.get("x-fake-signature") == "valid"

@@ -5,6 +5,7 @@ import { getCurrentUser } from "./api";
 
 export function useConnectionAccess() {
   const [role, setRole] = useState<string | null>(null);
+  const [tenantId, setTenantId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const retry = useCallback(async () => {
@@ -13,6 +14,7 @@ export function useConnectionAccess() {
     try {
       const user = await getCurrentUser();
       setRole(user.role);
+      setTenantId(user.tenant_id);
     } catch {
       setRole(null);
       setError("Could not check your permissions. Please retry.");
@@ -24,5 +26,5 @@ export function useConnectionAccess() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void retry();
   }, [retry]);
-  return { loading, error, retry, canManage: role === "admin" || role === "superadmin", isSuperadmin: role === "superadmin", checked: role !== null };
+  return { loading, error, retry, canManage: role === "admin" || role === "superadmin", isSuperadmin: role === "superadmin", isPlatformOperator: role === "superadmin" && tenantId === null, checked: role !== null };
 }

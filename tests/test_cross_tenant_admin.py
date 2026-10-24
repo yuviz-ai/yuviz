@@ -375,6 +375,11 @@ async def test_tier3_campaigns(two_tenants, superadmin, tenant_admin_a):
         )
     await _assert_tier3_matrix(
         campaigns_app, f"/campaigns/{camp_b['id']}", f"/campaigns/{camp_a['id']}",
+        superadmin["token"], tenant_admin_a["token"], cross_tenant_status=404,
+    )
+    await _assert_tier3_matrix(
+        campaigns_app, f"/tenants/{two_tenants['b']['id']}/campaigns/caller-ids",
+        f"/tenants/{two_tenants['a']['id']}/campaigns/caller-ids",
         superadmin["token"], tenant_admin_a["token"], cross_tenant_status=403,
     )
 

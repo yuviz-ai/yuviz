@@ -28,6 +28,7 @@ from libs.config_sdk.languages import (
     tts_model_of,
 )
 from libs.config_sdk.workflow import graphs_equivalent, starter_graph
+from libs.telephony_sdk.did_format import normalize_did
 from libs.tenancy import platform_conn, tenant_conn
 
 from . import audit, cache, call_flows, db, phone_numbers
@@ -40,7 +41,7 @@ _UPDATABLE_FIELDS = {
     "name", "direction", "greeting", "system_prompt", "goodbye_grace_ms", "language",
     "stt_config_id", "llm_config_id", "tts_config_id",
     "transfer_type", "transfer_destination", "queue_id", "escalation_threshold",
-    "caller_id_policy", "platform_did", "custom_caller_id",
+    "caller_id_policy", "platform_did", "custom_caller_id", "outbound_caller_id",
     "transfer_waiting_experience",
     "end_call_prompt", "transfer_prompt",
     "farewell_message", "transfer_announcement",
@@ -211,6 +212,23 @@ async def list_agents(tenant_id: Any) -> list[dict[str, Any]]:
 _PROVIDER_ROLE_BY_FIELD = {
     "stt_config_id": "stt", "llm_config_id": "llm", "tts_config_id": "tts",
 }
+
+
+_E164 = re.compile(r"\+[1-9][0-9]{6,14}")
+
+
+async def _validate_outbound_caller_id(conn: Any, tenant_id: Any, value: str | None) -> str | None:
+    if not value:
+        return None
+    if not _E164.fullmatch(value):
+        raise ValueError("outbound_caller_id must be an E.164 number, e.g. +919876543210")
+    owned = await conn.fetchrow(
+        "SELECT 1 FROM phone_numbers WHERE tenant_id = $1 AND did = $2 AND deleted_at IS NULL",
+        tenant_id, normalize_did(value),
+    )
+    if owned is None:
+        raise ValueError("outbound_caller_id must be a phone number this account owns")
+    return value
 
 
 async def _validate_provider_assignments(conn: Any, tenant_id: Any, fields: dict[str, Any]) -> None:
@@ -627,6 +645,9 @@ async def update_agent(
             raise LookupError(f"agent {agent_id} not found under tenant {tenant_slug!r}")
         old = _row(old_row)
         await _validate_provider_assignments(conn, old["tenant_id"], fields)
+        if "outbound_caller_id" in fields:
+            fields = {**fields, "outbound_caller_id": await _validate_outbound_caller_id(
+                conn, old["tenant_id"], fields["outbound_caller_id"])}
 
         set_fields = dict(fields)
         if "language" in fields:

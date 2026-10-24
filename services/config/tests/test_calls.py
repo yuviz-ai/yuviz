@@ -42,12 +42,12 @@ async def test_list_calls_scoped_to_tenant_and_decorated(test_tenant, scoped, po
     await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
 
 
-async def test_outbound_call_derives_webrtc_mode(test_tenant, scoped, pool):
+async def test_outbound_call_derives_outbound_mode(test_tenant, scoped, pool):
     session_id = f"test-call-{uuid.uuid4().hex[:8]}"
     await _insert_call(pool, tenant_slug=test_tenant["slug"], session_id=session_id, direction="outbound")
 
     call = await calls.get_call(session_id)
-    assert call["mode"] == "WebRTC"
+    assert call["mode"] == "Outbound"
 
     await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
 

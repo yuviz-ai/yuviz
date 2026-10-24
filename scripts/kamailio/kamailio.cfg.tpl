@@ -47,6 +47,20 @@
 #     - define WITH_USRLOCDB
 #
 #!define WITH_USRLOCDB
+#
+# *** Campaign dial handler (loopback :5071) and PSTN egress for fs-egress:
+#!define WITH_CAMPAIGN_DIAL
+#!ifdef WITH_CAMPAIGN_DIAL
+#!trydef WITH_XHTTP
+#!endif
+# *** Dev only (KAMAILIO_DEV_LOCAL_EGRESS=1): admitted egress to a dbaliases number rings that local phone
+__DEV_LOCAL_EGRESS_DEFINE__
+#!ifdef WITH_DEV_LOCAL_EGRESS
+#!trydef WITH_ALIASDB
+#!endif
+#!ifdef WITH_JSONRPC
+#!trydef WITH_XHTTP
+#!endif
 # *** To enable presence server execute:
 #     - enable mysql
 #     - define WITH_PRESENCE
@@ -149,6 +163,13 @@ import_file "kamailio-local.cfg"
 #!trydef DBURL "__KAMAILIO_DB_URL__"
 #!endif
 
+#!ifdef WITH_CAMPAIGN_DIAL
+#!substdef "!CAMPAIGNS_DIAL_SRC!__CAMPAIGNS_DIAL_SRC__!"
+#!substdef "!CAMPAIGNS_DIAL_HMAC!__CAMPAIGNS_DIAL_HMAC__!"
+#!substdef "!CAMPAIGNS_EGRESS_HMAC!__CAMPAIGNS_EGRESS_HMAC__!"
+#!substdef "!PSTN_GW_URI!__PSTN_GW_URI__!"
+#!endif
+
 #!ifdef WITH_MULTIDOMAIN
 # - the value for 'use_domain' parameters
 #!define MULTIDOMAIN 1
@@ -219,6 +240,10 @@ children=8
  *      listen=[proto]:[localip]:[lport] advertise [publicip]:[pport]
  * - it can be set many times to add more sockets to listen to */
 listen=udp:__LAN_IP__:5060
+#!ifdef WITH_CAMPAIGN_DIAL
+listen=tcp:127.0.0.1:5071
+listen=tcp:[::1]:5071
+#!endif
 
 /* life time of TCP connection when there is no traffic
  * - a bit higher than registration expires to cope with UA behind NAT */
@@ -230,7 +255,7 @@ tcp_max_connections=2048
 /* upper limit for TCP connections for one ip address - default 1024 */
 #tcp_accept_iplimit=1024
 
-#!ifdef WITH_JSONRPC
+#!ifdef WITH_XHTTP
 tcp_accept_no_cl=yes
 #!endif
 
@@ -294,7 +319,7 @@ loadmodule "tls.so"
 loadmodule "db_mysql.so"
 #!endif
 
-#!ifdef WITH_JSONRPC
+#!ifdef WITH_XHTTP
 loadmodule "xhttp.so"
 #!endif
 loadmodule "jsonrpcs.so"
@@ -369,6 +394,14 @@ loadmodule "debugger.so"
 # Define a table to store suspended transaction IDs
 loadmodule "htable.so"
 modparam("htable", "htable", "pushed=>size=8;autoexpire=30;")
+
+#!ifdef WITH_CAMPAIGN_DIAL
+loadmodule "jansson.so"
+loadmodule "crypto.so"
+loadmodule "uac.so"
+modparam("uac", "restore_mode", "none")
+modparam("htable", "htable", "egress=>size=8;autoexpire=300;")
+#!endif
 
 loadmodule "http_client.so"
 modparam("http_client", "connection_timeout", 2)
@@ -587,6 +620,12 @@ modparam("debugger", "log_level_name", "exec")
  * - note: this is the same as route { ... } */
 request_route {
 
+#!ifdef WITH_CAMPAIGN_DIAL
+    if ($Rp == 5071) {
+        drop;
+    }
+#!endif
+
     # ----------------------------------------------------------
     # 1. SANITY / MAX FORWARDS
     #    Reject requests that have looped too many times
@@ -632,6 +671,11 @@ if (has_totag()) {
 	# per request initial checks
 	route(REQINIT);
 
+#!ifdef WITH_CAMPAIGN_DIAL
+	# campaign headers are Kamailio's own to add, never a caller's
+	remove_hf_re("^X-(Call-Direction|Idempotency-Key|Campaign-Id|Contact-Id|Callee|Caller-Id|Agent-DID)$");
+#!endif
+
 	# NAT detection
 	route(NATDETECT);
 
@@ -670,7 +714,11 @@ if (is_method("INVITE")) {
     #    (e.g. a transfer to an AI number). Reply, never just exit: with no
     #    final response FreeSWITCH retransmits until SIP Timer B (~32 s) and
     #    the caller hears dead air the whole time.
+#!ifdef WITH_CAMPAIGN_DIAL
+    if (ds_is_from_list("1")) {
+#!else
     if (src_ip == __LAN_IP__ && src_port == 5080) {
+#!endif
         xlog("L_WARN", "Loop prevention triggered for $rU: refusing request\n");
         sl_send_reply("482", "Loop Detected");
         exit;
@@ -687,11 +735,15 @@ if (is_method("INVITE")) {
    }    
 
     # Only target our internal extensions
-    if ($rU =~ "100[0-2]") {
+    if ($rU =~ "^100[0-2]$") {
 
         # --- BLOCK 1: THE GATEKEEPER (Call coming BACK from FreeSWITCH) ---
         # FreeSWITCH has completed control/media handling and wants to deliver the call
+#!ifdef WITH_CAMPAIGN_DIAL
+        if (ds_is_from_list("1")) {
+#!else
         if ($si == "__LAN_IP__" && $sp == "5080") {
+#!endif
             xlog("L_INFO", "FS_LOOP: Call returned from FreeSWITCH for target $rU\n");
             
             if (!lookup("location")) {
@@ -747,7 +799,7 @@ if (is_method("INVITE")) {
     }
 
     # 2. Check the destination (Callee)
-    if ($rU =~ "100[0-2]") {
+    if ($rU =~ "^100[0-2]$") {
         
         # Look up where the user is actually registered
         if (lookup("location")) {
@@ -771,7 +823,7 @@ if (is_method("INVITE")) {
               record_route();
 
               # Check if the dialed number ($rU) is 1000-1002
-              if ($rU =~ "100[0-2]") {
+              if ($rU =~ "^100[0-2]$") {
             
                  $du = "sip:__LAN_IP__:5080;transport=udp"; 
             
@@ -804,7 +856,7 @@ if (is_method("INVITE")) {
 
     # --- 2. THE DISPATCHER (Your Code) ---
     # If the call is NOT from FreeSWITCH, send it TO FreeSWITCH
-    if ($rU =~ "100[0-2]") {
+    if ($rU =~ "^100[0-2]$") {
         if (!ds_select_dst("1", "4")) {
             xlog("L_ERR", "Dispatcher: No nodes available for $rU\n");
             sl_send_reply("503", "Service Unavailable");
@@ -834,6 +886,8 @@ if (is_method("INVITE")) {
 
 	# authentication
 	route(AUTH);
+
+	route(PSTN_EGRESS);
 
 	# record routing for dialog forming requests (in case they are routed)
 	# - remove preloaded route headers
@@ -1114,6 +1168,10 @@ route[AUTH] {
 			auth_challenge("$fd", "0");
 			exit;
 		}
+#!ifdef WITH_CAMPAIGN_DIAL
+		# consume_credentials drops the header $au reads, so route(PSTN_EGRESS) needs it saved
+		$avp(authuser) = $au;
+#!endif
 		# user authenticated - remove auth header
 		if(!is_method("REGISTER|PUBLISH"))
 			consume_credentials();
@@ -1133,6 +1191,77 @@ route[AUTH] {
 		exit;
 	}
 
+#!endif
+	return;
+}
+
+# Digest user fs-egress may only dial the PSTN with a single-use token minted for that exact call
+route[PSTN_EGRESS] {
+#!ifdef WITH_CAMPAIGN_DIAL
+	if ($avp(authuser) != "fs-egress") {
+		return;
+	}
+	if (!is_method("INVITE") || !($rU =~ "^[+][1-9][0-9]{6,14}$")) {
+		sl_send_reply("403", "Forbidden");
+		exit;
+	}
+	$var(secret) = "CAMPAIGNS_EGRESS_HMAC";
+	$var(gw) = "PSTN_GW_URI";
+	if ($var(secret) == "" || $var(gw) == "") {
+		sl_send_reply("503", "Service Unavailable");
+		exit;
+	}
+
+	$var(tok) = $hdr(X-Egress-Token);
+	$var(key) = $(var(tok){s.select,0,.});
+	$var(exp) = $(var(tok){s.select,1,.});
+	$var(tenant) = $(var(tok){s.select,2,.});
+	$var(cid) = $(var(tok){s.select,3,.});
+	$var(max) = $(var(tok){s.select,4,.});
+	$var(mac) = $(var(tok){s.select,5,.});
+	if ($(var(tok){s.select,6,.}) != "" || !($var(key) =~ "^[0-9a-f-]{36}_[0-9]{1,3}$")
+			|| !($var(exp) =~ "^[0-9]{10}$")
+			|| !($var(tenant) =~ "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+			|| !($var(cid) =~ "^[+][1-9][0-9]{6,14}$") || !($var(max) =~ "^[1-9][0-9]{1,3}$")
+			|| !($var(mac) =~ "^[A-Za-z0-9_-]{43}$")) {
+		sl_send_reply("403", "Forbidden");
+		exit;
+	}
+	if ($(var(exp){s.int}) < $Ts) {
+		sl_send_reply("403", "Forbidden");
+		exit;
+	}
+
+	$var(msg) = $var(key) + "|" + $rU + "|" + $var(cid) + "|" + $var(tenant) + "|" + $var(max) + "|" + $var(exp);
+	if (!crypto_hmac_sha256("$var(msg)", "CAMPAIGNS_EGRESS_HMAC", "$var(calc)")
+			|| $var(calc) != $var(mac) || !($(ai{uri.user}) == $var(cid))) {
+		sl_send_reply("403", "Forbidden");
+		exit;
+	}
+
+	sht_lock("egress=>$var(mac)");
+	if ($sht(egress=>$var(mac)) != $null) {
+		sht_unlock("egress=>$var(mac)");
+		sl_send_reply("403", "Forbidden");
+		exit;
+	}
+	$sht(egress=>$var(mac)) = 1;
+	sht_unlock("egress=>$var(mac)");
+
+	remove_hf("X-Egress-Token");
+#!ifdef WITH_DEV_LOCAL_EGRESS
+	if (alias_db_lookup("dbaliases")) {
+		setflag(FLT_ACC);
+		xlog("L_INFO", "EGRESS_ADMIT_LOCAL key=$var(key) to=$rU\n");
+		route(LOCATION);
+		exit;
+	}
+#!endif
+	$ru = "sip:" + $rU + "@" + $var(gw);
+	setflag(FLT_ACC);
+	xlog("L_INFO", "EGRESS_ADMIT key=$var(key)\n");
+	route(RELAY);
+	exit;
 #!endif
 	return;
 }
@@ -1340,11 +1469,112 @@ route[PSTN] {
 	return;
 }
 
-# JSONRPC over HTTP(S) routing
-#!ifdef WITH_JSONRPC
+# HTTP on the loopback dial socket (campaign dial) and, if enabled, JSONRPC over HTTP(S)
+#!ifdef WITH_XHTTP
 event_route[xhttp:request] {
 	set_reply_close();
 	set_reply_no_connect();
+#!ifdef WITH_CAMPAIGN_DIAL
+	if ($Rp == 5071) {
+		$var(secret) = "CAMPAIGNS_DIAL_HMAC";
+		if ($var(secret) == "" || !($si =~ "^(CAMPAIGNS_DIAL_SRC)$")) {
+			xhttp_reply("403", "Forbidden", "application/json", "{\"result\":\"forbidden\"}");
+			exit;
+		}
+		if ($hu != "/campaign-dial" && $hu != "/campaign-dial/health") {
+			xhttp_reply("404", "Not Found", "application/json", "{\"result\":\"not_found\"}");
+			exit;
+		}
+		if ($rm != "POST") {
+			xhttp_reply("405", "Method Not Allowed", "application/json", "{\"result\":\"method\"}");
+			exit;
+		}
+		if ($cl > 1024) {
+			xhttp_reply("400", "Bad Request", "application/json", "{\"result\":\"bad_request\"}");
+			exit;
+		}
+		$var(sig) = $hdr(X-Campaign-Signature);
+		if (!crypto_hmac_sha256("$rb", "CAMPAIGNS_DIAL_HMAC", "$var(mac)")
+				|| $(var(sig){s.len}) == 0 || $var(mac) != $var(sig)) {
+			xhttp_reply("401", "Unauthorized", "application/json", "{\"result\":\"unauthorized\"}");
+			exit;
+		}
+
+		if ($hu == "/campaign-dial/health") {
+			if (!jansson_get("ts", "$rb", "$var(ts)")) {
+				xhttp_reply("400", "Bad Request", "application/json", "{\"result\":\"bad_request\"}");
+				exit;
+			}
+			$var(skew) = $Ts - $(var(ts){s.int});
+			if ($var(skew) > 30 || $var(skew) < -30) {
+				xhttp_reply("401", "Unauthorized", "application/json", "{\"result\":\"unauthorized\"}");
+				exit;
+			}
+			if ("{\"ts\":" + $var(ts) + "}" != $rb) {
+				xhttp_reply("400", "Bad Request", "application/json", "{\"result\":\"bad_request\"}");
+				exit;
+			}
+			$var(gw) = "PSTN_GW_URI";
+			if ($var(gw) == "" || !ds_select_dst("1", "4")) {
+				xhttp_reply("503", "Service Unavailable", "application/json", "{\"result\":\"no_node\"}");
+				exit;
+			}
+			xhttp_reply("200", "OK", "application/json", "{\"result\":\"ok\"}");
+			exit;
+		}
+
+		if (!jansson_get("key", "$rb", "$var(key)") || !jansson_get("campaign_id", "$rb", "$var(campaign)")
+				|| !jansson_get("contact_id", "$rb", "$var(contact)") || !jansson_get("callee", "$rb", "$var(callee)")
+				|| !jansson_get("caller_id", "$rb", "$var(cid)") || !jansson_get("tenant_slug", "$rb", "$var(tslug)")
+				|| !jansson_get("agent_slug", "$rb", "$var(aslug)")
+				|| !jansson_get("ts", "$rb", "$var(ts)")) {
+			xhttp_reply("400", "Bad Request", "application/json", "{\"result\":\"bad_request\"}");
+			exit;
+		}
+		$var(skew) = $Ts - $(var(ts){s.int});
+		if ($var(skew) > 30 || $var(skew) < -30) {
+			xhttp_reply("401", "Unauthorized", "application/json", "{\"result\":\"unauthorized\"}");
+			exit;
+		}
+		if (!($var(key) =~ "^[0-9a-f-]{36}_[0-9]{1,3}$")
+				|| !($var(campaign) =~ "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+				|| !($var(contact) =~ "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+				|| !($var(callee) =~ "^[+][1-9][0-9]{6,14}$") || !($var(cid) =~ "^[+][1-9][0-9]{6,14}$")
+				|| !($var(tslug) =~ "^[a-z0-9][a-z0-9_-]{0,62}$") || !($var(aslug) =~ "^[a-z0-9][a-z0-9_-]{0,62}$")) {
+			xhttp_reply("400", "Bad Request", "application/json", "{\"result\":\"bad_request\"}");
+			exit;
+		}
+		$var(canon) = "{\"key\":\"" + $var(key) + "\",\"campaign_id\":\"" + $var(campaign)
+				+ "\",\"contact_id\":\"" + $var(contact) + "\",\"callee\":\"" + $var(callee)
+				+ "\",\"caller_id\":\"" + $var(cid) + "\",\"tenant_slug\":\"" + $var(tslug)
+				+ "\",\"agent_slug\":\"" + $var(aslug)
+				+ "\",\"ts\":" + $var(ts) + "}";
+		if ($var(canon) != $rb) {
+			xhttp_reply("400", "Bad Request", "application/json", "{\"result\":\"bad_request\"}");
+			exit;
+		}
+
+		if (!ds_select_dst("1", "4")) {
+			xhttp_reply("503", "Service Unavailable", "application/json", "{\"result\":\"no_node\"}");
+			exit;
+		}
+		$uac_req(method) = "INVITE";
+		$uac_req(ruri) = "sip:outbound-trigger@" + $dd;
+		$uac_req(ouri) = $du;
+		$uac_req(furi) = "sip:campaigns@__LAN_IP__";
+		$uac_req(callid) = $var(key) + "." + $Ts + $TV(u);
+		$uac_req(hdrs) = "Contact: <sip:campaigns@__LAN_IP__:5060>\r\nX-Call-Direction: outbound\r\nX-Idempotency-Key: " + $var(key) + "\r\n";
+		$uac_req(evroute) = 1;
+		if (!uac_req_send()) {
+			xhttp_reply("500", "Server Error", "application/json", "{\"result\":\"error\"}");
+			exit;
+		}
+		xlog("L_INFO", "DIAL_SENT key=$var(key) node=$du\n");
+		xhttp_reply("200", "OK", "application/json", "{\"result\":\"accepted\"}");
+		exit;
+	}
+#!endif
+#!ifdef WITH_JSONRPC
 	if(src_ip!=127.0.0.1) {
 		xhttp_reply("403", "Forbidden", "text/html",
 				"<html><body>Not allowed from $si</body></html>");
@@ -1358,6 +1588,16 @@ event_route[xhttp:request] {
 	xhttp_reply("200", "OK", "text/html",
 				"<html><body>Wrong URL $hu</body></html>");
 	exit;
+#!else
+	xhttp_reply("404", "Not Found", "text/plain", "Not Found");
+	exit;
+#!endif
+}
+#!endif
+
+#!ifdef WITH_CAMPAIGN_DIAL
+event_route[uac:reply] {
+	xlog("L_INFO", "DIAL_REPLY code=$uac_req(evcode) callid=$ci\n");
 }
 #!endif
 

@@ -187,6 +187,7 @@ async def handle_inbound_webhook(*, provider_name: str, account_ref: str, reques
             provider=account.provider, account_ref=account.account_ref,
             provider_call_id=route.provider_call_id, issued_at=time.monotonic(),
             direction=route.direction,
+            idempotency_key=(idem_key or call.provider_call_id) if route.direction == "outbound" else None,
         ))
     except HandoffCapacityError:
         log.warning("telephony.reject.capacity provider=%s account=%s", provider_name, account_ref)

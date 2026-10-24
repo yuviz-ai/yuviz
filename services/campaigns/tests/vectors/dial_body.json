@@ -1,0 +1,28 @@
+[
+    {
+        "secret": "dial-test-secret",
+        "key": "7d0b4d0e-0f2c-4a9f-9a3e-5d2c1b0a9e8f_1",
+        "campaign_id": "aaaaaaaa-0000-4000-8000-000000000001",
+        "contact_id": "bbbbbbbb-0000-4000-8000-000000000002",
+        "callee": "+919876543210",
+        "caller_id": "+918065354620",
+        "tenant_slug": "yuviz",
+        "agent_slug": "sales",
+        "ts": 1900000000,
+        "body": "{\"key\":\"7d0b4d0e-0f2c-4a9f-9a3e-5d2c1b0a9e8f_1\",\"campaign_id\":\"aaaaaaaa-0000-4000-8000-000000000001\",\"contact_id\":\"bbbbbbbb-0000-4000-8000-000000000002\",\"callee\":\"+919876543210\",\"caller_id\":\"+918065354620\",\"tenant_slug\":\"yuviz\",\"agent_slug\":\"sales\",\"ts\":1900000000}",
+        "signature": "kl1RIjsV84VPNc0zjl_ll_rrcad5rRdJrsXoEVFZ99E"
+    },
+    {
+        "secret": "dial-test-secret",
+        "key": "11111111-2222-4333-8444-555555555555_12",
+        "campaign_id": "aaaaaaaa-0000-4000-8000-000000000003",
+        "contact_id": "bbbbbbbb-0000-4000-8000-000000000004",
+        "callee": "+14155551234",
+        "caller_id": "+14155550100",
+        "tenant_slug": "sunrise-hospital",
+        "agent_slug": "reception",
+        "ts": 1900000999,
+        "body": "{\"key\":\"11111111-2222-4333-8444-555555555555_12\",\"campaign_id\":\"aaaaaaaa-0000-4000-8000-000000000003\",\"contact_id\":\"bbbbbbbb-0000-4000-8000-000000000004\",\"callee\":\"+14155551234\",\"caller_id\":\"+14155550100\",\"tenant_slug\":\"sunrise-hospital\",\"agent_slug\":\"reception\",\"ts\":1900000999}",
+        "signature": "IlJTClYGCH_z2W0G1G94gBWUKHhfe9LGxG1oJVEnSyM"
+    }
+]

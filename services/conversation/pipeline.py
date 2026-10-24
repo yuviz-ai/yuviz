@@ -505,6 +505,8 @@ class PipelineConversationHandler:
         self._direction     = direction
         self._caller_number = caller_number
         self._called_number = called_number
+        # caller/called are from/to, so on an outbound call the customer is the called party.
+        self._remote_number = called_number if direction == "outbound" else caller_number
         # Legacy path uses ""/0; calls.agent_id is a UUID FK, so map to None.
         self._agent_id             = runtime_config.agent.id or None
         self._agent_config_version = runtime_config.version or None
@@ -519,7 +521,7 @@ class PipelineConversationHandler:
         # Date / caller-number / directive tokens appended after each node's prompt.
         self._prompt_suffix = (
             _build_current_date_context()
-            + (_build_caller_number_context(self._caller_number)
+            + (_build_caller_number_context(self._remote_number)
                if (has_booking_tool if confirm_caller_number is None else confirm_caller_number) else "")
             + _build_end_call_instruction(
                 runtime_config.conversation.end_call_prompt,
@@ -1225,7 +1227,7 @@ class PipelineConversationHandler:
             caller_id_policy=self._caller_id_policy,
             platform_did=self._platform_did,
             custom_caller_id=self._custom_caller_id,
-            caller_number=self._caller_number,
+            caller_number=self._remote_number,
             waiting_experience=self._waiting_experience,
         )
 

@@ -3677,3 +3677,17 @@ async def test_short_lead_ins_and_numbers_are_not_split():
 async def test_hindi_first_clause():
     spoken = await _spoken_for_tokens(["घुटनों के दर्द के लिए Orthopaedics सही रहेगा, ", "वहाँ जोड़ों का इलाज होता है।"])
     assert spoken == ["घुटनों के दर्द के लिए Orthopaedics सही रहेगा,", "वहाँ जोड़ों का इलाज होता है।"]
+
+
+@pytest.mark.parametrize("direction, customer, own", [
+    ("outbound", "+919812345678", "+14155550100"),
+    ("inbound", "+14155550100", "+919812345678"),
+])
+def test_the_booking_prompt_and_transfer_caller_id_use_the_customers_number(direction, customer, own):
+    handler = _make_handler(
+        _make_stt(), _make_llm(), _make_tts(), system_prompt="x", has_booking_tool=True,
+        direction=direction, caller_number="+14155550100", called_number="+919812345678",
+    )
+    # The prompt spells the number out digit by digit for the voice.
+    assert " ".join(customer) in handler._prompt_suffix and " ".join(own) not in handler._prompt_suffix
+    assert handler._decision_context("s1").caller_number == customer

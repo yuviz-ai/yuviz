@@ -119,7 +119,6 @@ async def create_phone_number(
 ):
     await _resolve_tenant_id(tenant_id)
     await _resolve_agent_id(body.agent_id)
-    await _resolve_agent_id(body.fallback_agent_id)
     await _resolve_carrier_id(body.carrier_id)
     await _resolve_telephony_config_id(body.telephony_config_id, tenant_id)
     await _require_superadmin_for_local_number(current_user, body.did, body.telephony_config_id, body.carrier_id)
@@ -130,7 +129,6 @@ async def create_phone_number(
         tenant_id=tenant_id,
         did=body.did,
         agent_id=body.agent_id,
-        fallback_agent_id=body.fallback_agent_id,
         carrier_id=body.carrier_id,
         telephony_config_id=body.telephony_config_id,
         region=body.region,
@@ -173,8 +171,6 @@ async def update_phone_number(
     set_target_tenant(phone_number["tenant_id"])
     if "agent_id" in fields:
         await _resolve_agent_id(fields["agent_id"])
-    if "fallback_agent_id" in fields:
-        await _resolve_agent_id(fields["fallback_agent_id"])
     if "carrier_id" in fields:
         await _resolve_carrier_id(fields["carrier_id"])
     if "telephony_config_id" in fields:

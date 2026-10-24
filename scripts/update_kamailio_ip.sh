@@ -13,6 +13,7 @@ source "$REPO/scripts/lib/env.sh"
 # shellcheck source=lib/sip.sh
 source "$REPO/scripts/lib/sip.sh"
 MYSQL="${MYSQL:-mysql}"
+KAMCTL="${KAMCTL:-kamctl}"
 
 # Literal .env value, never sourced; the shell's value wins.
 _dotenv() { [[ -f "$REPO/.env" ]] && grep "^$1=" "$REPO/.env" | cut -d= -f2- || true; }
@@ -22,6 +23,35 @@ FS_ESL_PORT="${FS_ESL_PORT:-8022}"
 FS_ESL_PASSWORD="${FREESWITCH_ESL_PASSWORD:-$(_dotenv FREESWITCH_ESL_PASSWORD)}"
 KAMAILIO_DB_URL="${KAMAILIO_DB_URL:-$(_dotenv KAMAILIO_DB_URL)}"
 KAMAILIO_DB_URL="${KAMAILIO_DB_URL:?set KAMAILIO_DB_URL in .env}"
+
+# Campaign dial handler and PSTN egress. Empty secrets and gateway render empty, which makes Kamailio refuse
+# dials (403) and egress (503); the source list is empty only when .env sets it empty.
+_dotenv_or() { if [[ -f "$REPO/.env" ]] && grep -q "^$1=" "$REPO/.env"; then _dotenv "$1"; else echo "$2"; fi; }
+DIAL_HMAC="${CAMPAIGNS_KAMAILIO_HMAC_SECRET:-$(_dotenv CAMPAIGNS_KAMAILIO_HMAC_SECRET)}"
+EGRESS_HMAC="${CAMPAIGNS_EGRESS_HMAC_SECRET:-$(_dotenv CAMPAIGNS_EGRESS_HMAC_SECRET)}"
+PSTN_GW_URI="${PSTN_GW_URI:-$(_dotenv PSTN_GW_URI)}"
+FS_EGRESS_PASSWORD="${KAMAILIO_FS_EGRESS_PASSWORD:-$(_dotenv KAMAILIO_FS_EGRESS_PASSWORD)}"
+DIAL_SRC="${CAMPAIGNS_DIAL_SRC-$(_dotenv_or CAMPAIGNS_DIAL_SRC '127.0.0.1 ::1')}"
+DEV_LOCAL_EGRESS="${KAMAILIO_DEV_LOCAL_EGRESS:-$(_dotenv KAMAILIO_DEV_LOCAL_EGRESS)}"
+DEV_LOCAL_EGRESS_DEFINE="# dev local egress off"
+[[ "$DEV_LOCAL_EGRESS" == "1" ]] && DEV_LOCAL_EGRESS_DEFINE="#!define WITH_DEV_LOCAL_EGRESS"
+# The dev branch answers admitted campaign calls on local extensions; it must never sit beside a real trunk.
+if [[ "$DEV_LOCAL_EGRESS" == "1" && ! "$PSTN_GW_URI" =~ ^(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?$ ]]; then
+  echo "ERROR: KAMAILIO_DEV_LOCAL_EGRESS=1 is for development only; PSTN_GW_URI must be on loopback, got '$PSTN_GW_URI'" >&2
+  exit 1
+fi
+# These land inside quoted Kamailio strings and a sed expression: refuse anything that could break out.
+for spec in "CAMPAIGNS_KAMAILIO_HMAC_SECRET:$DIAL_HMAC" "CAMPAIGNS_EGRESS_HMAC_SECRET:$EGRESS_HMAC" \
+            "KAMAILIO_FS_EGRESS_PASSWORD:$FS_EGRESS_PASSWORD"; do
+  [[ "${spec#*:}" =~ ^[A-Za-z0-9._~-]*$ ]] || { echo "ERROR: ${spec%%:*} may only contain A-Z a-z 0-9 . _ ~ -" >&2; exit 1; }
+done
+[[ "$PSTN_GW_URI" =~ ^[][A-Za-z0-9._:-]*$ ]] || { echo "ERROR: PSTN_GW_URI must be host or host:port" >&2; exit 1; }
+read -r -a dial_src_list <<< "$DIAL_SRC"
+DIAL_SRC_RE=""
+for addr in ${dial_src_list[@]+"${dial_src_list[@]}"}; do
+  [[ "$addr" =~ ^[0-9A-Fa-f.:]+$ ]] || { echo "ERROR: CAMPAIGNS_DIAL_SRC must list IP addresses; got '$addr'" >&2; exit 1; }
+  DIAL_SRC_RE+="${DIAL_SRC_RE:+|}${addr//./[.]}"
+done
 
 export KAMAILIO_DIR YUVIZ_LOGS
 mkdir -p "$KAMAILIO_DIR/run" "$YUVIZ_LOGS"
@@ -102,13 +132,19 @@ for name in kamailio.cfg dispatcher.list; do
   tmp="$(mktemp)"
   sed -e "s/__LAN_IP__/$IP/g" \
       -e "s|__KAMAILIO_DIR__|$(sed_escape "$KAMAILIO_DIR")|g" \
-      -e "s|__KAMAILIO_DB_URL__|$(sed_escape "$KAMAILIO_DB_URL")|g" "$TPL_DIR/$name.tpl" > "$tmp"
+      -e "s|__KAMAILIO_DB_URL__|$(sed_escape "$KAMAILIO_DB_URL")|g" \
+      -e "s|__CAMPAIGNS_DIAL_SRC__|$(sed_escape "$DIAL_SRC_RE")|g" \
+      -e "s|__CAMPAIGNS_DIAL_HMAC__|$(sed_escape "$DIAL_HMAC")|g" \
+      -e "s|__CAMPAIGNS_EGRESS_HMAC__|$(sed_escape "$EGRESS_HMAC")|g" \
+      -e "s|__PSTN_GW_URI__|$(sed_escape "$PSTN_GW_URI")|g" \
+      -e "s|__DEV_LOCAL_EGRESS_DEFINE__|$(sed_escape "$DEV_LOCAL_EGRESS_DEFINE")|g" "$TPL_DIR/$name.tpl" > "$tmp"
   if cmp -s "$tmp" "$KAMAILIO_DIR/$name"; then
     rm -f "$tmp"
   else
     (umask 077; mv -f "$tmp" "$KAMAILIO_DIR/$name")
     changed=1
   fi
+  chmod 600 "$KAMAILIO_DIR/$name"   # holds the HMAC secrets
 done
 read -r -a kam_pids <<< "$(_kamailio_pids | tr '\n' ' ')"
 if [[ ${#kam_pids[@]} -gt 0 ]] && ! pgrep -u "$(id -u)" -f "^([^ ]*/)?kamailio -f $KAMAILIO_DIR/kamailio.cfg" >/dev/null; then
@@ -157,6 +193,23 @@ for row in os.environ['STALE_ROWS'].strip().splitlines():
     print(f\"UPDATE subscriber SET domain='{d}', ha1='{ha1}', ha1b='{ha1b}' WHERE username='{u}';\")
 " | "$MYSQL" -u root kamailio
     echo "  mysql: $(grep -c . <<< "$stale_rows") subscriber(s) moved to $IP"
+  fi
+fi
+
+# The digest user FreeSWITCH's egress gateway authenticates as; a failed kamctl aborts the sync.
+if [[ -z "$FS_EGRESS_PASSWORD" ]]; then
+  echo "  mysql: KAMAILIO_FS_EGRESS_PASSWORD empty — fs-egress not provisioned (campaign egress will fail)"
+elif ! command -v "$MYSQL" > /dev/null 2>&1 || ! "$MYSQL" -u root kamailio -e "SELECT 1" > /dev/null 2>&1; then
+  echo "  WARNING: mysql unavailable — fs-egress not provisioned; the next sync retries" >&2
+  ok=0
+else
+  egress_rows="$("$MYSQL" -u root kamailio -N -e "SELECT COUNT(*) FROM subscriber WHERE username='fs-egress' AND domain='$IP';")"
+  if [[ "$egress_rows" == 0 ]]; then
+    "$KAMCTL" add "fs-egress@$IP" "$FS_EGRESS_PASSWORD" >/dev/null || { echo "ERROR: kamctl add fs-egress@$IP failed" >&2; exit 1; }
+    echo "  mysql: fs-egress subscriber added"
+  else
+    "$KAMCTL" passwd "fs-egress@$IP" "$FS_EGRESS_PASSWORD" >/dev/null || { echo "ERROR: kamctl passwd fs-egress@$IP failed" >&2; exit 1; }
+    echo "  mysql: fs-egress password refreshed"
   fi
 fi
 

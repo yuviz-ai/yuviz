@@ -103,7 +103,7 @@ Fill these yourself; nothing can generate them:
 
 | Key | What |
 |---|---|
-| `FREESWITCH_ESL_PASSWORD` | Must match `password` in FreeSWITCH's `event_socket.conf.xml`. The Gateway and Campaigns refuse to use ESL without it. |
+| `FREESWITCH_ESL_PASSWORD` | Must match `password` in FreeSWITCH's `event_socket.conf.xml`. The Gateway refuses to use ESL without it. |
 | `KAMAILIO_DB_URL` | Kamailio's MySQL, e.g. `mysql://kamailio:<password>@localhost/kamailio`. Used by `scripts/update_kamailio_ip.sh`. |
 | `TELEPHONY_PUBLIC_BASE_URL` | Public tunnel URL for Vobiz/Cloudonix callbacks. |
 | `SMTP_*`, `GOOGLE_*`, provider API keys | Optional features. |

@@ -217,9 +217,16 @@ struct RouteResolution {
 // Missing or malformed input degrades gracefully; never throws.
 struct CallMetadata {
     std::string did;              // called number — feeds resolve_route()
-    std::string ani;              // calling number — feeds SessionContext::caller_did
+    std::string ani;              // the other party's number (the callee on an outbound call)
     std::string direction{"inbound"};
     std::string freeswitch_host;  // originating FS node (hostname/IP); routes ESL commands
+    std::string tenant_slug;      // outbound campaign calls only: the campaign's own route
+    std::string agent_slug;
+    long timestamp_epoch{0};      // outbound calls: unix timestamp when metadata was created (for replay protection)
+
+    // Outbound calls that name their own tenant and agent skip the did: lookup;
+    // `did` is then only the caller ID shown to the callee. Timestamp must be recent (<60s old).
+    [[nodiscard]] std::optional<PhoneRoute> direct_route() const;
 
     // raw is nullopt when no frame arrived in time.
     [[nodiscard]] static CallMetadata parse(

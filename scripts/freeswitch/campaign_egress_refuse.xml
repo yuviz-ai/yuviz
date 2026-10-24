@@ -1,0 +1,13 @@
+<!--
+  Context of the `campaign_egress` profile (see kamailio_egress.xml): that profile only places calls, so anything
+  that arrives on it is refused. Installed into dialplan/ by scripts/freeswitch/setup_macos.sh.
+-->
+<include>
+  <context name="campaign_egress_refuse">
+    <extension name="refuse">
+      <condition field="destination_number" expression="^.*$">
+        <action application="respond" data="403"/>
+      </condition>
+    </extension>
+  </context>
+</include>

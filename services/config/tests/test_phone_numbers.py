@@ -141,58 +141,6 @@ async def test_inactive_status_resolves_to_none_not_normal_agent(test_tenant, sc
     await pool.execute("DELETE FROM phone_numbers WHERE did = $1", did)
 
 
-async def test_fallback_agent_used_when_primary_agent_deleted(test_tenant, scoped, pool):
-    primary = await agents.create_agent(
-        tenant_id=test_tenant["id"], slug="sales", name="Sales Agent",
-    )
-    fallback = await agents.create_agent(
-        tenant_id=test_tenant["id"], slug="receptionist", name="Receptionist Agent",
-    )
-    did = f"9{uuid.uuid4().int % 10**10:010d}"
-    await phone_numbers.create_phone_number(
-        tenant_id=test_tenant["id"], did=did,
-        agent_id=primary["id"], fallback_agent_id=fallback["id"],
-    )
-
-    # Primary agent still active — resolves to it, not the fallback.
-    resolved = await phone_numbers.get_by_did(did)
-    assert resolved["agent_slug"] == "sales"
-
-    await pool.execute("UPDATE agents SET deleted_at = now() WHERE id = $1", primary["id"])
-    await cache.invalidate(f"did:{did}")
-
-    resolved = await phone_numbers.get_by_did(did)
-    assert resolved["agent_slug"] == "receptionist"
-
-    await pool.execute("DELETE FROM phone_numbers WHERE did = $1", did)
-
-
-async def test_fallback_agent_used_when_primary_agent_deactivated(test_tenant, scoped, pool):
-    """Fallback also applies when the primary agent is status='inactive'."""
-    primary = await agents.create_agent(
-        tenant_id=test_tenant["id"], slug="sales2", name="Sales Agent 2",
-    )
-    fallback = await agents.create_agent(
-        tenant_id=test_tenant["id"], slug="receptionist2", name="Receptionist Agent 2",
-    )
-    did = f"9{uuid.uuid4().int % 10**10:010d}"
-    await phone_numbers.create_phone_number(
-        tenant_id=test_tenant["id"], did=did,
-        agent_id=primary["id"], fallback_agent_id=fallback["id"],
-    )
-
-    resolved = await phone_numbers.get_by_did(did)
-    assert resolved["agent_slug"] == "sales2"
-
-    await pool.execute("UPDATE agents SET status = 'inactive' WHERE id = $1", primary["id"])
-    await cache.invalidate(f"did:{did}")
-
-    resolved = await phone_numbers.get_by_did(did)
-    assert resolved["agent_slug"] == "receptionist2"
-
-    await pool.execute("DELETE FROM phone_numbers WHERE did = $1", did)
-
-
 async def test_status_check_constraint_rejects_invalid_value(test_tenant, scoped, pool):
     did = f"9{uuid.uuid4().int % 10**10:010d}"
     with pytest.raises(Exception):
@@ -257,32 +205,6 @@ async def test_update_phone_number_rename_writes_through_new_and_clears_old(test
     assert await cache.get_json(f"did:{new_did}") is not None
 
     await pool.execute("DELETE FROM phone_numbers WHERE did = $1", new_did)
-
-
-async def test_pausing_an_agent_moves_its_numbers_to_the_fallback_and_back(test_tenant, scoped, pool):
-    primary = await agents.create_agent(tenant_id=test_tenant["id"], slug="primary", name="Primary")
-    backup = await agents.create_agent(tenant_id=test_tenant["id"], slug="backup", name="Backup")
-    did = f"9{uuid.uuid4().int % 10**10:010d}"
-    await phone_numbers.create_phone_number(
-        tenant_id=test_tenant["id"], did=did, agent_id=primary["id"], fallback_agent_id=backup["id"],
-    )
-    assert (await cache.get_json(f"did:{did}"))["agent_slug"] == "primary"
-
-    await agents.update_agent(primary["id"], tenant_slug=test_tenant["slug"], status="inactive")
-    assert (await cache.get_json(f"did:{did}"))["agent_slug"] == "backup"
-
-    # Pausing the fallback too, while the primary stays paused, must not leave the paused
-    # fallback as the answer — this is the part a missing "OR fallback_agent_id = $1" would miss.
-    await agents.update_agent(backup["id"], tenant_slug=test_tenant["slug"], status="inactive")
-    assert (await cache.get_json(f"did:{did}"))["agent_slug"] == "default"
-
-    await agents.update_agent(backup["id"], tenant_slug=test_tenant["slug"], status="active")
-    assert (await cache.get_json(f"did:{did}"))["agent_slug"] == "backup"
-
-    await agents.update_agent(primary["id"], tenant_slug=test_tenant["slug"], status="active")
-    assert (await cache.get_json(f"did:{did}"))["agent_slug"] == "primary"
-
-    await pool.execute("DELETE FROM phone_numbers WHERE did = $1", did)
 
 
 async def test_prewarm_never_overwrites_a_route_written_by_the_api(test_tenant, scoped, pool):

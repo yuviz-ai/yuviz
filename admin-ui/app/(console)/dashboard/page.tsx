@@ -595,7 +595,7 @@ export default function DashboardPage() {
           </div>
           {runningCampaigns.length === 0 ? (
             <div className="d-empty">
-              No campaigns running. <Link href="/campaigns/new" className="act">Start one</Link>
+              No campaigns running. <Link href="/campaigns?add=1" className="act">Start one</Link>
             </div>
           ) : (
             runningCampaigns.map((c) => {

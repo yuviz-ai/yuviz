@@ -139,8 +139,8 @@ def _all_apps():
     return [config_app, campaigns_app, knowledge_app, toolexec_app, did_app, telephony_app]
 
 
-# The tenants table is what tenant_conn() itself resolves from, so it's outside RLS.
-_OUT_OF_SCOPE_MODULES = {"services.config.routers.tenants"}
+# tenants is outside RLS; capacity routes are gated by require_platform_operator, not path-tenant binding.
+_OUT_OF_SCOPE_MODULES = {"services.config.routers.tenants", "services.campaigns.routers.capacity"}
 
 
 def test_every_tenants_path_route_has_bind_and_require_path_tenant_access():
@@ -176,6 +176,7 @@ _TIER3_MODULES = {
     "services.config.routers.live_calls": ([], {"set_target_tenant"}),
     "services.config.routers.call_flows": ([], {"_authorize_flow", "assert_tenant_access"}),
     "services.campaigns.routers.campaigns": ([], {"assert_tenant_access"}),
+    "services.campaigns.routers.capacity": ([], {"require_platform_operator"}),
     "services.knowledge.routers.knowledge_bases": ([], {"_authorize_kb"}),
     "services.knowledge.routers.documents": ([], {"assert_tenant_access"}),
     "services.knowledge.routers.agent_kb": ([], {"assert_tenant_access"}),
@@ -260,7 +261,9 @@ _BYPASS_REASONS = {
     # Platform-scoped, read-only export of calls (services/config/calls.py export_calls with tenant_slug=None);
     # added by the call-export change on redesign, registered here so the walker matches the code.
     "calls-platform-export",
-    "campaign-by-id", "dnc-by-id", "campaign-worker-scan",
+    "campaign-by-id", "dnc-by-id", "campaign-worker-scan", "campaign-dial-state", "campaign-attempts-list",
+    # Operator-only platform capacity limits; each write audits its own entity.
+    "capacity-admin",
     "kb-by-id", "kb-admin-by-id", "agent-kb-by-id", "kb-ingestion-job-claim",
     # Retention purge of retrieval_logs: deletes rows older than N days across every tenant, in small batches,
     # by age only (no tenant-supplied input). Mutation without a single tenant to stamp.

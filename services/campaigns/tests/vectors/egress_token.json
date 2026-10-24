@@ -1,0 +1,32 @@
+[
+    {
+        "secret": "egress-test-secret",
+        "key": "7d0b4d0e-0f2c-4a9f-9a3e-5d2c1b0a9e8f_1",
+        "callee": "+919876543210",
+        "caller_id": "+918065354620",
+        "tenant_id": "0b6f1c8e-1111-4222-8333-444455556666",
+        "max_call_s": 7200,
+        "exp": 1900000120,
+        "token": "7d0b4d0e-0f2c-4a9f-9a3e-5d2c1b0a9e8f_1.1900000120.0b6f1c8e-1111-4222-8333-444455556666.+918065354620.7200.JfLH3wiDT1F3LqTVnFXRJkbs_vWoRkPavDW_A9Txv3w"
+    },
+    {
+        "secret": "egress-test-secret",
+        "key": "7d0b4d0e-0f2c-4a9f-9a3e-5d2c1b0a9e8f_1",
+        "callee": "+14155551234",
+        "caller_id": "+14155550100",
+        "tenant_id": "0b6f1c8e-1111-4222-8333-444455556666",
+        "max_call_s": 900,
+        "exp": 1900000180,
+        "token": "7d0b4d0e-0f2c-4a9f-9a3e-5d2c1b0a9e8f_1.1900000180.0b6f1c8e-1111-4222-8333-444455556666.+14155550100.900.lTnuDhnNMIiV6AnAyrCDP01bQBS1Mg442M9NKHuh83g"
+    },
+    {
+        "secret": "egress-test-secret",
+        "key": "11111111-2222-4333-8444-555555555555_12",
+        "callee": "+442071838750",
+        "caller_id": "+442079460958",
+        "tenant_id": "0b6f1c8e-1111-4222-8333-444455556666",
+        "max_call_s": 30,
+        "exp": 2000000000,
+        "token": "11111111-2222-4333-8444-555555555555_12.2000000000.0b6f1c8e-1111-4222-8333-444455556666.+442079460958.30.wOgbReZLjz1PJve8BNzohhOUZnNjscmtc-aBrPNic-U"
+    }
+]

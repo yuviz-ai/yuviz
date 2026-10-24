@@ -119,6 +119,64 @@ fi
 cp "$HERE/00_voice_ai.xml" "$CONF/dialplan/public/00_voice_ai.xml"
 echo "  dialplan: public/00_voice_ai.xml (788, 5000-5009 -> start_voice_ai.lua)"
 
+# ── Campaign outbound dialing ───────────────────────────────────────────────
+# Lua is read in place from the repo, so the installer does not copy it.
+"$HERE/install_campaign_files.sh" "$FS_PREFIX" "$CONF" "$HERE"
+others=$(grep -rl 'name="kamailio_egress"' "$CONF/sip_profiles" "$CONF/directory" 2>/dev/null | grep -v '/sip_profiles/kamailio_egress.xml$' || true)
+if [[ -n "$others" ]]; then
+  echo "ERROR: gateway kamailio_egress must be defined only by campaign_egress; also found in: $others" >&2
+  exit 1
+fi
+echo "  campaign: dialplan trigger + refuse context, sip_profiles/kamailio_egress.xml (campaign_egress :5091)"
+
+egress_pw="$(_secret KAMAILIO_FS_EGRESS_PASSWORD)"
+sed -i '' '/data="kamailio_fs_egress_password=/d' "$vars"
+sed -i '' "s|^<include>|<include>\n  <X-PRE-PROCESS cmd=\"set\" data=\"kamailio_fs_egress_password=$egress_pw\"/>|" "$vars"
+chmod 600 "$vars"
+echo "  vars: kamailio_fs_egress_password"
+
+# Kamailio's trigger INVITE comes from the IP Kamailio listens on (SIP_IP).
+kam_ip="$(_sip_target_ip)" || true
+if [[ ! "$kam_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ || "$kam_ip" == 0.0.0.0 ]]; then
+  echo "ERROR: cannot resolve Kamailio's IPv4 for acl list kamailio (got '${kam_ip}')" >&2
+  exit 1
+fi
+acl="$CONF/autoload_configs/acl.conf.xml"
+sed -i '' 's|<list name="kamailio"[^>]*><node [^>]*/></list>||' "$acl"
+sed -i '' "s|</network-lists>|<list name=\"kamailio\" default=\"deny\"><node type=\"allow\" cidr=\"$kam_ip/32\"/></list></network-lists>|" "$acl"
+echo "  acl: list kamailio = $kam_ip/32"
+
+# mod_hiredis is not in the Homebrew bottle; build it from FreeSWITCH source
+# with mod_hiredis-username.patch, which adds the `username` connection param.
+if [[ ! -f "$MOD_DIR/mod_hiredis.so" ]]; then
+  echo "ERROR: $MOD_DIR/mod_hiredis.so missing — build mod_hiredis from FreeSWITCH source with $HERE/mod_hiredis-username.patch applied, install it there, then rerun" >&2
+  exit 1
+fi
+if ! grep -q 'mod_hiredis' "$modules"; then
+  sed -i '' 's|\(.*<load module="mod_lua"/>.*\)|\1\n    <load module="mod_hiredis"/>|' "$modules"
+  echo "  modules.conf: + mod_hiredis"
+fi
+redis_pw="$(_secret REDIS_FREESWITCH_PASSWORD)"
+( umask 077; cat > "$CONF/autoload_configs/hiredis.conf.xml" <<XML
+<configuration name="hiredis.conf" description="mod_hiredis">
+  <profiles>
+    <profile name="default">
+      <connections>
+        <connection name="primary">
+          <param name="hostname" value="127.0.0.1"/>
+          <param name="port" value="6379"/>
+          <param name="username" value="freeswitch"/>
+          <param name="password" value="$redis_pw"/>
+        </connection>
+      </connections>
+    </profile>
+  </profiles>
+</configuration>
+XML
+)
+echo "  hiredis.conf: profile default -> 127.0.0.1:6379 as ACL user freeswitch"
+echo ""
+
 # The stock "default" context is a demo dialplan with eavesdrop/intercept
 # extensions that reach every call on the switch. Keep the original once.
 "$HERE/install_default_context.sh" "$CONF"

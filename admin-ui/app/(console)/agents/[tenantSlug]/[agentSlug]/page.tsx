@@ -18,7 +18,7 @@ import { KnowledgeBasePanel } from "@/components/KnowledgeBasePanel";
 import { AgentCustomApisPanel } from "@/components/AgentCustomApisPanel";
 import { Modal } from "@/components/Modal";
 import { AgentStatusDialog } from "@/components/AgentStatusDialog";
-import { SipPanel } from "@/components/SipPanel";
+import { AgentNumbersPanel } from "@/components/AgentNumbersPanel";
 import {
   AgentVoiceSettings, agentLocalModels, isLanguageError, multilingualPayload, notReadyModels,
 } from "@/components/AgentVoiceSettings";
@@ -173,6 +173,7 @@ export default function AgentDetailPage() {
           caller_id_policy: a.caller_id_policy,
           platform_did: a.platform_did,
           custom_caller_id: a.custom_caller_id,
+          outbound_caller_id: a.outbound_caller_id,
           transfer_waiting_experience: a.transfer_waiting_experience,
           max_call_duration_s: a.max_call_duration_s,
           sentiment_analysis_enabled: a.sentiment_analysis_enabled ?? false,
@@ -662,7 +663,14 @@ export default function AgentDetailPage() {
 
           {section === "settings" && (
             <div style={{ marginBottom: 14 }}>
-              <SipPanel tenantId={agent.tenant_id} agentId={agent.id} />
+              <AgentNumbersPanel
+                tenantId={agent.tenant_id}
+                agentId={agent.id}
+                direction={form.direction ?? agent.direction}
+                outboundCallerId={form.outbound_caller_id ?? null}
+                onOutboundCallerId={(value) => setForm((f) => ({ ...f, outbound_caller_id: value }))}
+                onNumbers={setNumbers}
+              />
             </div>
           )}
 
@@ -1054,7 +1062,7 @@ export default function AgentDetailPage() {
             {isSuperadmin
               ? "No one is on a call with this agent."
               : "If a call is in progress on this agent, deletion will be refused until it ends."}{" "}
-            Phone numbers that use it will switch to their backup agent, or to your account&apos;s default agent.
+            Phone numbers that use it will switch to your account&apos;s default agent.
           </p>
         )}
       </Modal>

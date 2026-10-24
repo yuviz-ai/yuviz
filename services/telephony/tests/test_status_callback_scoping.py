@@ -22,7 +22,8 @@ class _AlwaysValidFake(FakeProvider):
 
 
 @pytest.fixture
-def client(monkeypatch):
+def client(monkeypatch, _scratch_redis_port):
+    monkeypatch.setenv("REDIS_URL", f"redis://127.0.0.1:{_scratch_redis_port}/0")
     fake_a = _AlwaysValidFake({})
     accounts._accounts = {
         ("fake", "cfg-a"): Account(
@@ -35,13 +36,7 @@ def client(monkeypatch):
     async def _noop_refresh(self):
         return None
 
-    async def _noop_notify(*args, **kwargs):
-        return None
-
     monkeypatch.setattr(accounts.__class__, "refresh", _noop_refresh)
-    import services.telephony.app as app_module
-    monkeypatch.setattr(app_module, "_notify_campaigns_best_effort", _noop_notify)
-
     with TestClient(app) as c:
         yield c
     accounts._accounts = {}
@@ -71,14 +66,14 @@ def test_status_route_requires_account_ref_segment():
 
 
 @pytest.mark.asyncio
-async def test_ring_event_does_not_notify_campaigns_only_hangup_does(client, monkeypatch):
+async def test_ring_event_does_not_publish_only_hangup_publishes(client, monkeypatch):
     calls = []
 
-    async def _record(*args, **kwargs):
-        calls.append(args)
+    async def _record(**event):
+        calls.append(event)
 
     import services.telephony.app as app_module
-    monkeypatch.setattr(app_module, "_notify_campaigns_best_effort", _record)
+    monkeypatch.setattr(app_module, "_publish", _record)
 
     client.post("/fake/status/cfg-a", params={"idem": "k1", "event": "ring"}, data={"call_uuid": "c1"})
     assert calls == []

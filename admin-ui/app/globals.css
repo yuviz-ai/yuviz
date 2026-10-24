@@ -1988,6 +1988,18 @@ button.topbar-cta { border: 0; font-family: inherit; }
 .phone-numbers-empty h2 { font-size: 1rem; color: var(--text); font-weight: 600; margin: 0 0 7px; }
 .phone-numbers-empty p { max-width: 380px; margin: 0 auto 16px; line-height: 1.6; }
 .phone-numbers-filter { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--border-2); color: var(--text-2); font-size: .75rem; }
+.campaign-dialog { width: 760px; display: flex; flex-direction: column; overflow: hidden; max-height: 88dvh; }
+.campaign-dialog .modal-hdr, .campaign-dialog .modal-footer { flex-shrink: 0; }
+.campaign-dialog .modal-body { overflow-y: auto; overscroll-behavior: contain; padding: 0; }
+.campaign-dialog-section { padding: 16px 20px; border-bottom: 1px solid var(--border); }
+.campaign-dialog-section:last-child { border-bottom: none; }
+.campaign-dialog-section h3 { margin: 0 0 12px; font-size: .88rem; font-weight: 700; color: var(--text); }
+.campaign-dialog-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 14px; }
+@media (max-width: 640px) {
+  .campaign-dialog { width: calc(100vw - 24px); max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); }
+  .campaign-dialog-section { padding: 14px; }
+  .campaign-dialog-grid { grid-template-columns: minmax(0, 1fr); }
+}
 .phone-number-dialog { width: 520px; display: flex; flex-direction: column; overflow: hidden; max-height: 85dvh; }
 .phone-number-dialog .modal-hdr, .phone-number-dialog .modal-footer { flex-shrink: 0; }
 .phone-number-dialog .modal-body { overflow-y: auto; overscroll-behavior: contain; }

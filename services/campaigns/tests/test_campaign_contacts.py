@@ -45,9 +45,9 @@ def test_parse_contacts_csv_strips_bom():
 
 
 def test_parse_contacts_csv_strips_common_separators():
-    content = b'phone_number\n"+1 (415) 555-1111"\n415.555.2222\n'
+    content = b'phone_number\n"+1 (415) 555-1111"\n"+1 (415) 555-2222"\n'
     contacts = campaign_contacts.parse_contacts_csv(content)
-    assert [c["phone_number"] for c in contacts] == ["+14155551111", "4155552222"]
+    assert [c["phone_number"] for c in contacts] == ["+14155551111", "+14155552222"]
 
 
 def test_parse_contacts_csv_rejects_multiline_injection():
@@ -63,7 +63,7 @@ def test_parse_contacts_csv_rejects_any_non_digit_and_names_every_row():
 
 
 def test_parse_contacts_csv_reports_spreadsheet_row_after_multiline_cell():
-    content = b'phone_number,name\n1001,"Acme\nBilling"\nxx,c\n'
+    content = b'phone_number,name\n+14155551001,"Acme\nBilling"\nxx,c\n'
     with pytest.raises(ValueError, match=r"row\(s\) 3:"):
         campaign_contacts.parse_contacts_csv(content)
 

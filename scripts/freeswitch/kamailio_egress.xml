@@ -1,0 +1,30 @@
+<!--
+  Sofia profile `campaign_egress`: the only owner of gateway `kamailio_egress`, through which a campaign callee leg
+  reaches Kamailio's PSTN egress route (digest user fs-egress plus the per-call X-Egress-Token). Nothing inbound is
+  served on it, and transfers keep using the other profiles, so they cannot select this gateway.
+  Single-host layout: Kamailio listens on this node's LAN IP. Installed into sip_profiles/ by setup_macos.sh.
+-->
+<profile name="campaign_egress">
+  <gateways>
+    <gateway name="kamailio_egress">
+      <param name="proxy" value="$${local_ip_v4}:5060"/>
+      <param name="realm" value="$${local_ip_v4}"/>
+      <param name="from-domain" value="$${local_ip_v4}"/>
+      <param name="username" value="fs-egress"/>
+      <param name="password" value="$${kamailio_fs_egress_password}"/>
+      <param name="register" value="false"/>
+      <param name="caller-id-in-from" value="false"/>
+    </gateway>
+  </gateways>
+  <settings>
+    <param name="sip-ip" value="$${local_ip_v4}"/>
+    <param name="rtp-ip" value="$${local_ip_v4}"/>
+    <param name="sip-port" value="5091"/>
+    <param name="context" value="campaign_egress_refuse"/>
+    <param name="dialplan" value="XML"/>
+    <param name="auth-calls" value="false"/>
+    <param name="manage-presence" value="false"/>
+    <param name="inbound-codec-prefs" value="$${global_codec_prefs}"/>
+    <param name="outbound-codec-prefs" value="$${outbound_codec_prefs}"/>
+  </settings>
+</profile>

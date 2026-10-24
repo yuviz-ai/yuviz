@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from services.config.auth import CurrentUser
 from services.config.deps import (
     assert_tenant_access,
@@ -14,8 +18,8 @@ from services.config.deps import (
     require_role,
 )
 
-from .. import campaign_contacts, campaigns as campaigns_service, dnc
-from ..schemas import CampaignCreate, CampaignUpdate, DncNumberCreate
+from .. import attempts, campaign_contacts, campaigns as campaigns_service, dnc, readiness
+from ..schemas import CampaignCreate, CampaignUpdate, DncNumberCreate, RecallRequest
 
 tenant_scoped_router = APIRouter(
     prefix="/tenants/{tenant_id}/campaigns", tags=["campaigns"],
@@ -24,9 +28,20 @@ tenant_scoped_router = APIRouter(
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
 
+async def _campaign_for(campaign_id: str, current_user: CurrentUser) -> dict:
+    return await get_or_404(
+        campaigns_service.get_campaign_for_caller(campaign_id, current_user.tenant_id), "campaign not found",
+    )
+
+
 @tenant_scoped_router.get("")
 async def list_campaigns(tenant_id: str, current_user: CurrentUser = Depends(get_current_user)):
     return await campaigns_service.list_campaigns(tenant_id)
+
+
+@tenant_scoped_router.get("/caller-ids")
+async def list_caller_ids(tenant_id: str, current_user: CurrentUser = Depends(get_current_user)):
+    return await campaigns_service.list_caller_ids(tenant_id)
 
 
 @tenant_scoped_router.post("", status_code=201)
@@ -34,15 +49,27 @@ async def create_campaign(
     tenant_id: str, body: CampaignCreate,
     current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
 ):
-    if not await campaigns_service.agent_exists_for_tenant(tenant_id, body.agent_id):
+    agent = await campaigns_service.agent_outbound_settings(tenant_id, body.agent_id)
+    if agent is None:
         raise HTTPException(status_code=422, detail="agent_id must reference an existing agent for this tenant")
-    # Otherwise a campaign could present another tenant's DID as its caller id.
-    if not await campaigns_service.caller_id_owned_by_tenant(tenant_id, body.caller_id):
-        raise HTTPException(status_code=422, detail="caller_id must be a DID provisioned for this tenant")
+    if agent["direction"] == "inbound":
+        raise HTTPException(status_code=422, detail="the agent is inbound-only; set its direction to outbound")
+    caller_id = agent["outbound_caller_id"]
+    if not caller_id:
+        raise HTTPException(status_code=422, detail="the agent has no outbound caller ID; set one on the agent first")
+    # Re-checked here because the number may have been released since the agent was saved.
+    if not await campaigns_service.caller_id_owned_by_tenant(tenant_id, caller_id):
+        raise HTTPException(status_code=422, detail="the agent's outbound caller ID is no longer owned by this account")
+    if body.scheduled_start_at is not None:
+        if body.scheduled_start_at.tzinfo is None:
+            raise HTTPException(status_code=422, detail="scheduled_start_at must include a timezone offset")
+        if body.scheduled_start_at <= datetime.now(timezone.utc):
+            raise HTTPException(status_code=422, detail="scheduled_start_at must be in the future")
     return await campaigns_service.create_campaign(
-        tenant_id, agent_id=body.agent_id, name=body.name, caller_id=body.caller_id,
+        tenant_id, agent_id=body.agent_id, name=body.name, caller_id=caller_id,
+        description=body.description, scheduled_start_at=body.scheduled_start_at,
         max_concurrent_calls=body.max_concurrent_calls, pacing_seconds=body.pacing_seconds,
-        max_attempts=body.max_attempts,
+        max_attempts=body.max_attempts, retry_gap_minutes=body.retry_gap_minutes,
         calling_hours_start=body.calling_hours_start, calling_hours_end=body.calling_hours_end,
         calling_hours_timezone=body.calling_hours_timezone,
         user_id=current_user.id, user_email=current_user.email,
@@ -51,11 +78,7 @@ async def create_campaign(
 
 @router.get("/{campaign_id}")
 async def get_campaign(campaign_id: str, current_user: CurrentUser = Depends(get_current_user)):
-    campaign = await get_or_404(
-        campaigns_service.get_campaign(campaign_id, platform_scoped=is_platform_scoped(current_user)),
-        f"campaign {campaign_id!r} not found",
-    )
-    await assert_tenant_access(campaign["tenant_id"], current_user)
+    campaign = await _campaign_for(campaign_id, current_user)
     return campaign
 
 
@@ -64,15 +87,7 @@ async def update_campaign(
     campaign_id: str, body: CampaignUpdate,
     current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
 ):
-    campaign = await get_or_404(
-        campaigns_service.get_campaign(campaign_id, platform_scoped=is_platform_scoped(current_user)),
-        f"campaign {campaign_id!r} not found",
-    )
-    await assert_tenant_access(campaign["tenant_id"], current_user)
-    if body.caller_id is not None and not await campaigns_service.caller_id_owned_by_tenant(
-        campaign["tenant_id"], body.caller_id,
-    ):
-        raise HTTPException(status_code=422, detail="caller_id must be a DID provisioned for this tenant")
+    await _campaign_for(campaign_id, current_user)
     return await campaigns_service.update_campaign(
         campaign_id, body.model_dump(),
         platform_scoped=is_platform_scoped(current_user), user_id=current_user.id, user_email=current_user.email,
@@ -81,12 +96,44 @@ async def update_campaign(
 
 @router.get("/{campaign_id}/progress")
 async def get_progress(campaign_id: str, current_user: CurrentUser = Depends(get_current_user)):
-    campaign = await get_or_404(
-        campaigns_service.get_campaign(campaign_id, platform_scoped=is_platform_scoped(current_user)),
-        f"campaign {campaign_id!r} not found",
-    )
-    await assert_tenant_access(campaign["tenant_id"], current_user)
+    campaign = await _campaign_for(campaign_id, current_user)
     return await campaigns_service.get_progress(campaign_id, platform_scoped=is_platform_scoped(current_user))
+
+
+@router.get("/{campaign_id}/attempts")
+async def list_attempts(campaign_id: str, current_user: CurrentUser = Depends(get_current_user)):
+    campaign = await _campaign_for(campaign_id, current_user)
+    return await attempts.list_for_campaign(campaign["id"], campaign["tenant_id"])
+
+
+async def _with_agent_caller_id(campaign: dict, current_user: CurrentUser) -> dict:
+    """Start/resume pick up the agent's current outbound caller ID, so a fix made on the agent reaches the campaign."""
+    scoped = is_platform_scoped(current_user)
+    agent = await campaigns_service.agent_outbound_settings(
+        campaign["tenant_id"], campaign["agent_id"], platform_scoped=scoped,
+    )
+    caller_id = agent["outbound_caller_id"] if agent else None
+    if not caller_id or caller_id == campaign["caller_id"]:
+        return campaign
+    return await campaigns_service.update_campaign(
+        campaign["id"], {"caller_id": caller_id},
+        platform_scoped=scoped, user_id=current_user.id, user_email=current_user.email,
+    )
+
+
+async def _check_readiness(request: Request, campaign: dict) -> readiness.Readiness:
+    return await readiness.check(
+        campaign, tenant_id=campaign["tenant_id"],
+        dial_client=request.app.state.dial_client, billing=request.app.state.billing,
+    )
+
+
+@router.get("/{campaign_id}/readiness")
+async def get_readiness(
+    campaign_id: str, request: Request, current_user: CurrentUser = Depends(get_current_user),
+):
+    campaign = await _campaign_for(campaign_id, current_user)
+    return await _check_readiness(request, campaign)
 
 
 @router.get("/{campaign_id}/contacts")
@@ -94,11 +141,7 @@ async def list_contacts(
     campaign_id: str, status: str | None = Query(default=None),
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    campaign = await get_or_404(
-        campaigns_service.get_campaign(campaign_id, platform_scoped=is_platform_scoped(current_user)),
-        f"campaign {campaign_id!r} not found",
-    )
-    await assert_tenant_access(campaign["tenant_id"], current_user)
+    campaign = await _campaign_for(campaign_id, current_user)
     return await campaign_contacts.list_contacts(
         campaign_id, status=status, platform_scoped=is_platform_scoped(current_user),
     )
@@ -109,11 +152,7 @@ async def upload_contacts(
     campaign_id: str, file: UploadFile,
     current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
 ):
-    campaign = await get_or_404(
-        campaigns_service.get_campaign(campaign_id, platform_scoped=is_platform_scoped(current_user)),
-        f"campaign {campaign_id!r} not found",
-    )
-    await assert_tenant_access(campaign["tenant_id"], current_user)
+    campaign = await _campaign_for(campaign_id, current_user)
     content = await file.read()
     try:
         contacts = campaign_contacts.parse_contacts_csv(content)
@@ -171,12 +210,15 @@ async def remove_dnc_number(dnc_id: str, current_user: CurrentUser = Depends(req
 
 
 @router.post("/{campaign_id}/start")
-async def start_campaign(campaign_id: str, current_user: CurrentUser = Depends(require_role("superadmin", "admin"))):
-    campaign = await get_or_404(
-        campaigns_service.get_campaign(campaign_id, platform_scoped=is_platform_scoped(current_user)),
-        f"campaign {campaign_id!r} not found",
-    )
-    await assert_tenant_access(campaign["tenant_id"], current_user)
+async def start_campaign(
+    campaign_id: str, request: Request, current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
+):
+    campaign = await _with_agent_caller_id(await _campaign_for(campaign_id, current_user), current_user)
+    if campaign["status"] in ("cancelled", "completed"):
+        raise HTTPException(status_code=409, detail=f"a {campaign['status']} campaign can't be started again; use Call again")
+    result = await _check_readiness(request, campaign)
+    if not result.ready:
+        return JSONResponse(status_code=409, content={"checks": jsonable_encoder(result.checks)})
     return await campaigns_service.set_status(
         campaign_id, "running",
         platform_scoped=is_platform_scoped(current_user), user_id=current_user.id, user_email=current_user.email,
@@ -185,11 +227,7 @@ async def start_campaign(campaign_id: str, current_user: CurrentUser = Depends(r
 
 @router.post("/{campaign_id}/pause")
 async def pause_campaign(campaign_id: str, current_user: CurrentUser = Depends(require_role("superadmin", "admin"))):
-    campaign = await get_or_404(
-        campaigns_service.get_campaign(campaign_id, platform_scoped=is_platform_scoped(current_user)),
-        f"campaign {campaign_id!r} not found",
-    )
-    await assert_tenant_access(campaign["tenant_id"], current_user)
+    campaign = await _campaign_for(campaign_id, current_user)
     return await campaigns_service.set_status(
         campaign_id, "paused",
         platform_scoped=is_platform_scoped(current_user), user_id=current_user.id, user_email=current_user.email,
@@ -197,13 +235,73 @@ async def pause_campaign(campaign_id: str, current_user: CurrentUser = Depends(r
 
 
 @router.post("/{campaign_id}/resume")
-async def resume_campaign(campaign_id: str, current_user: CurrentUser = Depends(require_role("superadmin", "admin"))):
-    campaign = await get_or_404(
-        campaigns_service.get_campaign(campaign_id, platform_scoped=is_platform_scoped(current_user)),
-        f"campaign {campaign_id!r} not found",
-    )
-    await assert_tenant_access(campaign["tenant_id"], current_user)
+async def resume_campaign(
+    campaign_id: str, request: Request, current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
+):
+    campaign = await _with_agent_caller_id(await _campaign_for(campaign_id, current_user), current_user)
+    if campaign["status"] in ("cancelled", "completed"):
+        raise HTTPException(status_code=409, detail=f"a {campaign['status']} campaign can't be started again; use Call again")
+    result = await _check_readiness(request, campaign)
+    if not result.ready:
+        return JSONResponse(status_code=409, content={"checks": jsonable_encoder(result.checks)})
     return await campaigns_service.set_status(
         campaign_id, "running",
         platform_scoped=is_platform_scoped(current_user), user_id=current_user.id, user_email=current_user.email,
     )
+
+
+@tenant_scoped_router.get("/call-attempts")
+async def list_call_attempts(
+    tenant_id: str,
+    direction: str | None = Query(None, pattern="^(outbound|inbound|all)$"),
+    status: str | None = Query(None, pattern="^(all|answered|ended|no_answer|busy|declined|failed|blocked|in_progress)$"),
+    q: str | None = Query(None, max_length=40),
+    limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    await assert_tenant_access(tenant_id, current_user)
+    return await campaigns_service.list_call_attempts(
+        tenant_id, direction=direction, status=status, query=q, limit=limit, offset=offset,
+    )
+
+
+@router.post("/{campaign_id}/cancel")
+async def cancel_campaign(
+    campaign_id: str, request: Request, current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
+):
+    campaign = await _campaign_for(campaign_id, current_user)
+    try:
+        return await campaigns_service.set_cancelled(
+            campaign, platform_scoped=is_platform_scoped(current_user),
+            user_id=current_user.id, user_email=current_user.email,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@router.delete("/{campaign_id}", status_code=204)
+async def delete_campaign(
+    campaign_id: str, current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
+):
+    campaign = await _campaign_for(campaign_id, current_user)
+    try:
+        await campaigns_service.soft_delete_draft(
+            campaign, platform_scoped=is_platform_scoped(current_user),
+            user_id=current_user.id, user_email=current_user.email,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@router.post("/{campaign_id}/recall", status_code=201)
+async def recall_campaign(
+    campaign_id: str, body: RecallRequest, current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
+):
+    source = await _campaign_for(campaign_id, current_user)
+    try:
+        return await campaigns_service.recall(
+            source, body.contact_ids, name=body.name, user_id=current_user.id, user_email=current_user.email,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))

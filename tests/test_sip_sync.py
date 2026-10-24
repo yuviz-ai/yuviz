@@ -156,7 +156,12 @@ def test_a_shell_that_only_mentions_a_service_is_never_restarted(repo):
 def test_template_listens_only_on_the_rendered_address():
     listens = [l for l in (REPO / "scripts/kamailio/kamailio.cfg.tpl").read_text().splitlines()
                if l.startswith("listen=")]
-    assert listens == ["listen=udp:__LAN_IP__:5060"]
+    # The campaign dial handler listens on loopback only; nothing else may be public.
+    assert listens == [
+        "listen=udp:__LAN_IP__:5060",
+        "listen=tcp:127.0.0.1:5071",
+        "listen=tcp:[::1]:5071",
+    ]
 
 
 def test_scripts_never_escalate():

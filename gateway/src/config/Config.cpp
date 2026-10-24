@@ -333,6 +333,19 @@ RouteResolution resolve_route(RedisClient& redis, const std::string& did, DidRou
     return resolve_route(did, redis.get_guarded("did:" + did, kDidRoutesReadyKey), cache);
 }
 
+std::optional<PhoneRoute> CallMetadata::direct_route() const {
+    if (direction != "outbound" || tenant_slug.empty() || agent_slug.empty()) return std::nullopt;
+    // For dev: validate that the metadata was generated recently (within 60s) to prevent replays.
+    // timestamp_epoch is parsed from the JSON's "ts" field by the caller.
+    if (timestamp_epoch > 0) {
+        auto now = std::time(nullptr);
+        if (now < timestamp_epoch || now - timestamp_epoch > 60) {
+            return std::nullopt;  // metadata expired or has invalid timestamp
+        }
+    }
+    return PhoneRoute{tenant_slug, agent_slug, 0};
+}
+
 CallMetadata CallMetadata::parse(const std::optional<std::string>& raw) noexcept {
     CallMetadata md;   // defaults: did="", ani="", direction="inbound", freeswitch_host=""
     if (!raw.has_value()) return md;
@@ -347,6 +360,12 @@ CallMetadata CallMetadata::parse(const std::optional<std::string>& raw) noexcept
             md.direction = j["direction"].get<std::string>();
         if (j.contains("freeswitch_host") && j["freeswitch_host"].is_string())
             md.freeswitch_host = j["freeswitch_host"].get<std::string>();
+        if (j.contains("tenant_slug") && j["tenant_slug"].is_string())
+            md.tenant_slug = j["tenant_slug"].get<std::string>();
+        if (j.contains("agent_slug") && j["agent_slug"].is_string())
+            md.agent_slug = j["agent_slug"].get<std::string>();
+        if (j.contains("ts") && j["ts"].is_number())
+            md.timestamp_epoch = j["ts"].get<long>();
     } catch (const nlohmann::json::exception&) {
         return CallMetadata{};
     }

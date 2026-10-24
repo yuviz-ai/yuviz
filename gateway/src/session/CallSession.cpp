@@ -426,7 +426,8 @@ void CallSession::wire_transport_callbacks() {
             active_transfer_id_          = std::move(transfer_id);
             active_transfer_destination_ = destination;
             active_transfer_type_        = transfer_type;
-            active_caller_id_          = caller_id.empty() ? ctx_.caller_did : caller_id;
+            const std::string& other_party = ctx_.direction == "outbound" ? ctx_.called_did : ctx_.caller_did;
+            active_caller_id_          = caller_id.empty() ? other_party : caller_id;
             active_waiting_experience_ = waiting_experience;
             // Unknown transfer_type falls back to cold.
             active_transfer_ = (transfer_type == "warm") ? static_cast<ITransferCoordinator*>(&warm_transfer_)

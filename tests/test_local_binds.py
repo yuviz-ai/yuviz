@@ -57,3 +57,38 @@ def test_containers_listening_widely_publish_only_to_loopback_by_default():
     for name in wide:
         for port in services[name].get("ports", []):
             assert re.match(r"\$\{[A-Z_]*BIND_ADDR:-127\.0\.0\.1\}:", str(port)), f"{name}: {port}"
+
+
+_KAMAILIO_TPL = (_REPO / "scripts/kamailio/kamailio.cfg.tpl").read_text()
+
+
+def _dial_branch() -> str:
+    start = _KAMAILIO_TPL.index("\tif ($Rp == 5071) {\n", _KAMAILIO_TPL.index("event_route[xhttp:request]"))
+    depth, i = 0, _KAMAILIO_TPL.index("{", start)
+    for end in range(i, len(_KAMAILIO_TPL)):
+        depth += {"{": 1, "}": -1}.get(_KAMAILIO_TPL[end], 0)
+        if depth == 0:
+            return _KAMAILIO_TPL[i + 1:end]
+    raise AssertionError("unbalanced dial branch")
+
+
+def test_kamailio_dial_listens_are_exactly_the_two_loopback_lines():
+    listens = re.findall(r"^listen=(\S+)$", _KAMAILIO_TPL, re.M)
+    assert [l for l in listens if l.endswith(":5071")] == ["tcp:127.0.0.1:5071", "tcp:[::1]:5071"]
+    assert listens[0] == "udp:__LAN_IP__:5060" and len(listens) == 3
+    assert not [l for l in listens if l.endswith(":5071") and ("0.0.0.0" in l or "__LAN_IP__" in l)]
+
+
+def test_kamailio_drops_sip_on_the_dial_socket_before_anything_else():
+    body = _KAMAILIO_TPL.split("request_route {\n", 1)[1]
+    assert re.match(r"\n#!ifdef WITH_CAMPAIGN_DIAL\n    if \(\$Rp == 5071\) \{\n        drop;\n    \}\n#!endif\n", body)
+
+
+def test_every_kamailio_dial_path_answers_and_exits_and_never_relays():
+    branch = _dial_branch()
+    replies = re.findall(r"xhttp_reply\([^;]*\);\n\s*(\S+)", branch)
+    assert len(replies) >= 12, "found too few xhttp_reply calls"
+    assert set(replies) == {"exit;"}, "an xhttp_reply that does not exit"
+    assert branch.rstrip().endswith("exit;")
+    assert not re.search(r"t_relay|jsonrpc|route\(|sl_send_reply|ds_is_from", branch)
+    assert branch.index('"CAMPAIGNS_DIAL_HMAC"') < branch.index("ds_select_dst") < branch.index("uac_req_send")

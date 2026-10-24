@@ -195,8 +195,8 @@ sudo systemctl restart freeswitch
 ```
 
 Set the ESL password to a random value in `event_socket.conf.xml`, and the
-same value as `FREESWITCH_ESL_PASSWORD` in `.env`; the Gateway and Campaigns
-read it from there. Don't leave FreeSWITCH's built-in default: anything that
+same value as `FREESWITCH_ESL_PASSWORD` in `.env`; the Gateway reads it from
+there. Don't leave FreeSWITCH's built-in default: anything that
 can reach port 8022 can control every call.
 
 ### 4. Kamailio

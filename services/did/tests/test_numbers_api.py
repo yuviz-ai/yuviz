@@ -174,3 +174,32 @@ async def test_release_nonexistent_purchased_number_is_404(client, test_tenant, 
     _override_provider_manager(_FakeProvider())
     resp = await client.post("/numbers/00000000-0000-0000-0000-000000000000/release")
     assert resp.status_code == 404
+
+
+async def test_a_tenant_admin_can_search_and_buy_only_once_a_superadmin_turns_buying_on(pool, test_tenant, test_carrier):
+    from services.config import auth as config_auth
+    from services.config import users as users_service
+
+    fake = _FakeProvider()
+    _override_provider_manager(fake)
+    admin = await users_service.create_user(
+        email=f"test-admin-{test_tenant['slug']}@example.com", password="test-password-not-real",
+        role="admin", tenant_id=test_tenant["id"],
+    )
+    headers = {"Authorization": f"Bearer {config_auth.create_access_token(admin)}"}
+    search = f"/tenants/{test_tenant['id']}/numbers/search?carrier_id={test_carrier['id']}&country=US"
+    purchase = f"/tenants/{test_tenant['id']}/numbers/purchase"
+    body = {"carrier_id": str(test_carrier["id"]), "phone_number": "+14155550188"}
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=headers) as c:
+            assert (await c.get(search)).status_code == 403
+            assert (await c.post(purchase, json=body)).status_code == 403
+            assert fake.purchased_numbers == []
+
+            await pool.execute("UPDATE tenants SET number_purchase_enabled = true WHERE id = $1", test_tenant["id"])
+            assert (await c.get(search)).status_code == 200
+            assert (await c.post(purchase, json=body)).status_code == 201
+    finally:
+        app.dependency_overrides.clear()
+        await pool.execute("DELETE FROM audit_log WHERE user_id = $1", admin["id"])
+        await pool.execute("DELETE FROM users WHERE id = $1", admin["id"])

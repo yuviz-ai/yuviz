@@ -17,7 +17,7 @@ import re
 from typing import Any
 
 from libs.tenancy import platform_conn, tenant_conn
-from services.campaigns.originate import OriginateError, _read_until_blank_line, is_valid_dial_number
+from services.clinic.esl_originate import OriginateError, _read_until_blank_line, is_valid_dial_number
 
 from . import booking, db, notifications, reminders_schedule
 
@@ -123,7 +123,7 @@ class ReminderWorker:
         self._listener = None
 
     def start(self) -> None:
-        from services.campaigns.originate import EslJobEventListener
+        from services.clinic.esl_originate import EslJobEventListener
 
         self._listener = EslJobEventListener(self.on_job_complete)
         self._listener.start()

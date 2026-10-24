@@ -182,7 +182,7 @@ const PAGE_CTA: Record<string, { label: string; href: string }> = {
   "/knowledge-bases": { label: "+ Add file", href: "/knowledge-bases?add=1" },
   "/telephony": { label: "+ Add Number", href: "/telephony?add=1" },
   "/integrations": { label: "+ Connect App", href: "/integrations?add=1" },
-  "/campaigns": { label: "+ New Campaign", href: "/campaigns/new" },
+  "/campaigns": { label: "+ New Campaign", href: "/campaigns?add=1" },
 };
 
 const monthKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;

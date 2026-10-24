@@ -30,7 +30,6 @@ export function CallStatsGrid({ stats }: { stats: CallStats }) {
   return (
     <div className="agent-card-stats">
       <div><b>{stats.calls}</b><span>Calls</span></div>
-      <div><b>{stats.tests}</b><span>Tests</span></div>
       <div><b>{stats.avg_duration_ms == null ? "—" : fmtDuration(stats.avg_duration_ms)}</b><span>Avg length</span></div>
       <div>
         <b className={pct == null ? "" : pct >= 80 ? "good" : pct >= 50 ? "warn" : "bad"}>

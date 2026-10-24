@@ -12,7 +12,7 @@ import {
 } from "@/lib/api";
 import {
   BUILTIN_TTS_ENGINE, BUILTIN_TTS_VOICE, DEEPGRAM_MULTI_LANGUAGES, LANGUAGE_MODES, LOCAL_ENGINES, MAX_LANGUAGES,
-  PREMIUM_ENGINES, SUPPORTED_LANGUAGES, baseLanguage, deepgramSupportsMulti, keptGreetings, languageLabel, languagesWithoutVoice, ttsLanguages, voiceSpeaks,
+  PREMIUM_ENGINES, SUPPORTED_LANGUAGES, VOICES_BY_ENGINE, baseLanguage, deepgramSupportsMulti, keptGreetings, languageLabel, languagesWithoutVoice, ttsLanguages, voiceSpeaks,
 } from "@/lib/engineCatalog";
 import { ModelRef, useLocalModels } from "@/lib/useLocalModels";
 
@@ -485,29 +485,36 @@ export function AgentVoiceSettings({
       const freeVoices = models.filter((m) =>
         m.role === "tts" && m.engine === BUILTIN_TTS_ENGINE && m.status !== "unavailable" && supports(m.engine, m.name, lang));
       const configFor = (name: string) => providers.find((p) => p.role === "tts" && p.engine === BUILTIN_TTS_ENGINE && p.voice === name);
+      const sampleUrl = current?.engine === BUILTIN_TTS_ENGINE
+        ? VOICES_BY_ENGINE[BUILTIN_TTS_ENGINE]?.find((v) => v.id === current.voice)?.sampleUrl
+        : undefined;
       picker = (
-        <select
-          className="form-select"
-          value={current?.id ?? ""}
-          onChange={(e) => {
-            const picked = e.target.value;
-            if (!picked.startsWith("free:")) {
-              prefetch(providers.find((p) => p.id === picked));
-              return setVoiceFor(lang, picked);
-            }
-            const name = picked.slice(5);
-            void assignLanguageVoice(lang, { name: `${BUILTIN_TTS_ENGINE} — ${name}`, role: "tts", engine: BUILTIN_TTS_ENGINE, voice: name });
-          }}
-        >
-          <option value="" disabled>{placeholder}</option>
-          {/* A saved voice outside the list still shows as selected. */}
-          {current && !freeVoices.some((m) => configFor(m.name)?.id === current.id) && (
-            <option value={current.id}>{current.name}</option>
-          )}
-          {freeVoices.map((m) => (
-            <option key={m.name} value={configFor(m.name)?.id ?? `free:${m.name}`}>{m.label}</option>
-          ))}
-        </select>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <select
+            className="form-select"
+            style={{ flex: 1 }}
+            value={current?.id ?? ""}
+            onChange={(e) => {
+              const picked = e.target.value;
+              if (!picked.startsWith("free:")) {
+                prefetch(providers.find((p) => p.id === picked));
+                return setVoiceFor(lang, picked);
+              }
+              const name = picked.slice(5);
+              void assignLanguageVoice(lang, { name: `${BUILTIN_TTS_ENGINE} — ${name}`, role: "tts", engine: BUILTIN_TTS_ENGINE, voice: name });
+            }}
+          >
+            <option value="" disabled>{placeholder}</option>
+            {/* A saved voice outside the list still shows as selected. */}
+            {current && !freeVoices.some((m) => configFor(m.name)?.id === current.id) && (
+              <option value={current.id}>{current.name}</option>
+            )}
+            {freeVoices.map((m) => (
+              <option key={m.name} value={configFor(m.name)?.id ?? `free:${m.name}`}>{m.label}</option>
+            ))}
+          </select>
+          {sampleUrl && <audio key={sampleUrl} controls preload="none" src={sampleUrl} style={{ height: 30, maxWidth: 200 }} />}
+        </div>
       );
     }
     return (

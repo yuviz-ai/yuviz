@@ -42,6 +42,9 @@ def test_every_outbound_route_depends_on_require_telephony_caller():
     assert paths == {
         ("/{provider}/call", ("POST",)),
         ("/{provider}/call/idempotency/{key}", ("GET",)),
+        ("/{provider}/call/reconcile", ("POST",)),
+        ("/{provider}/call/{call_id}/status", ("GET",)),
+        ("/{provider}/outbound-readiness", ("GET",)),
         ("/sms/send", ("POST",)),
     }
 

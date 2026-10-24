@@ -5,7 +5,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowRight, Check, ChevronDown, ChevronLeft, ChevronRight, Download, PhoneIncoming, PhoneOutgoing, RefreshCw, Search, X,
 } from "lucide-react";
-import { ALL_CALLS_LIMIT, ApiError, CallTimeRange, CallWithTenant, listAllCalls } from "@/lib/api";
+import { ALL_CALLS_LIMIT, ApiError, CallTimeRange, CallWithTenant, CampaignCallAttempt, listAllCalls, listCallAttempts } from "@/lib/api";
+import { CAMPAIGN_OUTCOME_LABEL, CAMPAIGN_OUTCOME_TONE, CampaignCallDetail } from "@/components/calls/CampaignCallDetail";
 import { CallRowActions } from "@/components/CallRowActions";
 import { ExportCallsModal, ExportScope } from "@/components/ExportCallsModal";
 import { SentimentBadge, SENTIMENT_ORDER, sentimentLabel } from "@/components/SentimentBadge";
@@ -19,8 +20,8 @@ const TONE_BADGE: Record<Tone, string> = { g: "green", a: "amber", r: "red", n: 
 // Normal endings keep the plain "Completed" badge; only outcomes that need a look stand out.
 function StatusBadge({ reason }: { reason: string | null }) {
   const o = outcomeOf(reason);
-  if (o.key === "done" || o.key === "unrecorded") return <span className="badge gray">Completed</span>;
-  return <span className={`badge ${TONE_BADGE[o.tone]}`} title={o.label}>{o.short}</span>;
+  if (o.key === "done" || o.key === "unrecorded") return <span className="badge gray" style={{ display: "inline-block", minWidth: 104, textAlign: "center" }}>Completed</span>;
+  return <span className={`badge ${TONE_BADGE[o.tone]}`} title={o.label} style={{ display: "inline-block", minWidth: 104, textAlign: "center" }}>{o.short}</span>;
 }
 
 function formatTime(iso: string): string {
@@ -68,6 +69,11 @@ const STAT_PILLS = [
   { key: "live", status: "live", label: "In progress", dot: "amber" },
   { key: "failed", status: "failed", label: "Failed", dot: "red" },
 ] as const;
+
+// Campaign calls ride in the same table as conversations; this recovers the attempt behind a row.
+function attemptOf(call: CallWithTenant): CampaignCallAttempt | null {
+  return (call as unknown as { campaign_attempt?: CampaignCallAttempt }).campaign_attempt ?? null;
+}
 
 function timeRangeFor(filter: string | undefined, custom: TimeRange): CallTimeRange {
   const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
@@ -240,6 +246,55 @@ export default function CallsPage() {
 
   const timeFilter = filters.time;
 
+  const [attempts, setAttempts] = useState<CampaignCallAttempt[]>([]);
+  const [openAttempt, setOpenAttempt] = useState<CampaignCallAttempt | null>(null);
+
+  // Unreached campaign calls join the table; answered ones already have a call record.
+  useEffect(() => {
+    if (tenantLoading || isAllTenants || !tenant) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setAttempts([]);
+      return;
+    }
+    let cancelled = false;
+    listCallAttempts(tenant.id, { direction: "outbound", limit: 500 })
+      .then((list) => { if (!cancelled) setAttempts(list.filter((a) => !a.answered_at)); })
+      .catch(() => { if (!cancelled) setAttempts([]); });
+    return () => { cancelled = true; };
+  }, [tenant, isAllTenants, tenantLoading, timeFilter, customRange]);
+
+  const campaignRows = useMemo<CallWithTenant[]>(() => {
+    const range = timeRangeFor(timeFilter, customRange);
+    return attempts
+      .filter((a) => (!range.startedAfter || a.created_at >= range.startedAfter)
+        && (!range.startedBefore || a.created_at <= range.startedBefore))
+      .map((a) => ({
+        session_id: `campaign:${a.id}`,
+        tenant_id: tenant?.id ?? "",
+        call_id: null,
+        direction: "outbound",
+        mode: "phone",
+        started_at: a.created_at,
+        ended_at: null,
+        duration_ms: null,
+        caller_number: a.caller_id,
+        called_number: a.callee_masked,
+        agent_name: a.agent_name,
+        status: "completed",
+        close_reason: null,
+        sentiment: null,
+        disposition: null,
+        sentiment_reason: null,
+        tenantName: tenant?.name ?? "",
+        campaign_attempt: a,
+      }) as unknown as CallWithTenant);
+  }, [attempts, tenant, timeFilter, customRange]);
+
+  const allRows = useMemo(
+    () => [...calls, ...campaignRows].sort((x, y) => y.started_at.localeCompare(x.started_at)),
+    [calls, campaignRows],
+  );
+
   const load = useCallback(() => {
     if (tenantLoading || targetTenants.length === 0) return;
     setLoading(true);
@@ -320,6 +375,9 @@ export default function CallsPage() {
           { value: "completed", label: "Completed", test: (c) => c.status === "completed" },
           { value: "succeeded", label: "Completed (not failed)", hidden: true, test: (c) => c.status === "completed" && !isFailed(c) },
           { value: "failed", label: "Failed", hidden: true, test: isFailed },
+          { value: "campaign_no_answer", label: "No answer", test: (c: CallWithTenant) => attemptOf(c)?.outcome === "no_answer" },
+          { value: "campaign_busy", label: "Busy", test: (c: CallWithTenant) => attemptOf(c)?.outcome === "busy" },
+          { value: "campaign_failed", label: "Failed", test: (c: CallWithTenant) => attemptOf(c)?.outcome === "failed" },
           ...OUTCOME_FILTERS.map((o) => ({
             value: o.key, label: o.label,
             test: (c: CallWithTenant) => c.status === "completed" && outcomeOf(c.close_reason).key === o.key,
@@ -332,12 +390,12 @@ export default function CallsPage() {
 
   const searched = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (q === "") return calls;
-    return calls.filter((c) => [
+    if (q === "") return allRows;
+    return allRows.filter((c) => [
       c.tenantName, c.agent_name, c.caller_number, c.called_number,
       c.disposition, c.sentiment_reason, c.session_id,
     ].some((field) => field != null && field.toLowerCase().includes(q)));
-  }, [calls, search]);
+  }, [allRows, search]);
 
   const activeTests = useMemo(
     () => columns.flatMap((col) => {
@@ -401,7 +459,11 @@ export default function CallsPage() {
     setPage(1);
   };
 
-  const openDetail = (call: CallWithTenant) => router.push(`/calls/${call.session_id}`);
+  const openDetail = (call: CallWithTenant) => {
+    const attempt = attemptOf(call);
+    if (attempt) setOpenAttempt(attempt);
+    else router.push(`/calls/${call.session_id}`);
+  };
 
   const toggleSelected = (ids: string[], on: boolean) =>
     setSelected((prev) => {
@@ -451,6 +513,7 @@ export default function CallsPage() {
         </div>
       </div>
 
+      {openAttempt && <CampaignCallDetail attempt={openAttempt} onClose={() => setOpenAttempt(null)} />}
       {exporting && (
         <ExportCallsModal
           onClose={() => setExporting(false)}
@@ -640,8 +703,12 @@ export default function CallsPage() {
                       <SentimentBadge sentiment={c.sentiment} />
                     </td>
                     <td>
-                      {c.status === "live"
-                        ? <span className="badge green">Live</span>
+                      {attemptOf(c) ? (
+                        <span className={`badge ${CAMPAIGN_OUTCOME_TONE[attemptOf(c)!.outcome ?? "in_progress"]}`} style={{ display: "inline-block", minWidth: 104, textAlign: "center" }}>
+                          {CAMPAIGN_OUTCOME_LABEL[attemptOf(c)!.outcome ?? "in_progress"]}
+                        </span>
+                      ) : c.status === "live"
+                        ? <span className="badge green" style={{ display: "inline-block", minWidth: 104, textAlign: "center" }}>Live</span>
                         : <StatusBadge reason={c.close_reason} />}
                     </td>
                     <td>

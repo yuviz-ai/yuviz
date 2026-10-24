@@ -11,7 +11,7 @@ from urllib.parse import quote, urlparse, urlunparse
 
 import httpx
 
-from ..exceptions import TelephonyProviderError
+from ..exceptions import TelephonyProviderError, TelephonyRateLimited
 from ..interface import ISmsProvider, ITelephonyProvider, InboundSyncResult, InboundUrls, NormalizedInboundCall
 from ..registry import SmsProviderRegistry, TelephonyProviderRegistry
 
@@ -47,8 +47,31 @@ def _expected_signature(auth_token: str, base_url: str, nonce: str, version: str
     return base64.b64encode(digest).decode("ascii")
 
 
+# Vobiz reports a live call in call_state and an ended one only through answer_time and hangup_cause.
+_LIVE_STATES = {"queued": "queued", "ringing": "ringing", "early": "ringing", "in-progress": "in-progress",
+                "answered": "in-progress"}
+_UNANSWERED_CAUSES = {
+    "USER_BUSY": "busy",
+    "NO_ANSWER": "no-answer", "NO_USER_RESPONSE": "no-answer", "ALLOTTED_TIMEOUT": "no-answer",
+    "CALL_REJECTED": "rejected", "ORIGINATOR_CANCEL": "canceled",
+}
+
+
+def _call_status(data: dict[str, Any]) -> str:
+    state = str(data.get("call_state") or "").lower()
+    if state in _LIVE_STATES:
+        return _LIVE_STATES[state]
+    cause = str(data.get("hangup_cause") or "").upper()
+    if not cause and not data.get("end_time"):
+        return state or "unknown"
+    if data.get("answer_time"):
+        return "completed"
+    return _UNANSWERED_CAUSES.get(cause, "failed")
+
+
 class VobizTelephonyProvider(ITelephonyProvider, ISmsProvider):
     PROVIDER_NAME = "vobiz"
+    supports_campaign_outbound = True
     # Tests replace this with an httpx.MockTransport.
     _http_transport: httpx.AsyncBaseTransport | None = None
 
@@ -91,9 +114,14 @@ class VobizTelephonyProvider(ITelephonyProvider, ISmsProvider):
             body["ring_method"] = "POST"
 
         endpoint = f"{_BASE_URL}/v1/Account/{self._auth_id}/Call/"
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with self._client() as client:
             resp = await client.post(endpoint, json=body, headers=self._headers)
 
+        if resp.status_code == 429:
+            retry_after = resp.headers.get("Retry-After", "")
+            raise TelephonyRateLimited(
+                "Rate limited by Vobiz", retry_after=int(retry_after) if retry_after.isdigit() else None,
+            )
         if resp.status_code != 201:
             raise TelephonyProviderError(f"Vobiz initiate_call returned {resp.status_code}: {resp.text}")
 
@@ -114,13 +142,15 @@ class VobizTelephonyProvider(ITelephonyProvider, ISmsProvider):
             raise TelephonyProviderError(f"Vobiz hangup_call returned {resp.status_code}: {resp.text}")
 
     async def get_call_status(self, call_id: str) -> dict[str, Any]:
+        """Vobiz's call record, plus the `status`/`to`/`from` keys every provider returns."""
         endpoint = f"{_BASE_URL}/v1/Account/{self._auth_id}/Call/{call_id}/"
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, transport=self._http_transport) as client:
             resp = await client.get(endpoint, headers=self._headers)
 
         if resp.status_code != 200:
             raise TelephonyProviderError(f"Vobiz get_call_status returned {resp.status_code}: {resp.text}")
-        return resp.json()
+        data = resp.json()
+        return {**data, "status": _call_status(data), "to": data.get("to_number"), "from": data.get("from_number")}
 
     def verify_webhook_signature(self, url: str, headers: dict[str, str]) -> bool:
         """Vobiz signs the callback's base URL (query parameters stripped)

@@ -58,6 +58,7 @@ class TenantUpdate(BaseModel):
     default_tts_config_id: str | None = None
     # None means unset; this route can't clear the cap to NULL.
     max_concurrent_calls:  int | None = Field(default=None, ge=1, le=10_000)
+    number_purchase_enabled: bool | None = None
 
 
 class TenantConcurrencyUpdate(BaseModel):
@@ -182,6 +183,7 @@ class AgentUpdate(BaseModel):
     escalation_threshold: int | None = None
     # Caller ID the human sees on a warm transfer; resolved in the Conversation Service.
     caller_id_policy:     Literal["original", "platform", "custom"] | None = None
+    outbound_caller_id:   str | None = None
     platform_did:         str | None = None
     custom_caller_id:     str | None = None
 
@@ -452,7 +454,6 @@ class CallExport(BaseModel):
 class PhoneNumberCreate(BaseModel):
     did:                 str
     agent_id:            str | None = None
-    fallback_agent_id:   str | None = None
     carrier_id:          str | None = None
     telephony_config_id: str | None = None
     region:              str | None = None
@@ -464,7 +465,6 @@ class PhoneNumberCreate(BaseModel):
 class PhoneNumberUpdate(BaseModel):
     did:                 str | None = None
     agent_id:            str | None = None
-    fallback_agent_id:   str | None = None
     carrier_id:          str | None = None
     telephony_config_id: str | None = None
     region:              str | None = None

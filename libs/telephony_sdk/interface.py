@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from .exceptions import TelephonyTransferUnsupported
 
@@ -49,6 +49,8 @@ class ITelephonyProvider(ABC):
     `credentials` dict."""
 
     PROVIDER_NAME: str
+    supports_campaign_outbound: ClassVar[bool] = False
+    signature_covers_fields: ClassVar[bool] = False
 
     def __init__(self, credentials: dict[str, Any]) -> None:
         self._credentials = credentials

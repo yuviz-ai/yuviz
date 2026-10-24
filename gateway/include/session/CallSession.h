@@ -107,7 +107,7 @@ private:
     std::string       active_transfer_id_;
     std::string       active_transfer_destination_;
     std::string       active_transfer_type_;  // "cold" | "warm"
-    // Falls back to ctx_.caller_did when the Conversation Service sends empty.
+    // Falls back to the other party's number when the Conversation Service sends empty.
     std::string       active_caller_id_;
     std::string       active_waiting_experience_;
     IClock::TimePoint transfer_started_at_{};

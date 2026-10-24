@@ -32,7 +32,7 @@ def _status_of(row: dict[str, Any]) -> str:
 
 def _mode_of(row: dict[str, Any]) -> str:
     """Display label derived from `direction`."""
-    return "AI" if row.get("direction") == "inbound" else "WebRTC"
+    return {"inbound": "AI", "outbound": "Outbound"}.get(row.get("direction"), "WebRTC")
 
 
 # JSONB columns decoded so API consumers get objects, not JSON strings.

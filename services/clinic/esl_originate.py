@@ -1,10 +1,4 @@
-"""
-Place outbound calls via raw FreeSWITCH ESL; the answered leg bridges back
-through Kamailio to the agent's DID, taking the same path as inbound calls.
-
-ESL command shape:
-    bgapi originate {origination_caller_id_number=<caller_id>}sofia/external/sip:<phone_number>@<sip_proxy_host>:<sip_proxy_port> &bridge(sofia/external/sip:<caller_id>@<sip_proxy_host>:<sip_proxy_port>)
-"""
+"""Raw FreeSWITCH ESL helpers for clinic reminder calls: dial-number check, header reader, BACKGROUND_JOB listener."""
 
 from __future__ import annotations
 
@@ -15,17 +9,14 @@ import re
 
 log = logging.getLogger(__name__)
 
-# Digits only (optional leading +): anything else interpolated into the ESL
-# command below could smuggle a newline and a second command.
+# Digits only (optional leading +): anything else interpolated into an ESL
+# command could smuggle a newline and a second command.
 _DIAL_NUMBER_RE = re.compile(r"\+?[0-9]{3,15}")
 
 _ESL_HOST = os.environ.get("FREESWITCH_ESL_HOST", "127.0.0.1")
 _ESL_PORT = int(os.environ.get("FREESWITCH_ESL_PORT", "8022"))
 # No default: FreeSWITCH's own default is public. Set it in .env.
 _ESL_PASSWORD = os.environ.get("FREESWITCH_ESL_PASSWORD", "")
-# No default: Kamailio's IP is host-specific (scripts/update_kamailio_ip.sh writes it).
-_SIP_PROXY_HOST = os.environ.get("SIP_PROXY_HOST", "")
-_SIP_PROXY_PORT = int(os.environ.get("SIP_PROXY_PORT", "5060"))
 
 
 class OriginateError(Exception):
@@ -48,68 +39,6 @@ async def _read_until_blank_line(reader: asyncio.StreamReader) -> dict[str, str]
             key, _, value = decoded.partition(":")
             headers[key.strip()] = value.strip()
     return headers
-
-
-async def originate_call(phone_number: str, caller_id: str) -> str:
-    """Dial phone_number and bridge it to caller_id (agent DID); returns the bgapi Job-UUID.
-
-    Only reports acceptance; the call outcome arrives later as a BACKGROUND_JOB event."""
-    for label, value in (("phone_number", phone_number), ("caller_id", caller_id)):
-        if not is_valid_dial_number(value):
-            raise OriginateError(f"refusing to dial: {label} {value!r} is not a plain dial number")
-    if not _ESL_PASSWORD:
-        raise OriginateError("FREESWITCH_ESL_PASSWORD is not set; add it to .env")
-    if not _SIP_PROXY_HOST:
-        raise OriginateError(
-            "SIP_PROXY_HOST is not set; run scripts/update_kamailio_ip.sh to write "
-            "Kamailio's IP into .env, then restart Campaigns"
-        )
-    try:
-        reader, writer = await asyncio.open_connection(_ESL_HOST, _ESL_PORT)
-    except OSError as exc:
-        raise OriginateError(f"cannot reach FreeSWITCH ESL at {_ESL_HOST}:{_ESL_PORT}: {exc}") from exc
-
-    try:
-        # FreeSWITCH sends auth/request unprompted on connect.
-        await _read_until_blank_line(reader)
-        writer.write(f"auth {_ESL_PASSWORD}\n\n".encode())
-        await writer.drain()
-        auth_reply = await _read_until_blank_line(reader)
-        if auth_reply.get("Reply-Text", "").strip() != "+OK accepted":
-            raise OriginateError(f"ESL auth rejected: {auth_reply}")
-
-        dial_string = f"sofia/external/sip:{phone_number}@{_SIP_PROXY_HOST}:{_SIP_PROXY_PORT}"
-        # Bridge via Kamailio, not `<exten> XML <context>`: Kamailio only routes
-        # a DID to the AI pipeline when it's the Request-URI of a new INVITE.
-        bridge_target = f"sofia/external/sip:{caller_id}@{_SIP_PROXY_HOST}:{_SIP_PROXY_PORT}"
-        command = (
-            f"bgapi originate {{origination_caller_id_number={caller_id}}}"
-            f"{dial_string} &bridge({bridge_target})"
-        )
-        # Backstop: a line break ends an ESL command, so one here would run a second command.
-        if any(c in command for c in "\r\n\0"):
-            raise OriginateError("refusing to send an ESL command containing CR/LF/NUL")
-        writer.write(f"{command}\n\n".encode())
-        await writer.drain()
-        reply = await _read_until_blank_line(reader)
-
-        reply_text = reply.get("Reply-Text", "")
-        if not reply_text.startswith("+OK"):
-            raise OriginateError(f"originate rejected: {reply}")
-
-        # +OK Job-UUID: <uuid>
-        job_uuid = reply_text.split("Job-UUID:")[-1].strip() if "Job-UUID:" in reply_text else ""
-        log.info(
-            "originate_call: accepted phone_number=%s caller_id=%s job_uuid=%s",
-            phone_number, caller_id, job_uuid,
-        )
-        return job_uuid
-    finally:
-        writer.close()
-        try:
-            await writer.wait_closed()
-        except Exception:
-            pass
 
 
 class EslJobEventListener:

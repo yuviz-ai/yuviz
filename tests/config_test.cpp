@@ -366,6 +366,29 @@ TEST_F(ConfigTest, CallMetadataIgnoresWrongTypedFields) {
     EXPECT_EQ(md.ani, "5551234567"); // correctly typed field still parses
 }
 
+TEST_F(ConfigTest, CallMetadataParsesCampaignSlugsAndRoutesOutboundDirectly) {
+    const auto md = voiceai::CallMetadata::parse(std::string(
+        R"({"did":"+918065354620","ani":"+919876543210","direction":"outbound","tenant_slug":"yuviz","agent_slug":"sales"})"));
+
+    EXPECT_EQ(md.tenant_slug, "yuviz");
+    EXPECT_EQ(md.agent_slug, "sales");
+    const auto route = md.direct_route();
+    ASSERT_TRUE(route.has_value());
+    EXPECT_EQ(route->tenant_slug, "yuviz");
+    EXPECT_EQ(route->agent_slug, "sales");
+}
+
+TEST_F(ConfigTest, CallMetadataDirectRouteNeedsOutboundAndBothSlugs) {
+    using voiceai::CallMetadata;
+    EXPECT_FALSE(CallMetadata::parse(std::string(
+        R"({"did":"5003","direction":"inbound","tenant_slug":"yuviz","agent_slug":"sales"})")).direct_route());
+    EXPECT_FALSE(CallMetadata::parse(std::string(
+        R"({"did":"+91","direction":"outbound","tenant_slug":"yuviz"})")).direct_route());
+    EXPECT_FALSE(CallMetadata::parse(std::string(
+        R"({"did":"+91","direction":"outbound","tenant_slug":"yuviz","agent_slug":""})")).direct_route());
+    EXPECT_FALSE(CallMetadata::parse(std::string(R"({"did":"+91","direction":"outbound"})")).direct_route());
+}
+
 } // namespace
 
 // ── CallFsmTimerConfig transfer timeout ──────────────────────────────────────

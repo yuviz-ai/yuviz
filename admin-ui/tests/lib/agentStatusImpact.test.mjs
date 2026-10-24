@@ -4,30 +4,21 @@ import test from "node:test";
 import { pauseOutcomes, resumeMissing } from "../../lib/agentStatusImpact.ts";
 
 const agent = { id: "a", slug: "support", name: "Support", status: "active" };
-const fallback = { id: "b", slug: "backup", name: "Backup", status: "active" };
-const number = { did: "+14155550100", agent_id: "a", fallback_agent_id: "b", status: "active" };
+const defaultAgent = { id: "d", slug: "default", name: "Default agent", status: "active" };
+const number = { did: "+14155550100", agent_id: "a", status: "active" };
 
-test("pausing names each active number and its actual next agent", () => {
-  assert.deepEqual(pauseOutcomes(agent, [agent, fallback], [number]),
-    ["+14155550100: calls go to Backup."]);
-  assert.deepEqual(pauseOutcomes(agent, [agent, { ...fallback, status: "inactive" }], [number]),
+test("pausing names each active number and where its calls go next", () => {
+  assert.deepEqual(pauseOutcomes(agent, [agent, defaultAgent], [number]),
+    ["+14155550100: calls go to Default agent."]);
+  assert.deepEqual(pauseOutcomes(agent, [agent], [number]),
     ["+14155550100: calls won't reach an agent."]);
-  assert.deepEqual(pauseOutcomes(agent, [agent, fallback], [{ ...number, status: "inactive" }]), []);
-  assert.deepEqual(pauseOutcomes(agent, [agent, fallback], [{ ...number, provider_sync: { ok: false } }]),
-    ["+14155550100: calls go to Backup."]);
-  assert.deepEqual(pauseOutcomes(agent, [agent, fallback], [{ ...number, fallback_agent_id: agent.id }]),
-    ["+14155550100: calls won't reach an agent."]);
-});
-
-test("pausing a backup explains whether the primary still answers", () => {
-  assert.deepEqual(pauseOutcomes(fallback, [agent, fallback], [number]),
-    ["+14155550100: continues to Support; this agent will no longer be its backup."]);
+  assert.deepEqual(pauseOutcomes(agent, [agent, defaultAgent], [{ ...number, status: "inactive" }]), []);
+  assert.deepEqual(pauseOutcomes(agent, [agent, defaultAgent], [{ ...number, agent_id: "other" }]), []);
 });
 
 test("pausing the default agent includes numbers that reach it implicitly", () => {
-  const defaultAgent = { ...agent, id: "default-id", slug: "default", name: "Default agent" };
-  const implicit = { ...number, agent_id: null, fallback_agent_id: null };
-  const inactivePrimary = { ...number, agent_id: "a", fallback_agent_id: null };
+  const implicit = { ...number, agent_id: null };
+  const inactivePrimary = { ...number, agent_id: "a" };
   assert.deepEqual(pauseOutcomes(defaultAgent, [agent, defaultAgent], [implicit]),
     ["+14155550100: calls won't reach an agent."]);
   assert.deepEqual(pauseOutcomes(defaultAgent, [{ ...agent, status: "inactive" }, defaultAgent], [inactivePrimary]),
@@ -49,16 +40,9 @@ test("resuming checks inbound and outbound setup by direction", () => {
   assert.equal(resumeMissing(agent, "outbound", [agent], [owned], [{ ...campaign, caller_id: "+14155550101" }]).length, 1);
 });
 
-test("resuming recognizes numbers reached through fallback and default routes", () => {
-  const paused = { ...agent, status: "inactive" };
-  const fallbackNumber = { ...number, agent_id: "b", fallback_agent_id: "a" };
-  assert.deepEqual(resumeMissing(paused, "inbound", [paused, { ...fallback, status: "inactive" }],
-    [fallbackNumber], []), []);
-  assert.equal(resumeMissing(paused, "inbound", [paused, fallback], [fallbackNumber], []).length, 1);
-
-  const defaultAgent = { ...paused, slug: "default" };
-  const implicit = { ...number, agent_id: null, fallback_agent_id: null };
-  assert.deepEqual(resumeMissing(defaultAgent, "inbound", [defaultAgent], [implicit], []), []);
+test("resuming recognizes numbers that reach it through the default route", () => {
+  const paused = { ...agent, status: "inactive", slug: "default" };
+  assert.deepEqual(resumeMissing(paused, "inbound", [paused], [{ ...number, agent_id: null }], []), []);
 });
 
 test("chat agents skip phone readiness and inbound checks survive a campaign outage", () => {

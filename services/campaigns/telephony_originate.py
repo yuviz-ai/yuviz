@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from datetime import datetime
 
 import httpx
+
+from libs.telephony_sdk.exceptions import TelephonyRateLimited
 
 log = logging.getLogger(__name__)
 
@@ -89,6 +92,8 @@ async def originate_call(
                 break
             await asyncio.sleep(backoff)
             continue
+        if resp.status_code == 429:
+            raise TelephonyRateLimited("telephony provider rate limit", retry_after=resp.json().get("retry_after"))
         if resp.status_code >= 400:
             raise TelephonyOriginateError(f"telephony service returned {resp.status_code}: {resp.text}")
 
@@ -99,32 +104,35 @@ async def originate_call(
         if not call_id:
             raise TelephonyOriginateError(f"telephony place_call response missing call_uuid: {data}")
         log.info(
-            "telephony_originate: accepted phone_number=%s caller_id=%s call_id=%s",
-            phone_number, caller_id, call_id,
+            "telephony_originate: accepted call_id=%s", call_id,
         )
         return call_id
 
     raise TelephonyOriginateError(f"cannot reach telephony service at {TELEPHONY_SERVICE_URL}: {last_exc}")
 
 
-async def poll_idempotency(*, provider: str, tenant_slug: str, idempotency_key: str) -> str | None:
-    """Vendor call id once resolved, None while pending; raises on a failed outcome."""
+async def _get_with_auth(path: str, params: dict, *, timeout: float) -> httpx.Response:
     global _jwt_token
     if _jwt_token is None:
         _jwt_token = await _login()
 
-    path = f"/{provider}/call/idempotency/{idempotency_key}"
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.get(
-            f"{TELEPHONY_SERVICE_URL}{path}", params={"tenant_slug": tenant_slug},
-            headers={"Authorization": f"Bearer {_jwt_token}"},
+            f"{TELEPHONY_SERVICE_URL}{path}", params=params, headers={"Authorization": f"Bearer {_jwt_token}"},
         )
         if resp.status_code == 401:
             _jwt_token = await _login()
             resp = await client.get(
-                f"{TELEPHONY_SERVICE_URL}{path}", params={"tenant_slug": tenant_slug},
-                headers={"Authorization": f"Bearer {_jwt_token}"},
+                f"{TELEPHONY_SERVICE_URL}{path}", params=params, headers={"Authorization": f"Bearer {_jwt_token}"},
             )
+    return resp
+
+
+async def poll_idempotency(*, provider: str, tenant_slug: str, idempotency_key: str) -> str | None:
+    """Vendor call id once resolved, None while pending; raises on a failed outcome."""
+    resp = await _get_with_auth(
+        f"/{provider}/call/idempotency/{idempotency_key}", {"tenant_slug": tenant_slug}, timeout=10.0,
+    )
 
     if resp.status_code == 404:
         raise TelephonyOriginateError(f"idempotency key {idempotency_key!r} expired or unknown")
@@ -135,3 +143,42 @@ async def poll_idempotency(*, provider: str, tenant_slug: str, idempotency_key: 
     if data.get("ok") is False:
         raise TelephonyOriginateError(f"telephony call resolved failed: {data.get('error')}")
     return data.get("call_uuid")
+
+
+async def outbound_readiness(*, provider: str, tenant_slug: str) -> dict:
+    """The telephony service's {"ready": bool, "reason": str | None} for this tenant's provider account."""
+    try:
+        resp = await _get_with_auth(f"/{provider}/outbound-readiness", {"tenant_slug": tenant_slug}, timeout=10.0)
+    except httpx.HTTPError as exc:
+        raise TelephonyOriginateError(f"cannot reach telephony service at {TELEPHONY_SERVICE_URL}: {exc}") from exc
+    if resp.status_code >= 400:
+        raise TelephonyOriginateError(f"telephony service returned {resp.status_code}: {resp.text}")
+    return resp.json()
+
+
+async def reconcile_call(
+    *, provider: str, tenant_slug: str, idempotency_key: str, to: str, caller_id: str, created_after: datetime,
+) -> dict:
+    """{"outcome": "placed" | "not_placed" | "unknown", "provider_call_id": str | None} for a possibly-sent key."""
+    body = {
+        "tenant_slug": tenant_slug, "idempotency_key": idempotency_key,
+        "to": to, "from": caller_id, "created_after": created_after.isoformat(),
+    }
+    try:
+        resp = await _post_with_auth(f"/{provider}/call/reconcile", body)
+    except httpx.HTTPError as exc:
+        raise TelephonyOriginateError(f"cannot reach telephony service at {TELEPHONY_SERVICE_URL}: {exc}") from exc
+    if resp.status_code >= 400:
+        raise TelephonyOriginateError(f"telephony service returned {resp.status_code}: {resp.text}")
+    return resp.json()
+
+
+async def call_status(*, provider: str, tenant_slug: str, call_id: str) -> dict:
+    """The provider API's view of a call: {"status": live|ended|busy|no_answer|declined|failed|unknown, "to", "from"}."""
+    try:
+        resp = await _get_with_auth(f"/{provider}/call/{call_id}/status", {"tenant_slug": tenant_slug}, timeout=10.0)
+    except httpx.HTTPError as exc:
+        raise TelephonyOriginateError(f"cannot reach telephony service at {TELEPHONY_SERVICE_URL}: {exc}") from exc
+    if resp.status_code >= 400:
+        raise TelephonyOriginateError(f"telephony service returned {resp.status_code}: {resp.text}")
+    return resp.json()

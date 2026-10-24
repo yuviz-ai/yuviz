@@ -3,7 +3,7 @@
 import { useContext, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Phone, Plus, Search } from "lucide-react";
+import { Phone, Search } from "lucide-react";
 import {
   Agent, ApiError, AvailableNumber, Call, PhoneNumber, PurchasedNumber, ProviderSync,
   createPhoneNumber, deletePhoneNumber, listAgents, listCalls, listCarriers,
@@ -45,9 +45,10 @@ interface NumberRow extends PhoneNumber {
   configName: string | null;
   providerLabel: string;
   answers: string | null;
+  /** Agents that show this number as their outbound caller ID. */
+  callerIdFor: string[];
   recentCalls: number | null;
 }
-type AgentList = { agents: Agent[]; ok: boolean };
 type Notice = { ok: boolean; text: string };
 type NumberMode = "manual" | "buy";
 
@@ -73,7 +74,6 @@ export default function TelephonyPage() {
   const mode: NumberMode | null = searchParams.get("buy") === "1" ? "buy" : searchParams.get("add") === "1" ? "manual" : null;
   const [configs, setConfigs] = useState<ConfigRow[]>([]);
   const [numbers, setNumbers] = useState<NumberRow[]>([]);
-  const [agentsByTenant, setAgentsByTenant] = useState<Record<string, AgentList>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -101,7 +101,6 @@ export default function TelephonyPage() {
       if (cancelled) return;
       const configRows: ConfigRow[] = [];
       const numberRows: NumberRow[] = [];
-      const agentsMap: Record<string, AgentList> = {};
       const errors: string[] = [];
       results.forEach((result, i) => {
         if (result.status !== "fulfilled") {
@@ -109,7 +108,6 @@ export default function TelephonyPage() {
           return;
         }
         const { t, carriers, connections, phoneNumbers, agents, calls } = result.value;
-        agentsMap[t.id] = agents;
         const tenantConfigs: ConfigRow[] = [
           ...carriers.map((c) => ({ kind: "carrier" as const, id: c.id, name: c.name, provider: c.provider })),
           ...connections.map((c) => ({ kind: "telephony_config" as const, id: c.id, name: c.name, provider: c.provider })),
@@ -124,18 +122,19 @@ export default function TelephonyPage() {
         numberRows.push(...phoneNumbers.map((n): NumberRow => {
           const config = tenantConfigs.find((c) => c.kind === "carrier" ? c.id === n.carrier_id : c.id === n.telephony_config_id);
           const agent = agents.agents.find((a) => a.id === n.agent_id);
-          const fallback = agents.agents.find((a) => a.id === n.fallback_agent_id);
           return {
             ...n, tenantName: t.name, configKey: config?.key ?? null, configName: config?.name ?? null,
             providerLabel: config?.providerLabel ?? "Local phone",
-            answers: !agents.ok ? "Unavailable" : agent?.name ?? (fallback ? `${fallback.name} (backup)` : n.agent_id ? "Unavailable agent" : null),
+            answers: !agents.ok ? "Unavailable" : agent?.name ?? (n.agent_id ? "Unavailable agent" : null),
+            callerIdFor: agents.agents
+              .filter((a) => a.outbound_caller_id && digits(a.outbound_caller_id) === digits(n.did))
+              .map((a) => a.name),
             recentCalls: calls === null ? null : activity.get(digits(n.did)) ?? 0,
           };
         }));
       });
       setConfigs(configRows);
       setNumbers(numberRows);
-      setAgentsByTenant(agentsMap);
       setError(errors.length ? errors.join("; ") : null);
       setLoading(false);
     })();
@@ -144,12 +143,14 @@ export default function TelephonyPage() {
 
   const selectedConfig = configs.find((c) => c.key === selectedKey);
   const availableConfigs = configs.filter((c) => access.isSuperadmin || !(c.kind === "telephony_config" && c.provider === NATIVE));
-  const canBuy = availableConfigs.some((c) => c.kind === "carrier");
+  // A superadmin turns buying on per account; superadmins can always buy.
+  const buyingAllowed = access.isSuperadmin || !!tenant?.number_purchase_enabled;
+  const canBuy = buyingAllowed && availableConfigs.some((c) => c.kind === "carrier");
   const visibleNumbers = useMemo(() => {
     const q = search.trim().toLowerCase();
     const qDigits = digits(q);
     return numbers.filter((n) => (!selectedKey || n.configKey === selectedKey) && (!q ||
-      `${n.did} ${n.region ?? ""} ${n.configName ?? ""} ${n.providerLabel} ${n.answers ?? "not set"} ${n.tenantName} ${n.status === "active" ? "on" : "off"}`.toLowerCase().includes(q) ||
+      `${n.did} ${n.region ?? ""} ${n.configName ?? ""} ${n.providerLabel} ${n.answers ?? "not set"} ${n.callerIdFor.join(" ")} ${n.tenantName} ${n.status === "active" ? "on" : "off"}`.toLowerCase().includes(q) ||
       (qDigits.length > 0 && digits(n.did).includes(qDigits))))
       .sort((a, b) => a.tenantName.localeCompare(b.tenantName) || a.did.localeCompare(b.did));
   }, [numbers, search, selectedKey]);
@@ -190,11 +191,6 @@ export default function TelephonyPage() {
           <h1>Phone Numbers</h1>
           <p>Numbers your agents can answer. Need Twilio or another line? Connect it on <Link href={CONNECTED_CALLING_APPS_URL}>Connected Apps</Link>.</p>
         </div>
-        {canAddNumber && canBuy && (
-          <div className="phone-numbers-actions">
-            <button className="btn btn-primary btn-sm" onClick={() => openAdd("buy")}><Plus size={14} /> Buy number</button>
-          </div>
-        )}
       </div>
       {(error || tenantError) && <div className="error-banner" role="alert">{error || tenantError} <button className="btn btn-ghost btn-sm" onClick={refresh}>Retry</button></div>}
       {access.error && <div className="error-banner" role="alert">{access.error} <button className="btn btn-ghost btn-sm" disabled={access.loading} onClick={() => void access.retry()}>Retry permissions</button></div>}
@@ -237,15 +233,14 @@ export default function TelephonyPage() {
                   <table className="tbl">
                     <thead><tr>
                       <th scope="col">Number</th>{isAllTenants && <th scope="col">Account</th>}
-                      <th scope="col">Through</th><th scope="col">Answers</th><th scope="col">Status</th>
+                      <th scope="col">Through</th><th scope="col">Status</th>
                       <th scope="col" className="phone-number-calls" title={`Based on the latest ${CALL_WINDOW} calls per account`}>Recent calls</th><th scope="col" aria-label="Actions" />
                     </tr></thead>
                     <tbody>{visibleNumbers.map((n) => <tr key={n.id}>
                       <td><span className="phone-number-address">{n.did}</span><div className="phone-number-sublabel">{n.region || "No label yet"}</div></td>
                       {isAllTenants && <td>{n.tenantName}</td>}
                       <td><CallingAppIdentity config={configFor(n)} /></td>
-                      <td>{n.answers ?? <span className="badge amber" title="No agent chosen for this number. Calls use the account default if available.">Not set</span>}</td>
-                      <td><span className={`badge ${n.status === "active" ? "green" : "gray"}`} title={n.status === "suspended" ? "Suspended — this number cannot take calls" : undefined}>{n.status === "active" ? "On" : "Off"}</span>{routingIssue(n, configFor(n)) && <div className="phone-number-sublabel"><span className="badge amber" title="Open Edit to see how calls reach this number">{routingIssue(n, configFor(n))}</span></div>}</td>
+                      <td><span className={`badge ${n.status === "active" ? "green" : "gray"}`} title={n.status === "suspended" ? "Suspended — this number cannot take calls" : undefined}>{n.status === "active" ? "On" : "Off"}</span>{routingIssue(configFor(n)) && <div className="phone-number-sublabel"><span className="badge amber" title="Open Edit to see how calls reach this number">{routingIssue(configFor(n))}</span></div>}</td>
                       <td className="phone-number-calls" title={`Based on the latest ${CALL_WINDOW} calls per account`}>{n.recentCalls === null ? "—" : fmtInt(n.recentCalls)}</td>
                       <td className="phone-number-calls"><button className="btn btn-ghost btn-sm" disabled={!access.canManage} aria-label={`Edit ${n.did}`} onClick={() => setEditId(n.id)}>Edit</button></td>
                     </tr>)}</tbody>
@@ -258,22 +253,20 @@ export default function TelephonyPage() {
       )}
       {!busy && !editNumber && mode && access.canManage && availableConfigs.length > 0 && <AddNumberModal
         key={`${tenant?.id ?? "all"}:${mode}:${selectedKey ?? ""}`}
-        initialMode={mode} configs={availableConfigs} initialConfigKey={selectedKey}
-        agentsByTenant={agentsByTenant} showTenant={isAllTenants}
+        initialMode={canBuy ? mode : "manual"} buyingAllowed={buyingAllowed} configs={availableConfigs} initialConfigKey={selectedKey}
+        showTenant={isAllTenants}
         onClose={() => window.history.replaceState(null, "", listUrl)}
         onCreated={(created, config) => {
           window.history.replaceState(null, "", "/telephony");
           setNotice(created.provider_sync?.ok === false
-            ? { ok: false, text: `${created.did} was added, but ${config.providerLabel} needs a fix before calls can arrive. Open Edit to retry.` }
-            : { ok: true, text: `${created.did} was added. Choose who answers below.` });
-          setEditId(created.id);
+            ? { ok: false, text: `${created.did} was added, but ${config.providerLabel} couldn't route its calls to us yet. Open Edit to see why and retry.` }
+            : { ok: true, text: `${created.did} was added. Attach it to an agent from that agent's Settings.` });
+          if (created.provider_sync?.ok === false) setEditId(created.id);
           refresh();
         }}
       />}
       {!busy && editNumber && <EditNumberModal
         key={editNumber.id} target={editNumber} config={configFor(editNumber)}
-        agents={agentsByTenant[editNumber.tenant_id]?.agents ?? []}
-        agentsOk={agentsByTenant[editNumber.tenant_id]?.ok ?? false}
         isSuperadmin={access.isSuperadmin} onClose={() => setEditId(null)}
         onChanged={refresh} onSaved={(text) => setNotice({ ok: true, text })}
       />}
@@ -291,15 +284,13 @@ function webhookUrlFor(config: ConfigRow): string | null {
 const autoSyncs = (config: ConfigRow | null) =>
   config?.kind === "telephony_config" && config.provider !== NATIVE && !MANUAL_SETUP_PROVIDERS.has(config.provider);
 
-// Why a number may not receive calls yet; matches the Edit dialog's routing section.
-function routingIssue(n: PhoneNumber, config: ConfigRow | null): string | null {
-  if (config?.kind === "telephony_config" && MANUAL_SETUP_PROVIDERS.has(config.provider)) return "Manual setup";
-  return autoSyncs(config) && !n.provider_sync?.ok ? "Needs a fix" : null;
+function routingIssue(config: ConfigRow | null): string | null {
+  return config?.kind === "telephony_config" && MANUAL_SETUP_PROVIDERS.has(config.provider) ? "Manual setup" : null;
 }
 
-function AddNumberModal({ initialMode, configs, initialConfigKey, agentsByTenant, showTenant, onClose, onCreated }: {
-  initialMode: NumberMode; configs: ConfigRow[]; initialConfigKey: string | null;
-  agentsByTenant: Record<string, AgentList>; showTenant: boolean; onClose: () => void;
+function AddNumberModal({ initialMode, buyingAllowed, configs, initialConfigKey, showTenant, onClose, onCreated }: {
+  initialMode: NumberMode; buyingAllowed: boolean; configs: ConfigRow[]; initialConfigKey: string | null;
+  showTenant: boolean; onClose: () => void;
   onCreated: (created: PhoneNumber, config: ConfigRow) => void;
 }) {
   const [mode, setMode] = useState(initialMode);
@@ -310,7 +301,7 @@ function AddNumberModal({ initialMode, configs, initialConfigKey, agentsByTenant
   const config = choices.find((c) => c.key === configKey) ?? choices[0];
   return <Modal open title={mode === "buy" ? "Buy a number" : "Add a number"} className="phone-number-dialog" trapFocus onClose={() => { if (!pending) onClose(); }}>
     <div className="phone-number-tabs" role="group" aria-label="How to add a number">
-      <button className={`btn btn-sm ${mode === "buy" ? "btn-primary" : "btn-ghost"}`} aria-pressed={mode === "buy"} disabled={locked || !configs.some((c) => c.kind === "carrier")} onClick={() => setMode("buy")}>Buy a new one</button>
+      <button className={`btn btn-sm ${mode === "buy" ? "btn-primary" : "btn-ghost"}`} aria-pressed={mode === "buy"} disabled={locked || !buyingAllowed || !configs.some((c) => c.kind === "carrier")} title={!buyingAllowed ? "Buying numbers isn't turned on for this account. Ask your platform admin." : !configs.some((c) => c.kind === "carrier") ? "Connect Twilio or Plivo on Connected Apps to buy numbers." : undefined} onClick={() => setMode("buy")}>Buy a new one</button>
       <button className={`btn btn-sm ${mode === "manual" ? "btn-primary" : "btn-ghost"}`} aria-pressed={mode === "manual"} disabled={locked} onClick={() => setMode("manual")}>I already have one</button>
     </div>
     {config ? <>
@@ -320,18 +311,17 @@ function AddNumberModal({ initialMode, configs, initialConfigKey, agentsByTenant
           {choices.map((c) => <option key={c.key} value={c.key}>{c.providerLabel} · {c.name}{showTenant ? ` · ${c.tenantName}` : ""}</option>)}
         </select>
       </div>
-      <NumberForm key={`${config.key}:${mode}`} mode={mode} config={config} agents={agentsByTenant[config.tenantId]} onClose={onClose} onCreated={(n) => onCreated(n, config)} onLock={(locked, pending) => { setLocked(locked); setPending(pending); }} />
+      <NumberForm key={`${config.key}:${mode}`} mode={mode} config={config} onClose={onClose} onCreated={(n) => onCreated(n, config)} onLock={(locked, pending) => { setLocked(locked); setPending(pending); }} />
     </> : <div className="empty-state phone-numbers-empty"><h2>{mode === "buy" ? "Connect a calling app to buy numbers" : "Connect a calling app first"}</h2><p>{mode === "buy" ? "Connect Twilio, Plivo, or Vonage to buy a number here. You can add an existing number through your other connected apps." : "Connect an app before adding a number."}</p><Link className="btn btn-primary btn-sm" href={CONNECTED_CALLING_APPS_URL}>Go to Connected Apps</Link></div>}
   </Modal>;
 }
 
-function NumberForm({ mode, config, agents, onClose, onCreated, onLock }: {
-  mode: NumberMode; config: ConfigRow; agents: AgentList | undefined;
+function NumberForm({ mode, config, onClose, onCreated, onLock }: {
+  mode: NumberMode; config: ConfigRow;
   onClose: () => void; onCreated: (created: PhoneNumber) => void; onLock: (locked: boolean, pending: boolean) => void;
 }) {
   const [did, setDid] = useState("");
   const [region, setRegion] = useState("");
-  const [agentId, setAgentId] = useState("");
   const [country, setCountry] = useState("US");
   const [areaCode, setAreaCode] = useState("");
   const [results, setResults] = useState<AvailableNumber[] | null>(null);
@@ -344,7 +334,7 @@ function NumberForm({ mode, config, agents, onClose, onCreated, onLock }: {
   const lock = (value: boolean) => { setBusy(value); onLock(value, value); };
 
   const add = async (phone: string) => createPhoneNumber(config.tenantId, {
-    ...connection, did: phone.trim(), region: region.trim() || undefined, agent_id: agentId || undefined, status: "active",
+    ...connection, did: phone.trim(), region: region.trim() || undefined, status: "active",
   });
   const handleAdd = async () => {
     lock(true); setError(null);
@@ -384,14 +374,6 @@ function NumberForm({ mode, config, agents, onClose, onCreated, onLock }: {
         <label className="form-label" htmlFor="number-label">Label <span className="hint">optional</span></label>
         <input id="number-label" className="form-input" value={region} disabled={busy} onChange={(e) => setRegion(e.target.value)} placeholder="e.g. West coast sales" />
       </div>
-      <div className="form-group">
-        <label className="form-label" htmlFor="number-agent">Who answers</label>
-        <select id="number-agent" className="form-select" value={agentId} disabled={busy || !agents?.ok} onChange={(e) => setAgentId(e.target.value)}>
-          <option value="">Choose later (use account default)</option>
-          {agents?.agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-        </select>
-        {!agents?.ok && <p className="form-hint">Agents could not be loaded. You can choose who answers after adding the number.</p>}
-      </div>
       <div className="phone-number-form-actions"><button className="btn btn-ghost btn-sm" disabled={busy} onClick={onClose}>Cancel</button><button className="btn btn-primary btn-sm" disabled={busy || !did.trim()} onClick={handleAdd}>{busy ? "Adding…" : "Add number"}</button></div>
     </> : <>
       <p className="phone-number-buy-hint">This uses your {config.providerLabel} account and may charge that account.</p>
@@ -408,7 +390,7 @@ function NumberForm({ mode, config, agents, onClose, onCreated, onLock }: {
       </div>}
       {confirmation && <div className="phone-number-buy-confirm" role="status"><p>Buy <strong className="phone-number-address">{confirmation}</strong>? Your {config.providerLabel} account will be charged.</p><div className="phone-numbers-actions"><button className="btn btn-ghost btn-sm" onClick={() => setConfirmation(null)}>Cancel</button><button className="btn btn-primary btn-sm" onClick={() => void handleBuy(confirmation)}>Confirm buy</button></div></div>}
       {bought && !busy && <button className="btn btn-primary btn-sm" onClick={() => void handleBuy(bought)}>Finish adding {bought}</button>}
-      <div className="phone-number-form-actions"><p className="form-hint">Next you’ll choose who answers</p><button className="btn btn-ghost btn-sm" disabled={busy} onClick={onClose}>{bought ? "Close" : "Cancel"}</button></div>
+      <div className="phone-number-form-actions"><p className="form-hint">Then attach it from an agent&apos;s Settings</p><button className="btn btn-ghost btn-sm" disabled={busy} onClick={onClose}>{bought ? "Close" : "Cancel"}</button></div>
     </>}
   </>;
 }
@@ -423,13 +405,11 @@ function removeModeFor(config: ConfigRow | null, purchase: PurchasedNumber | und
 
 /** Number routing and removal reuse the existing provider-specific APIs. */
 function EditNumberModal({
-  target, config, agents, agentsOk, isSuperadmin, onClose, onChanged, onSaved,
+  target, config, isSuperadmin, onClose, onChanged, onSaved,
 }: {
-  target: NumberRow; config: ConfigRow | null; agents: Agent[]; agentsOk: boolean; isSuperadmin: boolean;
+  target: NumberRow; config: ConfigRow | null; isSuperadmin: boolean;
   onClose: () => void; onChanged: () => void; onSaved: (text: string) => void;
 }) {
-  const [agentId, setAgentId] = useState(target.agent_id ?? "");
-  const [fallbackAgentId, setFallbackAgentId] = useState(target.fallback_agent_id ?? "");
   const [region, setRegion] = useState(target.region ?? "");
   const [status, setStatus] = useState<PhoneNumber["status"]>(target.status);
   const [sync, setSync] = useState<ProviderSync | null>(target.provider_sync ?? null);
@@ -472,13 +452,8 @@ function EditNumberModal({
     setBusy("save");
     setError(null);
     try {
-      await updatePhoneNumber(target.id, {
-        agent_id: agentId || null,
-        fallback_agent_id: fallbackAgentId || null,
-        region: region.trim(),
-        status,
-      });
-      onSaved(agentId && status === "active" ? `${agents.find((a) => a.id === agentId)?.name ?? "Your chosen agent"} now answers ${target.did}.` : `${target.did} was updated.`);
+      await updatePhoneNumber(target.id, { region: region.trim(), status });
+      onSaved(`${target.did} was updated.`);
       onClose();
       onChanged();
     } catch (e) {
@@ -574,29 +549,6 @@ function EditNumberModal({
         <label className="form-label" htmlFor="edit-number-label">Label <span className="hint">optional</span></label>
         <input id="edit-number-label" className="form-input" value={region} onChange={(e) => setRegion(e.target.value)} />
       </div>
-      <div className="form-group">
-        <label className="form-label" htmlFor="edit-number-agent">Who answers</label>
-        <select id="edit-number-agent" className="form-select" disabled={!agentsOk} value={agentId} onChange={(e) => setAgentId(e.target.value)}>
-          <option value="">Not set (use account default)</option>
-          {agentId && !agents.some((a) => a.id === agentId) && <option value={agentId}>Current agent (unavailable)</option>}
-          {agents.map((a) => (
-            <option key={a.id} value={a.id}>{a.name}</option>
-          ))}
-        </select>
-      </div>
-      <div className="form-group">
-        <label className="form-label" htmlFor="edit-number-fallback">
-          If that agent can’t take it <span className="hint">optional</span>
-        </label>
-        <select id="edit-number-fallback" className="form-select" disabled={!agentsOk} value={fallbackAgentId} onChange={(e) => setFallbackAgentId(e.target.value)}>
-          <option value="">No backup agent</option>
-          {fallbackAgentId && !agents.some((a) => a.id === fallbackAgentId) && <option value={fallbackAgentId}>Current backup (unavailable)</option>}
-          {agents.map((a) => (
-            <option key={a.id} value={a.id}>{a.name}</option>
-          ))}
-        </select>
-      </div>
-      {!agentsOk && <p className="form-hint">Agents could not be loaded. Your current choices will be kept. Close and retry loading the page to change them.</p>}
       <div className="phone-number-status-row">
         <label htmlFor="edit-number-on">This number is {status === "active" ? "on" : "off"}</label>
         <label className="toggle-switch">
@@ -619,7 +571,7 @@ function EditNumberModal({
 
       {syncsWithProvider && !manualSetup && (
         <>
-          <div style={sectionTitle}>{sync?.ok ? `Calls from ${providerLabel}` : "Needs a fix"}</div>
+          <div style={sectionTitle}>Calls from {providerLabel}</div>
           <div
             className={sync?.ok ? "info-banner" : sync ? "error-banner" : undefined}
             style={{ display: "flex", alignItems: "flex-start", gap: 10, ...(sync ? {} : { fontSize: ".8rem", color: "var(--text-2)" }) }}

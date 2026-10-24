@@ -15,14 +15,14 @@ import os
 import uuid
 from contextlib import asynccontextmanager
 
-import httpx
-from fastapi import Depends, FastAPI, Query, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Path, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from websockets.exceptions import ConnectionClosed
 
 from libs.media_stream_sdk.bridge import MediaStreamBridge
 from libs.media_stream_sdk.serializers import CloudonixSerializer, VobizSerializer
+from libs.telephony_sdk import campaign_events
 from libs.telephony_sdk import providers as _providers  # noqa: F401 — registers every built-in provider
 
 from . import auth, idempotency, orchestrator, outbound
@@ -35,7 +35,7 @@ from .outbound import OutboundUnavailable
 log = logging.getLogger("telephony.app")
 
 _REFRESH_S = float(os.environ.get("TELEPHONY_REFRESH_S", "300"))
-CAMPAIGNS_SERVICE_URL = os.environ.get("CAMPAIGNS_SERVICE_URL", "http://localhost:8400").rstrip("/")
+_NONCE_TTL_S = 86400
 
 _SERIALIZERS = {"vobiz": VobizSerializer, "cloudonix": CloudonixSerializer}
 
@@ -49,6 +49,8 @@ async def lifespan(app: FastAPI):
     refresh_task.cancel()
     health_task.cancel()
 
+
+_publish_tasks: set[asyncio.Task] = set()
 
 app = FastAPI(title="Telephony Service", lifespan=lifespan)
 
@@ -83,6 +85,14 @@ async def stream(websocket: WebSocket, provider: str, token: str) -> None:
 
     def on_session_start(session_id: str) -> None:
         orchestrator.call_session_map.put(route.provider_call_id, session_id)
+        if route.direction == "outbound" and route.idempotency_key:
+            account = accounts.get(route.provider, route.account_ref)
+            task = asyncio.create_task(_publish(
+                kind="answered", key=route.idempotency_key, tenant_id=account.tenant_id if account else None,
+                provider_call_id=route.provider_call_id, call_session_id=session_id, cause="answered", answered=True,
+            ))
+            _publish_tasks.add(task)
+            task.add_done_callback(_publish_tasks.discard)
 
     bridge = MediaStreamBridge(
         serializer=serializer_cls(),
@@ -109,6 +119,10 @@ async def status_callback(provider: str, account_ref: str, request: Request) -> 
     if account is None or not account.instance.verify_webhook_signature(str(request.url), headers):
         return PlainTextResponse("forbidden", status_code=403)
 
+    nonce = next((v for k, v in headers.items() if k.endswith("-nonce")), None)
+    if nonce and not await idempotency.claim_webhook_nonce(provider, account_ref, nonce, _NONCE_TTL_S):
+        return PlainTextResponse("forbidden", status_code=403)
+
     fields = await orchestrator.combined_fields(request)
     idem_key = request.query_params.get("idem")
     event = request.query_params.get("event")  # "ring" or "hangup" — we set this ourselves when building the URL
@@ -120,7 +134,12 @@ async def status_callback(provider: str, account_ref: str, request: Request) -> 
 
     # ring_url and hangup_url share this route; only hangup is terminal.
     if event == "hangup":
-        await _notify_campaigns_best_effort(call_id, lowered)
+        status = str(lowered.get("status") or lowered.get("callstatus") or "").lower()
+        await _publish(
+            kind="hangup", key=idem_key, tenant_id=account.tenant_id, provider_call_id=call_id, call_session_id=None,
+            cause=status, answered=status not in ("no-answer", "no_answer", "failed", "busy") if status else True,
+            unconfirmed=not account.instance.signature_covers_fields,
+        )
     return PlainTextResponse("ok")
 
 
@@ -138,19 +157,9 @@ async def dtmf_webhook(provider: str, account_ref: str, request: Request) -> Res
         return PlainTextResponse("error", status_code=500)
 
 
-async def _notify_campaigns_best_effort(call_id: str | None, fields: dict) -> None:
-    if not call_id:
-        return
-    status = str(fields.get("status") or fields.get("callstatus") or "").lower()
-    answered = status not in ("no-answer", "no_answer", "failed", "busy") if status else True
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            await client.post(
-                f"{CAMPAIGNS_SERVICE_URL}/internal/vobiz-call-resolved",
-                json={"call_uuid": call_id, "succeeded": answered, "detail": status or "answered"},
-            )
-    except httpx.HTTPError:
-        log.exception("telephony: failed to notify campaign service of call=%s outcome", call_id)
+async def _publish(*, unconfirmed: bool = False, **event) -> None:
+    fields = campaign_events.encode(source="cpaas", billable_ms=None, unconfirmed=unconfirmed, **event)
+    await idempotency.publish_event(campaign_events.STREAM_CPAAS, fields)
 
 
 # ── Outbound (internal caller-facing) ────────────────────────────────────
@@ -172,6 +181,11 @@ class PlaceCallBody(BaseModel):
         if not all(c.isalnum() or c in "_-" for c in v):
             raise ValueError("idempotency_key must contain only alphanumeric, underscore, and hyphen characters")
         return v
+
+
+class ReconcileBody(BaseModel):
+    tenant_slug: str
+    idempotency_key: str = Field(pattern=r"^[A-Za-z0-9_\-]{1,128}$")
 
 
 class SmsBody(BaseModel):
@@ -225,6 +239,37 @@ async def read_idempotency(
     # Same body shape as place_call's own response.
     status_code, body = outbound.result_from_outcome(entry)
     return _json_response(status_code, body)
+
+
+@app.post("/{provider}/call/reconcile")
+async def reconcile_call(provider: str, body: ReconcileBody, user=Depends(require_telephony_caller)) -> Response:
+    tenant_id, tenant_slug = await auth.resolve_caller_tenant(user, body.tenant_slug)
+    try:
+        result = await outbound.reconcile(
+            provider=provider, tenant_id=tenant_id, tenant_slug=tenant_slug, idempotency_key=body.idempotency_key,
+        )
+    except OutboundUnavailable as exc:
+        return PlainTextResponse(str(exc), status_code=503)
+    return _json_response(200, result)
+
+
+@app.get("/{provider}/call/{call_id}/status")
+async def call_status(
+    provider: str, call_id: str = Path(pattern=r"^[A-Za-z0-9_\-]{1,128}$"),
+    tenant_slug: str = Query(...), user=Depends(require_telephony_caller),
+) -> Response:
+    _tenant_id, slug = await auth.resolve_caller_tenant(user, tenant_slug)
+    try:
+        result = await outbound.call_status(provider=provider, tenant_slug=slug, call_id=call_id)
+    except OutboundUnavailable as exc:
+        return PlainTextResponse(str(exc), status_code=503)
+    return _json_response(200, result)
+
+
+@app.get("/{provider}/outbound-readiness")
+async def outbound_readiness(provider: str, tenant_slug: str = Query(...), user=Depends(require_telephony_caller)) -> Response:
+    _tenant_id, slug = await auth.resolve_caller_tenant(user, tenant_slug)
+    return _json_response(200, await outbound.readiness(provider=provider, tenant_slug=slug))
 
 
 @app.post("/sms/send")

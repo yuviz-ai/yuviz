@@ -6,9 +6,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import uuid
 from typing import Any
 
 import httpx
+
+from libs.telephony_sdk.exceptions import TelephonyProviderError, TelephonyRateLimited
 
 from . import idempotency
 from .accounts import Account, accounts
@@ -18,6 +21,14 @@ from .ownership import OutboundIdentity
 log = logging.getLogger("telephony.outbound")
 
 OutboundResult = tuple[int, dict[str, Any]]
+
+_DEFAULT_RETRY_AFTER_S = 5
+_HEALTH_TIMEOUT_S = 5.0
+
+_CALL_STATUS = {
+    "queued": "live", "ringing": "live", "in-progress": "answered", "completed": "ended", "busy": "busy",
+    "no-answer": "no_answer", "rejected": "declined", "canceled": "declined", "failed": "failed",
+}
 
 
 class OutboundUnavailable(Exception):
@@ -68,6 +79,9 @@ async def place_call(
                 provider, account.account_ref, call_id,
                 tenant_slug=identity.tenant_slug, agent_slug=identity.agent_slug,
             )
+    except TelephonyRateLimited as exc:
+        await idempotency.release(provider, identity.tenant_id, idempotency_key)
+        return 429, {"error": "rate_limited", "retry_after": exc.retry_after or _DEFAULT_RETRY_AFTER_S}
     except (asyncio.TimeoutError, httpx.TimeoutException):
         return await _reconcile_timeout(provider, identity, account, idempotency_key)
     except Exception as exc:
@@ -78,6 +92,53 @@ async def place_call(
     outcome = {"state": "done", "call_uuid": call_id}
     await idempotency.finalize(provider, identity.tenant_id, idempotency_key, outcome)
     return 200, {"ok": True, "call_uuid": call_id}
+
+
+async def reconcile(
+    *, provider: str, tenant_id: uuid.UUID, tenant_slug: str, idempotency_key: str,
+) -> dict[str, Any]:
+    account = _resolve_account(provider, tenant_slug)
+    observed = await idempotency.observed_call_id(provider, tenant_id, idempotency_key)
+    result = await account.instance.reconcile_call(reference=idempotency_key, observed_call_id=observed)
+    return {
+        "outcome": "unknown" if result.outcome == "indeterminate" else result.outcome,
+        "provider_call_id": result.provider_call_id,
+    }
+
+
+async def call_status(*, provider: str, tenant_slug: str, call_id: str) -> dict[str, Any]:
+    """Asked of the tenant's own account, so a call id from another account is unknown to the provider."""
+    account = _resolve_account(provider, tenant_slug)
+    try:
+        raw = await account.instance.get_call_status(call_id)
+    except TelephonyProviderError:
+        return {"status": "unknown", "to": None, "from": None}
+    return {
+        "status": _CALL_STATUS.get(str(raw.get("status", "")).lower(), "unknown"),
+        "to": _e164(raw.get("to")),
+        "from": _e164(raw.get("from")),
+    }
+
+
+async def readiness(*, provider: str, tenant_slug: str) -> dict[str, Any]:
+    try:
+        account = _resolve_account(provider, tenant_slug)
+    except OutboundUnavailable:
+        return {"ready": False, "reason": "no_default_outbound_account"}
+    if not account.instance.supports_campaign_outbound:
+        return {"ready": False, "reason": "provider_not_campaign_capable"}
+    try:
+        healthy = await asyncio.wait_for(account.instance.check_health(), timeout=_HEALTH_TIMEOUT_S)
+    except Exception:
+        healthy = False
+    return {"ready": True, "reason": None} if healthy else {"ready": False, "reason": "provider_unhealthy"}
+
+
+def _e164(number: Any) -> str | None:
+    if not number:
+        return None
+    number = str(number)
+    return number if number.startswith("+") else f"+{number}"
 
 
 async def send_sms(
