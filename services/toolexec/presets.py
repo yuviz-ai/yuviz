@@ -245,12 +245,13 @@ def _crm_lookup_step(
     endpoint_base_source: str,
 ) -> list[PresetStep]:
     return [PresetStep(
-        name="crm_lookup_contact",
+        name=f"{provider}_lookup_contact",
         description="Look up the person on this call in the CRM by their phone number.",
         method=method, endpoint_url=endpoint_url, side_effecting=False, params=params,
         endpoint_base_source=endpoint_base_source,
         response_transform={"kind": "crm_contact_projection", "provider": provider},
-        success_template="Contact lookup: {{$.outcome}}.{{$.spoken}}",
+        # No success_template: its text would be spoken to the caller verbatim and would end the model's turn.
+        # The model reads outcome/items/spoken from the step data and answers in its own words.
     )]
 
 
@@ -777,11 +778,18 @@ async def _insert_missing_steps(
                 endpoint_base_source=step.endpoint_base_source,
             )
         except asyncpg.UniqueViolationError:
-            # A hand-registered API already has this name; the tenant renames or removes it.
-            raise ValueError(f"preset_name_conflict: {step.name}") from None
+            raise PresetNameConflict(step.name) from None
         api_ids[step.name] = row["id"]
         created.append(row)
     return created
+
+
+class PresetNameConflict(Exception):
+    """409: a hand-registered API already has the name this preset writes. The
+    message is shown to the admin as is."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(f"An API named '{name}' already exists. Rename or remove it, then turn this on again.")
 
 
 class PresetConnectorRequired(Exception):

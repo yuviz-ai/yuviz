@@ -247,6 +247,14 @@ async def soft_delete_tenant(
             user_email=user_email,
             old_value=old,
         )
+        # A deleted tenant keeps no usable CRM/calendar credential. The upstream
+        # grant is not revoked here: that is a provider call, owned by toolexec.
+        await conn.execute(
+            "UPDATE oauth_connections SET status = 'disconnected', access_token_ref = NULL, "
+            "       refresh_token_ref = NULL, access_expires_at = NULL, updated_at = now() "
+            " WHERE tenant_id = $1 AND deleted_at IS NULL AND status <> 'disconnected'",
+            tenant_id,
+        )
         # A deleted tenant's numbers must stop routing; did:{did} has no TTL,
         # so nothing else would ever remove them.
         retired = await conn.fetch(

@@ -1126,6 +1126,10 @@ ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS auth_kind TEXT NOT NULL D
 -- binding at call time are the controls. NULL for fixed-origin providers.
 ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS api_base_url TEXT
     CHECK (api_base_url IS NULL OR api_base_url ~ '^https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$');
+-- Lease taken by a token refresh so concurrent refreshes (across processes) make one provider
+-- call without holding a DB connection through it. Bounded: a refresh that dies leaves a lease
+-- that simply expires.
+ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS refresh_claimed_until TIMESTAMPTZ;
 -- 'oauth_connection': endpoint_url holds a PATH and the origin comes from the row's
 -- connection at call time. Per row, so one shared connection serves both kinds.
 ALTER TABLE custom_apis ADD COLUMN IF NOT EXISTS endpoint_base_source TEXT NOT NULL DEFAULT 'literal'
@@ -1155,6 +1159,24 @@ DO $$ BEGIN
        endpoint_base_source = 'literal'
     OR (oauth_connection_id IS NOT NULL AND endpoint_url ~ '^/'))$sql$;
 END $$;
+
+-- CRM lookup presets applied before the per-provider names: every provider wrote one
+-- 'crm_lookup_contact' row, spoke its success_template to the caller, and made a re-apply
+-- insert a second row. Rename in place (agent attachments follow the id) and drop the
+-- spoken line. Idempotent: both predicates stop matching once migrated. A tenant that
+-- already has a live API under the new name keeps the old row's name, so the rename
+-- never trips custom_apis_tenant_name_key; its re-apply is the plain-language 409.
+-- crm-lookup-rename:begin
+UPDATE custom_apis SET success_template = NULL
+ WHERE preset_key IN ('salesforce_crm', 'hubspot_crm', 'zoho_crm')
+   AND success_template = 'Contact lookup: {{$.outcome}}.{{$.spoken}}';
+UPDATE custom_apis c SET name = replace(c.preset_key, '_crm', '') || '_lookup_contact'
+ WHERE c.preset_key IN ('salesforce_crm', 'hubspot_crm', 'zoho_crm')
+   AND c.name = 'crm_lookup_contact' AND c.deleted_at IS NULL
+   AND NOT EXISTS (SELECT 1 FROM custom_apis o
+                    WHERE o.tenant_id = c.tenant_id AND o.deleted_at IS NULL
+                      AND lower(o.name) = replace(c.preset_key, '_crm', '') || '_lookup_contact');
+-- crm-lookup-rename:end
 
 -- One DO block per table; each re-adds the existing values unchanged plus
 -- 'confirmation_required'. The implementer copies the current value lists

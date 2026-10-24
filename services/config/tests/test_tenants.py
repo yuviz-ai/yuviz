@@ -108,3 +108,18 @@ async def test_update_tenant_writes_audit_row(test_tenant, pool):
 async def test_update_tenant_accepts_max_concurrent_calls(test_tenant):
     updated = await tenants.update_tenant(test_tenant["id"], max_concurrent_calls=5)
     assert updated["max_concurrent_calls"] == 5
+
+
+async def test_soft_delete_tenant_disconnects_its_oauth_connections(test_tenant, pool):
+    tenant_id = test_tenant["id"]
+    await pool.execute(
+        "INSERT INTO oauth_connections (tenant_id, provider, status, access_token_ref, access_expires_at, "
+        "                               refresh_token_ref, auth_kind) "
+        "VALUES ($1, 'google', 'connected', 'enc:t1.a', now() + interval '1 hour', 'enc:t1.r', 'oauth2')", tenant_id,
+    )
+    try:
+        await tenants.soft_delete_tenant(tenant_id, force=True)
+        row = await pool.fetchrow("SELECT * FROM oauth_connections WHERE tenant_id = $1", tenant_id)
+        assert (row["status"], row["access_token_ref"], row["refresh_token_ref"]) == ("disconnected", None, None)
+    finally:
+        await pool.execute("DELETE FROM oauth_connections WHERE tenant_id = $1", tenant_id)

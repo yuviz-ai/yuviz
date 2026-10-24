@@ -57,6 +57,7 @@ async def oauth_callback(
     current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
 ):
     await assert_tenant_access(tenant_id, current_user)
+    await oauth.require_live_tenant(tenant_id)
     try:
         return await oauth.complete_authorization(
             tenant_id=tenant_id, user_id=current_user.id, user_email=current_user.email,
@@ -74,6 +75,7 @@ async def authorize_oauth_connection(
     current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
 ):
     await assert_tenant_access(tenant_id, current_user)
+    await oauth.require_live_tenant(tenant_id)
     authorize_url = await oauth.start_authorization(
         tenant_id=tenant_id, user_id=current_user.id, provider=provider, preset_key=body.preset_key,
     )
@@ -88,6 +90,7 @@ async def connect_api_key_connection(
     current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
 ):
     await assert_tenant_access(tenant_id, current_user)
+    await oauth.require_live_tenant(tenant_id)
     try:
         return await oauth.connect_api_key(
             tenant_id=tenant_id, provider=provider, api_key=body.api_key.get_secret_value(),

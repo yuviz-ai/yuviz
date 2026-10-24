@@ -84,6 +84,11 @@ async def preset_connector_required_handler(request: Request, exc: presets.Prese
     return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
+@app.exception_handler(presets.PresetNameConflict)
+async def preset_name_conflict_handler(request: Request, exc: presets.PresetNameConflict) -> JSONResponse:
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
 @app.exception_handler(LookupError)
 async def not_found_handler(request: Request, exc: LookupError) -> JSONResponse:
     # Never str(exc): secret resolvers raise KeyError with the ref and mount path in the message.

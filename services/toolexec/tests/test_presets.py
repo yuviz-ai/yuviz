@@ -493,10 +493,10 @@ def test_each_crm_preset_is_one_read_only_lookup_row():
     assert len(CRM_KEYS) >= 3 and all(key in presets.PRESETS for key in CRM_KEYS)
     for key in CRM_KEYS:
         step = _crm_step(key)
-        assert step.name == "crm_lookup_contact"
+        assert step.name == f"{key.split('_')[0]}_lookup_contact"
         assert step.auth_scheme == "oauth2_authorization_code" and step.side_effecting is False
         assert step.confirmation_template is None and step.session_send_cap is None
-        assert step.success_template == "Contact lookup: {{$.outcome}}.{{$.spoken}}"
+        assert step.success_template is None  # the caller must never hear the raw outcome token
         assert step.response_transform == {"kind": "crm_contact_projection", "provider": key.split("_")[0]}
         presets.validate_response_transform(step.response_transform)
         assert all(p.source in ("literal", "caller_id") for p in step.params)  # nothing the model supplies

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import pathlib
 import uuid
 from urllib.parse import parse_qs, urlsplit
 
@@ -17,7 +18,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from libs.config_sdk.secrets import decrypt_tenant_secret
+from libs.config_sdk.secrets import decrypt_tenant_secret, encrypt_tenant_secret
 from libs.tenancy import set_target_tenant, tenant_conn
 from services.config import auth
 from services.config.auth import CurrentUser
@@ -343,7 +344,8 @@ async def test_a_hand_made_api_with_a_preset_rows_name_is_a_conflict_and_rolls_e
         await _connect(c, tenants["a"], h)
         r = await _apply(c, tenants["a"], h, CALENDAR)
 
-    assert (r.status_code, r.json()) == (400, {"detail": "preset_name_conflict: gcal_book"})
+    assert (r.status_code, r.json()) == (409, {"detail": (
+        "An API named 'gcal_book' already exists. Rename or remove it, then turn this on again.")})
     assert [row["name"] for row in await _rows(pool, tenants["a"])] == ["GCAL_BOOK"]   # nothing of the preset survived
 
 
@@ -496,3 +498,80 @@ async def test_sheets_apply_creates_the_sheet_once_and_the_row_appends_caller_te
     assert append.url.params["valueInputOption"] == "RAW"
     assert json.loads(append.content) == {"values": [[formula, "+91 98123 45678"]]}   # the text is untouched
     assert append.headers["authorization"] == "Bearer at"
+
+
+@pytest.mark.asyncio
+async def test_a_soft_deleted_tenant_cannot_apply_a_preset(pool, world, provider):
+    tenants, users, _agents = world
+    headers = users["admin_a"]["headers"]
+    async with _client() as c:
+        await _connect(c, tenants["a"], headers)
+        await pool.execute("UPDATE tenants SET deleted_at = now() WHERE id = $1", uuid.UUID(tenants["a"]))
+        r = await _apply(c, tenants["a"], headers, CALENDAR)
+    assert r.status_code == 404
+    assert await _rows(pool, tenants["a"]) == []
+
+
+# ── rows applied before the per-provider CRM names ────────────────────────
+
+LEGACY_SPOKEN = "Contact lookup: {{$.outcome}}.{{$.spoken}}"
+SCHEMA_SQL = pathlib.Path(__file__).resolve().parents[3] / "database" / "schema.sql"
+
+
+async def _legacy_crm_row(pool, tenant: str, preset_key: str, name: str = "crm_lookup_contact") -> dict:
+    set_target_tenant(tenant)
+    async with tenant_conn(pool) as conn:
+        async with conn.transaction():
+            return await custom_apis._insert_custom_api(
+                conn, tenant_id=tenant, name=name, description="Look up the person on this call.",
+                endpoint_url="/services/data", method="GET", body_style="json", auth_scheme="none",
+                auth_config={}, side_effecting=False, idempotency_header=None, timeout_ms=None,
+                sensitive_response_paths=[], success_template=LEGACY_SPOKEN, params=[], preset_key=preset_key,
+            )
+
+
+async def _run_crm_rename_migration(pool) -> None:
+    text = SCHEMA_SQL.read_text()
+    begin, end = "-- crm-lookup-rename:begin", "-- crm-lookup-rename:end"
+    assert begin in text and end in text, "schema.sql has no CRM lookup rename migration"
+    await pool.execute(text.split(begin)[1].split(end)[0])
+
+
+@pytest.mark.asyncio
+async def test_the_schema_migration_renames_old_crm_rows_in_place_and_clears_the_spoken_line(pool, world):
+    tenants, users, agents = world
+    legacy = await _legacy_crm_row(pool, tenants["a"], "salesforce_crm")
+    await _enable(agents["a"], [legacy["id"]], tenants["a"])
+    # B hand-registered the new name before the migration: renaming would violate the unique index.
+    clash = await _legacy_crm_row(pool, tenants["b"], "hubspot_crm")
+    await _legacy_crm_row(pool, tenants["b"], None, name="Hubspot_Lookup_Contact")
+
+    await _run_crm_rename_migration(pool)
+    await _run_crm_rename_migration(pool)           # idempotent
+
+    rows = await _rows(pool, tenants["a"], "salesforce_crm")
+    assert [(r["id"], r["name"], r["success_template"]) for r in rows] == [
+        (legacy["id"], "salesforce_lookup_contact", None)]
+    assert await pool.fetchval(
+        "SELECT count(*) FROM agent_custom_apis WHERE custom_api_id = $1 AND enabled", legacy["id"]) == 1
+    kept = await pool.fetchrow("SELECT name, success_template FROM custom_apis WHERE id = $1", clash["id"])
+    assert (kept["name"], kept["success_template"]) == ("crm_lookup_contact", None)
+
+
+@pytest.mark.asyncio
+async def test_applying_a_crm_preset_after_the_migration_adds_no_duplicate_tool(pool, world, provider):
+    tenants, users, agents = world
+    tenant, headers = tenants["a"], users["admin_a"]["headers"]
+    legacy = await _legacy_crm_row(pool, tenant, "salesforce_crm")
+    await _run_crm_rename_migration(pool)
+    await pool.execute(
+        "INSERT INTO oauth_connections (tenant_id, provider, status, account_label, scopes, accounts_server, "
+        "access_token_ref, access_expires_at, refresh_token_ref, auth_kind, api_base_url) "
+        "VALUES ($1, 'salesforce', 'connected', 'x', $4, NULL, $2, now() + interval '1 hour', $3, 'oauth2', "
+        "'https://acme.my.salesforce.com')", uuid.UUID(tenant),
+        encrypt_tenant_secret(tenant, "at"), encrypt_tenant_secret(tenant, "rt"), list(presets._CRM_SCOPES["salesforce"]),
+    )
+    async with _client() as c:
+        applied = await _apply(c, tenant, headers, {"preset_key": "salesforce_crm"})
+    assert applied.status_code == 201, applied.text
+    assert [r["id"] for r in await _rows(pool, tenant, "salesforce_crm")] == [legacy["id"]]

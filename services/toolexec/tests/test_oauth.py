@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import dataclasses
+import datetime
 import hashlib
 import json
 import logging
@@ -18,6 +19,7 @@ import subprocess
 import sys
 import time
 import uuid
+import weakref
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -546,6 +548,14 @@ async def test_a_dead_hubspot_refresh_token_flips_the_status_and_requires_reconn
     assert row["status"] == "reconnect_needed" and row["refresh_token_ref"] is None
 
 
+def test_a_token_response_without_expires_in_assumes_the_shortest_salesforce_session(caplog):
+    with caplog.at_level(logging.INFO, logger="services.toolexec.oauth"):
+        expires_at = oauth._expires_at({"access_token": "x"}, "salesforce")
+    remaining = (expires_at - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+    assert 14 * 60 < remaining <= 15 * 60
+    assert [r.message for r in caplog.records] == ["oauth_expires_in_missing"]
+
+
 def test_every_oauth_provider_asks_for_a_scope_without_a_preset():
     # The account-level Connect sends preset_key=None; an empty scope fails the consent.
     empty = [
@@ -752,6 +762,142 @@ async def test_invalid_grant_delivered_to_a_refresh_that_lost_the_race_does_not_
     row = await pool.fetchrow("SELECT * FROM oauth_connections WHERE id = $1", connection["id"])
     assert row["status"] == "connected"
     assert decrypt_tenant_secret(made["a"], row["refresh_token_ref"]) == "rt-winner"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_refreshes_under_strict_reuse_detection_all_use_the_winners_token(pool, tenants, fake):
+    """The provider honours a refresh token once: the first use succeeds after a delay, any later use
+    is refused with invalid_grant at once. Every concurrent caller must end up with the winner's token
+    and the row must stay connected."""
+    made, users = tenants
+    connection = await _connect(made["a"], users["a"], fake, refresh="rt-original")
+    await _expire_access_token(pool, connection["id"])
+    used: list[str] = []
+
+    async def _strict(request):
+        refresh_token = fake.form(request)["refresh_token"]
+        if refresh_token in used:
+            return httpx.Response(400, json={"error": "invalid_grant"})
+        used.append(refresh_token)
+        await asyncio.sleep(0.2)
+        return httpx.Response(200, json={"access_token": "at-winner", "refresh_token": "rt-rotated", "expires_in": 3600})
+
+    fake.token = _strict
+    fake.requests.clear()
+    results = []
+    for _ in range(3):
+        results.append(asyncio.create_task(oauth.access_token_for(made["a"], str(connection["id"]))))
+        await asyncio.sleep(0.05)
+    tokens = [(await r)[0] for r in results]
+
+    assert tokens == ["at-winner"] * 3
+    assert len(fake.requests) == 1
+    row = await pool.fetchrow("SELECT * FROM oauth_connections WHERE id = $1", connection["id"])
+    assert row["status"] == "connected"
+    assert decrypt_tenant_secret(made["a"], row["refresh_token_ref"]) == "rt-rotated"
+
+
+@pytest.mark.asyncio
+async def test_refreshes_from_two_processes_under_strict_reuse_detection_use_the_winners_token(
+    pool, tenants, fake, monkeypatch,
+):
+    """Same provider as above, but the second caller is another process: it has its own asyncio locks
+    and its own DB session, so only the database can order the two. The loser must wait, re-read and
+    use the winner's token, not present the spent refresh token and flip the row to reconnect_needed."""
+    made, users = tenants
+    connection = await _connect(made["a"], users["a"], fake, refresh="rt-original")
+    await _expire_access_token(pool, connection["id"])
+    used: list[str] = []
+
+    async def _strict(request):
+        refresh_token = fake.form(request)["refresh_token"]
+        if refresh_token in used:
+            return httpx.Response(400, json={"error": "invalid_grant"})
+        used.append(refresh_token)
+        await asyncio.sleep(0.3)
+        return httpx.Response(200, json={"access_token": "at-winner", "refresh_token": "rt-rotated", "expires_in": 3600})
+
+    fake.token = _strict
+    fake.requests.clear()
+    first = asyncio.create_task(oauth.access_token_for(made["a"], str(connection["id"])))
+    await asyncio.sleep(0.1)                                    # the first caller is mid-refresh
+    monkeypatch.setattr(oauth, "_refresh_locks", weakref.WeakValueDictionary())   # the other process's locks
+    second = asyncio.create_task(oauth.access_token_for(made["a"], str(connection["id"])))
+    tokens = [(await first)[0], (await second)[0]]
+
+    assert tokens == ["at-winner"] * 2
+    assert len(fake.requests) == 1
+    row = await pool.fetchrow("SELECT * FROM oauth_connections WHERE id = $1", connection["id"])
+    assert row["status"] == "connected"
+    assert decrypt_tenant_secret(made["a"], row["refresh_token_ref"]) == "rt-rotated"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_refreshes_do_not_hold_pooled_connections_across_the_provider_call(
+    pool, tenants, fake,
+):
+    """More simultaneous refreshes than the pool has connections, each waiting on a slow provider:
+    none may sit on a pooled connection while it waits, or an unrelated lookup queues behind them."""
+    made, _users = tenants
+    extra = []
+    try:
+        connections = []
+        for i in range(12):
+            slug = f"oauth-pool-{i}-{uuid.uuid4().hex[:8]}"
+            tenant = str(await pool.fetchval("INSERT INTO tenants (name, slug) VALUES ($1, $1) RETURNING id", slug))
+            extra.append(tenant)
+            user = str(await pool.fetchval(
+                "INSERT INTO users (tenant_id, email, password_hash, role) VALUES ($1, $2, 'x', 'admin') RETURNING id",
+                tenant, f"{slug}@oauth.test",
+            ))
+            connection = await _connect(tenant, user, fake)
+            await _expire_access_token(pool, connection["id"])
+            connections.append((tenant, str(connection["id"])))
+
+        async def _slow(request):
+            await asyncio.sleep(1.5)
+            return httpx.Response(200, json={"access_token": "at-new", "expires_in": 3600})
+
+        fake.token = _slow
+        refreshes = []
+        for tenant, connection_id in connections:
+            set_target_tenant(tenant)
+            refreshes.append(asyncio.create_task(oauth.access_token_for(tenant, connection_id)))
+        await asyncio.sleep(0.5)                                # every refresh is waiting on the provider
+
+        set_target_tenant(made["a"])
+        started = time.monotonic()
+        await oauth.list_connections(made["a"])
+        assert time.monotonic() - started < 0.5
+
+        assert [(await r)[0] for r in refreshes] == ["at-new"] * 12
+    finally:
+        set_target_tenant(made["a"])
+        await pool.execute("DELETE FROM oauth_authorization_states WHERE tenant_id = ANY($1::uuid[])", extra)
+        await pool.execute("DELETE FROM oauth_connections WHERE tenant_id = ANY($1::uuid[])", extra)
+        await pool.execute(
+            "DELETE FROM audit_log WHERE user_id IN (SELECT id FROM users WHERE tenant_id = ANY($1::uuid[]))", extra,
+        )
+        await pool.execute("DELETE FROM users WHERE tenant_id = ANY($1::uuid[])", extra)
+        await pool.execute("DELETE FROM tenants WHERE id = ANY($1::uuid[])", extra)
+
+
+@pytest.mark.asyncio
+async def test_a_refresh_claim_left_by_a_dead_process_expires(pool, tenants, fake):
+    made, users = tenants
+    connection = await _connect(made["a"], users["a"], fake, refresh="rt-original")
+    await _expire_access_token(pool, connection["id"])
+    await pool.execute(
+        "UPDATE oauth_connections SET refresh_claimed_until = now() + interval '1 second' WHERE id = $1",
+        connection["id"],
+    )
+    fake.token = lambda request: httpx.Response(200, json={"access_token": "at-new", "expires_in": 3600})
+    started = time.monotonic()
+    token, *_ = await oauth.access_token_for(made["a"], str(connection["id"]))
+
+    assert token == "at-new" and time.monotonic() - started >= 0.5
+    row = await pool.fetchrow("SELECT * FROM oauth_connections WHERE id = $1", connection["id"])
+    assert row["refresh_claimed_until"] is None
 
 
 @pytest.mark.asyncio

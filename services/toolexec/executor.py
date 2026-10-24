@@ -289,6 +289,39 @@ class _StepFailure(Exception):
         self.http_status = http_status
 
 
+_inflight_auth: set[asyncio.Task] = set()
+
+
+def _settle_inflight(task: asyncio.Task) -> None:
+    _inflight_auth.discard(task)
+    if not task.cancelled():
+        task.exception()  # retrieved so a failure after the step gave up is not logged as unhandled
+
+
+async def _within_step_deadline(awaitable: Any, deadline: float) -> Any:
+    """Bound credential work (a token refresh is a provider round trip) by the
+    step's own deadline. The work is shielded rather than cancelled: a refresh
+    that already got a rotated refresh token back must still commit it, or the
+    connection is lost. It is bounded by the provider call timeout, and the
+    task is held here so it is not collected mid-flight."""
+    task = asyncio.ensure_future(awaitable)
+    _inflight_auth.add(task)
+    task.add_done_callback(_settle_inflight)
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), timeout=max(deadline - time.monotonic(), 0))
+    except asyncio.TimeoutError:
+        raise _StepFailure("timeout", "step_timeout") from None
+
+
+async def _credential_work(awaitable: Any, deadline: float) -> Any:
+    try:
+        return await _within_step_deadline(awaitable, deadline)
+    except auth_schemes.ReconnectRequired:
+        raise _StepFailure("unavailable", "reconnect_required")
+    except ValueError:
+        raise _StepFailure("unavailable", "credential_unavailable")
+
+
 def _coerce(value: Any, json_type: str) -> Any:
     if value is None:
         return None
@@ -767,7 +800,10 @@ async def _run_steps(
         argument_sources: dict[str, str] | None = None
         arguments_hash: str | None = None
         injected_auth_keys: set[str] = set()
+        used_auth: dict[str, str] = {}   # which stored OAuth token the request carries (see the 401 retry)
         started = time.monotonic()
+        step_timeout_ms = min(api_row.get("timeout_ms") or 6000, remaining_budget_ms)
+        deadline = started + step_timeout_ms / 1000
 
         try:
             effective_url = api_row["endpoint_url"]
@@ -784,12 +820,9 @@ async def _run_steps(
 
             hostname, allowed_ips = await resolve_and_validate_endpoint(url)
 
-            try:
-                injected_auth_keys = await auth_schemes.apply(api_row, headers, query_params, effective_url=url)
-            except auth_schemes.ReconnectRequired:
-                raise _StepFailure("unavailable", "reconnect_required")
-            except ValueError:
-                raise _StepFailure("unavailable", "credential_unavailable")
+            injected_auth_keys = await _credential_work(
+                auth_schemes.apply(api_row, headers, query_params, effective_url=url, used=used_auth), deadline,
+            )
 
             # Exclude auth-injected keys: never persist credentials, and rotating tokens would break the hash dedupe.
             resolved_arguments = {
@@ -833,20 +866,47 @@ async def _run_steps(
                     # (Google keeps a deleted event's id and refuses to reuse it).
                     body_fields[api_row["idempotency_body_field"]] = claimed.hex
 
-            step_timeout_ms = min(api_row.get("timeout_ms") or 6000, remaining_budget_ms)
             body_style = api_row.get("body_style", "json")
             json_body = body_fields if body_style == "json" and body_fields else None
             data_body = _form_fields(body_fields) if body_style == "form" and body_fields else None
 
-            try:
-                status_code, body, truncated = await asyncio.wait_for(
-                    _do_request(api_row["method"], url, headers, query_params, json_body, data_body,
-                                allowed_ips, step_timeout_ms),
-                    timeout=step_timeout_ms / 1000,
-                )
-            except (asyncio.TimeoutError, httpx.TimeoutException):
-                # Keep the claim: a timed-out mutation may have landed.
-                raise _StepFailure("timeout", "step_timeout")
+            for attempt in (1, 2):
+                request_timeout_ms = max(int((deadline - time.monotonic()) * 1000), 1)
+                try:
+                    status_code, body, truncated = await asyncio.wait_for(
+                        _do_request(api_row["method"], url, headers, query_params, json_body, data_body,
+                                    allowed_ips, request_timeout_ms),
+                        timeout=request_timeout_ms / 1000,
+                    )
+                except (asyncio.TimeoutError, httpx.TimeoutException):
+                    # Keep the claim: a timed-out mutation may have landed.
+                    raise _StepFailure("timeout", "step_timeout")
+                if status_code != 401 or attempt == 2 or api_row["auth_scheme"] != "oauth2_authorization_code":
+                    break
+                # The stored expiry can be wrong (Salesforce reports none): refresh once and retry.
+                # A 401 means the request was not processed, so the retry cannot repeat a side effect.
+                try:
+                    refreshed = await _credential_work(
+                        oauth.refresh_after_unauthorized(
+                            tenant_id, api_row["oauth_connection_id"], used_auth.get("access_token_ref"),
+                        ), deadline,
+                    )
+                    if refreshed:
+                        used_auth = {}
+                        injected_auth_keys = await _credential_work(
+                            auth_schemes.apply(api_row, headers, query_params, effective_url=url, used=used_auth),
+                            deadline,
+                        )
+                except _StepFailure:
+                    # The 401 proves the provider did not process the request, so a refresh that then fails
+                    # (reconnect needed, credential unavailable, step deadline) must free the claim, as the plain
+                    # 401 below does; held, it would refuse the same booking for the claim TTL after a reconnect.
+                    # Only the retried request's own timeout keeps the claim (it may have landed).
+                    if side_effecting:
+                        await _release_side_effect_claim(tenant_id, api_id, arguments_hash)
+                    raise
+                if not refreshed:
+                    break
 
             if truncated:
                 # Keep the claim: whether the mutation landed is unknown.

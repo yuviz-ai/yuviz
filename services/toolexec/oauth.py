@@ -18,6 +18,7 @@ platform CompositeSecretResolver, never the tenant resolver.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import datetime
 import hashlib
@@ -25,6 +26,7 @@ import json
 import logging
 import os
 import secrets
+import weakref
 from dataclasses import dataclass
 from typing import Any, Literal
 from urllib.parse import quote, urlsplit
@@ -46,9 +48,13 @@ _platform_secret_resolver = CompositeSecretResolver()  # the PLATFORM resolver â
 
 _STATE_TTL_MINUTES = 10
 _EXPIRY_SKEW_SECONDS = 60
+_ASSUMED_ACCESS_TTL_S = 15 * 60
 _PROVIDER_TIMEOUT_S = 10.0
+_REFRESH_LEASE_S = 30.0
+_REFRESH_POLL_S = 0.05
 _API_KEY_VERIFY_URLS = {"calcom": "https://api.cal.com/v2/me"}
 _REDIRECT_URI_ENV = "TOOLEXEC_OAUTH_REDIRECT_URI"
+_refresh_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
 
 # What a connection row may reveal: no *_ref, no provider_sub.
 _PUBLIC_COLUMNS = "id, provider, status, account_label, scopes, updated_at"
@@ -222,8 +228,14 @@ def _validated_api_base(spec: OAuthProvider, claim: Any) -> str:
     return claim
 
 
-def _expires_at(body: dict[str, Any]) -> datetime.datetime:
-    return datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=int(body.get("expires_in", 3600)))
+def _expires_at(body: dict[str, Any], provider: str) -> datetime.datetime:
+    expires_in = body.get("expires_in")
+    if expires_in is None:
+        # Salesforce never sends one and its org session timeout can be as short as 15 minutes,
+        # so assume the shortest. A 401 from the API forces a refresh whatever this says.
+        log.info("oauth_expires_in_missing", extra={"provider": provider})
+        expires_in = _ASSUMED_ACCESS_TTL_S
+    return datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=int(expires_in))
 
 
 def _id_token_claims(id_token: str) -> dict[str, Any]:
@@ -231,6 +243,19 @@ def _id_token_claims(id_token: str) -> dict[str, Any]:
     # 3.1.3.7), and used for display and the shared-grant check only.
     payload = id_token.split(".")[1]
     return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+
+
+async def require_live_tenant(tenant_id: str) -> None:
+    """A soft-deleted tenant can start no authorization, store no tokens and
+    apply no preset. assert_tenant_access is shared with other services and
+    does not look at tenants.deleted_at, so the connector routes check here."""
+    pool = await db.get_pool()
+    async with tenant_conn(pool) as conn:
+        live = await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM tenants WHERE id = $1 AND deleted_at IS NULL)", tenant_id,
+        )
+    if not live:
+        raise LookupError("tenant deleted")
 
 
 async def start_authorization(*, tenant_id: str, user_id: str, provider: str, preset_key: str | None) -> str:
@@ -341,7 +366,7 @@ async def complete_authorization(
             account_label, provider_sub = info.json().get("Email"), None if zuid is None else str(zuid)
         access_ref = encrypt_tenant_secret(tenant_id, access_token)
         refresh_ref = encrypt_tenant_secret(tenant_id, refresh_token)
-        access_expires_at = _expires_at(body)
+        access_expires_at = _expires_at(body, redeemed["provider"])
     except Exception:
         raise ValueError("oauth_connection_failed") from None
 
@@ -360,6 +385,12 @@ async def _upsert_connection(
 ) -> dict[str, Any]:
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
+        # require_live_tenant ran before the provider exchange. Re-check under a row lock that
+        # soft_delete_tenant's UPDATE also needs: a delete that committed during the exchange
+        # refuses here, and one that starts after this lock waits and then disconnects what we store.
+        live = await conn.fetchval("SELECT true FROM tenants WHERE id = $1 AND deleted_at IS NULL FOR SHARE", tenant_id)
+        if not live:
+            raise LookupError("tenant deleted")
         row = await conn.fetchrow(
             "INSERT INTO oauth_connections (tenant_id, provider, status, account_label, scopes, accounts_server, "
             "                               access_token_ref, access_expires_at, refresh_token_ref, connected_by, "
@@ -474,24 +505,105 @@ async def post_json(tenant_id: str, connection_id: Any, url: str, body: Any) -> 
     return resp.json()
 
 
-async def access_token_for(tenant_id: str, connection_id: str) -> tuple[str, OAuthProvider, str | None, str]:
+def _expiring(row: Any) -> bool:
+    return (row["access_expires_at"] - datetime.datetime.now(datetime.timezone.utc)).total_seconds() <= _EXPIRY_SKEW_SECONDS
+
+
+async def _connection_row(tenant_id: str, connection_id: Any) -> Any:
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
-        row = await conn.fetchrow(
+        return await conn.fetchrow(
             "SELECT * FROM oauth_connections WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL",
             tenant_id, connection_id,
         )
+
+
+async def access_token_for(tenant_id: str, connection_id: str) -> tuple[str, OAuthProvider, str | None, str]:
+    token, spec, api_base_url, auth_kind, _ref = await access_token_and_ref_for(tenant_id, connection_id)
+    return token, spec, api_base_url, auth_kind
+
+
+async def access_token_and_ref_for(
+    tenant_id: str, connection_id: str,
+) -> tuple[str, OAuthProvider, str | None, str, str]:
+    """access_token_for plus the stored reference of the token that came back, so a caller whose request is
+    refused (401) can say which token was refused (see refresh_after_unauthorized)."""
+    row = await _connection_row(tenant_id, connection_id)
     if row is None or row["status"] != "connected":
         raise ReconnectRequired
     spec = PROVIDERS[row["provider"]]
     # A static API key has no expiry and no refresh path: it never refreshes and never flips `status`.
-    if row["auth_kind"] == "api_key" or (
-        row["access_expires_at"] - datetime.datetime.now(datetime.timezone.utc)
-    ).total_seconds() > _EXPIRY_SKEW_SECONDS:
+    if row["auth_kind"] == "api_key" or not _expiring(row):
         token = await auth_schemes.resolve_tenant_ref(tenant_id, row["access_token_ref"])
+        ref = row["access_token_ref"]
     else:
-        token = await _refresh(tenant_id, row, spec)
-    return token, spec, row["api_base_url"], row["auth_kind"]
+        token = await _refresh_serialized(tenant_id, row, spec)
+        # The row now holds the token that was returned (or a newer one, which only makes a later 401 refresh less).
+        fresh = await _connection_row(tenant_id, connection_id)
+        ref = fresh["access_token_ref"] if fresh is not None else row["access_token_ref"]
+    return token, spec, row["api_base_url"], row["auth_kind"], ref
+
+
+async def refresh_after_unauthorized(tenant_id: str, connection_id: str, rejected_ref: str | None = None) -> bool:
+    """The provider's API refused the access token (401) although the stored
+    expiry said it was good: refresh now. False when there is nothing to
+    refresh (a static API key); ReconnectRequired when the refresh token is dead.
+
+    `rejected_ref` is the stored reference of the token the refused request carried. When the row already holds a
+    different one, another caller has replaced it since: return True without a provider round trip and let the
+    retry pick up the current token, so N concurrent 401s cost one refresh rather than N."""
+    row = await _connection_row(tenant_id, connection_id)
+    if row is None or row["status"] != "connected":
+        raise ReconnectRequired
+    if row["auth_kind"] == "api_key":
+        return False
+    if rejected_ref is not None and row["access_token_ref"] != rejected_ref:
+        return True
+    await _refresh_serialized(tenant_id, row, PROVIDERS[row["provider"]], force=True)
+    return True
+
+
+async def _refresh_serialized(tenant_id: str, row: Any, spec: OAuthProvider, *, force: bool = False) -> str:
+    """Concurrent refreshes of one connection run one at a time and each
+    re-reads the row once it holds the claim. A provider that rejects a reused
+    refresh token (Salesforce with rotation on) answers a second in-flight
+    refresh with invalid_grant before the first has committed, which would flip
+    a healthy connection to reconnect_needed. The asyncio lock orders callers
+    in this process; a short lease on the row (refresh_claimed_until) orders
+    them across processes and replicas without holding a pooled connection
+    across the provider call. A process that dies mid-refresh leaves a lease
+    that expires on its own."""
+    key = str(row["id"])
+    lock = _refresh_locks.get(key) or _refresh_locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        pool = await db.get_pool()
+        while True:
+            async with tenant_conn(pool) as conn:
+                claimed_until = await conn.fetchval(
+                    "UPDATE oauth_connections SET refresh_claimed_until = now() + make_interval(secs => $3) "
+                    " WHERE tenant_id = $1 AND id = $2 AND status = 'connected' AND deleted_at IS NULL "
+                    "   AND (refresh_claimed_until IS NULL OR refresh_claimed_until < now()) "
+                    "RETURNING refresh_claimed_until",
+                    tenant_id, row["id"], _REFRESH_LEASE_S,
+                )
+            current = await _connection_row(tenant_id, row["id"])
+            try:
+                if current is None or current["status"] != "connected":
+                    raise ReconnectRequired
+                # Another caller refreshed while this one waited: use its token.
+                if current["access_token_ref"] != row["access_token_ref"] or not (force or _expiring(current)):
+                    return await auth_schemes.resolve_tenant_ref(tenant_id, current["access_token_ref"])
+                if claimed_until is not None:
+                    return await _refresh(tenant_id, current, spec)
+            finally:
+                if claimed_until is not None:
+                    async with tenant_conn(pool) as conn:
+                        await conn.execute(
+                            "UPDATE oauth_connections SET refresh_claimed_until = NULL "
+                            " WHERE tenant_id = $1 AND id = $2 AND refresh_claimed_until = $3",
+                            tenant_id, row["id"], claimed_until,
+                        )
+            await asyncio.sleep(_REFRESH_POLL_S)
 
 
 async def _winners_token(tenant_id: str, connection_id: Any) -> str:
@@ -541,7 +653,7 @@ async def _refresh(tenant_id: str, row: Any, spec: OAuthProvider) -> str:
         new_refresh = body.get("refresh_token")
         access_ref = encrypt_tenant_secret(tenant_id, access_token)
         new_refresh_ref = encrypt_tenant_secret(tenant_id, new_refresh) if new_refresh else None
-        access_expires_at = _expires_at(body)
+        access_expires_at = _expires_at(body, spec.key)
     except Exception:
         raise ValueError("credential_unavailable") from None
 

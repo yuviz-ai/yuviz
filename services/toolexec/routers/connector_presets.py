@@ -21,6 +21,7 @@ from services.config.deps import (
 )
 
 from .. import custom_apis as custom_apis_service
+from .. import oauth
 from .. import presets
 from ..schemas import PresetApplyRequest
 
@@ -48,6 +49,7 @@ async def apply_connector_preset(
     current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
 ):
     await assert_tenant_access(tenant_id, current_user)
+    await oauth.require_live_tenant(tenant_id)
     if preset_key not in presets.PRESETS:
         raise LookupError(preset_key)
     if body.preset_key != preset_key:

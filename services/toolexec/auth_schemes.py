@@ -178,7 +178,10 @@ async def _oauth2_client_credentials_token(tenant_id: str, custom_api_id: str, c
     return token
 
 
-async def apply(api: dict, headers: dict[str, Any], query_params: dict[str, Any], *, effective_url: str) -> set[str]:
+async def apply(
+    api: dict, headers: dict[str, Any], query_params: dict[str, Any], *, effective_url: str,
+    used: dict[str, str] | None = None,
+) -> set[str]:
     """Places api['auth_scheme']'s credential into `headers` or
     `query_params` (mutated in place), resolving every ref through
     resolve_tenant_ref() at call time — never the bare
@@ -188,6 +191,9 @@ async def apply(api: dict, headers: dict[str, Any], query_params: dict[str, Any]
     auth_config value, and no partial credential in the message — if the
     ref cannot be resolved (out-of-namespace, missing platform/tenant
     secret, decrypt failure, or an unreachable OAuth2 token endpoint).
+
+    `used`, when given, receives {"access_token_ref": <stored reference>} for an OAuth connection's token: the
+    token this request carries, so a 401 can tell a still-current token from one another caller has replaced.
 
     Returns the set of header/query-param NAMES it just injected — never
     the values — so the caller (executor.py) can exclude the resolved
@@ -220,9 +226,11 @@ async def apply(api: dict, headers: dict[str, Any], query_params: dict[str, Any]
         elif scheme == "oauth2_authorization_code":
             from . import oauth  # function-local: oauth imports this module
 
-            token, provider, api_base_url, _auth_kind = await oauth.access_token_for(
+            token, provider, api_base_url, _auth_kind, token_ref = await oauth.access_token_and_ref_for(
                 tenant_id, api["oauth_connection_id"],
             )
+            if used is not None:
+                used["access_token_ref"] = token_ref
             # A connector token goes only to the host this row is bound to, judged on the URL actually dialed.
             if not oauth.provider_host_allowed(
                 provider, urlsplit(effective_url).hostname, api_base_url, base_source=api["endpoint_base_source"],

@@ -468,3 +468,51 @@ def test_every_tenant_scoped_handler_awaits_assert_tenant_access():
                 awaited.add(fn.name)
     assert len(bare) == len(handlers)           # every call site found...
     assert awaited == handlers                  # ...and each one is awaited, in every handler
+
+
+@pytest.mark.asyncio
+async def test_a_soft_deleted_tenant_can_neither_authorize_nor_redeem_nor_connect_a_key(pool, world, monkeypatch):
+    """The state was issued while the tenant was live and the admin's JWT still resolves; only the
+    tenant's own deleted_at can refuse the callback. Nothing may be exchanged or stored."""
+    tenants, users = world
+    headers, tenant = users["admin_a"]["headers"], tenants["a"]
+    base = f"/tenants/{tenant}/oauth-connections"
+    async with _client() as c:
+        state = await _authorize(c, tenant, headers)
+        await pool.execute("UPDATE tenants SET deleted_at = now() WHERE id = $1", uuid.UUID(tenant))
+        seen = []
+        monkeypatch.setattr(oauth, "_provider_transport", lambda ips: httpx.MockTransport(
+            lambda request: seen.append(request) or httpx.Response(500)))
+        callback = await c.post(f"{base}/callback", headers=headers, json={"state": state, "code": "c"})
+        authorize = await c.post(f"{base}/google/authorize", headers=headers, json={})
+        api_key = await c.post(f"{base}/calcom/api-key", headers=headers, json={"api_key": "cal_live_ok"})
+    assert (callback.status_code, authorize.status_code, api_key.status_code) == (404, 404, 404)
+    assert seen == []
+    assert await pool.fetchval("SELECT count(*) FROM oauth_connections WHERE tenant_id = $1", uuid.UUID(tenant)) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_tenant_deleted_during_the_token_exchange_stores_nothing(pool, world, monkeypatch):
+    """require_live_tenant passed, then the delete committed while the provider exchange was in flight.
+    The callback must be refused and no connected row, token or audit entry may appear."""
+    tenants, users = world
+    headers, tenant = users["admin_a"]["headers"], tenants["a"]
+
+    async def _delete_lands_mid_exchange(request: httpx.Request) -> httpx.Response:
+        await pool.execute("UPDATE tenants SET deleted_at = now() WHERE id = $1", uuid.UUID(tenant))
+        return httpx.Response(200, json={
+            "access_token": "at", "refresh_token": "rt", "expires_in": 3600,
+            "id_token": "h.eyJlbWFpbCI6ICJhQGIuYyIsICJzdWIiOiAiczEifQ.s",
+        })
+
+    async with _client() as c:
+        state = await _authorize(c, tenant, headers)
+        monkeypatch.setattr(oauth, "_provider_transport", lambda ips: httpx.MockTransport(_delete_lands_mid_exchange))
+        callback = await c.post(
+            f"/tenants/{tenant}/oauth-connections/callback", headers=headers, json={"state": state, "code": "c"},
+        )
+    assert callback.status_code == 404
+    assert await pool.fetchval("SELECT count(*) FROM oauth_connections WHERE tenant_id = $1", uuid.UUID(tenant)) == 0
+    assert await pool.fetchval(
+        "SELECT count(*) FROM audit_log WHERE entity_type = 'oauth_connection' AND user_id = $1",
+        uuid.UUID(users["admin_a"]["id"])) == 0

@@ -790,10 +790,10 @@ async def test_a_crm_projection_reaches_the_model_as_exactly_four_keys_with_the_
     data = {"outcome": "match", "spoken": f"Caller matched: {name}.", "items": [
         {"contact_id": "9", "full_name": name, "company": None, "owner_name": None}]}
     client = _FakeToolExecClient({
-        "chain_status": "success", "data": data, "deterministic_response": f"Contact lookup: match.{data['spoken']}",
-        "steps": [{"api_name": "crm_lookup_contact"}],
+        "chain_status": "success", "data": data, "deterministic_response": None,
+        "steps": [{"api_name": "zoho_lookup_contact"}],
     })
-    result = await ApiExecExecutor(client).execute(_request({"api_name": "crm_lookup_contact", "inputs": {}}))
+    result = await ApiExecExecutor(client).execute(_request({"api_name": "zoho_lookup_contact", "inputs": {}}))
 
     history: list[ChatMessage] = []
     _fold_tool_result_into_history(

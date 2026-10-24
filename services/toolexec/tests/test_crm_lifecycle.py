@@ -61,6 +61,14 @@ class Provider:
         return [r for r in self.requests if r.url.path.endswith(suffix)]
 
 
+class RejectsFirstRequest(Upstream):
+    """A CRM whose session ended early: 401 for the stale token, then normal."""
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        response = super().__call__(request)
+        return httpx.Response(401, json={}) if len(self.requests) == 1 else response
+
+
 @pytest.fixture
 def provider(monkeypatch) -> Provider:
     recorder = Provider()
@@ -78,7 +86,7 @@ async def _setup(pool, tenant, agent, monkeypatch, upstream, **seed) -> str:
 
 
 async def _lookup(tenant, agent, **overrides):
-    return await executor.execute_chain(_request(tenant, agent, "crm_lookup_contact", **CALL, **overrides))
+    return await executor.execute_chain(_request(tenant, agent, "zoho_lookup_contact", **CALL, **overrides))
 
 
 async def _connection(pool, connection: str) -> dict:
@@ -169,6 +177,163 @@ async def test_a_5xx_or_slow_crm_gives_a_bounded_failure_and_leaves_the_connecti
 
 
 @pytest.mark.asyncio
+async def test_a_slow_token_refresh_is_bounded_by_the_step_timeout_and_still_commits_the_rotation(
+    pool, tenant_agent, crm_cleanup, provider, monkeypatch,
+):
+    tenant, agent = tenant_agent
+    upstream = Upstream(body=zoho_body())
+    connection = await _setup(pool, tenant, agent, monkeypatch, upstream, expires_in_s=-30)
+    provider.delay = 1.0
+
+    started = time.monotonic()
+    response = await _lookup(tenant, agent, chain_budget_ms=300)  # the call's own budget, not a tuned constant
+
+    assert time.monotonic() - started < 0.9
+    assert (response.chain_status, response.error) == ("timeout", "step_timeout")
+    assert upstream.requests == []
+    # The refresh the step gave up on is allowed to finish: abandoning it would lose the rotated token.
+    await asyncio.gather(*executor._inflight_auth)
+    row = await _connection(pool, connection)
+    assert decrypt_tenant_secret(str(tenant["id"]), row["refresh_token_ref"]) == "rt-new-1"
+    assert row["status"] == "connected"
+
+
+@pytest.mark.asyncio
+async def test_a_401_from_the_crm_refreshes_once_and_retries_with_the_new_token(
+    pool, tenant_agent, crm_cleanup, provider, monkeypatch,
+):
+    tenant, agent = tenant_agent
+    upstream = RejectsFirstRequest(body=zoho_body())
+    await _setup(pool, tenant, agent, monkeypatch, upstream)  # the stored expiry says the token is good
+    response = await _lookup(tenant, agent)
+
+    assert response.chain_status == "success"
+    assert len(provider.calls("/token")) == 1
+    assert [r.headers["authorization"] for r in upstream.requests] == ["Bearer at-1", "Bearer at-new-1"]
+
+
+@pytest.mark.asyncio
+async def test_a_401_that_persists_after_the_refresh_fails_the_step_without_a_second_refresh(
+    pool, tenant_agent, crm_cleanup, provider, monkeypatch,
+):
+    tenant, agent = tenant_agent
+    upstream = Upstream(status=401, body={})
+    connection = await _setup(pool, tenant, agent, monkeypatch, upstream)
+
+    response = await _lookup(tenant, agent)
+
+    assert (response.chain_status, response.error) == ("failed", "http_status_401")
+    assert len(provider.calls("/token")) == 1 and len(upstream.requests) == 2
+    assert (await _connection(pool, connection))["status"] == "connected"
+
+
+async def _claims(pool, tenant) -> list[str]:
+    rows = await pool.fetch("SELECT status FROM api_side_effect_claims WHERE tenant_id = $1", tenant["id"])
+    return [r["status"] for r in rows]
+
+
+async def _make_side_effecting(pool, tenant) -> None:
+    """The lookup row stands in for a booking: same OAuth credential, but it takes a claim."""
+    await pool.execute("UPDATE custom_apis SET side_effecting = true WHERE tenant_id = $1 AND name = 'zoho_lookup_contact'",
+                       tenant["id"])
+
+
+@pytest.mark.asyncio
+async def test_a_failed_refresh_after_a_401_releases_the_side_effect_claim(
+    pool, tenant_agent, crm_cleanup, provider, monkeypatch,
+):
+    """A 401 proves the provider did not process the request. If the refresh that follows fails (the user revoked
+    access: invalid_grant), the claim must be freed, or the same booking is refused for the claim TTL after a
+    reconnect."""
+    tenant, agent = tenant_agent
+    upstream = Upstream(status=401, body={})
+    connection = await _setup(pool, tenant, agent, monkeypatch, upstream)   # stored expiry says the token is good
+    await _make_side_effecting(pool, tenant)
+    provider.token_status, provider.token_body = 400, {"error": "invalid_grant"}
+
+    response = await _lookup(tenant, agent)
+
+    assert (response.chain_status, response.error) == ("unavailable", "reconnect_required")
+    assert len(upstream.requests) == 1                                  # the retry never went out
+    assert await _claims(pool, tenant) == ["released"]
+    assert (await _connection(pool, connection))["status"] == "reconnect_needed"
+
+
+@pytest.mark.asyncio
+async def test_a_refresh_that_runs_out_of_time_after_a_401_releases_the_claim_too(
+    pool, tenant_agent, crm_cleanup, provider, monkeypatch,
+):
+    tenant, agent = tenant_agent
+    upstream = Upstream(status=401, body={})
+    await _setup(pool, tenant, agent, monkeypatch, upstream)
+    await _make_side_effecting(pool, tenant)
+    provider.delay = 1.0
+
+    response = await _lookup(tenant, agent, chain_budget_ms=300)
+
+    assert (response.chain_status, response.error) == ("timeout", "step_timeout")
+    assert await _claims(pool, tenant) == ["released"]
+    await asyncio.gather(*executor._inflight_auth)                      # let the abandoned refresh commit its rotation
+
+
+@pytest.mark.asyncio
+async def test_a_retry_that_still_fails_with_a_401_keeps_releasing_the_claim_as_before(
+    pool, tenant_agent, crm_cleanup, provider, monkeypatch,
+):
+    tenant, agent = tenant_agent
+    upstream = Upstream(status=401, body={})
+    await _setup(pool, tenant, agent, monkeypatch, upstream)
+    await _make_side_effecting(pool, tenant)
+
+    response = await _lookup(tenant, agent)
+
+    assert (response.chain_status, response.error) == ("failed", "http_status_401")
+    assert len(provider.calls("/token")) == 1 and len(upstream.requests) == 2
+    assert await _claims(pool, tenant) == ["released"]
+
+
+@pytest.mark.asyncio
+async def test_a_401_for_a_token_another_caller_already_replaced_does_not_refresh_again(
+    pool, tenant_agent, crm_cleanup, provider, monkeypatch,
+):
+    """Two calls get 401 with token T1. The first refreshes to T2. The second's 401 arrives after that commit: it
+    must retry with T2, not spend a second provider round trip rotating to T3."""
+    tenant, agent = tenant_agent
+    connection = await _setup(pool, tenant, agent, monkeypatch, Upstream(body=zoho_body()))
+    tid = str(tenant["id"])
+    rejected = (await _connection(pool, connection))["access_token_ref"]       # T1, what both requests carried
+
+    assert await oauth.refresh_after_unauthorized(tid, connection, rejected) is True      # first caller: refreshes
+    assert len(provider.calls("/token")) == 1
+    after_first = (await _connection(pool, connection))["access_token_ref"]
+    assert after_first != rejected
+
+    assert await oauth.refresh_after_unauthorized(tid, connection, rejected) is True      # second caller: reuses T2
+    assert len(provider.calls("/token")) == 1
+    assert (await _connection(pool, connection))["access_token_ref"] == after_first
+
+    # Without the rejected ref (an unknown token) the old behaviour holds: refresh.
+    assert await oauth.refresh_after_unauthorized(tid, connection) is True
+    assert len(provider.calls("/token")) == 2
+
+
+@pytest.mark.asyncio
+async def test_the_token_ref_a_request_carried_is_reported_by_access_token_and_ref_for(
+    pool, tenant_agent, crm_cleanup, provider, monkeypatch,
+):
+    tenant, agent = tenant_agent
+    connection = await _setup(pool, tenant, agent, monkeypatch, Upstream(body=zoho_body()))
+    tid = str(tenant["id"])
+    token, _spec, _base, _kind, ref = await oauth.access_token_and_ref_for(tid, connection)
+    assert token == "at-1" and ref == (await _connection(pool, connection))["access_token_ref"]
+
+    await pool.execute("UPDATE oauth_connections SET access_expires_at = now() - interval '1 minute' WHERE id = $1",
+                       uuid.UUID(connection))
+    token, _spec, _base, _kind, ref = await oauth.access_token_and_ref_for(tid, connection)   # refreshed inline
+    assert token == "at-new-1" and ref == (await _connection(pool, connection))["access_token_ref"]
+
+
+@pytest.mark.asyncio
 async def test_two_concurrent_refreshes_leave_one_winner_and_the_row_keeps_a_refresh_token(
     pool, tenant_agent, crm_cleanup, provider, monkeypatch,
 ):
@@ -180,12 +345,11 @@ async def test_two_concurrent_refreshes_leave_one_winner_and_the_row_keeps_a_ref
     first, second = await asyncio.gather(_lookup(tenant, agent), _lookup(tenant, agent))
 
     assert first.chain_status == second.chain_status == "success"
-    assert len(provider.calls("/token")) == 2
+    assert len(provider.calls("/token")) == 1                            # the loser waits, re-reads, reuses
     row = await _connection(pool, connection)
     stored_access = decrypt_tenant_secret(str(tenant["id"]), row["access_token_ref"])
     stored_refresh = decrypt_tenant_secret(str(tenant["id"]), row["refresh_token_ref"])
-    assert stored_refresh in {"rt-new-1", "rt-new-2"}                    # never lost, never the spent one
-    assert stored_access == f"at-new-{stored_refresh[-1]}"               # one winner's pair, not a mix
+    assert (stored_access, stored_refresh) == ("at-new-1", "rt-new-1")   # the one winner's pair, never the spent one
     assert {r.headers["authorization"] for r in upstream.requests} == {f"Bearer {stored_access}"}  # loser used it
 
 
