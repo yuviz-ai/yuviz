@@ -30,15 +30,16 @@ The hot-path budget. Each stage has its own timeout under one hard deadline; a s
 
 | Variable | Default | Type | Meaning | Read at |
 |---|---|---|---|---|
-| `KNOWLEDGE_BREAKER_COOLDOWN_S` | `20` | float | Seconds an open breaker waits before one half-open probe. | `services/knowledge/resilience.py:78` |
-| `KNOWLEDGE_BREAKER_FAILURES` | `5` | float | Consecutive failures before a dependency's circuit breaker opens (per embedding config, and rerank). | `services/knowledge/resilience.py:77` |
-| `KNOWLEDGE_DENSE_TIMEOUT_MS` | `120` | float | Vector search timeout. | `services/knowledge/resilience.py:73` |
-| `KNOWLEDGE_EMBED_TIMEOUT_MS` | `None` | str | Query-embedding timeout; on a miss retrieval continues lexical-only (`embedding_unavailable`). | `services/knowledge/resilience.py:72` |
-| `KNOWLEDGE_LEXICAL_TIMEOUT_MS` | `120` | float | Lexical (full-text) search timeout. | `services/knowledge/resilience.py:74` |
+| `KNOWLEDGE_BREAKER_COOLDOWN_S` | `20` | float | Seconds an open breaker waits before one half-open probe. | `services/knowledge/resilience.py:86` |
+| `KNOWLEDGE_BREAKER_FAILURES` | `5` | float | Consecutive failures before a dependency's circuit breaker opens (per embedding config, and rerank). | `services/knowledge/resilience.py:85` |
+| `KNOWLEDGE_DENSE_GRACE_MS` | `None` | str | Once keyword search has matches, wait at most this long for a dense branch still embedding, then return the keyword results (0 = do not wait; unset = off, wait for the embedder as usual). Each cut counts against the embedder's circuit breaker. | `services/knowledge/resilience.py:84` |
+| `KNOWLEDGE_DENSE_TIMEOUT_MS` | `120` | float | Vector search timeout. | `services/knowledge/resilience.py:80` |
+| `KNOWLEDGE_EMBED_TIMEOUT_MS` | `None` | str | Query-embedding timeout; on a miss retrieval continues lexical-only (`embedding_unavailable`). | `services/knowledge/resilience.py:79` |
+| `KNOWLEDGE_LEXICAL_TIMEOUT_MS` | `120` | float | Lexical (full-text) search timeout. | `services/knowledge/resilience.py:81` |
 | `KNOWLEDGE_MAX_BODY_BYTES` | `65536` | int | Request-body cap for `/internal/retrieve` and `/internal/prewarm` (413 above it). | `services/knowledge/body_limit.py:13` |
-| `KNOWLEDGE_RERANK_TIMEOUT_MS` | `120` | float | Stage budget for reranking inside the retrieval deadline. | `services/knowledge/resilience.py:75` |
-| `KNOWLEDGE_RETRIEVAL_DEADLINE_MS` | `400` | float | Hard deadline for one retrieval (the design's p99 target); stages are cancelled at it. | `services/knowledge/resilience.py:76` |
-| `KNOWLEDGE_RETRIEVAL_MAX_QUERY_CHARS` | `1000` | float | Queries are cut to this many characters before anything touches them. | `services/knowledge/resilience.py:87` |
+| `KNOWLEDGE_RERANK_TIMEOUT_MS` | `120` | float | Stage budget for reranking inside the retrieval deadline. | `services/knowledge/resilience.py:82` |
+| `KNOWLEDGE_RETRIEVAL_DEADLINE_MS` | `400` | float | Hard deadline for one retrieval (the design's p99 target); stages are cancelled at it. | `services/knowledge/resilience.py:83` |
+| `KNOWLEDGE_RETRIEVAL_MAX_QUERY_CHARS` | `1000` | float | Queries are cut to this many characters before anything touches them. | `services/knowledge/resilience.py:95` |
 | `KNOWLEDGE_RETRIEVE_TIMEOUT_S` | `_DEFAULT_RETRIEVE_TIMEOUT_S` | float | Outer guard on `/internal/retrieve`, above the stage deadlines; on expiry the service answers `unavailable` itself. | `services/knowledge/routers/retrieve.py:37` |
 
 ## Admission limiter and connection pool
@@ -48,13 +49,13 @@ Protects the database pool: past the caps a caller gets a typed `unavailable` qu
 | Variable | Default | Type | Meaning | Read at |
 |---|---|---|---|---|
 | `KNOWLEDGE_DB_POOL_IDLE_S` | `0` | float | Close connections idle this long; 0 keeps them (asyncpg's own idle close is disabled). | `services/knowledge/db.py:24` |
-| `KNOWLEDGE_DB_POOL_MAX` | `20` | int | Maximum pooled Postgres connections for the knowledge service. | `services/knowledge/db.py:13`, `services/knowledge/resilience.py:70` |
+| `KNOWLEDGE_DB_POOL_MAX` | `20` | int | Maximum pooled Postgres connections for the knowledge service. | `services/knowledge/db.py:13`, `services/knowledge/resilience.py:77` |
 | `KNOWLEDGE_DB_POOL_MIN` | `10` | int | Warm connections kept open (clamped to the maximum), so a burst does not open connections inside the acquire bound. | `services/knowledge/db.py:18` |
 | `KNOWLEDGE_HNSW_MAX_SCAN_TUPLES` | `20000` | int | pgvector `hnsw.max_scan_tuples` for the filtered vector scan (pgvector 0.8+ iterative scan). | `services/knowledge/db.py:30`, `services/knowledge/vector_repository.py:19` |
-| `KNOWLEDGE_POOL_ACQUIRE_TIMEOUT_MS` | `60` | float | Waiting longer than this for a pool connection counts as overload, not a slow dependency. | `services/knowledge/resilience.py:86` |
-| `KNOWLEDGE_RETRIEVAL_MAX_INFLIGHT` | `derived (see code)` | float | Retrievals admitted at once per process; default derives from the pool size. | `services/knowledge/resilience.py:69` |
-| `KNOWLEDGE_RETRIEVAL_QUEUE_WAIT_MS` | `150` | float | How long a refused arrival may queue for a slot before getting `overloaded`. | `services/knowledge/resilience.py:85` |
-| `KNOWLEDGE_RETRIEVAL_TENANT_MAX_INFLIGHT` | `max(1, max_inflight // 3)` | float | Admitted retrievals per tenant (default a third of the process cap), so one tenant cannot take every slot. | `services/knowledge/resilience.py:84` |
+| `KNOWLEDGE_POOL_ACQUIRE_TIMEOUT_MS` | `60` | float | Waiting longer than this for a pool connection counts as overload, not a slow dependency. | `services/knowledge/resilience.py:94` |
+| `KNOWLEDGE_RETRIEVAL_MAX_INFLIGHT` | `derived (see code)` | float | Retrievals admitted at once per process; default derives from the pool size. | `services/knowledge/resilience.py:76` |
+| `KNOWLEDGE_RETRIEVAL_QUEUE_WAIT_MS` | `150` | float | How long a refused arrival may queue for a slot before getting `overloaded`. | `services/knowledge/resilience.py:93` |
+| `KNOWLEDGE_RETRIEVAL_TENANT_MAX_INFLIGHT` | `max(1, max_inflight // 3)` | float | Admitted retrievals per tenant (default a third of the process cap), so one tenant cannot take every slot. | `services/knowledge/resilience.py:92` |
 
 ## Plan cache, query and embedding caches
 
@@ -72,11 +73,11 @@ Scoring thresholds and the lexical branch's term selection.
 
 | Variable | Default | Type | Meaning | Read at |
 |---|---|---|---|---|
-| `KNOWLEDGE_LEXICAL_CONFIDENT_SCORE` | `0.3` | float | A top hit supported only by lexical evidence is `low_confidence` unless it scores at least this. | `services/knowledge/resilience.py:82` |
+| `KNOWLEDGE_LEXICAL_CONFIDENT_SCORE` | `0.3` | float | A top hit supported only by lexical evidence is `low_confidence` unless it scores at least this. | `services/knowledge/resilience.py:90` |
 | `KNOWLEDGE_LEXICAL_MAX_TERM_DF` | `2000` | int | Terms present in more chunks than this are treated as common words and not searched alone. | `services/knowledge/vector_repository.py:110` |
-| `KNOWLEDGE_LEXICAL_MIN_SCORE` | `0.05` | float | Lexical hits scoring below this are dropped. | `services/knowledge/resilience.py:81` |
-| `KNOWLEDGE_LOW_CONFIDENCE_GAP` | `0.02` | float | Gap between the top two scores below which a weak top hit is `low_confidence`. | `services/knowledge/resilience.py:80` |
-| `KNOWLEDGE_LOW_CONFIDENCE_TOP` | `0.5` | float | Top score below this (and a small gap) marks the answer `low_confidence`. | `services/knowledge/resilience.py:79` |
+| `KNOWLEDGE_LEXICAL_MIN_SCORE` | `0.05` | float | Lexical hits scoring below this are dropped. | `services/knowledge/resilience.py:89` |
+| `KNOWLEDGE_LOW_CONFIDENCE_GAP` | `0.02` | float | Gap between the top two scores below which a weak top hit is `low_confidence`. | `services/knowledge/resilience.py:88` |
+| `KNOWLEDGE_LOW_CONFIDENCE_TOP` | `0.5` | float | Top score below this (and a small gap) marks the answer `low_confidence`. | `services/knowledge/resilience.py:87` |
 
 ## Rerank (opt-in)
 
@@ -100,9 +101,9 @@ Off unless `KNOWLEDGE_RERANKER` names a provider and an agent turns `rerank` on.
 | `KNOWLEDGE_RERANK_TENANT_SHARE` | `0.25` | float | Fraction of the platform quota one tenant may use. | `services/knowledge/reranker.py:96`, `services/knowledge/reranker.py:83` |
 | `KNOWLEDGE_RERANK_TOP_N` | `20` | int | Candidates sent to the reranker. | `services/knowledge/reranker.py:73` |
 | `KNOWLEDGE_RERANK_URL` | `(see code)` | str | Override the provider endpoint; must be https, carry no credentials and be an allowed host. **[SECURITY]** | `services/knowledge/reranker.py:322` |
-| `KNOWLEDGE_RERANK_VALVE_COOLDOWN_S` | `20` | float | How long the valve stays open before one probe. | `services/knowledge/resilience.py:254` |
-| `KNOWLEDGE_RERANK_VALVE_TENANTS` | `3` | int | Distinct tenants failing within the window that opens the platform-wide rerank valve. | `services/knowledge/resilience.py:252` |
-| `KNOWLEDGE_RERANK_VALVE_WINDOW_S` | `30` | float | Window for counting failing tenants. | `services/knowledge/resilience.py:253` |
+| `KNOWLEDGE_RERANK_VALVE_COOLDOWN_S` | `20` | float | How long the valve stays open before one probe. | `services/knowledge/resilience.py:275` |
+| `KNOWLEDGE_RERANK_VALVE_TENANTS` | `3` | int | Distinct tenants failing within the window that opens the platform-wide rerank valve. | `services/knowledge/resilience.py:273` |
+| `KNOWLEDGE_RERANK_VALVE_WINDOW_S` | `30` | float | Window for counting failing tenants. | `services/knowledge/resilience.py:274` |
 
 ## Logging and retention
 
@@ -192,8 +193,8 @@ How the Conversation service presents and guards retrieved text.
 | Variable | Default | Type | Meaning | Read at |
 |---|---|---|---|---|
 | `KNOWLEDGE_TAINT_BLOCKS_WRITES` | `1` | int | Default on: after a document lookup in a turn, state-changing tool calls are refused that turn (a planted passage cannot steer a write). Off removes that guard. **[SECURITY]** | `services/conversation/tools/guard.py:73` |
-| `KNOWLEDGE_TOOL_MAX_CHARS` | `6000` | int | Character ceiling as well, since words are no bound for CJK or minified text. | `services/conversation/pipeline.py:246` |
-| `KNOWLEDGE_TOOL_MAX_TOKENS` | `1500` | int | Ceiling on retrieved text handed to the LLM (words). The server already caps prompt-mode documents at half of `max_tokens`; this bounds the whole result. | `services/conversation/pipeline.py:244` |
+| `KNOWLEDGE_TOOL_MAX_CHARS` | `6000` | int | Character ceiling as well, since words are no bound for CJK or minified text. | `services/conversation/pipeline.py:378` |
+| `KNOWLEDGE_TOOL_MAX_TOKENS` | `1500` | int | Ceiling on retrieved text handed to the LLM (words). The server already caps prompt-mode documents at half of `max_tokens`; this bounds the whole result. | `services/conversation/pipeline.py:376` |
 
 ## Service wiring, storage and shared secrets
 
@@ -201,16 +202,16 @@ Where services find each other, and the secrets they share.
 
 | Variable | Default | Type | Meaning | Read at |
 |---|---|---|---|---|
-| `CONFIG_SERVICE_EMAIL` | `''` | str | Service-account email the Conversation service logs in with. | `services/conversation/__main__.py:284`, `services/conversation/__main__.py:298`, `services/conversation/tools/provider_manager.py:27` |
-| `CONFIG_SERVICE_PASSWORD` | `''` | str | Service-account password. **[SECURITY]** | `services/conversation/__main__.py:285`, `services/conversation/__main__.py:299`, `services/conversation/tools/provider_manager.py:28` |
-| `CONFIG_SERVICE_URL` | `'http://localhost:8000'` | str | Config service base URL (Conversation's login and config fetch). | `services/conversation/__main__.py:283`, `services/conversation/__main__.py:297`, `services/conversation/tools/provider_manager.py:26` |
+| `CONFIG_SERVICE_EMAIL` | `''` | str | Service-account email the Conversation service logs in with. | `services/conversation/__main__.py:292`, `services/conversation/__main__.py:306`, `services/conversation/tools/provider_manager.py:27` |
+| `CONFIG_SERVICE_PASSWORD` | `''` | str | Service-account password. **[SECURITY]** | `services/conversation/__main__.py:293`, `services/conversation/__main__.py:307`, `services/conversation/tools/provider_manager.py:28` |
+| `CONFIG_SERVICE_URL` | `'http://localhost:8000'` | str | Config service base URL (Conversation's login and config fetch). | `services/conversation/__main__.py:291`, `services/conversation/__main__.py:305`, `services/conversation/tools/provider_manager.py:26` |
 | `JWT_SECRET` | `''` | str | HMAC secret for access tokens; required at import. **[SECURITY]** **[SET ON BOTH CONFIG AND KNOWLEDGE]** | `services/config/auth.py:12` |
 | `KNOWLEDGE_PROVIDER_ALLOWED_HOSTS` | `None` | str | Allowed hosts for tenant-configured provider URLs (egress guard, when present). **[SECURITY]** | `libs/egress_guard.py:89` |
-| `KNOWLEDGE_SERVICE_URL` | `'http://localhost:8100'` | str | Where the Conversation service reaches the knowledge service. | `services/conversation/__main__.py:296` |
-| `LISTEN_HOST` | `'127.0.0.1'` | str | Bind address of the Conversation gRPC server. | `services/conversation/__main__.py:469` |
+| `KNOWLEDGE_SERVICE_URL` | `'http://localhost:8100'` | str | Where the Conversation service reaches the knowledge service. | `services/conversation/__main__.py:304` |
+| `LISTEN_HOST` | `'127.0.0.1'` | str | Bind address of the Conversation gRPC server. | `services/conversation/__main__.py:487` |
 | `OLLAMA_BASE_URL` | `None` | str | Base URL of the Ollama embedding server (when read by the code). | `libs/egress_guard.py:92` |
-| `POSTGRES_DSN` | `(unset)` | str | Postgres connection string; production runs the pool as the RLS-enforced `yuviz_app` role. **[SECURITY]** **[SET ON BOTH CONFIG AND KNOWLEDGE]** | `services/knowledge/db.py:39`, `services/conversation/__main__.py:316`, `services/conversation/__main__.py:227` (+1) |
-| `REDIS_URL` | `'redis://localhost:6379/0'` | str | Redis for the agent-KB flag cache and shared caches. **[SET ON BOTH CONFIG AND KNOWLEDGE]** | `services/knowledge/cache.py:27`, `services/conversation/__main__.py:272`, `services/conversation/__main__.py:277` (+2) |
+| `POSTGRES_DSN` | `(unset)` | str | Postgres connection string; production runs the pool as the RLS-enforced `yuviz_app` role. **[SECURITY]** **[SET ON BOTH CONFIG AND KNOWLEDGE]** | `services/knowledge/db.py:39`, `services/conversation/__main__.py:324`, `services/conversation/__main__.py:235` (+1) |
+| `REDIS_URL` | `'redis://localhost:6379/0'` | str | Redis for the agent-KB flag cache and shared caches. **[SET ON BOTH CONFIG AND KNOWLEDGE]** | `services/knowledge/cache.py:27`, `services/conversation/__main__.py:280`, `services/conversation/__main__.py:285` (+2) |
 | `SECRET_ENCRYPTION_KEY` | `''` | str | Fernet key for provider API keys stored in the database. **[SECURITY]** **[SET ON BOTH CONFIG AND KNOWLEDGE]** | `libs/config_sdk/secrets.py:43`, `libs/config_sdk/secrets.py:103` |
 | `TOOLEXEC_SERVICE_URL` | `'http://localhost:8600'` | str | Tool execution service base URL. | `services/conversation/tools/provider_manager.py:25` |
 
@@ -220,33 +221,33 @@ Read by `services/conversation`; listed so the reference is complete.
 
 | Variable | Default | Type | Meaning | Read at |
 |---|---|---|---|---|
-| `OPENAI_API_KEY` | `(unset)` | str | Fallback key for call-sentiment scoring. **[SECURITY]** | `services/conversation/pipeline_config.py:117` |
+| `OPENAI_API_KEY` | `(unset)` | str | Fallback key for call-sentiment scoring. **[SECURITY]** | `services/conversation/pipeline_config.py:140` |
 | `VOICEAI_LANG_HI_WORD_SHARE` | `0.3` | float | Language detection: share of Hindi words that decides Hindi. | `services/conversation/language.py:37` |
 | `VOICEAI_LANG_MIN_CONFIDENCE` | `0.7` | float | Language detection: minimum confidence to switch. | `services/conversation/language.py:32` |
 | `VOICEAI_LANG_SHORT_MIN_CONFIDENCE` | `0.8` | float | Language detection: minimum confidence for short utterances. | `services/conversation/language.py:41` |
 | `VOICEAI_LANG_SHORT_MIN_CONFIDENCE_HI` | `0` | float | Language detection: short-utterance confidence for Hindi. | `services/conversation/language.py:47` |
 | `VOICEAI_LANG_SHORT_MIN_S` | `0.45` | float | Language detection: what counts as a short utterance (s). | `services/conversation/language.py:40` |
 | `VOICEAI_LANG_SWITCH_STREAK` | `1` | float | Language detection: consecutive detections needed to switch. | `services/conversation/language.py:35` |
-| `VOICEAI_LLM_MODEL` | `(unset)` | str | Dev override: LLM model name. | `services/conversation/__main__.py:224`, `services/conversation/pipeline_config.py:81` |
-| `VOICEAI_LLM_SYSTEM` | `(unset)` | str | Dev override: LLM system prompt. | `services/conversation/pipeline_config.py:82` |
-| `VOICEAI_LLM_TEMPERATURE` | `0.7` | float | Dev override: LLM temperature. | `services/conversation/pipeline_config.py:84` |
-| `VOICEAI_LLM_TIMEOUT` | `30` | float | Dev override: LLM timeout (s). | `services/conversation/pipeline_config.py:85` |
-| `VOICEAI_LLM_URL` | `(unset)` | str | Dev override: LLM base URL. | `services/conversation/pipeline_config.py:83` |
-| `VOICEAI_SENTIMENT_API_KEY` | `(unset)` | str | Key for call-sentiment scoring; unset disables it. **[SECURITY]** | `services/conversation/pipeline_config.py:117` |
-| `VOICEAI_SENTIMENT_DISABLED` | `(unset)` | str | Set to disable sentiment scoring. | `services/conversation/pipeline_config.py:122` |
-| `VOICEAI_SENTIMENT_MAX_TURNS` | `40` | int | Transcript turns sent for scoring. | `services/conversation/pipeline_config.py:121` |
-| `VOICEAI_SENTIMENT_MODEL` | `(unset)` | str | Sentiment model name. | `services/conversation/pipeline_config.py:118` |
-| `VOICEAI_SENTIMENT_TIMEOUT` | `30` | float | Sentiment call timeout (s). | `services/conversation/pipeline_config.py:120` |
-| `VOICEAI_SENTIMENT_URL` | `(unset)` | str | Sentiment provider base URL. | `services/conversation/pipeline_config.py:119` |
-| `VOICEAI_STT_DEVICE` | `(unset)` | str | Dev override: STT device. | `services/conversation/pipeline_config.py:65` |
-| `VOICEAI_STT_LANGUAGE` | `(required)` | str | Dev override: STT language. | `services/conversation/pipeline_config.py:68` |
-| `VOICEAI_STT_MODEL` | `(unset)` | str | Dev override: STT model. | `services/conversation/pipeline_config.py:64` |
+| `VOICEAI_LLM_MODEL` | `(unset)` | str | Dev override: LLM model name. | `services/conversation/__main__.py:232`, `services/conversation/pipeline_config.py:104` |
+| `VOICEAI_LLM_SYSTEM` | `(unset)` | str | Dev override: LLM system prompt. | `services/conversation/pipeline_config.py:105` |
+| `VOICEAI_LLM_TEMPERATURE` | `0.7` | float | Dev override: LLM temperature. | `services/conversation/pipeline_config.py:107` |
+| `VOICEAI_LLM_TIMEOUT` | `30` | float | Dev override: LLM timeout (s). | `services/conversation/pipeline_config.py:108` |
+| `VOICEAI_LLM_URL` | `(unset)` | str | Dev override: LLM base URL. | `services/conversation/ai_provider_manager.py:162`, `services/conversation/pipeline_config.py:106` |
+| `VOICEAI_SENTIMENT_API_KEY` | `(unset)` | str | Key for call-sentiment scoring; unset disables it. **[SECURITY]** | `services/conversation/pipeline_config.py:140` |
+| `VOICEAI_SENTIMENT_DISABLED` | `(unset)` | str | Set to disable sentiment scoring. | `services/conversation/pipeline_config.py:145` |
+| `VOICEAI_SENTIMENT_MAX_TURNS` | `40` | int | Transcript turns sent for scoring. | `services/conversation/pipeline_config.py:144` |
+| `VOICEAI_SENTIMENT_MODEL` | `(unset)` | str | Sentiment model name. | `services/conversation/pipeline_config.py:141` |
+| `VOICEAI_SENTIMENT_TIMEOUT` | `30` | float | Sentiment call timeout (s). | `services/conversation/pipeline_config.py:143` |
+| `VOICEAI_SENTIMENT_URL` | `(unset)` | str | Sentiment provider base URL. | `services/conversation/pipeline_config.py:142` |
+| `VOICEAI_STT_DEVICE` | `(unset)` | str | Dev override: STT device. | `services/conversation/pipeline_config.py:88` |
+| `VOICEAI_STT_LANGUAGE` | `(required)` | str | Dev override: STT language. | `services/conversation/pipeline_config.py:91` |
+| `VOICEAI_STT_MODEL` | `(unset)` | str | Dev override: STT model. | `services/conversation/pipeline_config.py:87` |
 | `VOICEAI_STT_SHORT_MIN_SPEECH_CONFIDENCE` | `0.8` | float | Language detection: STT confidence floor for short utterances. | `services/conversation/language.py:44` |
-| `VOICEAI_TTS_ENGINE` | `(unset)` | str | Dev override: TTS engine. | `services/conversation/pipeline_config.py:97` |
-| `VOICEAI_TTS_KOKORO_SPEED` | `1` | float | Kokoro speech speed. | `services/conversation/pipeline_config.py:101` |
-| `VOICEAI_TTS_LANG_CODE` | `(unset)` | str | Kokoro language code. | `services/conversation/pipeline_config.py:99` |
-| `VOICEAI_TTS_MACOS_WPM` | `180` | int | macOS TTS words per minute. | `services/conversation/pipeline_config.py:100` |
-| `VOICEAI_TTS_VOICE` | `(unset)` | str | Dev override: TTS voice. | `services/conversation/pipeline_config.py:98` |
+| `VOICEAI_TTS_ENGINE` | `(unset)` | str | Dev override: TTS engine. | `services/conversation/pipeline_config.py:120` |
+| `VOICEAI_TTS_KOKORO_SPEED` | `1` | float | Kokoro speech speed. | `services/conversation/pipeline_config.py:124` |
+| `VOICEAI_TTS_LANG_CODE` | `(unset)` | str | Kokoro language code. | `services/conversation/pipeline_config.py:122` |
+| `VOICEAI_TTS_MACOS_WPM` | `180` | int | macOS TTS words per minute. | `services/conversation/pipeline_config.py:123` |
+| `VOICEAI_TTS_VOICE` | `(unset)` | str | Dev override: TTS voice. | `services/conversation/pipeline_config.py:121` |
 
 ## Other
 
@@ -254,7 +255,13 @@ Variables with no hand-written group yet.
 
 | Variable | Default | Type | Meaning | Read at |
 |---|---|---|---|---|
+| `ADMIN_UI_ORIGINS` | `'http://localhost:3000'` | str | (undocumented) | `services/knowledge/app.py:66` |
+| `DEEPGRAM_API_HOST` | `''` | str | (undocumented) | `services/conversation/providers/stt/deepgram.py:36` |
 | `KNOWLEDGE_OPENAI_BASE_URL` | `None` | str | (undocumented) | `services/knowledge/embedding_manager.py:262` |
+| `VOICEAI_BUSINESS_TIMEZONE` | `'UTC'` | str | (undocumented) | `services/conversation/pipeline.py:124` |
+| `VOICEAI_FILLER_DELAY_MS` | `_FILLER_DELAY_MS_DEFAULT` | str | (undocumented) | `services/conversation/pipeline.py:310` |
+| `VOICEAI_PHRASE_CACHE_ENTRIES` | `64` | int | (undocumented) | `services/conversation/phrase_audio.py:21` |
+| `VOICEAI_PRE_RETRIEVAL_WAIT_MS` | `_WAIT_MS_DEFAULT` | str | (undocumented) | `services/conversation/prefetch.py:31` |
 
 ## Test and CI only
 

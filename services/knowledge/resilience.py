@@ -41,6 +41,13 @@ class RetrievalConfig:
     lexical_timeout_s: float = 0.120
     rerank_timeout_s: float = 0.120
     deadline_s: float = 0.400
+    # Once the lexical branch has answered with matches, wait at most this long for a dense branch that is still
+    # embedding, then return the lexical results. A slow or unreachable embedding provider then costs one short grace
+    # period per search instead of its whole budget. Off (None) by default: a hosted embedding that takes 200-300 ms
+    # still joins the fusion. Turn it on (KNOWLEDGE_DENSE_GRACE_MS) where the embedding path is known to be slow;
+    # every cut counts as a miss for the embedder's circuit breaker, so a provider that never makes the grace
+    # ends up skipped altogether. 0 returns the moment lexical has matches.
+    dense_grace_s: float | None = None
     # Breaker: consecutive failures before opening, then seconds before one half-open probe.
     breaker_failures: int = 5
     breaker_cooldown_s: float = 20.0
@@ -74,6 +81,7 @@ class RetrievalConfig:
             lexical_timeout_s=_env_float("KNOWLEDGE_LEXICAL_TIMEOUT_MS", d.lexical_timeout_s * 1000) / 1000,
             rerank_timeout_s=_env_float("KNOWLEDGE_RERANK_TIMEOUT_MS", d.rerank_timeout_s * 1000) / 1000,
             deadline_s=_env_float("KNOWLEDGE_RETRIEVAL_DEADLINE_MS", d.deadline_s * 1000) / 1000,
+            dense_grace_s=_clamped_grace_or_none(os.environ.get("KNOWLEDGE_DENSE_GRACE_MS")),
             breaker_failures=int(_env_float("KNOWLEDGE_BREAKER_FAILURES", d.breaker_failures)),
             breaker_cooldown_s=_env_float("KNOWLEDGE_BREAKER_COOLDOWN_S", d.breaker_cooldown_s),
             low_confidence_top=_env_float("KNOWLEDGE_LOW_CONFIDENCE_TOP", d.low_confidence_top),
@@ -86,6 +94,19 @@ class RetrievalConfig:
             acquire_timeout_s=_env_float("KNOWLEDGE_POOL_ACQUIRE_TIMEOUT_MS", d.acquire_timeout_s * 1000) / 1000,
             max_query_chars=int(_env_float("KNOWLEDGE_RETRIEVAL_MAX_QUERY_CHARS", d.max_query_chars)),
         )
+
+
+def _clamped_grace_or_none(raw: Any) -> float | None:
+    """KNOWLEDGE_DENSE_GRACE_MS: blank or unusable = off (None); otherwise 0..2000 ms, in seconds."""
+    if raw is None or isinstance(raw, bool) or str(raw).strip() == "":
+        return None
+    try:
+        ms = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if ms != ms or ms in (float("inf"), float("-inf")):
+        return None
+    return min(max(ms, 0.0), 2000.0) / 1000
 
 
 EMBED_TIMEOUT_MIN_MS, EMBED_TIMEOUT_MAX_MS = 50.0, 2000.0

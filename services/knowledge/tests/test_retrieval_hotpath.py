@@ -603,6 +603,89 @@ async def test_hung_embedder_cannot_hold_the_call_past_the_deadline(world):
     assert result["chunks"][0]["content"] == REFUND
 
 
+async def test_slow_embedder_costs_only_the_grace_once_lexical_has_matches(world):
+    cfg = RetrievalConfig(dense_grace_s=0.05, deadline_s=0.8, embed_timeout_override_s=0.6)
+    t0 = time.monotonic()
+    result = await _run(world["tenant"], world["agent"], FakeEmbedder(latency_s=0.5), "refunds processed days",
+                        config=cfg)
+    elapsed = time.monotonic() - t0
+    assert elapsed < 0.3, elapsed                      # not the embedder's 0.5 s
+    assert result["chunks"][0]["content"] == REFUND
+    assert "lexical_only" in result["degraded"] and "deadline" not in result["degraded"]
+    assert result["retrieval_metadata"]["timings_ms"]["dense_grace_cut"] == 1.0
+
+
+async def test_every_grace_cut_counts_against_the_embedder_until_its_breaker_opens(world):
+    cfg = RetrievalConfig(dense_grace_s=0.04, deadline_s=0.8, embed_timeout_override_s=0.6, breaker_failures=3)
+    slow = FakeEmbedder(latency_s=0.5)
+    for _ in range(3):
+        result = await _run(world["tenant"], world["agent"], slow, "refunds processed days", config=cfg)
+        assert result["chunks"][0]["content"] == REFUND
+    assert {b.state for k, b in resilience.breakers._breakers.items() if k.startswith("embed:")} == {"open"}
+    calls_before = slow.calls
+    t0 = time.monotonic()
+    result = await _run(world["tenant"], world["agent"], slow, "refunds processed days", config=cfg)
+    assert time.monotonic() - t0 < 0.15 and slow.calls == calls_before        # open: no wait, no provider call
+    assert result["chunks"][0]["content"] == REFUND
+
+
+async def test_the_grace_is_off_unless_configured(world):
+    assert RetrievalConfig().dense_grace_s is None
+    result = await _run(world["tenant"], world["agent"], FakeEmbedder(latency_s=0.2), "how long do refunds take",
+                        config=RetrievalConfig(deadline_s=0.8, embed_timeout_override_s=0.6))
+    assert result["degraded"] == [] and "dense_grace_cut" not in result["retrieval_metadata"]["timings_ms"]
+
+
+def test_grace_env_parsing_is_defensive(monkeypatch):
+    for raw, expected in ((None, None), ("", None), ("  ", None), ("abc", None), ("nan", None), ("100", 0.1),
+                          ("0", 0.0), ("-5", 0.0), ("99999", 2.0)):
+        if raw is None:
+            monkeypatch.delenv("KNOWLEDGE_DENSE_GRACE_MS", raising=False)
+        else:
+            monkeypatch.setenv("KNOWLEDGE_DENSE_GRACE_MS", raw)
+        assert RetrievalConfig.from_env().dense_grace_s == expected, raw
+
+
+async def test_fast_embedder_still_joins_the_fusion(world):
+    cfg = RetrievalConfig(dense_grace_s=0.2, deadline_s=0.8, embed_timeout_override_s=0.6)
+    result = await _run(world["tenant"], world["agent"], FakeEmbedder(latency_s=0.03), "how long do refunds take",
+                        config=cfg)
+    assert result["chunks"][0]["content"] == REFUND
+    assert result["degraded"] == [] and "dense_grace_cut" not in result["retrieval_metadata"]["timings_ms"]
+
+
+async def test_lexical_without_matches_still_waits_for_the_dense_branch(world):
+    # Words that appear in no document: lexical finds nothing, so the slower dense branch is the only evidence.
+    cfg = RetrievalConfig(dense_grace_s=0.0, deadline_s=0.8, embed_timeout_override_s=0.6)
+    result = await _run(world["tenant"], world["agent"], FakeEmbedder(latency_s=0.15), "zzqx unrelated words",
+                        config=cfg)
+    assert "dense_grace_cut" not in result["retrieval_metadata"]["timings_ms"]
+    assert "deadline" not in result["degraded"]
+
+
+async def test_wait_lexical_first_distinguishes_a_cut_from_a_missed_deadline():
+    from types import SimpleNamespace
+
+    async def branch(delay, matches):
+        await asyncio.sleep(delay)
+        return SimpleNamespace(matches=matches)
+
+    t0 = time.monotonic()
+    tasks = {"lexical": asyncio.create_task(branch(0.0, [object()])), "dense": asyncio.create_task(branch(1.0, [object()]))}
+    done, pending, cut = await retrieval._wait_lexical_first(tasks, lambda: 5.0, 0.05)
+    assert cut and pending == {tasks["dense"]} and time.monotonic() - t0 < 0.3
+    tasks["dense"].cancel()
+
+    tasks = {"lexical": asyncio.create_task(branch(0.0, [])), "dense": asyncio.create_task(branch(0.1, [object()]))}
+    done, pending, cut = await retrieval._wait_lexical_first(tasks, lambda: 5.0, 0.0)
+    assert not cut and not pending and len(done) == 2                # empty lexical: dense is awaited in full
+
+    tasks = {"dense": asyncio.create_task(branch(1.0, [object()]))}
+    done, pending, cut = await retrieval._wait_lexical_first(tasks, lambda: 0.05, 0.1)
+    assert not cut and pending                                       # a real deadline miss stays a deadline miss
+    tasks["dense"].cancel()
+
+
 async def test_slow_database_returns_unavailable_inside_the_deadline(world):
     await _run(world["tenant"], world["agent"], world["embedder"], "warm the plan")
     t0 = time.monotonic()

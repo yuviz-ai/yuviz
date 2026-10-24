@@ -59,6 +59,7 @@ _R, _A, _C, _L, _RR, _LG, _Q, _CH, _P, _E, _RE, _T, _S, _V = (g for g, _ in GROU
 M: dict[str, tuple[str, str, tuple[str, ...]]] = {
     # retrieval
     "KNOWLEDGE_RETRIEVAL_DEADLINE_MS": (_R, "Hard deadline for one retrieval (the design's p99 target); stages are cancelled at it.", ()),
+    "KNOWLEDGE_DENSE_GRACE_MS": (_R, "Once keyword search has matches, wait at most this long for a dense branch still embedding, then return the keyword results (0 = do not wait; unset = off, wait for the embedder as usual). Each cut counts against the embedder's circuit breaker.", ()),
     "KNOWLEDGE_EMBED_TIMEOUT_MS": (_R, "Query-embedding timeout; on a miss retrieval continues lexical-only (`embedding_unavailable`).", ()),
     "KNOWLEDGE_DENSE_TIMEOUT_MS": (_R, "Vector search timeout.", ()),
     "KNOWLEDGE_LEXICAL_TIMEOUT_MS": (_R, "Lexical (full-text) search timeout.", ()),

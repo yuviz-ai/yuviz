@@ -32,7 +32,7 @@ from .directives import (
     TransferRequest,
     strip_markdown_chars,
 )
-from . import phrase_audio
+from . import phrase_audio, prefetch
 from .fillers import FillerSelector
 from .i18n import closure_phrases, farewell_phrases, first_turn_fillers, has_phrase_tables, t, tool_fillers
 from .guardrails import GuardrailCounter, GuardrailDetector
@@ -983,14 +983,21 @@ class PipelineConversationHandler:
         # mid-call transition lands before the next generation.
         self._refresh_node_prompt(history, session_id)
         history.append(ChatMessage(role="user", content=stt_result.text))
+        pre_retrieval = self._start_pre_retrieval(stt_result.text)
 
         # The first reply's filler is armed here and spoken only if the reply is slow (_with_filler_timer).
         first_turn_filler = is_first_turn and not self._session(session_id).first_turn_filler_spoken
         if first_turn_filler:
             self._session(session_id).first_turn_filler_spoken = True
 
-        # Knowledge retrieval is the `search_knowledge` local tool, called only when needed.
+        # Knowledge retrieval is the `search_knowledge` local tool, called only when needed. A turn that looks like
+        # a knowledge question searches up front instead (prefetch.py), so the model answers in one pass; the
+        # passages ride on a copy of the caller's turn and never enter history.
         messages_for_llm = history
+        if pre_retrieval is not None:
+            block = await self._pre_retrieval_block(pre_retrieval, session_id)
+            if block:
+                messages_for_llm = with_directive(history, ChatMessage(role="user", content=block))
 
         directives: list[Directive] = []
         full_response: list[str] = []
@@ -1682,6 +1689,60 @@ class PipelineConversationHandler:
         if self._knowledge is not None and self._workflow.knowledge_enabled():
             tools[SEARCH_KNOWLEDGE.name] = (SEARCH_KNOWLEDGE, self._make_knowledge_handler(session_id))
         return tools
+
+    def _start_pre_retrieval(self, text: str) -> "asyncio.Task | None":
+        """Start the knowledge search for a turn that looks like a question the documents answer, or None.
+        Only agents with a knowledge base (workflow.knowledge_enabled) ever search; the gate keeps booking, name
+        and confirmation turns out of it."""
+        if self._knowledge is None or not prefetch.enabled() or not self._workflow.knowledge_enabled():
+            return None
+        if not prefetch.wants_knowledge(text):
+            return None
+        return asyncio.get_running_loop().create_task(
+            self._knowledge.retrieve(self._tenant_slug, self._agent_slug, text, RetrievalPolicy()),
+        )
+
+    async def _pre_retrieval_block(self, task: "asyncio.Task", session_id: str) -> str | None:
+        """The reference block for the model, or None when the search was late, failed, found nothing sure, or
+        the turn was cancelled. Never raises and never waits past VOICEAI_PRE_RETRIEVAL_WAIT_MS: a miss only means
+        the model falls back to calling search_knowledge itself, as before."""
+        started = time.monotonic()
+        try:
+            done, _ = await asyncio.wait({task}, timeout=prefetch.wait_s())
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
+        waited_ms = (time.monotonic() - started) * 1000
+        if task not in done:
+            task.cancel()
+            task.add_done_callback(lambda t: t.cancelled() or t.exception())
+            log.info("pre_retrieval: outcome=late waited_ms=%.0f session=%s", waited_ms, session_id)
+            return None
+        try:
+            context = task.result()
+        except Exception:  # noqa: BLE001
+            log.warning("pre_retrieval: outcome=error waited_ms=%.0f session=%s", waited_ms, session_id, exc_info=True)
+            return None
+        if context is None or context.status not in ("ok", "partial") or not context.chunks:
+            # trace_id, never the query: the caller's words are not logged.
+            log.info(
+                "pre_retrieval: outcome=skipped status=%s chunks=%d waited_ms=%.0f session=%s",
+                getattr(context, "status", None), len(getattr(context, "chunks", None) or ()), waited_ms, session_id,
+            )
+            return None
+        answer_in = self._session_language(session_id) or normalize_language(self._agent_language)
+        block = prefetch.reference_block(
+            [c.content for c in context.chunks],
+            int(context.retrieval_metadata.get("always_included") or 0),
+            answer_in=language_name(answer_in) if answer_in else None,
+            low_confidence=bool(context.low_confidence),
+        )
+        log.info(
+            "pre_retrieval: outcome=%s status=%s chunks=%d low_confidence=%s waited_ms=%.0f trace_id=%s session=%s",
+            "used" if block else "empty", context.status, len(context.chunks), context.low_confidence, waited_ms,
+            context.trace_id, session_id,
+        )
+        return block
 
     def _make_knowledge_handler(self, session_id: str):
         async def handler(arguments: dict[str, Any]) -> ToolResult:

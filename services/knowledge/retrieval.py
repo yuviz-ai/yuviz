@@ -36,7 +36,7 @@ import uuid
 from array import array
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 import asyncpg
 
@@ -403,6 +403,36 @@ async def retrieve(
         admission.release(tenant_slug)
 
 
+def _lexical_has_matches(task: "asyncio.Task | None") -> bool:
+    if task is None or not task.done() or task.cancelled() or task.exception() is not None:
+        return False
+    return bool(task.result().matches)
+
+
+async def _wait_lexical_first(
+    tasks: dict[str, "asyncio.Task"], remaining: Callable[[], float], grace_s: float | None,
+) -> tuple[set, set, bool]:
+    """Wait for the search branches like asyncio.wait, except that, when `grace_s` is set, a dense branch still
+    embedding is not waited for beyond it once the lexical branch has answered with matches. A slow embedding
+    provider (a distant region, a bad network) then costs one grace period instead of its whole budget, while a
+    fast one still joins the fusion. Returns (done, pending, cut_early); cut_early means pending is only the dense
+    branch we chose to drop because the grace ran out first, not a missed deadline."""
+    all_tasks = set(tasks.values())
+    if grace_s is None:
+        done, pending = await asyncio.wait(all_tasks, timeout=max(remaining(), 0.0))
+        return done, pending, False
+    done, pending = await asyncio.wait(all_tasks, timeout=max(remaining(), 0.0), return_when=asyncio.FIRST_COMPLETED)
+    dense = tasks.get("dense")
+    if pending and _lexical_has_matches(tasks.get("lexical")) and dense in pending:
+        budget = max(remaining(), 0.0)
+        late, pending = await asyncio.wait(pending, timeout=min(grace_s, budget))
+        return done | late, pending, bool(pending) and grace_s < budget
+    if pending:
+        late, pending = await asyncio.wait(pending, timeout=max(remaining(), 0.0))
+        done |= late
+    return done, pending, False
+
+
 async def _retrieve(
     held: asyncpg.Connection | None, vector_repo: IVectorRepository, embedding_manager: EmbeddingProviderManager,
     cfg: RetrievalConfig, started: float, trace_id: str, tenant_slug: str, agent_slug: str, query: str,
@@ -482,8 +512,9 @@ async def _retrieve(
             tasks["dense"] = asyncio.create_task(dense_coro())
         if run_lexical:
             tasks["lexical"] = asyncio.create_task(lexical_coro())
+    cut_early = False
     if tasks:
-        done, pending = await asyncio.wait(tasks.values(), timeout=max(remaining(), 0.0))
+        done, pending, cut_early = await _wait_lexical_first(tasks, remaining, cfg.dense_grace_s)
         try:
             for name, task in tasks.items():
                 if task in done:
@@ -494,7 +525,13 @@ async def _retrieve(
             for task in pending:
                 task.cancel()
                 task.add_done_callback(_swallow)
-        if pending:
+        if cut_early:
+            ops_metrics.inc("dense_grace_cut")
+            timings["dense_grace_cut"] = 1.0
+            # A miss for each embedder that did not make the grace, so one that never does ends up skipped.
+            for config_id in plan.groups:
+                breakers.get(f"embed:{config_id}", cfg).record_failure()
+        elif pending:
             degraded.append("deadline")
 
     # Policy says dense-only, but dense produced nothing (or cannot run): lexical beats silence.

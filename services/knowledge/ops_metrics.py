@@ -12,7 +12,7 @@ from . import retrieval_log
 from .resilience import admission, breakers
 
 _counters: dict[str, int] = {"retrieval_overloaded": 0, "plan_cache_hit": 0, "plan_cache_miss": 0,
-             "rerank_calls": 0, "rerank_decisive_skip": 0}
+             "rerank_calls": 0, "rerank_decisive_skip": 0, "dense_grace_cut": 0}
 
 
 def inc(name: str) -> None:
@@ -52,6 +52,9 @@ def prometheus_text() -> str:
            [("", snap["retrieval_overloaded"])])
     metric("knowledge_plan_cache_total", "counter", "Retrieval plan cache lookups.",
            [('{result="hit"}', snap["plan_cache_hit"]), ('{result="miss"}', snap["plan_cache_miss"])])
+    metric("knowledge_dense_grace_cut_total", "counter",
+           "Searches that returned lexical matches without waiting out a slow dense branch.",
+           [("", snap["dense_grace_cut"])])
     metric("knowledge_retrieval_in_flight", "gauge", "Retrievals currently admitted.", [("", snap["retrieval_in_flight"])])
     metric("knowledge_retrieval_logs_dropped_total", "counter", "retrieval_logs rows dropped before insert.",
            [('{reason="queue_full"}', snap["retrieval_logs_dropped_queue_full"]),
