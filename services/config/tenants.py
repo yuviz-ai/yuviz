@@ -6,7 +6,6 @@ import json
 import uuid
 from typing import Any
 
-from libs.config_sdk.dial_targets import TransferPolicy
 from libs.tenancy import platform_conn
 
 from . import audit, cache, db, phone_numbers
@@ -20,7 +19,6 @@ _UPDATABLE_FIELDS = {
     "transfer_timeout_ms",
     "default_stt_config_id", "default_llm_config_id", "default_tts_config_id",
     "max_concurrent_calls", "number_purchase_enabled",
-    "home_calling_code", "allow_international_transfers",
 }
 
 
@@ -46,23 +44,6 @@ async def _validate_default_providers(conn: Any, tenant_id: Any, fields: dict[st
         if row["role"] != role:
             raise ValueError(f"{field}={config_id!r} is a {row['role']} provider, not {role}")
         require_usable_tts_voice(field, config_id, row["engine"], row["voice"])
-
-
-def transfer_policy(tenant: dict[str, Any]) -> TransferPolicy:
-    # .get: tenant:{slug} has no TTL, so a pre-migration cached row lacks both keys.
-    return TransferPolicy(
-        tenant.get("home_calling_code", "1"), tenant.get("allow_international_transfers", False),
-    )
-
-
-async def transfer_policy_on(conn: Any, tenant_id: Any) -> TransferPolicy:
-    """Read on the caller's connection: tenants is outside RLS, and a publish already holds one."""
-    row = await conn.fetchrow(
-        "SELECT home_calling_code, allow_international_transfers FROM tenants WHERE id = $1", tenant_id,
-    )
-    if row is None:
-        raise LookupError(f"tenant {tenant_id} not found")
-    return transfer_policy(dict(row))
 
 
 def _cache_key(slug: str) -> str:

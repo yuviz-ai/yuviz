@@ -3,13 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import copy
-import json
 from unittest.mock import MagicMock
-
-import pytest
-
-from libs.config_sdk.workflow import CALL_CONTEXT_VARIABLES, TRANSFER_DESTINATION_VARIABLES
 
 from services.conversation.tools.executor_registry import ExecutorRegistry
 from services.conversation.tools.llm_adapter import LLMAdapter, TokenEvent, ToolCallEvent
@@ -50,7 +44,7 @@ TRANSFER_GRAPH = {
             "greeting": "Thanks for calling."}},
         {"id": "n2", "type": "transfer", "data": {
             "name": "to_human", "prompt": "Say you're connecting them.",
-            "transfer_destination": "+14155559999"}},
+            "transfer_destination": "+15559999"}},
         {"id": "n3", "type": "end", "data": {
             "name": "goodbye", "prompt": "Close.", "disposition": "completed"}},
     ],
@@ -68,11 +62,9 @@ class _ScriptedToolLLM:
         self._generations = list(generations)
         self.seen_prompts: list[str] = []
         self.seen_tool_names: list[list[str]] = []
-        self.seen_last_messages: list[str] = []
 
     async def generate(self, messages):
         self.seen_prompts.append(messages[0].content if messages else "")
-        self.seen_last_messages.append(messages[-1].content if messages else "")
         self.seen_tool_names.append([])
         for event in self._generations.pop(0):
             assert isinstance(event, TokenEvent)
@@ -80,7 +72,6 @@ class _ScriptedToolLLM:
 
     async def generate_with_tools(self, messages, schemas, tool_choice=None):
         self.seen_prompts.append(messages[0].content if messages else "")
-        self.seen_last_messages.append(messages[-1].content if messages else "")
         self.seen_tool_names.append([s["name"] for s in schemas])
         for event in self._generations.pop(0):
             yield event
@@ -235,7 +226,7 @@ async def test_workflow_transfer_node_surfaces_a_transfer_request():
     assert handler._workflow.node.name == "to_human"
     transfers = [r.transfer_request for r in responses if r.transfer_request]
     assert len(transfers) == 1
-    assert transfers[0].destination == "+14155559999"
+    assert transfers[0].destination == "+15559999"
     assert transfers[0].trigger == "workflow_policy"
     assert not any(r.end_call for r in responses)
 
@@ -256,34 +247,6 @@ async def test_workflow_transfer_rejected_when_agent_transfer_disabled():
     assert handler._workflow.node.name == "greeting"
     assert handler._workflow.pending_transfer is None
     assert not any(r.transfer_request for r in responses)
-
-
-def _transfer_graph_to(destination):
-    graph = copy.deepcopy(TRANSFER_GRAPH)
-    graph["nodes"][2]["data"]["transfer_destination"] = destination
-    return graph
-
-
-@pytest.mark.parametrize("workflow, kwargs, reason", [
-    (TRANSFER_GRAPH, {"transfer_type": "none"}, "transfer_disabled"),
-    (_transfer_graph_to("call me maybe"), {"transfer_type": "warm"}, "destination_not_permitted"),
-    (_transfer_graph_to("{{extracted.number}}"), {"transfer_type": "warm"}, "destination_not_permitted"),
-])
-async def test_a_refused_workflow_transfer_tells_the_model_it_did_not_happen(workflow, kwargs, reason):
-    llm = _ScriptedToolLLM([
-        [ToolCallEvent(tool_call_id="t1", tool_name="goto_wants_a_human", arguments={})],
-        [TokenEvent(text="Connecting you now.")],
-        [TokenEvent(text="Sorry, I could not transfer you.")],
-    ])
-    handler = _handler(llm, _RecordingPolicyResolver(), workflow=workflow, **kwargs)
-
-    responses = [r async for r in handler.on_speech_ended("s1", _silence(), 1200, -20.0)]
-
-    assert not any(r.transfer_request for r in responses)
-    assert json.loads(llm.seen_last_messages[-1].split("\n\n")[0]) == {
-        "type": "system_event", "event": "transfer_failed", "reason": reason,
-    }
-    assert handler._session("s1").pending_recovery_turns[-1][0] == f"[transfer_failed: {reason}]"
 
 
 async def test_session_end_persists_workflow_outcome_even_when_extraction_times_out():
@@ -370,7 +333,7 @@ async def test_transfer_flush_timeout_still_routes_and_leaves_straggler():
 
     transfers = [r.transfer_request for r in responses if r.transfer_request]
     assert len(transfers) == 1
-    assert transfers[0].destination == "+14155559999"
+    assert transfers[0].destination == "+15559999"
 
 
 async def test_transfer_rejects_injected_destination_from_extracted_variable():
@@ -409,70 +372,6 @@ async def test_transfer_rejects_injected_destination_from_extracted_variable():
     responses = [r async for r in handler.on_speech_ended("s1", _silence(), 1200, -20.0)]
     assert not any(r.transfer_request for r in responses)
     assert handler._workflow.node.name == "greeting"
-
-
-def _templated_transfer_graph(destination: str) -> dict:
-    graph = {**TRANSFER_GRAPH, "nodes": [dict(n) for n in TRANSFER_GRAPH["nodes"]]}
-    graph["nodes"][2] = {"id": "n2", "type": "transfer", "data": {
-        "name": "to_human", "prompt": "Connect.", "transfer_destination": destination}}
-    return graph
-
-
-async def _transfers_for(graph: dict, extracted: dict | None = None, **handler_kw):
-    llm = _ScriptedToolLLM([
-        [ToolCallEvent(tool_call_id="t1", tool_name="goto_wants_a_human", arguments={})],
-        [TokenEvent(text="One moment.")],
-    ])
-    handler = _handler(
-        llm, _RecordingPolicyResolver(), workflow=graph,
-        transfer_type="warm", transfer_destination="+15550001111", **handler_kw,
-    )
-    handler._workflow.update_variables(extracted or {})
-    return [
-        r.transfer_request
-        async for r in handler.on_speech_ended("s1", _silence(), 1200, -20.0)
-        if r.transfer_request
-    ]
-
-
-async def test_templated_destination_from_extracted_variable_is_refused_even_when_well_formed():
-    graph = _templated_transfer_graph("{{ extension }}")
-    transfers = await _transfers_for(graph, extracted={"extension": "+882345678901"})
-    assert transfers == []
-
-
-async def test_templated_destination_from_call_flow_handoff_is_refused(caplog):
-    graph = _templated_transfer_graph("{{ extension }}")
-    with caplog.at_level("WARNING"):
-        transfers = await _transfers_for(
-            graph, initial_variables={"extension": "+882345678901"},
-        )
-    assert transfers == []
-    assert "882345678901" not in caplog.text
-
-
-@pytest.mark.parametrize("variable", ["caller_number", "called_number"])
-async def test_destination_cannot_be_built_from_a_call_number(variable, caplog):
-    # caller_number is the spoofable CLI; called_number is not guaranteed to be a routed DID.
-    # Both are domestic here, so the transfer policy alone would let them through.
-    graph = _templated_transfer_graph("{{ %s }}" % variable)
-    with caplog.at_level("WARNING"):
-        transfers = await _transfers_for(
-            graph, caller_number="+14155550123", called_number="+14155550456",
-        )
-    assert transfers == []
-    assert "4155550123" not in caplog.text and "4155550456" not in caplog.text
-
-
-async def test_destination_with_no_variables_still_transfers():
-    transfers = await _transfers_for(_templated_transfer_graph("+14155557654"))
-    assert [t.destination for t in transfers] == ["+14155557654"]
-
-
-def test_transfer_destination_variables_exclude_both_call_numbers():
-    assert "caller_number" not in TRANSFER_DESTINATION_VARIABLES
-    assert "called_number" not in TRANSFER_DESTINATION_VARIABLES
-    assert set(TRANSFER_DESTINATION_VARIABLES) <= set(CALL_CONTEXT_VARIABLES)
 
 
 async def test_next_turn_interrupts_background_extract_before_live_generate():

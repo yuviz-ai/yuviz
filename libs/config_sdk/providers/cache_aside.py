@@ -86,8 +86,6 @@ def _tenant_from_dict(row: dict[str, Any]) -> Tenant:
         default_tts_config_id=row.get("default_tts_config_id"),
         config_version=row.get("config_version", 0),
         updated_at=_parse_dt(row.get("updated_at")),
-        home_calling_code=row.get("home_calling_code", "1"),
-        allow_international_transfers=row.get("allow_international_transfers", False),
     )
 
 

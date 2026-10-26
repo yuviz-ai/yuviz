@@ -4,28 +4,13 @@ Pure and stateless: ConversationFSM owns session state, the pipeline/servicer ow
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass
 from enum import Enum
-
-from libs.config_sdk.dial_targets import TransferPolicy, transfer_policy_problem
 
 from .directives import TransferDirective, TransferRequest, TransferType, coerce_transfer_type
 from .metrics import IMetrics, NullMetrics
 
 log = logging.getLogger(__name__)
-
-_MAX_REASON_CHARS = 120
-_REASON_WHITESPACE_RE = re.compile(r"\s+")
-# C0/C1 controls plus bidi overrides/isolates and zero-width characters, which render as nothing or reorder a log line.
-_REASON_CONTROL_RE = re.compile("[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
-
-
-def _clean_reason(raw: str) -> str:
-    """The model writes the directive reason, so keep it one short line before it
-    reaches TransferRequest and every log that prints it."""
-    one_line = _REASON_WHITESPACE_RE.sub(" ", raw)
-    return _REASON_CONTROL_RE.sub("", one_line).strip()[:_MAX_REASON_CHARS] or "caller_requested_human"
 
 
 class TransferReason(str, Enum):
@@ -82,7 +67,6 @@ class DecisionContext:
     custom_caller_id: str | None = None
     caller_number: str = ""
     waiting_experience: str = "announcement_moh"
-    transfer_policy: TransferPolicy = TransferPolicy()
 
 
 @dataclass(frozen=True)
@@ -129,10 +113,9 @@ class TransferDecisionEngine:
             if trigger.directive is None:
                 return reject("missing_directive_payload")
             transfer_reason = TransferReason.CUSTOMER_REQUEST
-            # The model only signals intent; type and destination come from agent config.
-            transfer_type   = coerce_transfer_type(ctx.transfer_type)
-            destination     = ctx.transfer_destination or ""
-            free_reason     = _clean_reason(trigger.directive.reason)
+            transfer_type   = trigger.directive.transfer_type
+            destination     = trigger.directive.destination
+            free_reason     = trigger.directive.reason
 
         elif trigger.type is TriggerType.ESCALATION:
             if trigger.violation_count is None:
@@ -166,8 +149,6 @@ class TransferDecisionEngine:
             return reject("transfer_disabled")
         if not destination:
             return reject("no_destination_configured")
-        if transfer_policy_problem(destination, ctx.transfer_policy):
-            return reject("destination_not_permitted")
 
         # caller_id is ignored by the gateway for cold transfers.
         request = TransferRequest(

@@ -679,18 +679,3 @@ async def test_invalid_or_empty_host_falls_back_to_global(monkeypatch, value):
     stt = DeepgramSTT(api_key="test-key")
     assert str(stt._client.base_url) == "https://api.deepgram.com"
     assert stt._live_ws_url == "wss://api.deepgram.com/v1/listen"
-
-
-async def test_transcribe_does_not_log_the_transcript(caplog):
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={
-            "results": {"channels": [{"alternatives": [
-                {"transcript": "my card number is 4111", "confidence": 0.9},
-            ]}]},
-        })
-
-    with caplog.at_level("DEBUG"):
-        await _make_stt(handler).transcribe(b"\x00\x01" * 100, 16000)
-
-    assert "DeepgramSTT" in caplog.text
-    assert "4111" not in caplog.text

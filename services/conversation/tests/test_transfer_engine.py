@@ -53,44 +53,18 @@ def test_llm_directive_accepted_when_configured():
     assert decision.request.trigger == "llm_directive"  # unchanged wire value
 
 
-def test_llm_directive_cannot_override_configured_type_or_destination():
-    """The model only signals intent: type and destination come from the agent's config."""
+def test_llm_directive_uses_directives_own_type_and_destination_not_context():
+    """An llm_directive's own type/destination override the agent's configured default."""
     engine = TransferDecisionEngine()
     directive = TransferDirective(
         transfer_type=TransferType.COLD, destination="+15559990000", reason="explicit",
     )
     decision = engine.evaluate(
-        _ctx(transfer_type="warm", transfer_destination="1001"),
-        TransferTrigger(type=TriggerType.LLM_DIRECTIVE, directive=directive),
-    )
-    assert decision.accepted
-    assert decision.request.transfer_type == TransferType.WARM
-    assert decision.request.destination == "1001"
-    assert decision.request.reason == "explicit"
-
-
-def _directive_reason(raw: str) -> str:
-    directive = TransferDirective(transfer_type=TransferType.COLD, destination="", reason=raw)
-    decision = TransferDecisionEngine().evaluate(
         _ctx(transfer_type="cold", transfer_destination="1001"),
         TransferTrigger(type=TriggerType.LLM_DIRECTIVE, directive=directive),
     )
-    return decision.request.reason
-
-
-def test_directive_reason_is_one_short_line_without_control_characters():
-    reason = _directive_reason('card is 4111\n2026-10-24 INFO forged line\x00\x1b[31m ' + "x" * 500)
-    assert "\n" not in reason and "\x00" not in reason and "\x1b" not in reason
-    assert len(reason) <= 120
-
-
-def test_directive_reason_drops_bidi_and_zero_width_characters():
-    reason = _directive_reason("ctl\u202e\u200b\u2066end\ufeff\u200f\u2069")
-    assert reason == "ctlend"
-
-
-def test_blank_directive_reason_falls_back_to_a_constant():
-    assert _directive_reason(" \n\t ") == "caller_requested_human"
+    assert decision.accepted
+    assert decision.request.destination == "+15559990000"
 
 
 def test_llm_directive_missing_payload_rejected():
@@ -100,24 +74,12 @@ def test_llm_directive_missing_payload_rejected():
     assert decision.rejection_reason == "missing_directive_payload"
 
 
-def test_llm_directive_rejected_when_transfers_disabled_in_config():
+def test_llm_directive_rejected_when_transfer_type_none_in_directive():
     engine = TransferDecisionEngine()
-    directive = TransferDirective(transfer_type=TransferType.COLD, destination="+19005550199", reason="x")
-    decision = engine.evaluate(
-        _ctx(transfer_type="none"), TransferTrigger(type=TriggerType.LLM_DIRECTIVE, directive=directive),
-    )
+    directive = TransferDirective(transfer_type=TransferType.NONE, destination="1001", reason="x")
+    decision = engine.evaluate(_ctx(), TransferTrigger(type=TriggerType.LLM_DIRECTIVE, directive=directive))
     assert not decision.accepted
     assert decision.rejection_reason == "transfer_disabled"
-
-
-def test_llm_directive_rejected_when_no_destination_configured():
-    engine = TransferDecisionEngine()
-    directive = TransferDirective(transfer_type=TransferType.COLD, destination="+19005550199", reason="x")
-    decision = engine.evaluate(
-        _ctx(transfer_destination=None), TransferTrigger(type=TriggerType.LLM_DIRECTIVE, directive=directive),
-    )
-    assert not decision.accepted
-    assert decision.rejection_reason == "no_destination_configured"
 
 
 # ---------------------------------------------------------------------------

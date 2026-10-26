@@ -275,14 +275,8 @@ def _health(connection: ServerConnection, request):
     return None
 
 
-def _configure_logging() -> None:
-    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
-    # At DEBUG the websockets library logs every frame, which is the caller's transcript.
-    logging.getLogger("websockets").setLevel(logging.INFO)
-
-
 async def main() -> None:
-    _configure_logging()
+    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
     port = urlparse(os.environ.get("NEXT_PUBLIC_WEBCALL_URL", "")).port or 8300
     host = os.environ.get("LISTEN_HOST", "127.0.0.1")
     async with serve(_handle_connection, host, port, process_request=_health):

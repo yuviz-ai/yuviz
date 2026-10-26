@@ -156,7 +156,7 @@ class OpenAILLM:
                         try:
                             args = json.loads(entry["arguments"]) if entry["arguments"] else {}
                         except json.JSONDecodeError:
-                            log.warning("OpenAILLM: malformed tool_call arguments (%d chars)", len(entry["arguments"]))
+                            log.warning("OpenAILLM: malformed tool_call arguments=%r", entry["arguments"])
                             args = {}
                         yield ToolCallEvent(
                             tool_call_id=entry["id"] or f"call_{i}",

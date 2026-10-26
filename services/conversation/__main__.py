@@ -23,7 +23,6 @@ import redis.asyncio as aioredis
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 
 from libs.config_sdk import CacheAsideConfigProvider, HttpConfigRepository, IConfigProvider, RedisConfigRepository
-from libs.config_sdk.dial_targets import TransferPolicy
 from libs.config_sdk.languages import normalize_language, stt_languages, tts_languages
 from libs.config_sdk.test_credentials import redeem_test_credential
 from libs.knowledge_sdk import (
@@ -469,9 +468,6 @@ async def serve(port: int, args: argparse.Namespace) -> None:
                 handoff=handoff,
                 voice_for=voice_for,
                 agent_slugs=flow.agent_slugs,
-                transfer_policy=TransferPolicy(
-                    runtime_config.tenant.home_calling_code, runtime_config.tenant.allow_international_transfers,
-                ),
             )
 
     # Disable SO_REUSEPORT so a duplicate process fails to bind instead of silently sharing the port.

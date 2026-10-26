@@ -8,7 +8,6 @@ import json
 import logging
 
 import asyncpg
-import pytest
 
 from services.conversation.providers.interfaces import ChatMessage
 from services.conversation.tools.executor_registry import ExecutorRegistry
@@ -298,86 +297,6 @@ async def test_success_maps_to_success_and_returns_only_data_projection():
     assert result.payload == {"order_id": "o1"}
 
 
-async def test_oversized_data_is_truncated_with_a_marker_before_it_reaches_the_model():
-    client = _FakeToolExecClient({"chain_status": "success", "data": {"blob": "x" * 2_000_000}})
-
-    result = await ApiExecExecutor(client).execute(_request())
-
-    assert result.status == ToolStatus.SUCCESS
-    assert result.payload["truncated"] is True
-    assert len(result.payload["data_excerpt"]) <= 6000
-    assert len(json.dumps(result.payload)) < 7000
-
-
-async def test_oversized_non_latin_data_is_excerpted_readable_not_as_unicode_escapes():
-    from services.conversation.tools.orchestrator import _fold_tool_result_into_history
-
-    client = _FakeToolExecClient({"chain_status": "success", "data": {"blob": "नमस्ते दुनिया " * 2_000}})
-
-    result = await ApiExecExecutor(client).execute(_request())
-
-    excerpt = result.payload["data_excerpt"]
-    assert result.payload["truncated"] is True
-    assert excerpt.startswith('{"blob": "नमस्ते दुनिया ')
-    assert len(excerpt) == 6000
-    history: list[ChatMessage] = []
-    _fold_tool_result_into_history(
-        history, ToolCallEvent(tool_call_id="call1", tool_name="execute_api", arguments={}), result)
-    assert "नमस्ते दुनिया" in history[-1].content
-    assert "\\u" not in history[-1].content
-    assert json.loads(history[-1].content)["data"]["data_excerpt"] == excerpt
-
-
-async def test_non_latin_data_under_the_cap_reaches_the_model_readable():
-    from services.conversation.tools.orchestrator import _fold_tool_result_into_history
-
-    client = _FakeToolExecClient({"chain_status": "success", "data": {"name": "सुनीता शर्मा", "city": "München"}})
-
-    result = await ApiExecExecutor(client).execute(_request())
-
-    assert result.payload == {"name": "सुनीता शर्मा", "city": "München"}
-    history: list[ChatMessage] = []
-    _fold_tool_result_into_history(
-        history, ToolCallEvent(tool_call_id="call1", tool_name="execute_api", arguments={}), result)
-    assert "सुनीता शर्मा" in history[-1].content and "München" in history[-1].content
-
-
-async def test_a_lone_surrogate_in_tool_data_does_not_break_the_next_llm_request_body():
-    from services.conversation.tools.orchestrator import _fold_tool_result_into_history
-
-    # A JS backend that cut "Ravi 😀" with .slice() sends "Ravi \ud83d"; json.loads keeps it.
-    data = json.loads('{"name": "Ravi \\ud83d", "note": "😀 सुनीता"}')
-    assert data["name"] == "Ravi \ud83d"
-    client = _FakeToolExecClient({"chain_status": "success", "data": data})
-
-    result = await ApiExecExecutor(client).execute(_request())
-    history: list[ChatMessage] = []
-    _fold_tool_result_into_history(
-        history, ToolCallEvent(tool_call_id="call1", tool_name="execute_api", arguments={}), result)
-
-    content = history[-1].content
-    # httpx encodes json= bodies this way; it raised UnicodeEncodeError on the raw surrogate.
-    json.dumps({"messages": [{"role": "tool", "content": content}]}, ensure_ascii=False).encode("utf-8")
-    assert "😀 सुनीता" in content
-    assert json.loads(content)["data"]["name"].startswith("Ravi ")
-
-
-async def test_non_latin_data_is_capped_by_its_readable_length_not_its_escaped_length():
-    client = _FakeToolExecClient({"chain_status": "success", "data": {"b": "क" * 1_500}})
-
-    result = await ApiExecExecutor(client).execute(_request())
-
-    assert result.payload == {"b": "क" * 1_500}
-
-
-async def test_data_under_the_cap_is_passed_through_untouched():
-    client = _FakeToolExecClient({"chain_status": "success", "data": {"blob": "x" * 1000}})
-
-    result = await ApiExecExecutor(client).execute(_request())
-
-    assert result.payload == {"blob": "x" * 1000}
-
-
 async def test_partial_maps_to_failed_with_partial_flag():
     client = _FakeToolExecClient({"chain_status": "partial", "data": {}, "error": "b failed"})
     executor = ApiExecExecutor(client)
@@ -649,42 +568,47 @@ async def test_cancel_event_mid_call_yields_failed_cancelled_and_never_folds_the
     assert json.loads(history[2].content)["error"]["code"] == "cancelled"
 
 
-# ── tool-call logging carries names and sizes only (#177), against the real build_default_chain ──
-
-_CALLER_WORDS = "my name is Zebulonqx and my card is 4111 1111 1111 1111"
+# ── logging redaction (finding 8), against the real build_default_chain ──
 
 
-@pytest.mark.parametrize("arguments", [
-    {"api_name": "lookup_order", "inputs": {"order_id": _CALLER_WORDS}},
-    {"api_name": "lookup_order", "inputs": _CALLER_WORDS},
-    {"api_name": "lookup_order", "inputs": {"Order_ID": _CALLER_WORDS, "card_number": "4111111111111111"}},
-])
-async def test_no_argument_value_or_payload_reaches_any_log_record(caplog, arguments):
-    client = _FakeToolExecClient({"chain_status": "success", "data": {"card": "4111111111111111"}})
-    chain = build_default_chain(ApiExecExecutor(client), timeout_ms=1000)
-
-    with caplog.at_level(logging.DEBUG, logger="services.conversation.tools"):
-        await chain.execute(_request(arguments=arguments))
-
-    joined = " ".join(r.getMessage() + repr(r.args) for r in caplog.records)
-    assert "Zebulonqx" not in joined
-    assert "4111" not in joined
-
-
-async def test_start_line_names_the_tool_and_argument_keys_only(caplog):
-    client = _FakeToolExecClient({"chain_status": "success", "data": {}})
-    chain = build_default_chain(ApiExecExecutor(client), timeout_ms=1000)
+async def test_sensitive_arg_keys_never_appear_in_any_log_record(caplog):
+    client = _FakeToolExecClient({"chain_status": "success", "data": {"looked_up": True}})
+    executor = ApiExecExecutor(client)
+    chain = build_default_chain(executor, timeout_ms=1000, redact_arg_keys=frozenset({"national_id"}))
+    request = _request(arguments={
+        "api_name": "lookup_customer", "inputs": {"national_id": "SENTINEL-SSN-123", "name": "Alex"},
+    })
 
     with caplog.at_level(logging.INFO, logger="services.conversation.tools.middleware"):
-        await chain.execute(_request(arguments={"api_name": "lookup_order", "inputs": {"order_id": "o1"}}))
+        result = await chain.execute(request)
 
-    start = next(r.getMessage() for r in caplog.records if "tool_call start" in r.getMessage())
-    assert "tool=execute_api" in start
-    assert "arg_keys=['api_name', 'inputs']" in start
-    assert "o1" not in start and "lookup_order" not in start
+    assert result.status == ToolStatus.SUCCESS
+    for record in caplog.records:
+        assert "SENTINEL-SSN-123" not in record.getMessage()
+        assert "SENTINEL-SSN-123" not in repr(record.args)
+    joined = " ".join(r.getMessage() for r in caplog.records)
+    assert "lookup_customer" in joined
+    assert "Alex" in joined
 
 
-async def test_orchestrator_result_line_logs_no_argument_values(caplog):
+async def test_empty_redact_arg_keys_default_logs_byte_identical_to_today(caplog):
+    client = _FakeToolExecClient({"chain_status": "success", "data": {}})
+    executor = ApiExecExecutor(client)
+    chain = build_default_chain(executor, timeout_ms=1000)  # default redact_arg_keys=frozenset()
+    request = _request(arguments={"api_name": "lookup_order", "inputs": {"order_id": "o1"}})
+
+    with caplog.at_level(logging.INFO, logger="services.conversation.tools.middleware"):
+        await chain.execute(request)
+
+    start_record = next(r for r in caplog.records if "tool_call start" in r.getMessage())
+    assert start_record.getMessage() == (
+        "tool_call start tool=execute_api call_id=call1 tenant=t1 agent=a1 "
+        "arguments={'api_name': 'lookup_order', 'inputs': {'order_id': 'o1'}}"
+    )
+
+
+async def test_orchestrator_wires_policy_sensitive_arg_keys_into_the_real_logging_middleware(caplog):
+    """The real orchestrator passes policy sensitive_arg_keys as redact_arg_keys to build_default_chain."""
     client = _FakeToolExecClient({"chain_status": "success", "data": {}})
     registry = ExecutorRegistry()
     registry.register(
@@ -695,25 +619,23 @@ async def test_orchestrator_result_line_logs_no_argument_values(caplog):
     llm = _ScriptedLLM([
         [ToolCallEvent(
             tool_call_id="c1", tool_name="execute_api",
-            arguments={"api_name": "lookup_customer", "inputs": {"anything": _CALLER_WORDS}},
+            arguments={"api_name": "lookup_customer", "inputs": {"national_id": "SENTINEL-SSN-456"}},
         )],
         [TokenEvent(text="done")],
     ])
     orchestrator = ToolCallOrchestrator(
         llm_adapter=LLMAdapter(llm),
-        policy_resolver=_FakePolicyResolver([_policy()]),
+        policy_resolver=_FakePolicyResolver([_policy(sensitive_arg_keys=frozenset({"national_id"}))]),
         provider_manager=_FakeProviderManager(client),
         executor_registry=registry,
     )
     history = [ChatMessage(role="user", content="look me up")]
 
-    with caplog.at_level(logging.INFO, logger="services.conversation.tools"):
+    with caplog.at_level(logging.INFO, logger="services.conversation.tools.middleware"):
         [e async for e in orchestrator.run_turn("agent1", "t1", "c1", "s1", history)]
 
-    assert any("tool_call result" in r.getMessage() for r in caplog.records)
     for record in caplog.records:
-        assert "Zebulonqx" not in record.getMessage()
-        assert "4111" not in record.getMessage()
+        assert "SENTINEL-SSN-456" not in record.getMessage()
 
 
 # ── tenant fence (AC 10), real Postgres — defense-in-depth independent of

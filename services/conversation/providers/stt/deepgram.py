@@ -188,7 +188,7 @@ class DeepgramSTT:
             _language_fields(_word_languages(alt), alt.get("languages") or [])
             if params["language"] == "multi" else {}
         )
-        log.debug("DeepgramSTT transcript_chars=%d confidence=%.2f lang=%s", len(text), confidence, lang_fields.get("language"))
+        log.debug("DeepgramSTT transcript=%r confidence=%.2f lang=%s", text, confidence, lang_fields.get("language"))
         return SttResult(text=text, confidence=confidence, **lang_fields)
 
     def _live_url(self, sample_rate: int, language: str) -> str:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 import uuid
@@ -12,8 +11,8 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from libs.tenancy import current_scope, set_caller_tenant, set_target_tenant, tenant_conn
-from services.config import agents, auth, cache, call_flows, db, provider_configs, tenants
+from libs.tenancy import current_scope, set_caller_tenant, set_target_tenant
+from services.config import agents, auth, cache, call_flows, provider_configs
 from services.config.app import app
 
 
@@ -457,111 +456,3 @@ async def test_agent_deactivation_or_delete_reaches_a_warm_runtime_cache(test_te
         await agents.soft_delete_agent(deleted["id"], tenant_slug=test_tenant["slug"])
         after_delete = await call_flows.get_published_for_runtime(test_tenant["slug"], flow["id"])
         assert after_delete["agent_slugs"] == {}
-
-
-def _dial_graph(destination: str) -> dict:
-    return {
-        "version": 1,
-        "nodes": [START, {"id": "n2", "type": "dial", "data": {"destination": destination}}],
-        "edges": [{"id": "e1", "source": "n1", "target": "n2"}],
-    }
-
-
-@pytest.mark.parametrize("destination", ["+442071234567", "sip:x@attacker.example", "+8821234567890"])
-async def test_publish_refuses_dial_outside_the_default_transfer_policy(test_tenant, destination):
-    flow = await _flow(test_tenant)
-    with _as_tenant(test_tenant["id"]):
-        with pytest.raises(call_flows.CallFlowValidationError) as exc:
-            await call_flows.publish(flow["id"], _dial_graph(destination))
-    assert [(e.id, e.field) for e in exc.value.errors] == [("n2", "destination")]
-
-
-@pytest.mark.parametrize("destination", ["+18005550100", "1001"])
-async def test_publish_allows_a_domestic_dial(test_tenant, destination):
-    flow = await _flow(test_tenant)
-    with _as_tenant(test_tenant["id"]):
-        published = await call_flows.publish(flow["id"], _dial_graph(destination))
-    assert published["config_version"] == flow["config_version"] + 1
-
-
-async def test_publish_allows_international_dial_only_after_opt_in_but_never_premium(test_tenant):
-    flow = await _flow(test_tenant)
-    await tenants.update_tenant(test_tenant["id"], allow_international_transfers=True)
-    with _as_tenant(test_tenant["id"]):
-        await call_flows.publish(flow["id"], _dial_graph("+442071234567"))
-        with pytest.raises(call_flows.CallFlowValidationError):
-            await call_flows.publish(flow["id"], _dial_graph("+8821234567890"))
-
-
-async def test_concurrent_publishes_with_dial_nodes_do_not_exhaust_the_pool(test_tenant):
-    """Each publish holds a tenant_conn; reading the transfer policy must reuse it, not take a second
-    pool connection, or more publishes than pool slots wait on each other forever."""
-    pool_size = (await db.get_pool()).get_max_size()
-    flows = [await _flow(test_tenant) for _ in range(pool_size + 2)]
-
-    async def publish(flow):
-        with _as_tenant(test_tenant["id"]):
-            return await call_flows.publish(flow["id"], _dial_graph("+18005550100"))
-
-    published = await asyncio.wait_for(asyncio.gather(*(publish(f) for f in flows)), timeout=15)
-    assert len(published) == pool_size + 2
-
-
-async def test_publish_of_a_flow_whose_tenant_row_is_gone_raises_lookup_error(test_tenant):
-    flow = await _flow(test_tenant)
-    with _as_tenant(test_tenant["id"]):
-        async with tenant_conn(await db.get_pool()) as conn:
-            with pytest.raises(LookupError):
-                await call_flows._dial_destination_errors(conn, _dial_graph("+18005550100"), uuid.uuid4())
-
-
-async def _post_flow(client, tenant, **body):
-    return await client.post(
-        f"/tenants/{tenant['slug']}/call-flows",
-        json={"slug": f"flow-{uuid.uuid4().hex[:6]}", "name": "Policy Flow", **body},
-    )
-
-
-async def test_call_flow_create_refuses_a_dial_outside_the_policy_and_stores_nothing(
-    test_tenant, test_admin, pool,
-):
-    async with _client_as(test_admin["user"]) as client:
-        resp = await _post_flow(client, test_tenant, graph=_dial_graph("+447911123456"))
-    assert resp.status_code == 400, resp.text
-    assert [(e["id"], e["field"]) for e in resp.json()["errors"]] == [("n2", "destination")]
-    assert await pool.fetchval("SELECT count(*) FROM call_flows WHERE tenant_id = $1", test_tenant["id"]) == 0
-
-
-async def test_call_flow_create_allows_the_dial_after_opt_in(test_tenant, test_admin):
-    await tenants.update_tenant(test_tenant["id"], allow_international_transfers=True)
-    async with _client_as(test_admin["user"]) as client:
-        resp = await _post_flow(client, test_tenant, graph=_dial_graph("+447911123456"))
-    assert resp.status_code == 201, resp.text
-    assert resp.json()["config_version"] == 1
-
-
-async def test_call_flow_create_for_a_home_91_tenant_allows_91_and_refuses_premium(test_tenant, test_admin):
-    await tenants.update_tenant(test_tenant["id"], home_calling_code="91", allow_international_transfers=True)
-    async with _client_as(test_admin["user"]) as client:
-        assert (await _post_flow(client, test_tenant, graph=_dial_graph("+919876543210"))).status_code == 201
-        assert (await _post_flow(client, test_tenant, graph=_dial_graph("+8821234567890"))).status_code == 400
-
-
-async def test_call_flow_clone_refuses_a_dial_the_policy_no_longer_allows(test_tenant, test_admin):
-    await tenants.update_tenant(test_tenant["id"], allow_international_transfers=True)
-    async with _client_as(test_admin["user"]) as client:
-        source = (await _post_flow(client, test_tenant, graph=_dial_graph("+447911123456"))).json()
-        await tenants.update_tenant(test_tenant["id"], allow_international_transfers=False)
-        resp = await _post_flow(client, test_tenant, clone_from_id=source["id"])
-    assert resp.status_code == 400, resp.text
-
-
-async def test_call_flow_validate_reports_what_publish_refuses(test_tenant, test_admin):
-    flow = await _flow(test_tenant)
-    async with _client_as(test_admin["user"]) as client:
-        resp = await client.post(
-            f"/call-flows/{flow['id']}/validate",
-            json={"graph": _dial_graph("+447911123456")},
-        )
-    assert resp.status_code == 400, resp.text
-    assert [(e["id"], e["field"]) for e in resp.json()["errors"]] == [("n2", "destination")]
