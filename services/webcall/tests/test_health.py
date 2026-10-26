@@ -1,10 +1,11 @@
 import asyncio
+import logging
 import urllib.request
 
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
-from services.webcall.__main__ import _health
+from services.webcall.__main__ import _configure_logging, _health
 
 
 async def _echo(ws):
@@ -21,3 +22,12 @@ async def test_health_answers_plain_http_and_websockets_still_work():
         async with connect(f"ws://127.0.0.1:{port}/") as ws:
             await ws.send("hi")
             assert await ws.recv() == "hi"
+
+
+def test_debug_log_level_does_not_log_websocket_frames(monkeypatch):
+    monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+    ws_logger = logging.getLogger("websockets")
+    monkeypatch.setattr(ws_logger, "level", logging.NOTSET)
+    monkeypatch.setattr(logging.getLogger(), "level", logging.DEBUG)
+    _configure_logging()
+    assert ws_logger.getEffectiveLevel() >= logging.INFO

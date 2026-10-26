@@ -377,3 +377,11 @@ async def test_whisper_aliases_share_one_download_key(whisper_cls, monkeypatch):
         await _stt(whisper_cls, None, model_size=name)._download()
 
     assert keys[0] == keys[1] == ("faster_whisper", "Systran/faster-whisper-large-v3")
+
+
+async def test_transcribe_does_not_log_the_transcript(whisper_cls, caplog):
+    stt = _stt(whisper_cls, language=None)
+    with caplog.at_level("DEBUG"):
+        await stt.transcribe(b"\x00\x01" * 8000, 16000)
+    assert "FasterWhisper" in caplog.text
+    assert "haan ji" not in caplog.text

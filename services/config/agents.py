@@ -32,6 +32,7 @@ from libs.telephony_sdk.did_format import normalize_did
 from libs.tenancy import platform_conn, tenant_conn
 
 from . import audit, cache, call_flows, db, phone_numbers
+from . import tenants as tenants_service
 from .provider_configs import require_usable_tts_voice
 from .system_prompt import check_prompt_structure
 
@@ -557,7 +558,7 @@ async def create_agent(
     editor authors a multi-node graph.
     """
     # Deferred import: workflows.py imports this module for its cache key.
-    from .workflows import append_version, column_prompts, validate
+    from .workflows import append_version, check_transfer_policy, column_prompts, validate
 
     graph = workflow if workflow else starter_graph(greeting, system_prompt)
     await validate(graph)
@@ -566,6 +567,7 @@ async def create_agent(
 
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
+        check_transfer_policy(graph, await tenants_service.transfer_policy_on(conn, tenant_id))
         await _validate_provider_assignments(
             conn, tenant_id,
             {"stt_config_id": stt_config_id, "llm_config_id": llm_config_id, "tts_config_id": tts_config_id},

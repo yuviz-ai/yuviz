@@ -54,6 +54,8 @@ class Tenant:
     default_tts_config_id: str | None
     config_version: int
     updated_at: datetime
+    home_calling_code: str = "1"
+    allow_international_transfers: bool = False
 
 
 @dataclass(frozen=True)

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import pytest
 
+from libs.config_sdk.dial_targets import TransferPolicy
 from libs.config_sdk.workflow import (
     WorkflowInvalid,
     graph_warnings,
     literal_destination_errors,
+    literal_destination_policy_errors,
     parse_graph,
     render,
     starter_graph,
@@ -278,6 +280,17 @@ def test_a_stored_graph_with_an_unsafe_destination_still_loads_at_call_time(dest
     # The runtime parses with parse_graph; failing here would swap in the starter graph.
     graph = parse_graph(_transfer_graph(dest))
     assert graph.nodes["n2"].transfer_destination == dest
+
+
+@pytest.mark.parametrize("dest, policy, flagged", [
+    ("+447911123456", TransferPolicy("1", False), True),
+    ("+447911123456", TransferPolicy("1", True), False),
+    ("+12125550100", TransferPolicy("1", False), False),
+    ("{{ branch_number }}", TransferPolicy("1", False), False),
+])
+def test_literal_transfer_destination_is_checked_against_the_tenant_policy(dest, policy, flagged):
+    errors = literal_destination_policy_errors(parse_graph(_transfer_graph(dest)), policy)
+    assert [(e.id, e.field) for e in errors] == ([("n2", "transfer_destination")] if flagged else [])
 
 
 def test_transfer_node_with_templated_destination_is_left_for_runtime():

@@ -9,7 +9,13 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-from .dial_targets import is_transfer_destination
+from .dial_targets import (
+    TransferPolicy,
+    is_transfer_destination,
+    transfer_policy_prefix_problem,
+    transfer_policy_problem,
+    transfer_policy_sip_template_problem,
+)
 
 NODE_TYPES = ("start", "agent", "transfer", "end", "global")
 TERMINAL_NODE_TYPES = ("end", "transfer")
@@ -30,6 +36,14 @@ SYSTEM_DISPOSITIONS = (
 CALL_CONTEXT_VARIABLES = (
     "caller_number", "called_number", "direction", "agent_name",
     "current_date", "current_time", "business_name",
+)
+
+# The subset a transfer destination may be rendered from. caller_number is the caller's
+# own CLI, which a caller can spoof to any number; called_number is whatever the call
+# arrived on (not necessarily a number routed to this tenant) or, outbound, contact
+# data. Neither may choose where the platform dials, so only non-number context stays.
+TRANSFER_DESTINATION_VARIABLES = tuple(
+    v for v in CALL_CONTEXT_VARIABLES if v not in ("caller_number", "called_number")
 )
 
 # Not Jinja2: templates include caller-influenced values (sandbox-escape risk).
@@ -358,6 +372,28 @@ def literal_destination_errors(graph: WorkflowGraph) -> list[WorkflowError]:
         for node in graph.nodes.values()
         if node.type == "transfer" and node.transfer_destination
         and "{{" not in node.transfer_destination and not is_transfer_destination(node.transfer_destination)
+    ]
+
+
+def _destination_policy_problem(destination: str, policy: TransferPolicy) -> str | None:
+    if "{{" in destination and destination.lower().startswith(("sip:", "sips:")):
+        return transfer_policy_sip_template_problem(destination, policy)
+    if "{{" in destination:
+        return transfer_policy_prefix_problem(destination.split("{{", 1)[0].strip(), policy)
+    return transfer_policy_problem(destination, policy)
+
+
+def literal_destination_policy_errors(graph: WorkflowGraph, policy: TransferPolicy) -> list[WorkflowError]:
+    """Publish-time only: transfer destinations the tenant's transfer policy refuses. A destination
+    that mixes a literal prefix with a template is checked on the prefix; the rendered number is
+    checked again at call time."""
+    return [
+        WorkflowError("node", node.id, "transfer_destination",
+                      f"{node.name!r} can't transfer there — {problem}")
+        for node in graph.nodes.values()
+        if node.type == "transfer" and node.transfer_destination
+        for problem in [_destination_policy_problem(node.transfer_destination, policy)]
+        if problem
     ]
 
 

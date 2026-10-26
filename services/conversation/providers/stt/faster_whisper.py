@@ -275,7 +275,7 @@ class FasterWhisperSTT:
             kept.append(seg.text.strip())
 
         text = " ".join(kept).strip()
-        log.debug("FasterWhisper transcript=%r lang=%s p=%.2f", text, info.language, info.language_probability)
+        log.debug("FasterWhisper transcript_chars=%d lang=%s p=%.2f", len(text), info.language, info.language_probability)
         if reported is not None:
             return SttResult(text=text, confidence=1.0, language=reported[0], language_confidence=reported[1])
         if language is not None:

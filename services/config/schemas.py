@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
+from libs.config_sdk.calling_codes import CALLING_CODES
 from libs.config_sdk.dial_targets import is_dial_number, is_transfer_destination
 from libs.telephony_sdk.did_format import is_routable_did, normalize_did
 
@@ -63,6 +64,18 @@ class TenantUpdate(BaseModel):
 
 class TenantConcurrencyUpdate(BaseModel):
     max_concurrent_calls: int = Field(ge=1, le=10_000)
+
+
+class TenantTransferPolicyUpdate(BaseModel):
+    home_calling_code: str | None = None
+    allow_international_transfers: bool | None = None
+
+    @field_validator("home_calling_code")
+    @classmethod
+    def _real_calling_code(cls, v: str | None) -> str | None:
+        if v is not None and v not in CALLING_CODES:
+            raise ValueError("home_calling_code must be a country calling code such as '1', '44' or '91'")
+        return v
 
 
 class SystemPromptGenerate(BaseModel):

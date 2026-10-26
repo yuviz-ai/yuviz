@@ -11,6 +11,8 @@ STRINGS: dict[str, str] = {
     "end_call_check": "Is there anything else I can help you with?",
     # Used if the LLM produces no apology text after a failed transfer.
     "transfer_failed_fallback": "I'm sorry, I couldn't connect you to an agent right now.",
+    # Spoken before the hangup when a call-flow Dial node's destination is refused by the transfer policy.
+    "callflow_dial_refused": "I can't transfer this call right now. Please try again later. Goodbye.",
     # Replaces transfer_announcement for a fabrication-triggered transfer.
     "booking_fabrication_transfer_announcement": (
         "Let me just double-check that booking with a team member to make sure "

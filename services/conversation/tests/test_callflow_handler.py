@@ -14,6 +14,7 @@ from libs.config_sdk import Agent, ConversationInfo, MediaInfo, Policies
 from libs.config_sdk import ProviderConfig as SDKProviderConfig
 from libs.config_sdk import ProviderConfigs, RuntimeConfig, Tenant
 from libs.config_sdk.callflow import parse_graph
+from libs.config_sdk.dial_targets import TransferPolicy
 from libs.config_sdk.workflow import starter_graph
 
 from ..callflow.handler import CallFlowConversationHandler
@@ -122,13 +123,13 @@ async def _no_voice(tts_config_id: str):
     return None
 
 
-def _handler(graph_raw: dict, *, handoff=None, variables=None):
+def _handler(graph_raw: dict, *, handoff=None, variables=None, transfer_policy=TransferPolicy()):
     runner = CallFlowRunner(parse_graph(graph_raw), tts_config_id=None, variables=variables)
     tts = FakeTTS()
     handler = CallFlowConversationHandler(
         runner, tts=tts, sample_rate=8000, session_id="s1", tenant_id="t1", call_id="c1",
         handoff=handoff or _no_handoff, voice_for=_no_voice,
-        agent_slugs={"agent-uuid-1": "support-bot"},
+        agent_slugs={"agent-uuid-1": "support-bot"}, transfer_policy=transfer_policy,
     )
     return handler, runner, tts
 
@@ -235,6 +236,32 @@ async def test_dial_node_emits_cold_transfer_request():
     assert response.tts_payloads == [b"\x00\x00"]  # "Connecting." spoken first
     assert response.transfer_request is not None
     assert response.transfer_request.destination == "+15551230000"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("destination, policy", [
+    ("+442071234567", TransferPolicy()),
+    ("sip:x@attacker.example", TransferPolicy()),
+    ("+8821234567890", TransferPolicy(allow_international=True)),
+])
+async def test_dial_node_outside_tenant_policy_is_never_dialled(destination, policy):
+    graph = _dial_graph()
+    next(n for n in graph["nodes"] if n["type"] == "dial")["data"]["destination"] = destination
+    handler, runner, tts = _handler(graph, transfer_policy=policy)
+    response = await asyncio.wait_for(handler.out_responses.get(), timeout=1)
+    assert response.transfer_request is None
+    assert response.end_call is True
+    # The node's "Connecting." is never synthesized; the caller hears that the transfer is not possible.
+    assert tts.calls == ["I can't transfer this call right now. Please try again later. Goodbye."]
+
+
+@pytest.mark.asyncio
+async def test_dial_node_international_after_opt_in_is_dialled():
+    graph = _dial_graph()
+    next(n for n in graph["nodes"] if n["type"] == "dial")["data"]["destination"] = "+442071234567"
+    handler, runner, tts = _handler(graph, transfer_policy=TransferPolicy(allow_international=True))
+    response = await asyncio.wait_for(handler.out_responses.get(), timeout=1)
+    assert response.transfer_request.destination == "+442071234567"
 
 
 @pytest.mark.asyncio

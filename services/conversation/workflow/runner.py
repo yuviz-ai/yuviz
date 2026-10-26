@@ -13,8 +13,8 @@ from typing import Any, Awaitable, Callable
 
 from libs.config_sdk import RuntimeConfig
 from libs.config_sdk.workflow import (
-    ENDED_EARLY, Edge, Node, WorkflowGraph, WorkflowInvalid, parse_graph, render,
-    starter_graph,
+    ENDED_EARLY, TRANSFER_DESTINATION_VARIABLES, Edge, Node, WorkflowGraph, WorkflowInvalid, parse_graph,
+    render, starter_graph, template_variables,
 )
 
 from ..providers.interfaces import ChatMessage
@@ -43,6 +43,7 @@ class WorkflowRunner:
         base_suffix: str = "",
         default_global: str = "",
         variables: dict[str, Any] | None = None,
+        context_variables: dict[str, Any] | None = None,
         extractor: Any | None = None,
         summarizer: Any | None = None,
     ) -> None:
@@ -52,6 +53,8 @@ class WorkflowRunner:
         self._default_global = (default_global or "").strip()
         self._suffix = base_suffix
         self._vars: dict[str, Any] = dict(variables or {})
+        # Server-side call metadata only; never extractor, DTMF or handoff values.
+        self._context_vars: dict[str, Any] = dict(context_variables or {})
         self._extractor = extractor
         self._summarizer = summarizer
         self.visited: list[str] = [self._node.name]
@@ -128,6 +131,14 @@ class WorkflowRunner:
 
     def render(self, text: str) -> str:
         return render(text, self._vars)
+
+    def render_transfer_destination(self, text: str) -> str | None:
+        """Render from the call-context variables a destination may use. None when the
+        template names anything else, because the caller or the model could have set it."""
+        allowed = {k: v for k, v in self._context_vars.items() if k in TRANSFER_DESTINATION_VARIABLES}
+        if not template_variables(text) <= allowed.keys():
+            return None
+        return render(text, allowed)
 
     def local_tools(
         self,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 
@@ -12,6 +13,9 @@ log = logging.getLogger(__name__)
 
 # Mirrors toolexec graph.MAX_CHAIN_LEVELS; a client value can only lower it (the server clamps too).
 _PLATFORM_MAX_CHAIN_DEPTH = 4
+
+# Caps the serialized `data` that reaches the model and stays in history (same size as the knowledge tool's).
+_MAX_DATA_CHARS = 6000
 
 # chain_status -> ToolStatus, 1:1 except "partial" (see execute() below).
 _STATUS_MAP: dict[str, ToolStatus] = {
@@ -85,6 +89,12 @@ class ApiExecExecutor:
             # Only the redacted `data` projection reaches the LLM/log —
             # never steps/completed_steps/failed_step.
             payload = dict(response.get("data") or {})
+            serialized = json.dumps(payload, ensure_ascii=False)
+            if len(serialized) > _MAX_DATA_CHARS:
+                log.warning(
+                    "ApiExecExecutor: data truncated api_name=%s chars=%d", api_name, len(serialized),
+                )
+                payload = {"truncated": True, "data_excerpt": serialized[:_MAX_DATA_CHARS]}
         elif status is ToolStatus.INVALID_ARGUMENT:
             # Lets the LLM ask for the one missing piece (e.g. an order id).
             payload["missing_fields"] = response.get("missing_fields") or []

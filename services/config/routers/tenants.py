@@ -6,7 +6,7 @@ from .. import tenants as tenants_service
 from .. import users as users_service
 from ..auth import CurrentUser
 from ..deps import get_current_user, get_or_404, require_role
-from ..schemas import TenantConcurrencyUpdate, TenantCreate, TenantUpdate
+from ..schemas import TenantConcurrencyUpdate, TenantCreate, TenantTransferPolicyUpdate, TenantUpdate
 
 router = APIRouter(prefix="/tenants", tags=["tenants"])
 
@@ -68,6 +68,27 @@ async def update_tenant_concurrency(
     return await tenants_service.update_tenant(
         tenant_id, user_id=row["id"], user_email=row["email"],
         max_concurrent_calls=body.max_concurrent_calls,
+    )
+
+
+@router.patch("/{tenant_id}/transfer-policy")
+async def update_tenant_transfer_policy(
+    tenant_id: str, body: TenantTransferPolicyUpdate,
+    current_user: CurrentUser = Depends(require_role("superadmin")),
+):
+    """Superadmin only: international transfers are billed to the platform, so a tenant
+    admin must not be able to switch them on or move what counts as domestic. The role is
+    re-read from the users row, as for /concurrency, so a stale token cannot carry it."""
+    fields = body.model_dump(exclude_none=True)
+    if not fields:
+        raise HTTPException(status_code=400, detail="request body has no fields to update")
+    row = await users_service.get_user_by_id(current_user.id)
+    if row is None:
+        raise HTTPException(status_code=403, detail="account is no longer active")
+    if row["role"] != "superadmin":
+        raise HTTPException(status_code=403, detail=f"role {row['role']!r} cannot perform this action")
+    return await tenants_service.update_tenant(
+        tenant_id, user_id=row["id"], user_email=row["email"], **fields,
     )
 
 

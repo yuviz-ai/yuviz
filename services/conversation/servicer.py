@@ -643,9 +643,9 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
                 elif payload_case == "transfer_initiated":
                     ti = msg.transfer_initiated
                     transfer_started_at = time.monotonic()
-                    log.info("Converse: transfer_initiated type=%s destination=%s reason=%s "
+                    log.info("Converse: transfer_initiated type=%s destination=%s "
                              "transfer_id=%s session=%s",
-                             ti.transfer_type, ti.destination, ti.reason, ti.transfer_id, sid)
+                             ti.transfer_type, ti.destination, ti.transfer_id, sid)
                     session.on_transfer_initiated(ti.transfer_type, ti.destination, ti.reason,
                                                   ti.transfer_id)
 

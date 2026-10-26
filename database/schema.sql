@@ -1441,6 +1441,107 @@ CREATE INDEX IF NOT EXISTS idx_cfv_flow ON call_flow_versions (call_flow_id, ver
 -- Flow answering ahead of this agent; deleting the flow reverts agents to answering directly.
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS call_flow_id UUID REFERENCES call_flows(id) ON DELETE SET NULL;
 
+-- Transfer-destination policy (libs/config_sdk/dial_targets.py TransferPolicy). Domestic =
+-- no international prefix, or an international-format number under home_calling_code.
+-- Default is closed: international numbers and external SIP hosts need the opt-in.
+-- Premium-rate/satellite ranges are refused regardless.
+-- Existing tenants get their home code from their own numbers, in the same block as the
+-- ADD COLUMN (placed after call_flows, which it reads): a flat default of '1' would make
+-- every +91 destination "international" and break it on upgrade. It runs once (only when
+-- the column is added), so a code a superadmin has set since is never overwritten.
+-- Evidence is one vote per DISTINCT number per tenant, and only numbers written with an explicit
+-- country code (+CC... or 00CC...): an agent transfer destination, a published call-flow Dial
+-- node destination (call_flows.graph), a published workflow transfer node destination
+-- (agents.workflow) and an agent's outbound_caller_id (stored as +CC..., validated as a number
+-- the tenant owns), pooled, so the same number in three places is one vote, not three.
+-- DIDs never vote: they are normalized to plain digits earlier in this file, and a plain-digit
+-- string cannot name a country (18001021234 is Indian toll-free and also a well-formed NANP
+-- number). A national-form number, an extension, a SIP URI and a {{template}} vote for nothing.
+-- The country code is the one in the calling-code list that prefixes the digits (the list is
+-- prefix-free, so there is exactly one).
+-- The code with the most votes wins. If the top count is shared, or there is no evidence at all,
+-- the tenant keeps the closed default '1', a NOTICE names it, and an audit_log row
+-- (entity_type 'tenant_home_calling_code', entity_id = the tenant) is written for a superadmin to
+-- query and set the code.
+-- The code list is libs/config_sdk/calling_codes.py; a test keeps the two equal.
+-- row_security is switched off for the block because agents and call_flows are FORCE
+-- RLS: an owner without BYPASSRLS would otherwise read no rows and silently give every
+-- tenant '1'. With it off, such an owner gets an error and the block rolls back, so the
+-- next apply retries; apply schema.sql as a superuser or a BYPASSRLS role.
+DO $$
+DECLARE
+  leader record;
+  reason text;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = current_schema() AND table_name = 'tenants' AND column_name = 'home_calling_code'
+  ) THEN
+    PERFORM set_config('row_security', 'off', true);
+    ALTER TABLE tenants ADD COLUMN home_calling_code TEXT NOT NULL DEFAULT '1';
+    FOR leader IN WITH codes(code) AS (
+      SELECT unnest(ARRAY[
+        '1', '7', '20', '27', '30', '31', '32', '33', '34', '36', '39', '40', '41', '43', '44',
+        '45', '46', '47', '48', '49', '51', '52', '53', '54', '55', '56', '57', '58', '60', '61',
+        '62', '63', '64', '65', '66', '81', '82', '84', '86', '90', '91', '92', '93', '94', '95',
+        '98', '211', '212', '213', '216', '218', '220', '221', '222', '223', '224', '225', '226',
+        '227', '228', '229', '230', '231', '232', '233', '234', '235', '236', '237', '238', '239',
+        '240', '241', '242', '243', '244', '245', '246', '247', '248', '249', '250', '251', '252',
+        '253', '254', '255', '256', '257', '258', '260', '261', '262', '263', '264', '265', '266',
+        '267', '268', '269', '290', '291', '297', '298', '299', '350', '351', '352', '353', '354',
+        '355', '356', '357', '358', '359', '370', '371', '372', '373', '374', '375', '376', '377',
+        '378', '379', '380', '381', '382', '383', '385', '386', '387', '389', '420', '421', '423',
+        '500', '501', '502', '503', '504', '505', '506', '507', '508', '509', '590', '591', '592',
+        '593', '594', '595', '596', '597', '598', '599', '670', '672', '673', '674', '675', '676',
+        '677', '678', '679', '680', '681', '682', '683', '685', '686', '687', '688', '689', '690',
+        '691', '692', '850', '852', '853', '855', '856', '880', '886', '960', '961', '962', '963',
+        '964', '965', '966', '967', '968', '970', '971', '972', '973', '974', '975', '976', '977',
+        '992', '993', '994', '995', '996', '998'
+      ])
+    ), evidence(tenant_id, digits) AS (
+      SELECT tenant_id, regexp_replace(transfer_destination, '^(\+|00)', '') FROM agents
+       WHERE deleted_at IS NULL AND transfer_destination ~ '^(\+|00)[1-9][0-9]{6,14}$'
+      UNION
+      SELECT cf.tenant_id, regexp_replace(btrim(n.v #>> '{}'), '^(\+|00)', '')
+        FROM call_flows cf,
+             jsonb_path_query(cf.graph, '$.nodes[*] ? (@.type == "dial").data.destination') AS n(v)
+       WHERE cf.deleted_at IS NULL AND btrim(n.v #>> '{}') ~ '^(\+|00)[1-9][0-9]{6,14}$'
+      UNION
+      SELECT a.tenant_id, regexp_replace(btrim(n.v #>> '{}'), '^(\+|00)', '')
+        FROM agents a,
+             jsonb_path_query(a.workflow, '$.nodes[*] ? (@.type == "transfer").data.transfer_destination') AS n(v)
+       WHERE a.deleted_at IS NULL AND btrim(n.v #>> '{}') ~ '^(\+|00)[1-9][0-9]{6,14}$'
+      UNION
+      SELECT tenant_id, regexp_replace(outbound_caller_id, '^\+', '') FROM agents
+       WHERE deleted_at IS NULL AND outbound_caller_id ~ '^\+[1-9][0-9]{6,14}$'
+    ), counted AS (
+      SELECT e.tenant_id, c.code, count(*) AS n
+        FROM evidence e JOIN codes c ON e.digits LIKE c.code || '%'
+       GROUP BY e.tenant_id, c.code
+    ), leaders AS (
+      SELECT tenant_id, array_agg(code) AS codes
+        FROM (SELECT *, rank() OVER (PARTITION BY tenant_id ORDER BY n DESC) AS rk FROM counted) r
+       WHERE rk = 1 GROUP BY tenant_id
+    )
+    SELECT t.id AS tenant_id, l.codes FROM tenants t LEFT JOIN leaders l ON l.tenant_id = t.id LOOP
+      IF leader.codes IS NOT NULL AND cardinality(leader.codes) = 1 THEN
+        UPDATE tenants SET home_calling_code = leader.codes[1] WHERE id = leader.tenant_id;
+      ELSE
+        reason := CASE WHEN leader.codes IS NULL THEN 'no explicit country-code number'
+                       ELSE 'its numbers tie between ' || array_to_string(leader.codes, ', ') END;
+        RAISE NOTICE 'tenant % keeps home_calling_code 1: %; a superadmin must set it', leader.tenant_id, reason;
+        INSERT INTO audit_log (entity_type, entity_id, tenant_id, action, new_value)
+        VALUES ('tenant_home_calling_code', leader.tenant_id, leader.tenant_id, 'updated',
+                jsonb_build_object('home_calling_code', '1', 'reason', reason, 'candidates', to_jsonb(leader.codes)));
+      END IF;
+    END LOOP;
+  END IF;
+END $$;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS allow_international_transfers BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE tenants DROP CONSTRAINT IF EXISTS tenants_home_calling_code_check;
+ALTER TABLE tenants ADD  CONSTRAINT tenants_home_calling_code_check
+    CHECK (home_calling_code ~ '^[1-9][0-9]{0,2}$');
+
 -- Guided agent creation: shipped template (and version) that built the agent, plus a one-deep
 -- prompt undo slot. All nullable, no backfill. The undo columns are never returned by the API.
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS template_id                 TEXT;

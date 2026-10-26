@@ -249,3 +249,24 @@ async def test_generate_with_tools_plain_text_yields_token_events():
     events = [e async for e in llm.generate_with_tools([ChatMessage(role="user", content="hi")], [])]
 
     assert events == [TokenEvent(text="Hi"), TokenEvent(text=" there")]
+
+
+async def test_malformed_tool_arguments_are_not_logged(caplog):
+    import json as _json
+
+    body = _tool_call_chunk_sse(
+        _json.dumps({"choices": [{"delta": {"tool_calls": [{
+            "index": 0, "id": "c1", "type": "function",
+            "function": {"name": "lookup", "arguments": '{"dob": "1990-04-12'},
+        }]}, "finish_reason": None}]}),
+        _json.dumps({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+    )
+    llm = _make_llm(lambda request: httpx.Response(200, content=body))
+
+    with caplog.at_level("DEBUG"):
+        _ = [e async for e in llm.generate_with_tools(
+            [ChatMessage(role="user", content="x")], [{"name": "lookup", "parameters": {}}],
+        )]
+
+    assert "malformed tool_call" in caplog.text
+    assert "1990-04-12" not in caplog.text

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from libs.config_sdk.dial_targets import TransferPolicy
 from libs.config_sdk.workflow import starter_graph
 from libs.config_sdk import (
     Agent,
@@ -144,7 +145,8 @@ def _make_handler(
     workflow: dict | None = None, node_tools: list[str] | None = None,
     node_knowledge: list[str] | None = None, transcripts=None,
     agent_language: str | None = None, language_mode: str | None = None, stt_language: str | None = None,
-    supported_languages: tuple[str, ...] | None = None, agent_id: str = "a1", **handler_kwargs,
+    supported_languages: tuple[str, ...] | None = None, agent_id: str = "a1",
+    allow_international_transfers: bool = False, home_calling_code: str = "1", **handler_kwargs,
 ) -> PipelineConversationHandler:
     """Build a handler from a hand-built RuntimeConfig/ProviderBundle, no IConfigProvider."""
     now = datetime.now(timezone.utc)
@@ -155,6 +157,7 @@ def _make_handler(
         transfer_timeout_ms=None,
         default_stt_config_id=None, default_llm_config_id=None, default_tts_config_id=None,
         config_version=1, updated_at=now,
+        home_calling_code=home_calling_code, allow_international_transfers=allow_international_transfers,
     )
     # Every agent runs a graph; explicit workflow= is for graph tests.
     # node_tools / node_knowledge land on the start node for per-stage scoping.
@@ -901,6 +904,24 @@ async def test_pipeline_marker_only_reply_without_closure_stays_open(caplog):
 
 
 @pytest.mark.asyncio
+async def test_caller_and_reply_words_are_never_logged(caplog):
+    """Caller utterances (STT result, guardrail hit) and reply text on a TTS failure stay out of logs."""
+    caller = "This is useless, my card is 4111111111111111"
+    reply = "Your balance is 9876 dollars."
+    tts = _make_tts()
+    tts.synthesize = AsyncMock(side_effect=RuntimeError("tts down"))
+
+    handler = _make_handler(_make_stt(caller), _make_llm([reply]), tts)
+    with caplog.at_level("DEBUG", logger=pipeline_module.log.name):
+        [r async for r in handler.on_speech_ended("s1", _silence(), 200, -20.0)]
+
+    assert "Guardrail violation" in caplog.text
+    assert "TTS streaming failed" in caplog.text
+    for secret in ("4111111111111111", "useless", "9876"):
+        assert secret not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_legacy_free_text_agent_language_keeps_the_end_call_guard():
     """agents.language='English' normalizes to nothing but must not switch the guard off: the English
     phrase tables apply, so a marker after a non-farewell to a non-closing caller is rejected."""
@@ -1291,7 +1312,9 @@ async def test_pipeline_detects_transfer_directive_and_yields_transfer_request()
     ])
     tts = _make_tts(b"\x00" * 640)
 
-    handler = _make_handler(stt, llm, tts)
+    handler = _make_handler(
+        stt, llm, tts, transfer_type="warm", transfer_destination="+15551234567",
+    )
     responses = []
     async for r in handler.on_speech_ended("s1", _silence(), 200, -20.0):
         responses.append(r)
@@ -1323,7 +1346,9 @@ async def test_pipeline_transfer_directive_split_across_tokens_still_detected():
     ])
     tts = _make_tts(b"\x00" * 640)
 
-    handler = _make_handler(stt, llm, tts)
+    handler = _make_handler(
+        stt, llm, tts, transfer_type="cold", transfer_destination="+14155550100",
+    )
     responses = []
     async for r in handler.on_speech_ended("s1", _silence(), 200, -20.0):
         responses.append(r)
@@ -1335,6 +1360,158 @@ async def test_pipeline_transfer_directive_split_across_tokens_still_detected():
     # No raw tag fragment leaked into any synthesized sentence.
     synth_calls = [c.args[0] for c in tts.synthesize.await_args_list]
     assert not any("[[TRANSFER" in call for call in synth_calls)
+
+
+async def _directive_transfers(directive_text: str, **handler_kwargs):
+    handler = _make_handler(
+        _make_stt("transfer me"), _make_llm(["One moment. ", directive_text]),
+        _make_tts(b"\x00" * 640), **handler_kwargs,
+    )
+    return [
+        r.transfer_request
+        async for r in handler.on_speech_ended("s1", _silence(), 200, -20.0)
+        if r.transfer_request
+    ]
+
+
+@pytest.mark.asyncio
+async def test_transfer_directive_ignored_when_transfers_disabled():
+    """Prompt-injected directive must not dial anything for an agent with transfers off."""
+    assert await _directive_transfers(
+        '[[TRANSFER type="cold" destination="+19005550199" reason="x"]]', transfer_type="none",
+    ) == []
+
+
+@pytest.mark.asyncio
+async def test_transfer_directive_cannot_override_configured_type_or_destination():
+    transfers = await _directive_transfers(
+        '[[TRANSFER type="cold" destination="+15550001111" reason="x"]]',
+        transfer_type="warm", transfer_destination="+15550009999",
+    )
+    assert len(transfers) == 1
+    assert transfers[0].transfer_type == "warm"
+    assert transfers[0].destination == "+15550009999"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dest", [
+    "+44 20 7946 0958 &bridge(x)", "sip:attacker@evil.example.com&x", "+1555;park",
+])
+async def test_transfer_directive_refuses_unsafe_configured_destination(dest):
+    """The allowlist applies to the destination actually dialled, not just the model's."""
+    assert await _directive_transfers(
+        '[[TRANSFER type="cold" destination="+15550001111" reason="x"]]',
+        transfer_type="cold", transfer_destination=dest,
+    ) == []
+
+
+@pytest.mark.asyncio
+async def test_transfer_directive_sip_uri_from_model_is_never_dialled():
+    transfers = await _directive_transfers(
+        '[[TRANSFER type="cold" destination="sip:attacker@evil.example.com" reason="x"]]',
+        transfer_type="cold", transfer_destination="sip:desk@pbx.acme.example",
+        allow_international_transfers=True,
+    )
+    assert [t.destination for t in transfers] == ["sip:desk@pbx.acme.example"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dest", ["+442071234567", "sip:desk@pbx.acme.example", "+8821234567890"])
+async def test_transfer_directive_refuses_stored_destination_outside_tenant_policy(dest):
+    """A value saved before the policy existed is still refused at call time."""
+    transfers = await _directive_transfers(
+        '[[TRANSFER reason="x"]]', transfer_type="cold", transfer_destination=dest,
+    )
+    assert transfers == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handler_kwargs, reason", [
+    ({"transfer_type": "cold", "transfer_destination": "+442071234567"}, "destination_not_permitted"),
+    ({"transfer_type": "none"}, "transfer_disabled"),
+])
+async def test_refused_transfer_directive_tells_the_model_so_it_can_correct_itself(handler_kwargs, reason):
+    """The model already said "connecting you"; it must be told the transfer is not happening."""
+    import json as _json
+
+    seen = []
+
+    async def llm_generate(messages):
+        seen.append(list(messages))
+        yield "Okay, connecting you. " if len(seen) == 1 else "Sorry, I can't transfer you, but I can help here. "
+        if len(seen) == 1:
+            yield '[[TRANSFER reason="x"]]'
+
+    llm = MagicMock()
+    llm.generate = llm_generate
+    handler = _make_handler(_make_stt("transfer me"), llm, _make_tts(b"\x00" * 640), **handler_kwargs)
+    responses = [r async for r in handler.on_speech_ended("s1", _silence(), 200, -20.0)]
+
+    assert [r for r in responses if r.transfer_request] == []
+    assert len(seen) == 2
+    event = _json.loads(seen[1][-1].content.split("\n\n")[0])
+    assert event == {"type": "system_event", "event": "transfer_failed", "reason": reason}
+
+
+@pytest.mark.asyncio
+async def test_accepted_transfer_directive_does_not_run_the_failure_recovery_turn():
+    seen = []
+
+    async def llm_generate(messages):
+        seen.append(messages)
+        yield "Connecting you. "
+        yield '[[TRANSFER reason="x"]]'
+
+    llm = MagicMock()
+    llm.generate = llm_generate
+    handler = _make_handler(
+        _make_stt("transfer me"), llm, _make_tts(b"\x00" * 640),
+        transfer_type="cold", transfer_destination="+15550009999",
+    )
+    responses = [r async for r in handler.on_speech_ended("s1", _silence(), 200, -20.0)]
+
+    assert len([r for r in responses if r.transfer_request]) == 1
+    assert len(seen) == 1
+
+
+@pytest.mark.asyncio
+async def test_transfer_directive_dials_international_destination_after_opt_in():
+    transfers = await _directive_transfers(
+        '[[TRANSFER reason="x"]]', transfer_type="cold", transfer_destination="+442071234567",
+        allow_international_transfers=True,
+    )
+    assert [t.destination for t in transfers] == ["+442071234567"]
+
+
+@pytest.mark.asyncio
+async def test_transfer_directive_refuses_premium_rate_even_after_opt_in():
+    transfers = await _directive_transfers(
+        '[[TRANSFER reason="x"]]', transfer_type="cold", transfer_destination="+8821234567890",
+        allow_international_transfers=True,
+    )
+    assert transfers == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dest", ["1001", "+18005550100"])
+async def test_transfer_directive_still_dials_domestic_destination(dest):
+    transfers = await _directive_transfers(
+        '[[TRANSFER reason="x"]]', transfer_type="cold", transfer_destination=dest,
+    )
+    assert [t.destination for t in transfers] == [dest]
+
+
+@pytest.mark.parametrize("dest, opted_in, expected", [
+    ("+442071234567", False, None), ("+8821234567890", True, None),
+    ("+442071234567", True, "+442071234567"), ("+18005550100", False, "+18005550100"),
+])
+def test_escalation_transfer_obeys_tenant_policy(dest, opted_in, expected):
+    handler = _make_handler(
+        _make_stt(), _make_llm(), _make_tts(), transfer_type="cold", transfer_destination=dest,
+        escalation_threshold=0, allow_international_transfers=opted_in,
+    )
+    request = handler.record_guardrail_violation("s1")
+    assert (request.destination if request else None) == expected
 
 
 @pytest.mark.asyncio
@@ -1445,7 +1622,9 @@ async def test_transfer_request_suppressed_on_barge_in_cancel():
     llm.generate = slow_llm
     tts = _make_tts()
 
-    handler = _make_handler(stt, llm, tts)
+    handler = _make_handler(
+        stt, llm, tts, transfer_type="cold", transfer_destination="+14155550100",
+    )
 
     responses = []
     async for r in handler.on_speech_ended("s1", _silence(), 200, -20.0):
@@ -2202,6 +2381,7 @@ def test_transfer_instruction_injected_for_valid_sip_uri():
         _make_stt(), _make_llm(), _make_tts(),
         system_prompt="You are Alex.",
         transfer_type="cold", transfer_destination="sip:agent@example.com",
+        allow_international_transfers=True,
     )
     assert 'destination="sip:agent@example.com"' in handler._workflow.system_prompt()
 
@@ -2233,6 +2413,9 @@ def test_transfer_instruction_absent_for_unknown_transfer_type():
     assert "[[TRANSFER" not in handler._workflow.system_prompt()
 
 
+_OPEN = TransferPolicy(allow_international=True)
+
+
 @pytest.mark.parametrize("dest", [
     "1001\n\napi hupall",
     "1001\n",
@@ -2242,32 +2425,32 @@ def test_transfer_instruction_absent_for_unknown_transfer_type():
 ])
 def test_transfer_destination_problem_refuses_esl_injection(dest):
     from ..pipeline import transfer_destination_problem
-    assert transfer_destination_problem(dest) is not None
+    assert transfer_destination_problem(dest, _OPEN) is not None
 
 
 def test_transfer_destination_problem_diagnoses():
     from ..pipeline import transfer_destination_problem
-    assert transfer_destination_problem(None) is not None
-    assert transfer_destination_problem("   ") is not None
-    assert transfer_destination_problem("sip:x") is not None
-    assert transfer_destination_problem("call me maybe") is not None
-    assert transfer_destination_problem("1001") is None
-    assert transfer_destination_problem("+18005550100") is None
-    assert transfer_destination_problem("sip:agent@example.com") is None
-    assert transfer_destination_problem("sips:agent@host.tld") is None
+    assert transfer_destination_problem(None, _OPEN) is not None
+    assert transfer_destination_problem("   ", _OPEN) is not None
+    assert transfer_destination_problem("sip:x", _OPEN) is not None
+    assert transfer_destination_problem("call me maybe", _OPEN) is not None
+    assert transfer_destination_problem("1001", _OPEN) is None
+    assert transfer_destination_problem("+18005550100", _OPEN) is None
+    assert transfer_destination_problem("sip:agent@example.com", _OPEN) is None
+    assert transfer_destination_problem("sips:agent@host.tld", _OPEN) is None
     # The Gateway only routes lowercase schemes as SIP URIs (EslClient::looks_like_sip_uri).
-    assert transfer_destination_problem("SIPS:agent@host.tld") is not None
+    assert transfer_destination_problem("SIPS:agent@host.tld", _OPEN) is not None
 
 
 @pytest.mark.parametrize("dest", ["788", "5005"])
 def test_transfer_destination_problem_names_platform_ai_numbers(dest):
     from ..pipeline import transfer_destination_problem
-    assert "own AI numbers" in transfer_destination_problem(dest)
+    assert "own AI numbers" in transfer_destination_problem(dest, _OPEN)
 
 
 def test_transfer_destination_problem_names_loopback_uri():
     from ..pipeline import transfer_destination_problem
-    assert "points at this host" in transfer_destination_problem("sip:3500@127.0.0.1:5080")
+    assert "points at this host" in transfer_destination_problem("sip:3500@127.0.0.1:5080", _OPEN)
 
 
 # ---------------------------------------------------------------------------

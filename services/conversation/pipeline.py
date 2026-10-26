@@ -17,9 +17,11 @@ from typing import Any, AsyncGenerator
 
 from libs.config_sdk import RuntimeConfig, validate_transfer_timeout_ms
 from libs.config_sdk.dial_targets import (
+    TransferPolicy,
     is_platform_ai_number,
     is_sip_uri_shape,
     is_transfer_destination,
+    transfer_policy_problem,
 )
 from libs.knowledge_sdk import IKnowledgeProvider, RetrievalPolicy
 
@@ -419,14 +421,14 @@ def _build_transfer_instruction(
 # Runtime ESL-injection allowlist for transfer destinations, including
 # workflow-rendered ones. Must match EslClient.cpp's is_safe_destination;
 # never relax it for convenience.
-def transfer_destination_problem(destination: str | None) -> str | None:
+def transfer_destination_problem(destination: str | None, policy: TransferPolicy) -> str | None:
     """None when the destination looks routable; otherwise a human-readable
     diagnosis for the session-setup error log. Checks the exact value the
     Gateway will receive (no strip), with the Gateway's own allowlist."""
     if destination is None or not destination.strip():
         return "transfer_destination is empty"
     if is_transfer_destination(destination):
-        return None
+        return transfer_policy_problem(destination, policy)
     if is_platform_ai_number(destination):
         return (
             f"transfer_destination {destination!r} is one of this platform's own AI numbers "
@@ -543,6 +545,9 @@ class PipelineConversationHandler:
         self._call_started_at = time.monotonic()
         self._transfer_type_default        = runtime_config.policies.transfer_type
         self._transfer_destination_default = runtime_config.policies.transfer_destination
+        self._transfer_policy = TransferPolicy(
+            runtime_config.tenant.home_calling_code, runtime_config.tenant.allow_international_transfers,
+        )
         self._escalation_threshold         = runtime_config.policies.escalation_threshold
         # Caller-ID resolution inputs (see transfer_engine._resolve_caller_id).
         self._caller_id_policy  = runtime_config.policies.caller_id_policy
@@ -562,7 +567,7 @@ class PipelineConversationHandler:
                 tt, runtime_config.agent.slug,
             )
         elif tt and tt != "none":
-            problem = transfer_destination_problem(self._transfer_destination_default)
+            problem = transfer_destination_problem(self._transfer_destination_default, self._transfer_policy)
             if problem:
                 log.error(
                     "Transfer misconfigured for agent %s (transfer_type=%s): %s "
@@ -601,21 +606,22 @@ class PipelineConversationHandler:
             self._llm, threshold_msgs=summary_threshold_for(max_history),
         )
         graph = graph_for(runtime_config)
+        call_context = {
+            "caller_number": caller_number,
+            "called_number": called_number,
+            "direction":     direction,
+            "agent_name":    runtime_config.agent.name,
+            "business_name": runtime_config.tenant.name,
+            "current_date":  now.strftime("%Y-%m-%d"),
+            "current_time":  now.strftime("%H:%M"),
+        }
         self._workflow = WorkflowRunner(
             graph,
             base_suffix=self._prompt_suffix,
             default_global=self._default_system_prompt,
             # Call-flow handoff values override the call-context defaults.
-            variables={
-                "caller_number": caller_number,
-                "called_number": called_number,
-                "direction":     direction,
-                "agent_name":    runtime_config.agent.name,
-                "business_name": runtime_config.tenant.name,
-                "current_date":  now.strftime("%Y-%m-%d"),
-                "current_time":  now.strftime("%H:%M"),
-                **(initial_variables or {}),
-            },
+            variables={**call_context, **(initial_variables or {})},
+            context_variables=call_context,
             extractor=self._extractor,
             summarizer=self._summarizer,
         )
@@ -916,8 +922,8 @@ class PipelineConversationHandler:
                 # own transcript confidence (Deepgram; Whisper reports 1.0 and gates on no_speech_prob).
                 if stt_result.confidence < lang_state.SHORT_MIN_SPEECH_CONFIDENCE or not tracker.accept_short(heard):
                     log.debug(
-                        "Skipping short utterance %r lang=%s conf=%s stt_conf=%.2f (session language %s) session=%s",
-                        stt_result.text, heard.language, heard.confidence, stt_result.confidence,
+                        "Skipping short utterance chars=%d lang=%s conf=%s stt_conf=%.2f (session language %s) session=%s",
+                        len(stt_result.text), heard.language, heard.confidence, stt_result.confidence,
                         tracker.current, session_id,
                     )
                     return
@@ -926,13 +932,13 @@ class PipelineConversationHandler:
 
         if tracker is not None:
             log.info(
-                "STT result=%r language=%s conf=%s session_language=%s session=%s",
-                stt_result.text, heard.language,
+                "STT result chars=%d language=%s conf=%s session_language=%s session=%s",
+                len(stt_result.text), heard.language,
                 f"{heard.confidence:.2f}" if heard.confidence is not None else None,
                 tracker.current, session_id,
             )
         else:
-            log.info("STT result=%r session=%s", stt_result.text, session_id)
+            log.info("STT result chars=%d session=%s", len(stt_result.text), session_id)
         yield HandlerResponse(stt_text=stt_result.text, stt_confidence=stt_result.confidence)
 
         # A breach only stores a pending transfer; the agent still answers this turn first.
@@ -943,8 +949,7 @@ class PipelineConversationHandler:
         violation = GuardrailDetector.check(stt_result.text, check_language)
         if violation is not None:
             log.info(
-                "Guardrail violation category=%s matched=%r session=%s",
-                violation.category, violation.matched, session_id,
+                "Guardrail violation category=%s session=%s", violation.category, session_id,
             )
             self.record_guardrail_violation(session_id)
         else:
@@ -1101,7 +1106,7 @@ class PipelineConversationHandler:
             if fabricated_booking_claim:
                 log.warning(
                     "Possible fabricated booking claim (no tool call this turn) "
-                    "session=%s text=%r", session_id, assistant_text,
+                    "session=%s chars=%d", session_id, len(assistant_text),
                 )
                 history.append(ChatMessage(
                     role="system",
@@ -1141,11 +1146,19 @@ class PipelineConversationHandler:
         # At most one transfer per turn: directive, then workflow, then pending escalation.
         # Computed before end_call, since yielding end_call first would tear the session down.
         transfer_request: TransferRequest | None = None
+        refused_reason: str | None = None
         if not cancel_event.is_set():
             transfer_directive = next(
                 (d for d in directives if isinstance(d, TransferDirective)), None,
             )
-            if transfer_directive is not None:
+            directive_problem = (
+                transfer_destination_problem(self._transfer_destination_default, self._transfer_policy)
+                if transfer_directive is not None and self._transfer_type_default != "none" else None
+            )
+            if directive_problem is not None:
+                log.warning("Transfer directive rejected: %s session=%s", directive_problem, session_id)
+                refused_reason = "destination_not_permitted"
+            elif transfer_directive is not None:
                 decision = self._transfer_engine.evaluate(
                     self._decision_context(session_id),
                     TransferTrigger(type=TriggerType.LLM_DIRECTIVE, directive=transfer_directive),
@@ -1153,8 +1166,11 @@ class PipelineConversationHandler:
                 if decision.accepted:
                     transfer_request = decision.request
                     self._session(session_id).transfer_requested = True
+                elif decision.rejection_reason != "already_transferring":
+                    refused_reason = decision.rejection_reason
             if transfer_request is None:
-                transfer_request = await self._workflow_transfer(session_id)
+                transfer_request, workflow_refusal = await self._workflow_transfer(session_id)
+                refused_reason = refused_reason or workflow_refusal
             # Also covers a directive rejected as already_transferring because of this pending request.
             if transfer_request is None:
                 state = self._session(session_id)
@@ -1192,6 +1208,11 @@ class PipelineConversationHandler:
                 async for chunk in self._synthesize_sentence_stream(announcement, session_id):
                     yield HandlerResponse(tts_payloads=[chunk])
             yield HandlerResponse(transfer_request=transfer_request)
+        elif refused_reason is not None and not end_call and not cancel_event.is_set():
+            # The model's own words ("connecting you") are already spoken by now, so tell it the transfer is not
+            # happening and let it correct itself and carry on.
+            async for response in self.on_transfer_failed(session_id, "", refused_reason):
+                yield response
 
     async def on_cancel(self, session_id: str) -> None:
         self._cancel_event(session_id).set()
@@ -1240,6 +1261,7 @@ class PipelineConversationHandler:
             session_id=session_id, tenant_id=self._tenant_id, call_id=self._call_id,
             transfer_type=self._transfer_type_default,
             transfer_destination=destination_override or self._transfer_destination_default,
+            transfer_policy=self._transfer_policy,
             escalation_threshold=self._escalation_threshold,
             already_requested=self._session(session_id).transfer_requested,
             caller_id_policy=self._caller_id_policy,
@@ -1388,10 +1410,11 @@ class PipelineConversationHandler:
         else:
             history.insert(0, prompt)
 
-    async def _workflow_transfer(self, session_id: str) -> TransferRequest | None:
+    async def _workflow_transfer(self, session_id: str) -> tuple[TransferRequest | None, str | None]:
+        """The accepted request, or the refusal reason the model is told about (None when nothing was refused)."""
         node = self._workflow.pending_transfer
         if node is None:
-            return None
+            return None, None
         self._workflow.pending_transfer = None
         # Do not let a queued summary race the transfer path on the call LLM.
         self._summarizer.cancel()
@@ -1407,15 +1430,23 @@ class PipelineConversationHandler:
                     "routing with variables collected so far; stragglers left running",
                     session_id,
                 )
-        destination = self._workflow.render(node.transfer_destination or "") or None
-        problem = transfer_destination_problem(destination)
+        destination = self._workflow.render_transfer_destination(
+            node.transfer_destination or "",
+        ) or None
+        # Category only: a rendered destination is caller-derived, so never logged.
+        if destination is None:
+            problem = "destination is empty or uses a variable a destination may not (caller_number, called_number, extracted)"
+        elif transfer_destination_problem(destination, self._transfer_policy) is not None:
+            problem = "rendered destination failed the transfer allowlist"
+        else:
+            problem = None
         if problem is not None:
             log.warning(
                 "Workflow transfer node %r rejected: %s session=%s",
                 node.name, problem, session_id,
             )
             self._workflow.abandon_transfer()
-            return None
+            return None, "destination_not_permitted"
         decision = self._transfer_engine.evaluate(
             self._decision_context(session_id, destination_override=destination),
             TransferTrigger(
@@ -1428,9 +1459,9 @@ class PipelineConversationHandler:
                 node.name, decision.rejection_reason, session_id,
             )
             self._workflow.abandon_transfer()
-            return None
+            return None, (None if decision.rejection_reason == "already_transferring" else decision.rejection_reason)
         self._session(session_id).transfer_requested = True
-        return decision.request
+        return decision.request, None
 
     def _interrupt_workflow_background_llm(self) -> None:
         self._extractor.interrupt_for_live_turn()
@@ -1879,7 +1910,7 @@ class PipelineConversationHandler:
                 yield chunk
             complete = True
         except Exception:
-            log.exception("TTS streaming failed text=%r session=%s", text, session_id)
+            log.exception("TTS streaming failed chars=%d session=%s", len(text), session_id)
         finally:
             if cache:
                 phrase_audio.finish(tts, key, flight, collected if complete else None)

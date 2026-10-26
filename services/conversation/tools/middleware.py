@@ -20,36 +20,28 @@ log = logging.getLogger(__name__)
 NextCall = Callable[[ToolExecutionRequest], Awaitable[ToolResult]]
 
 
-def _redact(value: Any, redact_keys: frozenset[str]) -> Any:
-    """Replace values of keys in redact_keys with "[redacted]" at any depth."""
-    if isinstance(value, dict):
-        return {
-            k: ("[redacted]" if k in redact_keys else _redact(v, redact_keys))
-            for k, v in value.items()
-        }
-    if isinstance(value, list):
-        return [_redact(v, redact_keys) for v in value]
-    return value
+def describe_arguments(arguments: Any) -> str:
+    """Tool arguments carry the caller's words, so a log line gets the top-level key names and the size, never a value."""
+    keys = sorted(arguments) if isinstance(arguments, dict) else "<not an object>"
+    return f"arg_keys={keys} arg_chars={len(repr(arguments))}"
 
 
 class LoggingMiddleware:
-    """Logs tool calls; redact_arg_keys comes from the resolved policy's sensitive_arg_keys."""
-
-    def __init__(self, redact_arg_keys: frozenset[str] = frozenset()) -> None:
-        self._redact_arg_keys = redact_arg_keys
+    """Logs tool calls by name, argument key names, sizes and status. Argument values and payloads are caller
+    and upstream data, so they are never logged, whatever their key."""
 
     async def __call__(self, request: ToolExecutionRequest, call_next: NextCall) -> ToolResult:
         log.info(
-            "tool_call start tool=%s call_id=%s tenant=%s agent=%s arguments=%r",
+            "tool_call start tool=%s call_id=%s tenant=%s agent=%s %s",
             request.tool_name, request.tool_call_id,
             request.context.tenant_id, request.context.agent_id,
-            _redact(request.arguments, self._redact_arg_keys),
+            describe_arguments(request.arguments),
         )
         result = await call_next(request)
         log.info(
-            "tool_call done tool=%s call_id=%s status=%s payload=%r error=%r",
+            "tool_call done tool=%s call_id=%s status=%s payload_chars=%d error=%r",
             request.tool_name, request.tool_call_id, result.status.value,
-            _redact(result.payload, self._redact_arg_keys), result.error,
+            len(repr(result.payload)), result.error,
         )
         return result
 
@@ -243,13 +235,12 @@ def _bind(middleware, next_call: NextCall) -> NextCall:
 
 def build_default_chain(
     executor, timeout_ms: int = 6000, metrics: IMetrics | None = None,
-    redact_arg_keys: frozenset[str] = frozenset(),
     latency_store: ToolLatencyStore | None = None,
     breaker_board: BreakerBoard | None = None,
 ) -> MiddlewareChain:
     """Standard chain: Logging, Metrics, Latency (if a store is given), CircuitBreaker, Retry, Timeout."""
     middlewares = [
-        LoggingMiddleware(redact_arg_keys=redact_arg_keys),
+        LoggingMiddleware(),
         MetricsMiddleware(metrics),
     ]
     if latency_store is not None:

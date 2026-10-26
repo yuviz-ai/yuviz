@@ -163,9 +163,13 @@ async def validate_call_flow(
     body: CallFlowDraft,
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    await _authorize_flow(call_flow_id, current_user)
+    flow = await _authorize_flow(call_flow_id, current_user)
     try:
-        return {"valid": True, "warnings": await call_flows_service.validate(body.graph)}
+        warnings = await call_flows_service.validate(body.graph)
+        dial_errs = await call_flows_service.dial_policy_errors(flow["tenant_id"], body.graph)
+        if dial_errs:
+            raise call_flows_service.CallFlowValidationError(dial_errs)
+        return {"valid": True, "warnings": warnings}
     except call_flows_service.CallFlowValidationError as exc:
         return _validation_error(exc)
 
