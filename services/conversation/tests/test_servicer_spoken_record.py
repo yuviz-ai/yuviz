@@ -90,6 +90,9 @@ async def test_a_hangup_during_the_transfer_failed_apology_is_persisted_before_t
 
     async def stream():
         yield _open()
+        # A transfer_failed only counts while a transfer is pending.
+        yield pb.GatewayMessage(transfer_initiated=pb.TransferInitiated(
+            session_id="s1", transfer_type="cold", destination="+15551234567", reason="x", transfer_id="x1"))
         yield pb.GatewayMessage(transfer_failed=pb.TransferFailed(
             session_id="s1", destination="+15551234567", reason="esl_unreachable", transfer_id="x1"))
         await asyncio.Event().wait()   # the gateway holds the stream open until it hangs up
