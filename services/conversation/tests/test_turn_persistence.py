@@ -39,9 +39,13 @@ async def test_hangup_mid_reply_persists_the_turn_as_interrupted():
         return handler
 
     async def consume():
+        chunks = 0
         async for msg in ConversationServicer(factory).Converse(stream(), AsyncMock()):
             if msg.HasField("tts_chunk"):
-                first_audio.set()
+                chunks += 1
+                # The first chunk is the filler; hang up once the reply sentence, the second, is sent.
+                if chunks == 2:
+                    first_audio.set()
 
     task = asyncio.create_task(consume())
     await asyncio.wait_for(first_audio.wait(), 2)
@@ -154,3 +158,21 @@ async def test_a_turn_that_finishes_normally_is_recorded_once_even_if_closed_aft
 
     transcripts.record_turn.assert_called_once()
     assert transcripts.record_turn.call_args.args[4] is False
+
+
+async def test_a_turn_abandoned_past_the_session_end_does_not_write_to_the_ended_call():
+    """A turn the servicer abandoned at the close may finish after on_session_end: its row must be dropped."""
+    transcripts = MagicMock()
+    handler = _make_handler(
+        _make_stt("book me in"), _make_llm(["Sure thing."]), _make_tts(), transcripts=transcripts,
+    )
+
+    turn = handler.on_speech_ended("s1", _silence(), 200, -20.0)
+    async for response in turn:
+        if response.response_text:
+            break
+    await handler.on_session_end("s1", "stream_ended")
+    await turn.aclose()   # the abandoned turn unwinds only after the session ended
+
+    transcripts.record_turn.assert_not_called()
+    assert "s1" not in handler._sessions

@@ -757,6 +757,8 @@ class PipelineConversationHandler:
         # and would erase the fabrication streak.
         self._booking_fabrication_counter = GuardrailCounter()
         self._sessions: dict[str, _SessionState] = {}
+        # Set by on_session_end: a turn abandoned at the close must not write to the ended call.
+        self._ended = False
         # Conversation workflow — graph_for() falls back to starter, never None.
         now = business_now()
         self._extractor = VariableExtractor(self._llm, self._on_variables_extracted)
@@ -1031,7 +1033,7 @@ class PipelineConversationHandler:
             # Not after end_call: that already dropped this session, and a write would re-create its state.
             if (progress.stt_text and not progress.recorded and self._transcripts is not None
                     and session_id in self._sessions):
-                self._transcripts.record_turn(
+                self._record_turn(
                     session_id, progress.stt_text, progress.stt_confidence,
                     _spoken_reply([_join_sentences(progress.spoken)], self._session(session_id).unspoken_sentences), True,
                     tool_calls=progress.transcript_tool_calls, count_barge_in=False,
@@ -1178,7 +1180,7 @@ class PipelineConversationHandler:
                 max_duration_goodbye if got_audio else fallback_goodbye if got_fallback_audio else ""
             )
             if self._transcripts is not None:
-                turn_number = self._transcripts.record_turn(
+                turn_number = self._record_turn(
                     session_id, stt_result.text, stt_result.confidence,
                     spoken_goodbye, False,
                     latency=TurnLatency(
@@ -1310,8 +1312,13 @@ class PipelineConversationHandler:
                         if not getter.done():
                             getter.cancel()
                     if not getter.done() or getter.cancelled():
-                        break
-                    item = getter.result()
+                        # The producer's read task adds a hop, so a failure raised with the cancel can land
+                        # just behind it: still report it, but send no audio and speak no fallback.
+                        item = items.get_nowait() if not items.empty() else None
+                        if not isinstance(item, Exception) or isinstance(item, LlmResponseTimeout):
+                            break
+                    else:
+                        item = getter.result()
                 else:
                     # Already queued: take it without a suspension, as before the race existed.
                     item = items.get_nowait()
@@ -1432,7 +1439,7 @@ class PipelineConversationHandler:
                 history.pop()
 
         if self._transcripts is not None:
-            turn_number = self._transcripts.record_turn(
+            turn_number = self._record_turn(
                 session_id, stt_result.text, stt_result.confidence,
                 stored_reply, cancelled,
                 latency=TurnLatency(
@@ -1634,6 +1641,7 @@ class PipelineConversationHandler:
         self._guardrail_counter.reset(session_id)
         self._booking_fabrication_counter.reset(session_id)
         self._sessions.pop(session_id, None)
+        self._ended = True
         # One handler per call: its prewarms (phrase audio, STT, retrieval) are worthless once the call ends.
         for task in list(self._background_tasks):
             task.cancel()
@@ -1764,7 +1772,7 @@ class PipelineConversationHandler:
 
         if self._transcripts is not None:
             interrupted = cancel_event.is_set()
-            turn_number = self._transcripts.record_turn(
+            turn_number = self._record_turn(
                 session_id, f"[transfer_failed: {reason}]", 1.0,
                 self._cancelled_reply(session_id, progress) if interrupted else assistant_text,
                 interrupted,
@@ -2383,8 +2391,15 @@ class PipelineConversationHandler:
                     self._default_language, self._supported_languages,
                     unsupported_to_default=self._language_mode == "multilingual",
                 )
-            self._sessions[session_id] = state
+            if not self._ended:  # an abandoned turn must not resurrect the ended call's state
+                self._sessions[session_id] = state
         return state
+
+    def _record_turn(self, session_id: str, *args, **kwargs) -> int | None:
+        if self._ended:
+            log.warning("Dropping a turn recorded after the session ended session=%s", session_id)
+            return None
+        return self._transcripts.record_turn(session_id, *args, **kwargs)
 
     def _cancel_event(self, session_id: str) -> asyncio.Event:
         return self._session(session_id).cancelled

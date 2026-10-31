@@ -27,7 +27,7 @@ def _consume(task: asyncio.Task) -> None:
         task.exception()
 
 
-def _abandon(task: asyncio.Task) -> None:
+def abandon(task: asyncio.Task) -> None:
     task.add_done_callback(_consume)
     task.cancel()
 
@@ -42,9 +42,9 @@ async def run_bounded(awaitable: Awaitable[T], timeout: float) -> T:
     try:
         done, _ = await asyncio.wait({task}, timeout=timeout)
     except asyncio.CancelledError:
-        _abandon(task)
+        abandon(task)
         raise
     if not done:
-        _abandon(task)
+        abandon(task)
         raise TimeoutError
     return task.result()

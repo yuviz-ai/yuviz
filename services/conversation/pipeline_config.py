@@ -34,8 +34,11 @@ Environment-variable overrides (all optional):
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
+
+log = logging.getLogger(__name__)
 
 
 def _env(key: str) -> str | None:
@@ -73,7 +76,11 @@ def env_ms(key: str, default_ms: float) -> float:
 
 def env_count(key: str, default: int, *, minimum: int = 1) -> int:
     value = _env_number(key, None, int, lenient=True)
-    return default if value is None else max(minimum, value)
+    if value is None:
+        return default
+    if value < minimum:
+        log.warning("%s=%d is below its minimum; using %d", key, value, minimum)
+    return max(minimum, value)
 
 
 @dataclass

@@ -299,10 +299,13 @@ async def _utterance_audio_per_turn(burst):
     return audios
 
 
-async def test_each_utterance_queued_during_a_reply_keeps_its_own_audio():
+async def test_each_utterance_queued_during_a_reply_keeps_its_own_audio(monkeypatch):
     """Five utterances during one reply, no cancel: every deferred utterance reaches the pipeline
     with the audio sent before its speech_ended, not discarded as 'trailing frames' of a turn
-    that ran ahead of it."""
+    that ran ahead of it. The queued-utterance limit is lifted so all four deferred ones fit."""
+    from services.conversation import servicer as servicer_mod
+
+    monkeypatch.setattr(servicer_mod, "MAX_QUEUED_UTTERANCES", 0)
     audios = await _utterance_audio_per_turn([
         _speech_ended(),
         _audio(b"\x03\x03"), _speech_ended(),
