@@ -67,7 +67,7 @@ class CallFlowConversationHandler:
         self._transcripts = transcripts
 
         # The call row starts here, ahead of the driver, so it covers the IVR and names the flow's
-        # agent; a delegate's own begin_call() at handoff is then a same-tenant upsert that changes nothing.
+        # agent; a delegate's own begin_call() at handoff is then a same-tenant upsert that only sets answering_agent_id.
         if transcripts is not None:
             transcripts.begin_call(session_id, tenant_id, call_id, **(call_row or {}))
 
@@ -131,6 +131,8 @@ class CallFlowConversationHandler:
                 return
             elif isinstance(action, Hangup):
                 self._ended = True
+                if self._transcripts is not None:
+                    self._transcripts.record_workflow_outcome(self._session_id, disposition=f"callflow:{action.reason}")
                 await self.out_responses.put(HandlerResponse(tts_payloads=pcm, end_call=True))
                 return
             elif isinstance(action, Dial):
@@ -226,9 +228,9 @@ class CallFlowConversationHandler:
             return self._delegate.on_speech_ended(session_id, audio, duration_ms, energy_db)
         return _empty_async_gen()
 
-    async def on_cancel(self, session_id: str) -> None:
+    async def on_cancel(self, session_id: str, *, hanging_up: bool = False) -> None:
         if self._delegate is not None:
-            await self._delegate.on_cancel(session_id)
+            await self._delegate.on_cancel(session_id, hanging_up=hanging_up)
 
     async def on_session_end(
         self, session_id: str, reason: str, final_state: str | None = None,
@@ -271,3 +273,5 @@ class CallFlowConversationHandler:
     def record_live_stage(self, session_id: str, stage: str) -> None:
         if self._delegate is not None:
             self._delegate.record_live_stage(session_id, stage)
+        elif self._transcripts is not None:
+            self._transcripts.record_live_stage(session_id, stage)

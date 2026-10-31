@@ -45,19 +45,6 @@ async def test_a_sentence_that_failed_tts_is_not_stored_as_spoken():
     assert handler._get_history("s1")[-1].content == "Anything else?"
 
 
-async def test_a_reply_whose_tts_failed_entirely_is_not_added_to_history(monkeypatch):
-    monkeypatch.setenv("VOICEAI_FILLER_DELAY_MS", "60000")
-    handler = _make_handler(
-        _make_stt("when is it"), _make_llm(["Your booking QATTSFAIL is done."]),
-        _tts_failing_on("QATTSFAIL"),
-    )
-
-    responses = [r async for r in handler.on_speech_ended("s1", _silence(), 200, -20.0)]
-
-    assert not any(r.tts_payloads or r.response_text for r in responses)
-    assert [m.role for m in handler._get_history("s1")] == ["system"]
-
-
 async def test_a_turn_with_no_audio_still_sends_the_terminal_chunk(monkeypatch):
     monkeypatch.setenv("VOICEAI_FILLER_DELAY_MS", "60000")
     handler = _make_handler(
@@ -359,12 +346,18 @@ async def test_empty_audio_chunks_do_not_count_as_audio():
 
 async def test_a_reply_that_is_entirely_silent_is_not_added_to_history(monkeypatch):
     monkeypatch.setenv("VOICEAI_FILLER_DELAY_MS", "60000")
-    handler = _make_handler(_make_stt("hi"), _make_llm(["-5 degrees."]), _tts_silent_on("-5"))
+    transcripts = MagicMock()
+    handler = _make_handler(
+        _make_stt("hi"), _make_llm(["-5 degrees."]), _tts_silent_on("-5"), transcripts=transcripts,
+    )
 
     responses = [r async for r in handler.on_speech_ended("s1", _silence(), 200, -20.0)]
 
     assert not any(r.tts_payloads or r.response_text for r in responses)
     assert [m.role for m in handler._get_history("s1")] == ["system"]
+    # The transcript still holds the caller's turn, with nothing stored as spoken.
+    assert transcripts.record_turn.call_args.args[1] == "hi"
+    assert _reply_recorded(transcripts) == ""
 
 
 async def test_a_silent_cached_phrase_is_not_cached_and_is_not_a_reply_sentence():

@@ -118,8 +118,7 @@ async def test_synthesize_per_call_language_overrides_row():
         return httpx.Response(200, content=_silence_pcm(1600))
 
     tts = _make_tts(handler, language_code="en")
-    chunks = [c async for c in tts.synthesize_stream("नमस्ते", 16000, language="hi")]
-    assert chunks
+    assert await tts.synthesize("नमस्ते", 16000, language="hi")
 
 
 async def test_regional_language_code_is_normalised():
@@ -155,3 +154,61 @@ async def test_flash_v2_5_sends_normalised_language_code():
 
     tts = _make_tts(handler, model_id="eleven_flash_v2_5", language_code="en-US")
     await tts.synthesize("hello", 16000)
+
+
+async def test_stream_parses_with_timestamps_into_word_end_bytes():
+    import base64
+
+    seen = {}
+    pcm = _silence_pcm(8000)
+    text = "Hi you now"
+    ends = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]   # one per character
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        return httpx.Response(200, json={
+            "audio_base64": base64.b64encode(pcm).decode(),
+            "alignment": {
+                "characters": list(text), "character_start_times_seconds": [e - 0.1 for e in ends],
+                "character_end_times_seconds": ends,
+            },
+        })
+
+    tts = _make_tts(handler)
+    chunks = [c async for c in tts.synthesize_stream(text, 16000)]
+
+    assert seen["path"].endswith("/with-timestamps")
+    assert chunks == [pcm]
+    # "Hi" ends with character 2 (0.2 s), "you" with character 6 (0.6 s), "now" with character 10 (1.0 s).
+    assert chunks[0].word_ends == [6400, 19200, 32000]
+
+
+@pytest.mark.parametrize("alignment", [
+    None,
+    {},
+    {"characters": ["H", "i"], "character_end_times_seconds": [0.1, None]},
+    {"characters": None, "character_end_times_seconds": None},
+    {"characters": [None, "i"], "character_end_times_seconds": [0.1, 0.2]},
+])
+async def test_stream_keeps_the_audio_when_the_alignment_is_unusable(alignment):
+    import base64
+
+    pcm = _silence_pcm(800)
+    body = {"audio_base64": base64.b64encode(pcm).decode(), "alignment": alignment}
+
+    tts = _make_tts(lambda request: httpx.Response(200, json=body))
+    chunks = [c async for c in tts.synthesize_stream("Hi", 16000)]
+
+    assert chunks == [pcm]
+    assert chunks[0].word_ends == []
+
+
+async def test_stream_keeps_the_audio_when_the_response_has_no_alignment_key():
+    import base64
+
+    pcm = _silence_pcm(800)
+    tts = _make_tts(lambda request: httpx.Response(200, json={"audio_base64": base64.b64encode(pcm).decode()}))
+
+    chunks = [c async for c in tts.synthesize_stream("Hi", 16000)]
+
+    assert chunks == [pcm] and chunks[0].word_ends == []

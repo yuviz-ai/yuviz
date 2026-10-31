@@ -6,18 +6,27 @@ import base64
 import hashlib
 import hmac
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote, urlparse, urlunparse
 
 import httpx
 
 from ..exceptions import TelephonyProviderError, TelephonyRateLimited
-from ..interface import ISmsProvider, ITelephonyProvider, InboundSyncResult, InboundUrls, NormalizedInboundCall
+from ..interface import (
+    ISmsProvider, ITelephonyProvider, InboundSyncResult, InboundUrls, NormalizedInboundCall, ReconcileResult,
+)
 from ..registry import SmsProviderRegistry, TelephonyProviderRegistry
 
 log = logging.getLogger(__name__)
 
 _BASE_URL = "https://api.vobiz.ai/api"
+# Vobiz ignores call-list filters, so reconcile pages through calls itself, within these bounds.
+_RECONCILE_SETTLE_S = 30  # a create request Vobiz got after our timeout can still dial
+_RECONCILE_SKEW_S = 60
+_RECONCILE_PAGE = 20
+_RECONCILE_MAX_PAGES = 10
+_RECONCILE_MAX_OPEN = 25
 
 
 def _base_url_no_query(url: str) -> str:
@@ -29,6 +38,10 @@ def _e164(number: str) -> str:
     """Vobiz's number inventory keys numbers as E.164 with a leading "+"."""
     digits = "".join(c for c in number if c.isdigit())
     return f"+{digits}"
+
+
+def _digits(number: Any) -> str:
+    return "".join(c for c in str(number or "") if c.isdigit())
 
 
 def _vobiz_error(resp: httpx.Response) -> str:
@@ -151,6 +164,92 @@ class VobizTelephonyProvider(ITelephonyProvider, ISmsProvider):
             raise TelephonyProviderError(f"Vobiz get_call_status returned {resp.status_code}: {resp.text}")
         data = resp.json()
         return {**data, "status": _call_status(data), "to": data.get("to_number"), "from": data.get("from_number")}
+
+    async def reconcile_call(
+        self, *, reference: str, observed_call_id: str | None,
+        to: str | None = None, from_number: str | None = None, created_after: datetime | None = None,
+    ) -> ReconcileResult:
+        """'not_placed' only when no queued, live or recorded call from `from_number` to `to` exists since `created_after`."""
+        if observed_call_id is not None or not (to and from_number and created_after):
+            return await super().reconcile_call(reference=reference, observed_call_id=observed_call_id)
+        if not (to.startswith("+") and from_number.startswith("+")) or created_after.tzinfo is None:
+            return ReconcileResult(outcome="indeterminate")
+        if (datetime.now(timezone.utc) - created_after).total_seconds() < _RECONCILE_SETTLE_S:
+            return ReconcileResult(outcome="indeterminate")
+        target = (_digits(to), _digits(from_number))
+        try:
+            async with self._client() as client:
+                open_matches = await self._open_calls_to(client, target)
+                recorded = await self._recorded_calls_to(client, target, created_after) if open_matches == [] else None
+        except (httpx.HTTPError, TelephonyProviderError, KeyError, TypeError, ValueError) as exc:
+            log.warning("Vobiz reconcile failed reference=%s: %s", reference, type(exc).__name__)
+            return ReconcileResult(outcome="indeterminate")
+        matches = open_matches or recorded
+        if matches is None or len(matches) > 1:
+            return ReconcileResult(outcome="indeterminate")
+        if matches:
+            return ReconcileResult(outcome="placed", provider_call_id=matches[0])
+        return ReconcileResult(outcome="not_placed")
+
+    async def _open_calls_to(self, client: httpx.AsyncClient, target: tuple[str, str]) -> list[str] | None:
+        """Queued and live calls to the target; None when there are too many to check or a detail lacks to/from."""
+        endpoint = f"{_BASE_URL}/v1/Account/{self._auth_id}/Call/"
+        matches: list[str] = []
+        for status in ("queued", "live"):
+            resp = await client.get(endpoint, params={"status": status}, headers=self._headers)
+            if resp.status_code != 200:
+                raise TelephonyProviderError(f"Vobiz {status} call list returned {resp.status_code}")
+            call_ids = resp.json()["calls"]
+            if not isinstance(call_ids, list) or len(call_ids) > _RECONCILE_MAX_OPEN:
+                return None
+            for call_id in call_ids:
+                detail = await client.get(f"{endpoint}{call_id}/", params={"status": status}, headers=self._headers)
+                if detail.status_code == 404:
+                    continue
+                if detail.status_code != 200:
+                    raise TelephonyProviderError(f"Vobiz {status} call detail returned {detail.status_code}")
+                data = detail.json()
+                to_number, from_value = data.get("to_number") or data.get("to"), data.get("from_number") or data.get("from")
+                if not to_number or not from_value:
+                    return None
+                if (_digits(to_number), _digits(from_value)) == target:
+                    matches.append(str(call_id))
+        return matches
+
+    async def _recorded_calls_to(
+        self, client: httpx.AsyncClient, target: tuple[str, str], since: datetime,
+    ) -> list[str] | None:
+        """Ended calls to the target since `since`, walking newest-first; None if that order can't be confirmed."""
+        endpoint = f"{_BASE_URL}/v1/Account/{self._auth_id}/Call/"
+        floor = since - timedelta(seconds=_RECONCILE_SKEW_S)
+        matches: list[str] = []
+        offset, previous = 0, None
+        for _ in range(_RECONCILE_MAX_PAGES):
+            resp = await client.get(
+                endpoint, params={"limit": _RECONCILE_PAGE, "offset": offset}, headers=self._headers,
+            )
+            if resp.status_code != 200:
+                raise TelephonyProviderError(f"Vobiz call list returned {resp.status_code}")
+            body = resp.json()
+            records, total = body["objects"], int(body["meta"]["total_count"])
+            for index, record in enumerate(records):
+                started = datetime.fromisoformat(record.get("initiation_time") or record["created_at"])
+                if started.tzinfo is None or (previous is not None and started > previous):
+                    return None
+                # Stop early only once a newer record before this one shows the list runs newest-first.
+                if started < floor and (previous is not None or offset + index + 1 >= total):
+                    return matches
+                previous = started
+                if started < floor:
+                    continue
+                if (_digits(record.get("to_number")), _digits(record.get("from_number"))) == target:
+                    matches.append(str(record["call_uuid"]))
+            offset += len(records)
+            if offset >= total:
+                return matches
+            if not records:
+                return None
+        return None
 
     def verify_webhook_signature(self, url: str, headers: dict[str, str]) -> bool:
         """Vobiz signs the callback's base URL (query parameters stripped)

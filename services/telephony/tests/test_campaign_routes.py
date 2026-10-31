@@ -77,6 +77,24 @@ def test_reconcile_route_against_the_fake_provider(client):
     assert resp.json() == {"outcome": "unknown", "provider_call_id": None}
 
 
+def test_reconcile_passes_to_from_and_created_after_to_the_provider(client):
+    seen: dict = {}
+
+    class Capturing(FakeProvider):
+        async def reconcile_call(self, **kwargs):
+            seen.update(kwargs)
+            return await super().reconcile_call(**kwargs)
+
+    _wire(Capturing({"reconcile_outcome": "not_placed"}))
+    resp = client.post("/fake/call/reconcile", json={
+        "tenant_slug": "tenant-a", "idempotency_key": "k_1",
+        "to": "+919876543210", "from": "+918065354620", "created_after": "2026-10-31T10:00:00+00:00",
+    }, headers=_headers())
+    assert resp.json() == {"outcome": "not_placed", "provider_call_id": None}
+    assert (seen["to"], seen["from_number"], seen["created_after"].isoformat()) == (
+        "+919876543210", "+918065354620", "2026-10-31T10:00:00+00:00")
+
+
 def test_reconcile_rejects_a_malformed_key(client):
     resp = client.post("/fake/call/reconcile", json={"tenant_slug": "tenant-a", "idempotency_key": "a b/c"}, headers=_headers())
     assert resp.status_code == 422

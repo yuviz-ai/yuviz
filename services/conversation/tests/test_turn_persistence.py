@@ -128,6 +128,8 @@ async def test_hangup_parked_at_the_response_text_yield_writes_one_interrupted_r
 
     turn = handler.on_speech_ended("s1", _silence(), 200, -20.0)
     async for response in turn:
+        if response.on_sent:
+            response.on_sent()   # the servicer's send
         if response.response_text:
             break
     await turn.aclose()   # the gateway hangs up while the generator waits at that yield

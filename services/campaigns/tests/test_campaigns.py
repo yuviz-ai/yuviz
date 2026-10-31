@@ -82,6 +82,19 @@ async def test_caller_id_owned_by_tenant_false_for_another_tenants_did(test_tena
         await pool.execute("DELETE FROM tenants WHERE id = $1", other["id"])
 
 
+async def test_inactive_did_is_not_an_outbound_caller_id(test_tenant, test_agent, pool, scoped):
+    await pool.execute(
+        "INSERT INTO phone_numbers (did, tenant_id, status) VALUES ($1, $2, 'inactive')",
+        "14155557777", test_tenant["id"],
+    )
+    try:
+        assert await campaigns.caller_id_owned_by_tenant(test_tenant["id"], "+14155557777") is False
+        route = await campaigns.resolve_outbound_route(test_tenant["id"], test_agent["id"], "+14155557777")
+        assert route["caller_id_owned"] is False
+    finally:
+        await pool.execute("DELETE FROM phone_numbers WHERE did = $1", "14155557777")
+
+
 async def test_caller_id_owned_by_tenant_false_for_unprovisioned_number(test_tenant, scoped):
     assert await campaigns.caller_id_owned_by_tenant(test_tenant["id"], "+19995550000") is False
 

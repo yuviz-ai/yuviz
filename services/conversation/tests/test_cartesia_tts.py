@@ -96,3 +96,64 @@ async def test_synthesize_sends_per_call_language():
 def test_body_language_is_normalised_to_iso_639_1():
     assert CartesiaTTS(api_key="k", voice="v", language="en-US")._body("hi", 16000)["language"] == "en"
     assert CartesiaTTS(api_key="k", voice="v")._body("hi", 16000, "hi-IN")["language"] == "hi"
+
+
+async def test_stream_reports_word_end_bytes_from_timestamp_events():
+    import base64
+    import json as _json
+
+    import httpx
+
+    seen = {}
+
+    def event(**kw) -> str:
+        return f"data: {_json.dumps(kw)}\n\n"
+
+    audio = base64.b64encode(b"\x01\x00" * 8000).decode()
+    sse = (
+        event(type="chunk", data=audio)
+        + event(type="timestamps", word_timestamps={"words": ["Hello", "there."], "start": [0.0, 0.2], "end": [0.2, 0.5]})
+        + event(type="done")
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(_json.loads(request.content))
+        return httpx.Response(200, content=sse.encode())
+
+    tts = CartesiaTTS(api_key="k", voice="v")
+    tts._client = httpx.AsyncClient(base_url="https://api.cartesia.ai", transport=httpx.MockTransport(handler))
+    chunks = [c async for c in tts.synthesize_stream("Hello there.", 16000)]
+
+    assert seen["add_timestamps"] is True
+    assert chunks == [b"\x01\x00" * 8000]
+    # 16 kHz, 2 bytes per sample: 0.2 s and 0.5 s.
+    assert chunks[0].word_ends == [6400, 16000]
+
+
+async def test_stream_ignores_a_malformed_timestamps_event_and_keeps_the_audio():
+    import base64
+    import json as _json
+
+    import httpx
+
+    def event(**kw) -> str:
+        return f"data: {_json.dumps(kw)}\n\n"
+
+    audio = base64.b64encode(b"\x01\x00" * 8).decode()
+    sse = (
+        event(type="chunk", data=audio)
+        + event(type="timestamps", word_timestamps={"words": ["a"]})            # no "end"
+        + event(type="timestamps", word_timestamps={"end": [None]})             # null entry
+        + event(type="timestamps")                                             # no word_timestamps
+        + event(type="chunk", data=audio)
+        + event(type="done")
+    )
+    tts = CartesiaTTS(api_key="k", voice="v")
+    tts._client = httpx.AsyncClient(
+        base_url="https://api.cartesia.ai",
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, content=sse.encode())),
+    )
+
+    chunks = [c async for c in tts.synthesize_stream("a b", 16000)]
+
+    assert chunks == [b"\x01\x00" * 8, b"\x01\x00" * 8]

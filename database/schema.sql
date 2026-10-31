@@ -555,6 +555,12 @@ ALTER TABLE calls ADD CONSTRAINT calls_sentiment_check
 -- Languages the caller spoke, in order of first appearance (multilingual agents only).
 ALTER TABLE calls ADD COLUMN IF NOT EXISTS detected_languages TEXT[];
 
+-- Post-transfer handoff summary; never a transcript turn (session_finalizer.PersistSummaryStep).
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS session_summary TEXT;
+-- Agent that took the call after a call-flow handoff; agent_id keeps the flow/IVR agent. NULL = no handoff.
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS answering_agent_id UUID REFERENCES agents(id);
+CREATE INDEX IF NOT EXISTS idx_calls_answering_agent ON calls(answering_agent_id) WHERE answering_agent_id IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_calls_tenant   ON calls(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_calls_started  ON calls(started_at);
 CREATE INDEX IF NOT EXISTS idx_calls_agent    ON calls(agent_id);
@@ -690,6 +696,8 @@ CREATE INDEX IF NOT EXISTS idx_campaign_attempts_open
     ON campaign_attempts(campaign_id) WHERE state <> 'resolved' OR outcome = 'answered';
 CREATE INDEX IF NOT EXISTS idx_campaign_attempts_open_tenant
     ON campaign_attempts(tenant_id) WHERE state <> 'resolved' OR outcome = 'answered';
+CREATE INDEX IF NOT EXISTS idx_campaign_attempts_tenant_created
+    ON campaign_attempts(tenant_id, created_at DESC);
 
 -- CPS scope of each dial start: 'sip_trunk:pstn' or 'provider_account:<telephony_configs.id>'.
 ALTER TABLE campaign_attempts ADD COLUMN IF NOT EXISTS cps_scope    TEXT NOT NULL DEFAULT 'sip_trunk:pstn';

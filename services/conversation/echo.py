@@ -50,7 +50,7 @@ class EchoConversationHandler:
         return
         yield  # make this an async generator
 
-    async def on_cancel(self, session_id: str) -> None:
+    async def on_cancel(self, session_id: str, *, hanging_up: bool = False) -> None:
         pass
 
     async def on_dtmf(self, session_id: str, digit: str) -> None:

@@ -34,7 +34,7 @@ import httpx
 
 from libs.config_sdk.languages import normalize_language
 
-from ..interfaces import INSTANCE_LANGUAGE
+from ..interfaces import INSTANCE_LANGUAGE, AlignedAudio
 from services.conversation.providers.http_pool import provider_http_limits
 
 log = logging.getLogger(__name__)
@@ -146,7 +146,9 @@ class CartesiaTTS:
 
         Each event is a JSON object; the ones carrying audio have
         type="chunk" and a base64 `data` field. A "done" type ends the
-        stream. Anything else (timestamps, errors) is ignored rather than
+        stream. "timestamps" events (requested with add_timestamps) carry the
+        end time of each word and fill the AlignedAudio.word_ends the chunks
+        share. Anything else (errors) is ignored rather than
         treated as audio — feeding a non-audio event to the caller would
         surface as a burst of noise, which is far harder to diagnose than
         silence.
@@ -154,9 +156,10 @@ class CartesiaTTS:
         if not text.strip():
             return
 
+        word_ends: list[int] = []
         try:
             async with self._client.stream(
-                "POST", "/tts/sse", json=self._body(text, sample_rate, language),
+                "POST", "/tts/sse", json={**self._body(text, sample_rate, language), "add_timestamps": True},
             ) as resp:
                 resp.raise_for_status()
                 # Same odd-byte carry as DeepgramTTS: base64 chunks decode to
@@ -176,6 +179,16 @@ class CartesiaTTS:
                         continue
                     if event.get("type") == "done":
                         break
+                    if event.get("type") == "timestamps":
+                        # Seconds from the start of this synthesis, as bytes of 16-bit mono at the output rate.
+                        try:
+                            word_ends.extend(round(end * sample_rate) * 2 for end in event["word_timestamps"]["end"])
+                        except (KeyError, TypeError) as exc:
+                            log.warning(
+                                "CartesiaTTS: malformed timestamps event (%s: %s), skipping voice=%s",
+                                type(exc).__name__, exc, self._voice,
+                            )
+                        continue
                     encoded = event.get("data")
                     if not encoded:
                         continue
@@ -189,7 +202,7 @@ class CartesiaTTS:
                     even_len = len(data) - (len(data) % 2)
                     pending = data[even_len:]
                     if even_len:
-                        yield data[:even_len]
+                        yield AlignedAudio(data[:even_len], word_ends)
         except httpx.HTTPError:
             log.exception("CartesiaTTS streaming request failed")
 

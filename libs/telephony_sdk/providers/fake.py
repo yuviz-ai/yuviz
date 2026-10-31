@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+from datetime import datetime
 from typing import Any
 
 from ..exceptions import TelephonyProviderError, TelephonyRateLimited
@@ -99,6 +100,7 @@ class FakeProvider(ITelephonyProvider, ISmsProvider):
 
     async def reconcile_call(
         self, *, reference: str, observed_call_id: str | None,
+        to: str | None = None, from_number: str | None = None, created_after: datetime | None = None,
     ) -> ReconcileResult:
         if self._reconcile_outcome == "placed":
             return ReconcileResult(outcome="placed", provider_call_id=observed_call_id or f"fake-call-{reference}")

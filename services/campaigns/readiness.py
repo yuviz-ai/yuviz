@@ -110,7 +110,7 @@ async def _caller_id_checks(campaign: dict, tenant_id: UUID, dial_client: DialRe
         tenant_id, campaign["agent_id"], campaign["caller_id"], platform_scoped=True,
     )
     if not route["caller_id_owned"]:
-        return [_block("caller_id_not_owned", "caller_id", "the caller ID is not a number owned by this account")]
+        return [_block("caller_id_not_owned", "caller_id", "the caller ID is not an active number owned by this account")]
 
     provider = route["provider"]
     if provider is None or provider == "native":

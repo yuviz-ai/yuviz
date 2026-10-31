@@ -80,6 +80,8 @@ async def test_on_transfer_failed_reverts_to_ai():
     row = await pool.fetchrow("SELECT live_stage FROM calls WHERE session_id = $1", session_id)
     assert row["live_stage"] == "ai"
 
+    # on_transfer_failed records the apology turn, which references the calls row.
+    await pool.execute("DELETE FROM transcript_entries WHERE session_id = $1", session_id)
     await pool.execute("DELETE FROM calls WHERE session_id = $1", session_id)
     await builder.close()
 

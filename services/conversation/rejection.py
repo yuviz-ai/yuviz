@@ -90,7 +90,7 @@ class RejectionHandler:
             return
         raise RejectedCallHangup(f"caller kept talking over the rejection message session={session_id}")
 
-    async def on_cancel(self, session_id: str) -> None:
+    async def on_cancel(self, session_id: str, *, hanging_up: bool = False) -> None:
         pass
 
     async def on_dtmf(self, session_id: str, digit: str) -> None:

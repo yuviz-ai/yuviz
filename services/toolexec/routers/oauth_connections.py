@@ -16,6 +16,7 @@ import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
+from libs.tenancy import TenantUnresolved, tenant_conn
 from services.config.auth import CurrentUser
 from services.config.deps import (
     assert_tenant_access,
@@ -25,8 +26,9 @@ from services.config.deps import (
     require_role,
 )
 
-from .. import oauth
+from .. import db, oauth
 from ..schemas import ApiKeyConnectRequest, OAuthAuthorizeRequest, OAuthCallbackRequest, RevokeGrantsRequest
+
 
 async def require_tenant_uuid(tenant_id: str) -> None:
     """Reject a slug in the id segment with 422 (it reached the DB as a UUID and 500'd).
@@ -39,10 +41,24 @@ async def require_tenant_uuid(tenant_id: str) -> None:
         raise HTTPException(status_code=422, detail="tenant_id must be a tenant UUID") from None
 
 
+async def require_known_path_tenant() -> None:
+    """A platform-scoped caller reaches here for any path tenant; one that does not exist is a 404, not
+    tenant_conn's TenantUnresolved 500. Runs after require_path_tenant_access, so a tenant-scoped caller
+    has already been refused for a foreign tenant and learns nothing here."""
+    try:
+        async with tenant_conn(await db.get_pool()):
+            pass
+    except TenantUnresolved:
+        raise HTTPException(status_code=404, detail="not found") from None
+
+
 tenant_scoped_router = APIRouter(
     prefix="/tenants/{tenant_id}/oauth-connections",
     tags=["oauth_connections"],
-    dependencies=[Depends(bind_path_tenant), Depends(require_path_tenant_access), Depends(require_tenant_uuid)],
+    dependencies=[
+        Depends(bind_path_tenant), Depends(require_path_tenant_access), Depends(require_tenant_uuid),
+        Depends(require_known_path_tenant),
+    ],
 )
 router = APIRouter(tags=["oauth_connections"])
 

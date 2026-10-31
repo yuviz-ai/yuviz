@@ -59,7 +59,7 @@ async def create_campaign(
         raise HTTPException(status_code=422, detail="the agent has no outbound caller ID; set one on the agent first")
     # Re-checked here because the number may have been released since the agent was saved.
     if not await campaigns_service.caller_id_owned_by_tenant(tenant_id, caller_id):
-        raise HTTPException(status_code=422, detail="the agent's outbound caller ID is no longer owned by this account")
+        raise HTTPException(status_code=422, detail="the agent's outbound caller ID is no longer an active number owned by this account")
     if body.scheduled_start_at is not None:
         if body.scheduled_start_at.tzinfo is None:
             raise HTTPException(status_code=422, detail="scheduled_start_at must include a timezone offset")

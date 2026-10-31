@@ -52,10 +52,13 @@ async def test_hangup_mid_turn_writes_one_interrupted_row_and_leaks_no_task(hang
 
     async def consume():
         converse = ConversationServicer(factory).Converse(stream(), AsyncMock())
+        chunks = 0
         async for msg in converse:
             if msg.HasField("tts_chunk"):
+                chunks += 1
                 first_audio.set()
-                if hangup == "generator_closed":
+                # The first chunk is the filler; the reply sentence is the second, and only a sent one is stored.
+                if hangup == "generator_closed" and chunks == 2:
                     await stalled.wait()
                     await asyncio.sleep(0.1)   # the reply so far reaches the pipeline's buffer
                     # Abandoned at a yield, as when the RPC is torn down between messages.
@@ -81,3 +84,39 @@ async def test_hangup_mid_turn_writes_one_interrupted_row_and_leaks_no_task(hang
     await _settle()
     leaked = [t for t in asyncio.all_tasks() - before if not t.done() and t is not asyncio.current_task()]
     assert leaked == []
+
+
+async def test_stream_close_ends_a_turn_stalled_before_its_first_token_promptly():
+    """A half-close must cancel a turn waiting on the LLM, not wait for the LLM to time out; the turn is
+    stored as interrupted and is not counted as a barge-in."""
+    async def _never(messages):
+        await asyncio.Event().wait()
+        yield ""
+
+    llm = MagicMock()
+    llm.generate = _never
+    transcripts = MagicMock()
+    handler = _make_handler(_make_stt("book me in"), llm, _make_tts(), transcripts=transcripts)
+
+    async def stream():
+        yield pb.GatewayMessage(session_open=pb.SessionOpenRequest(
+            protocol_version="1.0", session_id="s1", tenant_id="t1",
+            routing_status=pb.ROUTING_STATUS_ROUTED,
+        ))
+        yield pb.GatewayMessage(audio_chunk=pb.AudioChunk(session_id="s1", payload=_silence()))
+        yield pb.GatewayMessage(speech_ended=pb.SpeechEndedNotification(session_id="s1", duration_ms=1500))
+        await asyncio.sleep(0.2)   # the turn is now stalled on the LLM; the client half-closes
+
+    async def factory(ctx):
+        return handler
+
+    async def consume():
+        async for _ in ConversationServicer(factory).Converse(stream(), AsyncMock()):
+            pass
+
+    await asyncio.wait_for(consume(), 1.0)
+
+    transcripts.record_turn.assert_called_once()
+    assert transcripts.record_turn.call_args.args[4] is True
+    assert transcripts.record_turn.call_args.kwargs["count_barge_in"] is False
+    assert "s1" not in handler._sessions   # session closed

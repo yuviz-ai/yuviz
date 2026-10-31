@@ -313,7 +313,7 @@ async def test_create_takes_the_caller_id_from_the_agent_and_ignores_one_in_the_
 @pytest.mark.parametrize("caller_id, direction, detail", [
     (None, "outbound", "no outbound caller ID"),
     ("owned", "inbound", "inbound-only"),
-    ("+14155550999", "outbound", "no longer owned"),
+    ("+14155550999", "outbound", "no longer an active number"),
 ])
 async def test_create_refuses_an_agent_that_cannot_dial(scratch_pool, api, caller_id, direction, detail):
     world = await _world(scratch_pool)

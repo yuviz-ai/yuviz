@@ -4,6 +4,7 @@
 #include "timer/TimerType.h"
 
 #include <stdexcept>
+#include <utility>
 
 namespace voiceai {
 
@@ -178,6 +179,14 @@ void CallSession::post(std::function<void()> fn) {
     control_cv_.notify_one();
 }
 
+void CallSession::cancel_generation() {
+    // Armed before sending: the ack can arrive before the send returns.
+    const uint64_t cancel_id = next_cancel_id_++;
+    cancelled_reply_gate_.on_cancel_sent(cancel_id, std::chrono::steady_clock::now());
+    if (!transport_->send_cancel_generation(ctx_.obs.session_id, cancel_id))
+        cancelled_reply_gate_.on_cancel_resolved(cancel_id);  // no ack will come
+}
+
 void CallSession::control_loop() noexcept {
     for (;;) {
         std::function<void()> fn;
@@ -242,7 +251,9 @@ void CallSession::wire_fsm_handlers() {
     };
 
     h.on_playback_finished = [this](bool interrupted) {
-        transport_->send_playback_finished(ctx_.obs.session_id, interrupted);
+        transport_->send_playback_finished_heard(
+            ctx_.obs.session_id, interrupted,
+            interrupted ? std::exchange(barge_played_bytes_, std::nullopt) : std::nullopt);
         log_.set_provider_request_id("");
     };
 
@@ -279,8 +290,14 @@ void CallSession::wire_fsm_handlers() {
             // Stands if only CallFSM's TransferTimeout resolves the attempt.
             pending_transfer_detail_ = "transfer_timeout";
 
-            TransferCoordinatorContext tctx{call_id, destination, reason, active_transfer_id_,
-                                           active_caller_id_, active_waiting_experience_};
+            TransferCoordinatorContext tctx{
+                .call_id            = call_id,
+                .destination        = destination,
+                .reason             = reason,
+                .transfer_id        = active_transfer_id_,
+                .freeswitch_host    = ctx_.freeswitch_host,
+                .caller_id          = active_caller_id_,
+                .waiting_experience = active_waiting_experience_};
             TransferCoordinatorCallbacks tcbs;
             // Not posted: must be visible before the WebSocket disconnect it causes.
             tcbs.on_media_handoff = [this] {
@@ -365,11 +382,14 @@ void CallSession::wire_transport_callbacks() {
     };
 
     cbs.on_tts_started = [this] {
+        reply_start_bytes_.store(playback_drain_.sent_bytes(), std::memory_order_relaxed);
         tts_first_chunk_pending_.store(true, std::memory_order_relaxed);
         post([this] { if (fsm_) fsm_->on_text_ready(); });
     };
 
     cbs.on_tts_chunk = [this](AudioFrame frame) {
+        if (cancelled_reply_gate_.should_drop_audio(std::chrono::steady_clock::now())) return;
+
         // Only the first chunk of a turn drives Synthesizing→Speaking.
         if (tts_first_chunk_pending_.exchange(false, std::memory_order_relaxed)) {
             post([this] { if (fsm_) fsm_->on_first_audio_chunk(); });
@@ -403,6 +423,10 @@ void CallSession::wire_transport_callbacks() {
                                frame.payload.begin() + static_cast<std::ptrdiff_t>(end));
             media_->push_outbound(std::move(sub));
         }
+    };
+
+    cbs.on_cancel_ack_id = [this](std::optional<uint64_t> cancel_id) {
+        cancelled_reply_gate_.on_cancel_resolved(cancel_id);
     };
 
     cbs.on_cancel_ack = [this](const std::string& /*session_id*/) {
@@ -508,7 +532,11 @@ void CallSession::wire_media_callbacks() {
                 barge_in_energy_db_  = energy_db;
                 pending_speech_ended_ = false;
                 media_->cancel_playback();
-                transport_->cancel_generation(ctx_.obs.session_id);
+                // The reply may start inside the previous reply's unplayed lead.
+                const uint64_t played = playback_drain_.played_bytes();
+                const uint64_t start  = reply_start_bytes_.load(std::memory_order_relaxed);
+                barge_played_bytes_ = played > start ? played - start : 0;
+                cancel_generation();
             } else if (s == CallFsmState::Thinking || s == CallFsmState::Synthesizing) {
                 barge_in_capture_    = true;
                 barge_in_buffer_.assign(std::make_move_iterator(preroll_.begin()),
@@ -517,7 +545,8 @@ void CallSession::wire_media_callbacks() {
                 barge_in_energy_db_  = energy_db;
                 pending_speech_ended_ = false;
                 if (media_->is_playing()) media_->cancel_playback();
-                transport_->cancel_generation(ctx_.obs.session_id);
+                barge_played_bytes_ = 0;
+                cancel_generation();
                 fsm_->on_early_barge_in();
             } else {
                 if (media_->is_playing()) media_->cancel_playback();  // greeting

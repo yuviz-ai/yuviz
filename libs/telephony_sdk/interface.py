@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, ClassVar, Literal
 
 from .exceptions import TelephonyTransferUnsupported
@@ -145,6 +146,7 @@ class ITelephonyProvider(ABC):
 
     async def reconcile_call(
         self, *, reference: str, observed_call_id: str | None,
+        to: str | None = None, from_number: str | None = None, created_after: datetime | None = None,
     ) -> ReconcileResult:
         """Confirm an observed call id via get_call_status(); never guesses 'not_placed'."""
         if observed_call_id is None:

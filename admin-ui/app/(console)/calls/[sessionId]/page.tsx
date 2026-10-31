@@ -154,6 +154,12 @@ export default function CallDetailPage() {
                 <dd className="mono">{call.called_number || "—"}</dd>
                 <dt>Agent</dt>
                 <dd>{call.agent_name || "—"}</dd>
+                {call.answering_agent_name && (
+                  <>
+                    <dt>Answered by</dt>
+                    <dd>{call.answering_agent_name}</dd>
+                  </>
+                )}
               </dl>
             </div>
 
@@ -232,6 +238,12 @@ export default function CallDetailPage() {
                 : `${transcript.length} turn${transcript.length === 1 ? "" : "s"}`}
             </div>
           </div>
+          {call.session_summary && (
+            <div className="detail-section">
+              <div className="detail-section-title">Summary</div>
+              <p>{call.session_summary}</p>
+            </div>
+          )}
           {transcriptLoading ? (
             <div className="empty-state">Loading transcript…</div>
           ) : transcript.length === 0 ? (

@@ -128,8 +128,9 @@ message AudioChunk {
 
 // Gateway requests the service to discard any pending generation (barge-in).
 message CancelGeneration {
-  string session_id = 1;
-  string trace_id   = 2;
+  string          session_id = 1;
+  string          trace_id   = 2;
+  optional uint64 cancel_id  = 3;  // set by the gateway; echoed in CancelAck
 }
 
 // Gateway notifies the service that the last TTS chunk has been played.
@@ -138,6 +139,9 @@ message PlaybackFinished {
   string session_id  = 1;
   string trace_id    = 2;
   bool   interrupted = 3;  // true when cancelled by barge-in
+  // Bytes of the interrupted reply's audio sent to the call before the cut.
+  // Absent on an older gateway, which is not the same as 0 bytes played.
+  optional uint64 played_bytes = 4;
 }
 
 // Gateway notifies the service that the end of a speech utterance was detected.
@@ -270,8 +274,9 @@ message TtsChunk {
 
 // Acknowledges a CancelGeneration — sent after generation is aborted.
 message CancelAck {
-  string session_id = 1;
-  string trace_id   = 2;
+  string          session_id = 1;
+  string          trace_id   = 2;
+  optional uint64 cancel_id  = 3;  // echo of CancelGeneration.cancel_id
 }
 
 // Non-fatal or fatal error from the service.

@@ -540,7 +540,20 @@ async def serve(port: int, args: argparse.Namespace) -> None:
     server = grpc.aio.server(options=[("grpc.so_reuseport", 0)])
 
     # Conversation service
-    conversation_servicer = ConversationServicer(handler_factory, transcripts)
+    ready = False  # set once the model is loaded; capacity changes must not flip health before that
+
+    def _on_capacity_change(at_capacity: bool) -> None:
+        # Full process reports NOT_SERVING so Envoy routes new calls elsewhere; live calls are untouched.
+        if ready:
+            health_servicer.set(SERVICE_NAME, health_pb2.HealthCheckResponse.NOT_SERVING if at_capacity
+                                else health_pb2.HealthCheckResponse.SERVING)
+
+    try:
+        max_sessions = int(os.environ.get("CONVERSATION_MAX_SESSIONS", "250"))
+    except ValueError:
+        max_sessions = 250
+    conversation_servicer = ConversationServicer(
+        handler_factory, transcripts, max_sessions=max_sessions, on_capacity_change=_on_capacity_change)
     pb_grpc.add_ConversationServiceServicer_to_server(conversation_servicer, server)
 
     # Health check — stays NOT_SERVING until the Whisper model finishes loading.
@@ -556,11 +569,15 @@ async def serve(port: int, args: argparse.Namespace) -> None:
              listen_addr, args.mode)
 
     async def _load_and_promote() -> None:
+        nonlocal ready
         if stt is not None:
             await stt.load()
         if args.mode != "echo":
             await _prewarm_agents(http_config_repo, provider_registry, config)
-        health_servicer.set(SERVICE_NAME, health_pb2.HealthCheckResponse.SERVING)
+        ready = True
+        at_cap = max_sessions > 0 and len(conversation_servicer._live_sessions) >= max_sessions
+        health_servicer.set(SERVICE_NAME, health_pb2.HealthCheckResponse.NOT_SERVING if at_cap
+                            else health_pb2.HealthCheckResponse.SERVING)
         log.info("ConversationService SERVING")
 
     load_task = _spawn(_load_and_promote(), "startup load")
@@ -584,6 +601,7 @@ async def serve(port: int, args: argparse.Namespace) -> None:
             await _await_stopped(task)
         await provider_config_subscriber.stop()
         log.info("Shutting down…")
+        ready = False
         health_servicer.set(SERVICE_NAME, health_pb2.HealthCheckResponse.NOT_SERVING)
         await server.stop(grace=5)
         # server.stop() cancels streams without waiting for their teardown, which queues the end_call write.

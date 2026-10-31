@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { availabilityLabel, filterApps, oauthAuthorizationUrl, workAppCards } from "../../lib/connectedApps.ts";
+import { availabilityLabel, filterApps, oauthAuthorizationUrl, toolStatus, workAppCards } from "../../lib/connectedApps.ts";
 
 const providers = [{ key: "google", label: "Google", auth_kind: "oauth2" }, { key: "zoho", label: "Zoho", auth_kind: "oauth2" }];
 const presets = [
@@ -81,6 +81,27 @@ test("changing Google accounts requests its chooser while retaining the server's
   assert.equal(result.searchParams.get("redirect_uri"), "https://console.test/integrations/callback");
   assert.equal(oauthAuthorizationUrl(original, "google", false), original);
   assert.equal(oauthAuthorizationUrl(original, "salesforce", true), original);
+});
+
+test("a saved tool is flagged reconnect-needed once its provider grant is disconnected (issue 158)", () => {
+  const sf = [{ key: "salesforce", label: "Salesforce", auth_kind: "oauth2" }];
+  const sfPresets = [{ key: "salesforce_crm", title: "Salesforce contact lookup", provider: "salesforce" }];
+  const apis = [{ preset_key: "salesforce_crm", oauth_connection_id: "c1" }];
+  const tool = (conns, rows = apis) => workAppCards(sf, conns, sfPresets, rows).find((c) => c.id === "salesforce").tools[0];
+  assert.equal(tool([{ id: "c1", provider: "salesforce", status: "connected" }]).status, "on");
+  assert.equal(tool([{ id: "c1", provider: "salesforce", status: "disconnected" }]).status, "reconnect");
+  assert.equal(tool([{ id: "c1", provider: "salesforce", status: "reconnect_needed" }]).status, "reconnect");
+  assert.equal(tool([]).status, "reconnect");
+  // another connection the tool is not bound to does not rescue it
+  assert.equal(tool([{ id: "c2", provider: "salesforce", status: "connected" }]).status, "reconnect");
+  // an unbound tool row is served by any live connection
+  assert.equal(tool([{ id: "c2", provider: "salesforce", status: "connected" }], [{ preset_key: "salesforce_crm" }]).status, "on");
+  assert.equal(tool([], []).status, "off");
+});
+
+test("toolStatus: provider-less presets never need reconnecting", () => {
+  assert.equal(toolStatus({ key: "w", provider: null }, [{ preset_key: "w" }], []), "on");
+  assert.equal(toolStatus({ key: "w", provider: null }, [], []), "off");
 });
 
 test("the account chooser is added to whatever prompt the server already asked for", () => {

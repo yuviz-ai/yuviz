@@ -3,7 +3,9 @@
 #include "common/AudioFrame.h"
 #include "session/SessionContext.h"
 
+#include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 
 namespace voiceai {
@@ -24,6 +26,10 @@ struct ConversationTransportCallbacks {
     std::function<void(AudioFrame frame)>               on_tts_chunk;
 
     std::function<void(const std::string& session_id)>  on_cancel_ack;
+
+    // Fires just before on_cancel_ack with the cancel_id the service echoed
+    // (empty when it sent none).
+    std::function<void(std::optional<uint64_t> cancel_id)> on_cancel_ack_id;
 
     // Agent ended the call; fires after the final TtsChunk. grace_period_ms 0 = default.
     std::function<void(const std::string& session_id,
@@ -64,9 +70,26 @@ public:
     // Barge-in.
     virtual void cancel_generation(const std::string& session_id) = 0;
 
+    // Barge-in whose CancelAck echoes cancel_id (see on_cancel_ack_id). False when
+    // the cancel was not sent, or when no CancelAck carrying this id will come, as
+    // with this default for transports that cannot carry an id.
+    virtual bool send_cancel_generation(const std::string& session_id,
+                                        std::optional<uint64_t> /*cancel_id*/) {
+        cancel_generation(session_id);
+        return false;  // no id echo, so do not hold the cancelled-reply gate
+    }
+
     // interrupted=true when cancelled by barge-in.
     virtual void send_playback_finished(const std::string& session_id,
                                         bool interrupted) = 0;
+
+    // As above, plus the reply audio the caller heard before an interrupt
+    // (nullopt when unknown). Transports that cannot carry it keep this default.
+    virtual void send_playback_finished_heard(const std::string& session_id,
+                                              bool interrupted,
+                                              std::optional<uint64_t> /*played_bytes*/) {
+        send_playback_finished(session_id, interrupted);
+    }
 
     // Sent once per utterance, after all its AudioChunks.
     virtual void send_speech_ended(const std::string& session_id,

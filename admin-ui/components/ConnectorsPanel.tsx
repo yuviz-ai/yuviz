@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Check, Plus, Search } from "lucide-react";
 import { ApiError, listCarriers, listTelephonyConfigs, deleteCarrier, deleteTelephonyConfig } from "@/lib/api";
 import { CallingAppModal, CallingAccount } from "@/components/CallingAppModal";
-import { APP_CATEGORIES, AppCard, availabilityLabel, filterApps, oauthAuthorizationUrl, workAppCards } from "@/lib/connectedApps";
+import { APP_CATEGORIES, AppCard, availabilityLabel, filterApps, oauthAuthorizationUrl, toolStatus, workAppCards } from "@/lib/connectedApps";
 import {
   ConnectorPreset,
   CustomApi,
@@ -447,7 +447,7 @@ export function ConnectorsPanel({
         {!!app.accounts?.length && <div className="connected-app-account" title={app.accounts.map((a) => a.account_label ?? "Account connected").join(", ")}>
           {app.accounts.length === 1 ? app.accounts[0].account_label ?? "Account connected" : `${app.accounts[0].account_label ?? "Account connected"} +${app.accounts.length - 1} more`}
         </div>}
-        {!!app.tools?.length && <div className="form-hint">{app.tools.map((tool) => <div key={tool.key}>{tool.label}: {tool.configured ? "Configured" : "Not set up"}</div>)}</div>}
+        {!!app.tools?.length && <div className="form-hint">{app.tools.map((tool) => <div key={tool.key}>{tool.label}: {tool.status === "reconnect" ? "Reconnect needed" : tool.configured ? "Configured" : "Not set up"}</div>)}</div>}
         {!app.available && !app.comingSoon && !app.connected && <span className="connected-app-setup-hint">{app.calling ? "Try refreshing to load this app." : "A platform admin needs to enable this app."}</span>}
         {app.calling === "native" && !isSuperadmin && !app.connected && <span className="form-hint">Ask a platform admin to connect.</span>}
         <div className="connected-app-actions">
@@ -510,7 +510,7 @@ export function ConnectorsPanel({
             {canManage && managed.available && <button className="btn btn-ghost btn-sm" disabled={busy !== null} onClick={() => startConnect(managed)}>{managed.id === "google" ? "Change Google account" : `Reconnect ${managed.label}`}</button>}
           </>}
           {presets.filter((p) => managed.preset ? p.key === managed.preset.key : p.provider === managed.provider?.key).map((preset) => <div className="kb-row connected-app-manage-row" key={preset.key}>
-            <div style={{ flex: 1 }}><b>{preset.title}</b><div className="form-hint">{rowsFor(preset.key).length ? "Turned on" : "Not turned on"}</div></div>
+            <div style={{ flex: 1 }}><b>{preset.title}</b><div className="form-hint">{({ off: "Not turned on", on: "Turned on", reconnect: "Turned on, but reconnect needed. Calls will fail until you reconnect." } as const)[toolStatus(preset, apis, connections)]}</div></div>
             {canManage && <>
               <button className="btn btn-primary btn-sm" disabled={busy !== null} onClick={() => { closeManage(); openApply(preset); }}>{rowsFor(preset.key).length ? "Update" : "Turn on"}</button>
               {rowsFor(preset.key).length > 0 && <button className="btn btn-danger btn-sm" disabled={busy !== null} onClick={() => remove(preset)}>Turn off</button>}

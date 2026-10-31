@@ -34,3 +34,16 @@ async def test_buffer_accepts_a_new_utterance_after_the_cap_was_hit():
     await session.push_audio(b"\x01\x02")
 
     assert bytes(session._audio_buffer) == b"\x01\x02"
+
+
+async def test_cap_hit_exactly_on_a_frame_boundary_warns_once(caplog):
+    session = await _session()
+    frame = bytes(MAX_UTTERANCE_BYTES // 4)
+    assert len(frame) * 4 == MAX_UTTERANCE_BYTES
+
+    for _ in range(6):
+        await session.push_audio(frame)
+
+    assert len(session._audio_buffer) == MAX_UTTERANCE_BYTES
+    warnings = [r for r in caplog.records if "over cap" in r.getMessage()]
+    assert len(warnings) == 1

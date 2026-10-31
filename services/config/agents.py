@@ -224,11 +224,11 @@ async def _validate_outbound_caller_id(conn: Any, tenant_id: Any, value: str | N
     if not _E164.fullmatch(value):
         raise ValueError("outbound_caller_id must be an E.164 number, e.g. +919876543210")
     owned = await conn.fetchrow(
-        "SELECT 1 FROM phone_numbers WHERE tenant_id = $1 AND did = $2 AND deleted_at IS NULL",
+        "SELECT 1 FROM phone_numbers WHERE tenant_id = $1 AND did = $2 AND status = 'active' AND deleted_at IS NULL",
         tenant_id, normalize_did(value),
     )
     if owned is None:
-        raise ValueError("outbound_caller_id must be a phone number this account owns")
+        raise ValueError("outbound_caller_id must be an active phone number this account owns")
     return value
 
 

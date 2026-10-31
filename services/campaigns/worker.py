@@ -32,6 +32,7 @@ _REGISTRY_TIMEOUT_S = 2.0
 _RATE_LIMIT_BACKOFF_S = 30
 _RATE_LIMIT_MAX_S = 300
 _SCHEDULE_RECHECK_S = 60
+_RECONCILE_EVERY_S = 20  # a provider reconcile can cost dozens of API calls
 
 
 def _parse_hhmm(value: str) -> dtime:
@@ -206,7 +207,10 @@ class CampaignWorker:
             elif row["send_due"] and await attempts.reserve_send(row["id"], path="cpaas", require_running=True) == "ok":
                 await self._send_cpaas({**row, "send_count": row["send_count"] + 1})
             return
-        if row["state"] == "pending" and row["send_due"] and row["resend_age"] and row["send_count"] < attempts.MAX_SENDS:
+        if (
+            row["state"] == "pending" and row["send_due"] and row["resend_age"] and row["send_count"] < attempts.MAX_SENDS
+            and await self._redis.set(f"campaign:claim:reconcile:{row['idempotency_key']}", 1, nx=True, ex=_RECONCILE_EVERY_S)
+        ):
             try:
                 result = await telephony_originate.reconcile_call(
                     provider=row["provider"], tenant_slug=row["tenant_slug"], idempotency_key=row["idempotency_key"],

@@ -168,13 +168,13 @@ class SummaryStep:
 
 
 class PersistSummaryStep:
-    """Persist the summary as a transcript_entries row."""
+    """Persist the summary on the calls row; it is not a transcript turn."""
     name = "persist_session_summary"
 
     async def run(self, ctx: FinalizationContext) -> None:
         if ctx.transcripts is None or not ctx.summary:
             return
-        ctx.transcripts.record_turn(ctx.session_id, "[session_summary]", 1.0, ctx.summary, False)
+        ctx.transcripts.record_summary(ctx.session_id, ctx.summary)
         ctx.transcript_written = True
 
 

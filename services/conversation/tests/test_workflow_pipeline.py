@@ -275,7 +275,8 @@ async def test_a_refused_workflow_transfer_tells_the_model_it_did_not_happen(wor
         [TokenEvent(text="Connecting you now.")],
         [TokenEvent(text="Sorry, I could not transfer you.")],
     ])
-    handler = _handler(llm, _RecordingPolicyResolver(), workflow=workflow, **kwargs)
+    transcripts = MagicMock()
+    handler = _handler(llm, _RecordingPolicyResolver(), workflow=workflow, transcripts=transcripts, **kwargs)
 
     responses = [r async for r in handler.on_speech_ended("s1", _silence(), 1200, -20.0)]
 
@@ -283,7 +284,7 @@ async def test_a_refused_workflow_transfer_tells_the_model_it_did_not_happen(wor
     assert json.loads(llm.seen_last_messages[-1].split("\n\n")[0]) == {
         "type": "system_event", "event": "transfer_failed", "reason": reason,
     }
-    assert handler._session("s1").pending_recovery_turns[-1][0] == f"[transfer_failed: {reason}]"
+    assert f"[transfer_failed: {reason}]" in [c.args[1] for c in transcripts.record_turn.call_args_list]
 
 
 async def test_session_end_persists_workflow_outcome_even_when_extraction_times_out():

@@ -90,7 +90,8 @@ class TranscriptBuilder:
             return 0
         async with platform_conn(self._pool, reason="conversation-reconcile-sweep") as conn:
             result = await conn.execute(
-                "UPDATE calls SET ended_at = NOW(), close_reason = 'reconciled_stale' "
+                "UPDATE calls SET ended_at = NOW(), close_reason = 'reconciled_stale', "
+                "turn_count = (SELECT COUNT(*) FROM transcript_entries te WHERE te.session_id = calls.session_id) "
                 "WHERE ended_at IS NULL AND conv_node = $1",
                 self._node_id,
             )
@@ -126,7 +127,8 @@ class TranscriptBuilder:
         ) as conn:
             result = await conn.execute(
                 """
-                UPDATE calls SET ended_at = NOW(), close_reason = 'reconciled_dead_node'
+                UPDATE calls SET ended_at = NOW(), close_reason = 'reconciled_dead_node',
+                    turn_count = (SELECT COUNT(*) FROM transcript_entries te WHERE te.session_id = calls.session_id)
                 WHERE ended_at IS NULL
                   AND conv_node IS NOT NULL
                   AND conv_node NOT IN (
@@ -151,7 +153,8 @@ class TranscriptBuilder:
         ) as conn:
             result = await conn.execute(
                 """
-                UPDATE calls SET ended_at = NOW(), close_reason = 'reconciled_inactive'
+                UPDATE calls SET ended_at = NOW(), close_reason = 'reconciled_inactive',
+                    turn_count = (SELECT COUNT(*) FROM transcript_entries te WHERE te.session_id = calls.session_id)
                 WHERE ended_at IS NULL
                   AND started_at < NOW() - ($1 * INTERVAL '1 second')
                   AND NOT EXISTS (
@@ -199,16 +202,56 @@ class TranscriptBuilder:
         ai_response:       str,
         interrupted:       bool,
         latency:           "TurnLatency | None" = None,
-    ) -> None:
+        *,
+        tool_calls:        list[dict[str, str]] | None = None,
+        count_barge_in:    bool | None = None,
+    ) -> int | None:
+        """count_barge_in=None counts a barge-in exactly when the turn was interrupted; a turn cut
+        short by hang-up passes False. tool_calls carries only name and status, never arguments.
+        Returns the turn number, or None when there is no pool to write to."""
         if self._pool is None:
-            return
+            return None
+        # Before the turn number is taken: a NUL would fail the insert and leave a gap.
+        caller_text = _strip_nul(caller_text)
+        ai_response = _strip_nul(ai_response)
+        tool_calls_json = (
+            json.dumps([{"name": _strip_nul(t["name"]), "status": t["status"]} for t in tool_calls])
+            if tool_calls else None
+        )
         turn_number = self._turn_counts.get(session_id, 0) + 1
         self._turn_counts[session_id] = turn_number
-        if interrupted:
+        if interrupted if count_barge_in is None else count_barge_in:
             self._barge_in_counts[session_id] = self._barge_in_counts.get(session_id, 0) + 1
         self._spawn(session_id, self._record_turn(
             session_id, self._tenant_slugs.get(session_id), turn_number, caller_text,
-            caller_confidence, ai_response, interrupted, latency or TurnLatency(),
+            caller_confidence, ai_response, interrupted, latency or TurnLatency(), tool_calls_json,
+        ))
+        return turn_number
+
+    def correct_turn_reply(
+        self, session_id: str, turn_number: int, text: str, *,
+        newly_interrupted: bool = False, count_barge_in: bool = True,
+    ) -> None:
+        """Replace a recorded turn's ai_response, e.g. with the part the caller actually heard.
+        newly_interrupted: the turn was recorded as complete but the caller cut it off; it is marked
+        interrupted, and counted as the barge-in it is unless count_barge_in is False (the same cut already
+        counted for another turn). Queued behind the turn's INSERT. A no-op once the call
+        has ended."""
+        tenant_slug = self._tenant_slugs.get(session_id)
+        if self._pool is None or tenant_slug is None:
+            return
+        if newly_interrupted and count_barge_in:
+            self._barge_in_counts[session_id] = self._barge_in_counts.get(session_id, 0) + 1
+        self._spawn(session_id, self._correct_turn_reply(
+            session_id, tenant_slug, turn_number, _strip_nul(text), newly_interrupted,
+        ))
+
+    def record_summary(self, session_id: str, summary: str) -> None:
+        """calls.session_summary: the post-transfer handoff summary. Never a transcript turn."""
+        if self._pool is None:
+            return
+        self._spawn(session_id, self._record_summary(
+            session_id, self._tenant_slugs.get(session_id), _strip_nul(summary),
         ))
 
     def record_workflow_outcome(
@@ -304,7 +347,9 @@ class TranscriptBuilder:
                     "(session_id, tenant_id, call_id, direction, caller_number, called_number, "
                     "agent_id, agent_config_version, conv_node) "
                     "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) "
-                    "ON CONFLICT (session_id) DO UPDATE SET session_id = calls.session_id "
+                    "ON CONFLICT (session_id) DO UPDATE SET answering_agent_id = "
+                    "CASE WHEN EXCLUDED.agent_id IS DISTINCT FROM calls.agent_id "
+                    "THEN EXCLUDED.agent_id ELSE calls.answering_agent_id END "
                     "WHERE calls.tenant_id = EXCLUDED.tenant_id RETURNING 1",
                     session_id, tenant_slug, call_id or None,
                     direction or "inbound", caller_number or None, called_number or None,
@@ -350,6 +395,18 @@ class TranscriptBuilder:
         except Exception:
             log.exception("TranscriptBuilder: record_detected_languages failed session=%s", session_id)
 
+    async def _record_summary(self, session_id: str, tenant_slug: str | None, summary: str) -> None:
+        try:
+            async with tenant_conn(
+                self._pool, explicit_tenant=tenant_slug, reason="conversation-session-write",
+            ) as conn:
+                await conn.execute(
+                    "UPDATE calls SET session_summary = $2 WHERE session_id = $1 AND tenant_id = $3",
+                    session_id, summary, tenant_slug,
+                )
+        except Exception:
+            log.exception("TranscriptBuilder: record_summary failed session=%s", session_id)
+
     async def _record_live_stage(self, session_id: str, tenant_slug: str | None, stage: str) -> None:
         try:
             async with tenant_conn(
@@ -372,6 +429,7 @@ class TranscriptBuilder:
         ai_response:        str,
         interrupted:        bool,
         latency:            TurnLatency,
+        tool_calls_json:    str | None,
     ) -> None:
         # JSONB mirror of the *_latency_ms columns so new fields don't need a migration.
         latency_json = json.dumps({
@@ -386,19 +444,37 @@ class TranscriptBuilder:
                     "INSERT INTO transcript_entries "
                     "(session_id, turn_number, caller_text, caller_confidence, ai_response, interrupted, "
                     "stt_engine, stt_latency_ms, llm_engine, llm_latency_ms, tts_engine, tts_latency_ms, "
-                    "latency_ms) "
+                    "latency_ms, tool_calls) "
                     "SELECT $1::text, $2::int, $3::text, $4::float8, $5::text, $6::bool, $7::text, $8::int, "
-                    "$9::text, $10::int, $11::text, $12::int, $13::jsonb "
+                    "$9::text, $10::int, $11::text, $12::int, $13::jsonb, $15::jsonb "
                     "WHERE EXISTS (SELECT 1 FROM calls WHERE session_id = $1 AND tenant_id = $14)",
                     session_id, turn_number, caller_text, caller_confidence, ai_response, interrupted,
                     latency.stt_engine, _round_or_none(latency.stt_ms),
                     latency.llm_engine, _round_or_none(latency.llm_ms),
                     latency.tts_engine, _round_or_none(latency.tts_ms),
-                    latency_json, tenant_slug,
+                    latency_json, tenant_slug, tool_calls_json,
                 )
         except Exception:
             log.exception(
                 "TranscriptBuilder: record_turn failed session=%s turn=%d", session_id, turn_number,
+            )
+
+    async def _correct_turn_reply(
+        self, session_id: str, tenant_slug: str, turn_number: int, text: str, newly_interrupted: bool,
+    ) -> None:
+        try:
+            async with tenant_conn(
+                self._pool, explicit_tenant=tenant_slug, reason="conversation-session-write",
+            ) as conn:
+                await conn.execute(
+                    "UPDATE transcript_entries SET ai_response = $3, interrupted = interrupted OR $5 "
+                    "WHERE session_id = $1 AND turn_number = $2 "
+                    "AND EXISTS (SELECT 1 FROM calls WHERE session_id = $1 AND tenant_id = $4)",
+                    session_id, turn_number, text, tenant_slug, newly_interrupted,
+                )
+        except Exception:
+            log.exception(
+                "TranscriptBuilder: correct_turn_reply failed session=%s turn=%d", session_id, turn_number,
             )
 
     async def _end_call(
@@ -459,6 +535,11 @@ class TranscriptBuilder:
                 )
         except Exception:
             log.exception("TranscriptBuilder: sentiment write failed session=%s", session_id)
+
+
+def _strip_nul(text: str) -> str:
+    """Postgres text and jsonb both reject NUL, so one in a transcript would drop the whole row."""
+    return text.replace("\x00", "")
 
 
 def _round_or_none(value: float | None) -> int | None:

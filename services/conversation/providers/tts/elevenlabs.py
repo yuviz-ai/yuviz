@@ -6,6 +6,7 @@ Only fixed PCM rates are served, so request the nearest rate >= target and downs
 
 from __future__ import annotations
 
+import base64
 import logging
 from typing import Any
 
@@ -14,7 +15,7 @@ import numpy as np
 
 from libs.config_sdk.languages import normalize_language
 
-from ..interfaces import INSTANCE_LANGUAGE
+from ..interfaces import INSTANCE_LANGUAGE, AlignedAudio
 from services.conversation.providers.http_pool import provider_http_limits
 
 log = logging.getLogger(__name__)
@@ -35,6 +36,25 @@ def _nearest_supported_rate(requested: int) -> int:
         if rate >= requested:
             return rate
     return _SUPPORTED_PCM_RATES[-1]
+
+
+def _word_ends(alignment: dict | None, sample_rate: int, voice_id: str) -> list[int]:
+    """Audio byte (16-bit mono at *sample_rate*) at which each whitespace-delimited word ends, from the
+    per-character end times of a with-timestamps response. Empty when the alignment is absent or malformed:
+    timings only refine where a barge-in cut falls, so they must never cost the audio."""
+    try:
+        chars, ends = alignment["characters"], alignment["character_end_times_seconds"]
+        return [
+            round(end * sample_rate) * 2
+            for i, (char, end) in enumerate(zip(chars, ends))
+            if not char.isspace() and (i + 1 == len(chars) or chars[i + 1].isspace())
+        ]
+    except (KeyError, TypeError, AttributeError) as exc:
+        log.warning(
+            "ElevenLabsTTS: unusable alignment (%s: %s), audio kept without word timings voice_id=%s",
+            type(exc).__name__, exc, voice_id,
+        )
+        return []
 
 
 class ElevenLabsTTS:
@@ -71,14 +91,22 @@ class ElevenLabsTTS:
             voice_id, model_id, language_code,
         )
 
-    async def synthesize(self, text: str, sample_rate: int, *, language: Any = INSTANCE_LANGUAGE) -> bytes:
-        if not text.strip():
-            return b""
+    def _body(self, text: str, language: Any) -> dict:
         language_code = self._language_code if language is INSTANCE_LANGUAGE else language
         # language_code is ISO 639-1; agents.language is often regional ("en-US").
         language_code = normalize_language(language_code)
         if not _supports_language_code(self._model_id):
             language_code = None
+        return {
+            "text": text,
+            "model_id": self._model_id,
+            **({"voice_settings": {"speed": self._speed}} if self._speed != 1.0 else {}),
+            **({"language_code": language_code} if language_code else {}),
+        }
+
+    async def synthesize(self, text: str, sample_rate: int, *, language: Any = INSTANCE_LANGUAGE) -> bytes:
+        if not text.strip():
+            return b""
 
         output_rate = _nearest_supported_rate(sample_rate)
 
@@ -86,15 +114,7 @@ class ElevenLabsTTS:
             resp = await self._client.post(
                 f"/v1/text-to-speech/{self._voice_id}",
                 params={"output_format": f"pcm_{output_rate}"},
-                json={
-                    "text": text,
-                    "model_id": self._model_id,
-                    **(
-                        {"voice_settings": {"speed": self._speed}}
-                        if self._speed != 1.0 else {}
-                    ),
-                    **({"language_code": language_code} if language_code else {}),
-                },
+                json=self._body(text, language),
             )
             resp.raise_for_status()
         except httpx.HTTPError:
@@ -108,9 +128,32 @@ class ElevenLabsTTS:
         return self._resample(pcm, output_rate, sample_rate)
 
     async def synthesize_stream(self, text: str, sample_rate: int, *, language: Any = INSTANCE_LANGUAGE):
-        audio = await self.synthesize(text, sample_rate, language=language)
-        if audio:
-            yield audio
+        """One request, as synthesize() makes, but to the with-timestamps endpoint: a single JSON body holding
+        the audio in base64 and the time each character ends, so no round trip is added and the audio
+        arrives when it did before."""
+        if not text.strip():
+            return
+
+        output_rate = _nearest_supported_rate(sample_rate)
+
+        try:
+            resp = await self._client.post(
+                f"/v1/text-to-speech/{self._voice_id}/with-timestamps",
+                params={"output_format": f"pcm_{output_rate}"},
+                json=self._body(text, language),
+            )
+            resp.raise_for_status()
+            body = resp.json()
+            pcm = base64.b64decode(body["audio_base64"])
+            alignment = body.get("alignment")
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            log.exception("ElevenLabsTTS request failed")
+            return
+
+        if output_rate != sample_rate:
+            pcm = self._resample(pcm, output_rate, sample_rate)
+        if pcm:
+            yield AlignedAudio(pcm, _word_ends(alignment, sample_rate, self._voice_id))
 
     @staticmethod
     def _resample(pcm: bytes, from_rate: int, to_rate: int) -> bytes:

@@ -14,6 +14,7 @@ import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from fastapi import Depends, FastAPI, Path, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse
@@ -184,8 +185,13 @@ class PlaceCallBody(BaseModel):
 
 
 class ReconcileBody(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     tenant_slug: str
     idempotency_key: str = Field(pattern=r"^[A-Za-z0-9_\-]{1,128}$")
+    to: str | None = Field(default=None, max_length=32)
+    from_: str | None = Field(default=None, alias="from", max_length=32)
+    created_after: datetime | None = None
 
 
 class SmsBody(BaseModel):
@@ -247,6 +253,7 @@ async def reconcile_call(provider: str, body: ReconcileBody, user=Depends(requir
     try:
         result = await outbound.reconcile(
             provider=provider, tenant_id=tenant_id, tenant_slug=tenant_slug, idempotency_key=body.idempotency_key,
+            to=body.to, from_number=body.from_, created_after=body.created_after,
         )
     except OutboundUnavailable as exc:
         return PlainTextResponse(str(exc), status_code=503)

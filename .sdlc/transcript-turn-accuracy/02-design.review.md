@@ -1,0 +1,4 @@
+# Review: 02-design.md (transcript-turn-accuracy)
+VERDICT: AMBER
+
+1. [minor] The disposition-drift tripwire says it finds 4 Hangup reasons in `callflow/runner.py`, but runner.py has only 3 distinct literals (`flow_budget` at 146/173, `flow_complete` at 201, `retries_exhausted` at 233). The 4th, `transfer_refused`, is emitted in `callflow/handler.py:117` and goes through the same Hangup branch (handler.py:132) that will now write `callflow:transfer_refused`. As written, the size-4 assertion fails on correct code, or the implementer will "fix" it by loosening it into a check that cannot fail. — Risks, 4th bullet (disposition drift) — fix: scan `Hangup("…")` literals in both `callflow/runner.py` and `callflow/handler.py`. Assert the found set equals {flow_budget, flow_complete, retries_exhausted, transfer_refused}, and assert that clean ∪ non-clean covers all of it.

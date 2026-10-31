@@ -106,6 +106,19 @@ class ILLM(Protocol):
         ...
 
 
+class AlignedAudio(bytes):
+    """A PCM chunk that knows where each word of its sentence ends. `word_ends` is shared by every chunk of one
+    synthesis and fills as the provider reports timings: the audio byte (at the output rate, from the sentence's
+    first chunk) at which each whitespace-delimited word of the synthesized text ends."""
+
+    word_ends: list[int]
+
+    def __new__(cls, data: bytes, word_ends: list[int]) -> "AlignedAudio":
+        chunk = super().__new__(cls, data)
+        chunk.word_ends = word_ends
+        return chunk
+
+
 class ITTS(Protocol):
     """Synthesise a text string to raw L16 PCM bytes at a given sample rate.
 
@@ -119,5 +132,6 @@ class ITTS(Protocol):
     def synthesize_stream(self, text: str, sample_rate: int) -> AsyncGenerator[bytes, None]:
         """Yield raw L16 PCM chunks at sample_rate Hz as they become available.
 
-        Non-streaming providers yield their single synthesize() result once."""
+        Non-streaming providers yield their single synthesize() result once. A provider with word timings
+        yields AlignedAudio chunks; the rest yield plain bytes."""
         ...

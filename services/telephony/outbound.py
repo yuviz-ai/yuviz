@@ -7,6 +7,7 @@ import asyncio
 import logging
 import os
 import uuid
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -96,10 +97,14 @@ async def place_call(
 
 async def reconcile(
     *, provider: str, tenant_id: uuid.UUID, tenant_slug: str, idempotency_key: str,
+    to: str | None = None, from_number: str | None = None, created_after: datetime | None = None,
 ) -> dict[str, Any]:
     account = _resolve_account(provider, tenant_slug)
     observed = await idempotency.observed_call_id(provider, tenant_id, idempotency_key)
-    result = await account.instance.reconcile_call(reference=idempotency_key, observed_call_id=observed)
+    result = await account.instance.reconcile_call(
+        reference=idempotency_key, observed_call_id=observed,
+        to=to, from_number=from_number, created_after=created_after,
+    )
     return {
         "outcome": "unknown" if result.outcome == "indeterminate" else result.outcome,
         "provider_call_id": result.provider_call_id,

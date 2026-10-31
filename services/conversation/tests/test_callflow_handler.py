@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from unittest.mock import MagicMock, call
 from datetime import datetime, timezone
 
 import pytest
@@ -123,13 +124,14 @@ async def _no_voice(tts_config_id: str):
     return None
 
 
-def _handler(graph_raw: dict, *, handoff=None, variables=None, transfer_policy=TransferPolicy()):
+def _handler(graph_raw: dict, *, handoff=None, variables=None, transfer_policy=TransferPolicy(), transcripts=None):
     runner = CallFlowRunner(parse_graph(graph_raw), tts_config_id=None, variables=variables)
     tts = FakeTTS()
     handler = CallFlowConversationHandler(
         runner, tts=tts, sample_rate=8000, session_id="s1", tenant_id="t1", call_id="c1",
         handoff=handoff or _no_handoff, voice_for=_no_voice,
         agent_slugs={"agent-uuid-1": "support-bot"}, transfer_policy=transfer_policy,
+        transcripts=transcripts,
     )
     return handler, runner, tts
 
@@ -225,6 +227,26 @@ async def test_hangup_with_no_prompt_response_has_empty_payload_and_end_call():
     response = await asyncio.wait_for(handler.out_responses.get(), timeout=1)
     assert response.tts_payloads == []
     assert response.end_call is True
+
+
+@pytest.mark.asyncio
+async def test_hangup_records_callflow_disposition_before_end_call():
+    transcripts = MagicMock()
+    handler, runner, tts = _handler(_no_prompt_hangup_graph(), transcripts=transcripts)
+    response = await asyncio.wait_for(handler.out_responses.get(), timeout=1)
+    assert response.end_call is True
+    transcripts.record_workflow_outcome.assert_called_once_with("s1", disposition="callflow:flow_complete")
+
+
+@pytest.mark.asyncio
+async def test_record_live_stage_without_delegate_writes_through_transcripts():
+    transcripts = MagicMock()
+    handler, runner, tts = _handler(_no_prompt_hangup_graph(), transcripts=transcripts)
+    handler.record_live_stage("s1", "waiting_for_human")
+    handler.record_live_stage("s1", "human_connected")
+    assert transcripts.record_live_stage.call_args_list == [
+        call("s1", "waiting_for_human"), call("s1", "human_connected"),
+    ]
 
 
 # ── Test 14: dial + mid-node exception ──────────────────────────────────────

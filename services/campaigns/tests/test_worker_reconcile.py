@@ -195,9 +195,34 @@ async def test_b_pending_not_placed_sends_once_and_unknown_sends_nothing(scratch
 
     scripted["outcome"] = "not_placed"
     await _reconcile(redis_raw)
+    assert sends == []
+    await redis_raw.delete(f"campaign:claim:reconcile:{att['idempotency_key']}")
+    await _reconcile(redis_raw)
     await _reconcile(redis_raw)
     assert sends == [att["idempotency_key"]]
     assert (await _attempt(scratch_pool, att["idempotency_key"]))["provider_call_id"] == "vendor-1"
+
+
+async def test_b_reconcile_asks_the_provider_at_most_once_per_window(scratch_pool, redis_raw, monkeypatch):
+    world = await _setup(scratch_pool, provider="fake")
+    async with scratch_pool.acquire() as conn:
+        _, att = await w.open_attempt(conn, world, path="cpaas", provider="fake", age_s=30)
+    calls = []
+
+    async def reconcile(**kw):
+        calls.append(kw)
+        return {"outcome": "unknown", "provider_call_id": None}
+
+    monkeypatch.setattr(telephony_originate, "reconcile_call", reconcile)
+    for _ in range(3):
+        await _reconcile(redis_raw)
+    assert len(calls) == 1
+    assert 0 < await redis_raw.ttl(f"campaign:claim:reconcile:{att['idempotency_key']}") <= 20
+    async with scratch_pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE campaign_attempts SET state = 'resolved', outcome = 'failed', resolved_at = now() WHERE id = $1",
+            att["id"],
+        )
 
 
 async def test_b_unconfirmed_resend_is_capped_and_a_young_attempt_is_left_alone(scratch_pool, redis_raw, monkeypatch):

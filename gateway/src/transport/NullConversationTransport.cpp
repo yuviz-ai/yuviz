@@ -48,14 +48,28 @@ void NullConversationTransport::send_audio(AudioFrame frame) {
 }
 
 void NullConversationTransport::cancel_generation(const std::string& session_id) {
+    send_cancel_generation(session_id, std::nullopt);
+}
+
+bool NullConversationTransport::send_cancel_generation(const std::string& session_id,
+                                                       std::optional<uint64_t> cancel_id) {
     logger_.debug("NullConversationTransport::cancel_generation session={}", session_id);
     turn_signalled_ = false;
+    if (callbacks_.on_cancel_ack_id)
+        callbacks_.on_cancel_ack_id(cancel_id);
     if (callbacks_.on_cancel_ack)
         callbacks_.on_cancel_ack(session_id);
+    return true;
 }
 
 void NullConversationTransport::send_playback_finished(const std::string& session_id,
-                                                       bool /*interrupted*/) {
+                                                       bool interrupted) {
+    send_playback_finished_heard(session_id, interrupted, std::nullopt);
+}
+
+void NullConversationTransport::send_playback_finished_heard(const std::string& session_id,
+                                                             bool /*interrupted*/,
+                                                             std::optional<uint64_t> /*played_bytes*/) {
     logger_.debug("NullConversationTransport::send_playback_finished session={}", session_id);
     // Reset so the next turn's first audio frame re-fires stt_result + tts_started.
     turn_signalled_ = false;

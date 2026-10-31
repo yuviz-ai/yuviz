@@ -397,7 +397,7 @@ async def test_half_close_during_the_drain_still_transcribes_the_deferred_uttera
     servicer, handler = _servicer(turn)
     handler.on_audio.return_value = HandlerResponse()
 
-    async def on_cancel(_sid):
+    async def on_cancel(_sid, **_):
         release.set()      # a cancelled turn ends
 
     handler.on_cancel.side_effect = on_cancel

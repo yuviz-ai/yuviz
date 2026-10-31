@@ -13,7 +13,9 @@ import pytest
 from services.conversation.providers.interfaces import ChatMessage
 from services.conversation.tools.executor_registry import ExecutorRegistry
 from services.conversation.tools.executors.api_exec_executor import ApiExecExecutor
-from services.conversation.tools.llm_adapter import LLMAdapter, ToolCallEvent, ToolCallStartedEvent
+from services.conversation.tools.llm_adapter import (
+    LLMAdapter, ToolCallEvent, ToolCallFinishedEvent, ToolCallStartedEvent,
+)
 from services.conversation.tools.middleware import build_default_chain
 from services.conversation.tools.orchestrator import ToolCallOrchestrator
 from services.conversation.tools.policy_resolver import ResolvedToolPolicy, ToolPolicyResolver
@@ -637,7 +639,10 @@ async def test_cancel_event_mid_call_yields_failed_cancelled_and_never_folds_the
     cancel_event.set()
     events = await asyncio.wait_for(task, timeout=1.0)
 
-    assert events == [ToolCallStartedEvent(tool_name="execute_api")]
+    assert events == [
+        ToolCallStartedEvent(tool_name="execute_api"),
+        ToolCallFinishedEvent(tool_name="execute_api", status="failed"),
+    ]
     folded = json.loads(history[2].content)
     assert folded["status"] == "error"
     assert folded["error"]["code"] == "cancelled"

@@ -531,10 +531,76 @@ async def test_revoke_grants_route_is_superadmin_only(world):
 
 # ── slug in the tenant segment (issue #155) ───────────────────────────────
 
+
+# ── a path tenant that does not exist (#165) ──────────────────────────────
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def superadmin_headers(pool):
+    row = await pool.fetchrow(
+        "INSERT INTO users (email, password_hash, role) VALUES ($1, 'x', 'superadmin') RETURNING id, email",
+        f"sa-{uuid.uuid4().hex[:8]}@oauthr.test",
+    )
+    token = auth.create_access_token({
+        "id": str(row["id"]), "email": row["email"], "role": "superadmin",
+        "tenant_id": None, "is_service_account": False,
+    })
+    yield {"Authorization": f"Bearer {token}"}
+    await pool.execute("DELETE FROM audit_log WHERE user_id = $1", row["id"])
+    await pool.execute("DELETE FROM users WHERE id = $1", row["id"])
+
+
 def _client_no_raise() -> AsyncClient:
-    # A server error must surface as a 500 response, not a raised exception.
     return AsyncClient(transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test")
 
+
+async def _every_route(c, tenant, headers):
+    base = f"/tenants/{tenant}/oauth-connections"
+    return [
+        await c.get(base, headers=headers),
+        await c.post(f"{base}/google/authorize", headers=headers, json={}),
+        await c.post(f"{base}/callback", headers=headers, json={"state": "s", "code": "c"}),
+        await c.post(f"{base}/calcom/api-key", headers=headers, json={"api_key": "cal_live_ok"}),
+        await c.delete(f"{base}/{uuid.uuid4()}", headers=headers),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_superadmin_naming_a_nonexistent_tenant_gets_404_not_500(world, superadmin_headers):
+    async with _client_no_raise() as c:
+        responses = await _every_route(c, str(uuid.uuid4()), superadmin_headers)
+        assert [r.status_code for r in responses] == [404] * 5, [r.text for r in responses]
+        assert {r.text for r in responses} == {'{"detail":"not found"}'}  # no echo of the path value
+
+
+@pytest.mark.asyncio
+async def test_a_superadmin_naming_an_unknown_slug_gets_422_not_500(world, superadmin_headers):
+    """A slug in the id segment is refused by require_tenant_uuid (#155) before the existence check."""
+    async with _client_no_raise() as c:
+        responses = await _every_route(c, f"no-such-slug-{uuid.uuid4().hex[:8]}", superadmin_headers)
+    assert [r.status_code for r in responses] == [422] * 5, [r.text for r in responses]
+
+
+@pytest.mark.asyncio
+async def test_the_nonexistent_tenant_404_does_not_change_an_existing_tenants_routes(world, superadmin_headers):
+    tenants, _users = world
+    async with _client() as c:
+        r = await c.get(f"/tenants/{tenants['a']}/oauth-connections", headers=superadmin_headers)
+    assert r.status_code == 200 and r.json() == []
+
+
+@pytest.mark.asyncio
+async def test_a_tenant_admin_still_cannot_probe_for_tenant_existence(world):
+    """A tenant admin gets 403 for a foreign id whether or not it exists: no existence oracle."""
+    tenants, users = world
+    headers = users["admin_a"]["headers"]
+    async with _client_no_raise() as c:
+        foreign = await c.get(f"/tenants/{tenants['b']}/oauth-connections", headers=headers)
+        missing = await c.get(f"/tenants/{uuid.uuid4()}/oauth-connections", headers=headers)
+    assert (foreign.status_code, missing.status_code) == (403, 403)
+    assert foreign.json() == missing.json()
+
+
+# ── slug in the tenant segment (issue #155) ───────────────────────────────
 
 @pytest.mark.asyncio
 async def test_own_tenant_slug_in_the_id_segment_is_422_not_500(world, pool):

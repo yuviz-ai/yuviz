@@ -762,6 +762,11 @@ export interface Call {
   barge_in_count: number;
   agent_id: string | null;
   agent_name: string | null;
+  // Agent that took over after an IVR handoff; null when the call never changed agent.
+  answering_agent_id: string | null;
+  // Only the single-call endpoint joins it; list rows omit it.
+  answering_agent_name?: string | null;
+  session_summary: string | null;
   status: CallStatus;
   mode: CallMode;
   disposition: string | null;

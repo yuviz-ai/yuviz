@@ -19,7 +19,19 @@ export interface AppCard {
   preset?: ConnectorPreset;
   calling?: string;
   count?: number;
-  tools?: { key: string; label: string; configured: boolean }[];
+  tools?: { key: string; label: string; configured: boolean; status: ToolStatus }[];
+}
+
+export type ToolStatus = "off" | "on" | "reconnect";
+
+// A saved tool whose provider grant is gone (disconnected or needing reconnect) fails every call.
+export function toolStatus(preset: ConnectorPreset, apis: CustomApi[], connections: OAuthConnection[]): ToolStatus {
+  const rows = apis.filter((a) => a.preset_key === preset.key);
+  if (!rows.length) return "off";
+  if (!preset.provider) return "on";
+  const live = connections.some((c) => c.provider === preset.provider && c.status === "connected"
+    && rows.some((r) => !r.oauth_connection_id || r.oauth_connection_id === c.id));
+  return live ? "on" : "reconnect";
 }
 
 type WorkAppDefinition = { key: string; label: string; description: string; category: AppCard["category"]; icon: string; presetKey?: string; comingSoon?: boolean };
@@ -62,6 +74,7 @@ export function workAppCards(providers: OAuthProvider[], connections: OAuthConne
       accounts: active, count: active.length, provider,
       tools: presets.filter((preset) => preset.provider === entry.key).map((preset) => ({
         key: preset.key, label: preset.title, configured: apis.some((api) => api.preset_key === preset.key),
+        status: toolStatus(preset, apis, connections),
       })) };
   });
   // Account tools live in Manage; Sheets also has a shortcut card in the catalog.

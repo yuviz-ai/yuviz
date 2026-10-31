@@ -59,8 +59,12 @@ type Column = { key: ColKey; label: string; options: FilterOption[] };
 type TimeRange = { from: string; to: string };
 
 const ageMs = (c: CallWithTenant) => Date.now() - new Date(c.started_at).getTime();
-// "Failed" = the call broke (dropped / transfer failed); other finished calls count as completed.
-const isFailed = (c: CallWithTenant) => c.status === "completed" && outcomeOf(c.close_reason).tone === "r";
+// "Failed" = the call broke (dropped / transfer failed) or a campaign dial never connected.
+const isFailed = (c: CallWithTenant) => {
+  if (c.status !== "completed") return false;
+  const attempt = attemptOf(c);
+  return attempt ? attempt.outcome !== "ended" : outcomeOf(c.close_reason).tone === "r";
+};
 
 // Header pills; each sets the Status filter (null = all calls).
 const STAT_PILLS = [
@@ -280,7 +284,7 @@ export default function CallsPage() {
         caller_number: a.caller_id,
         called_number: a.callee_masked,
         agent_name: a.agent_name,
-        status: "completed",
+        status: a.outcome === null || a.outcome === "answered" || a.outcome === "in_progress" ? "live" : "completed",
         close_reason: null,
         sentiment: null,
         disposition: null,
@@ -372,7 +376,7 @@ export default function CallsPage() {
       {
         key: "status", label: "Status", options: [
           { value: "live", label: "Live", test: (c) => c.status === "live" },
-          { value: "completed", label: "Completed", test: (c) => c.status === "completed" },
+          { value: "completed", label: "Completed", test: (c) => c.status === "completed" && !attemptOf(c) },
           { value: "succeeded", label: "Completed (not failed)", hidden: true, test: (c) => c.status === "completed" && !isFailed(c) },
           { value: "failed", label: "Failed", hidden: true, test: isFailed },
           { value: "campaign_no_answer", label: "No answer", test: (c: CallWithTenant) => attemptOf(c)?.outcome === "no_answer" },
@@ -380,7 +384,7 @@ export default function CallsPage() {
           { value: "campaign_failed", label: "Failed", test: (c: CallWithTenant) => attemptOf(c)?.outcome === "failed" },
           ...OUTCOME_FILTERS.map((o) => ({
             value: o.key, label: o.label,
-            test: (c: CallWithTenant) => c.status === "completed" && outcomeOf(c.close_reason).key === o.key,
+            test: (c: CallWithTenant) => c.status === "completed" && !attemptOf(c) && outcomeOf(c.close_reason).key === o.key,
           })),
         ],
       },
@@ -471,8 +475,10 @@ export default function CallsPage() {
       ids.forEach((id) => (on ? next.add(id) : next.delete(id)));
       return next;
     });
-  const pageAllSelected = pageCalls.length > 0 && pageCalls.every((c) => selected.has(c.session_id));
-  const pageSomeSelected = pageCalls.some((c) => selected.has(c.session_id));
+  // Campaign attempt rows have no conversation to export.
+  const pageSelectable = pageCalls.filter((c) => !attemptOf(c));
+  const pageAllSelected = pageSelectable.length > 0 && pageSelectable.every((c) => selected.has(c.session_id));
+  const pageSomeSelected = pageSelectable.some((c) => selected.has(c.session_id));
 
   // The server re-applies these filters, so the export isn't capped at the calls loaded here.
   const exportRequest = (scope: ExportScope) => {
@@ -607,7 +613,8 @@ export default function CallsPage() {
                       ref={(el) => {
                         if (el) el.indeterminate = pageSomeSelected && !pageAllSelected;
                       }}
-                      onChange={() => toggleSelected(pageCalls.map((c) => c.session_id), !pageAllSelected)}
+                      disabled={pageSelectable.length === 0}
+                      onChange={() => toggleSelected(pageSelectable.map((c) => c.session_id), !pageAllSelected)}
                     />
                   </th>
                   {columns.map((col) => (
@@ -666,6 +673,8 @@ export default function CallsPage() {
                       <input
                         type="checkbox"
                         aria-label="Select call"
+                        disabled={attemptOf(c) !== null}
+                        title={attemptOf(c) ? "Campaign dials can't be exported" : undefined}
                         checked={selected.has(c.session_id)}
                         onChange={(e) => toggleSelected([c.session_id], e.target.checked)}
                       />

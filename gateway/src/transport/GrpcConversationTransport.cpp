@@ -165,25 +165,41 @@ void GrpcConversationTransport::send_audio(AudioFrame frame) {
 }
 
 void GrpcConversationTransport::cancel_generation(const std::string& session_id) {
-    if (!stream_open_.load(std::memory_order_acquire)) return;
+    send_cancel_generation(session_id, std::nullopt);
+}
+
+bool GrpcConversationTransport::send_cancel_generation(const std::string& session_id,
+                                                       std::optional<uint64_t> cancel_id) {
+    if (!stream_open_.load(std::memory_order_acquire)) return false;
 
     ::voiceai::v1::GatewayMessage msg;
-    msg.mutable_cancel_generation()->set_session_id(session_id);
+    auto* cancel = msg.mutable_cancel_generation();
+    cancel->set_session_id(session_id);
+    if (cancel_id) cancel->set_cancel_id(*cancel_id);  // the service echoes it in CancelAck
 
-    if (!send_queue_->q.push(std::move(msg)))
+    if (!send_queue_->q.push(std::move(msg))) {
         logger_.warn("GrpcTransport: send_queue_ full, dropping cancel_generation session={}", session_id);
-    else
-        send_queue_->cv.notify_one();
+        return false;
+    }
+    send_queue_->cv.notify_one();
+    return true;
 }
 
 void GrpcConversationTransport::send_playback_finished(const std::string& session_id,
                                                         bool interrupted) {
+    send_playback_finished_heard(session_id, interrupted, std::nullopt);
+}
+
+void GrpcConversationTransport::send_playback_finished_heard(const std::string& session_id,
+                                                             bool interrupted,
+                                                             std::optional<uint64_t> played_bytes) {
     if (!stream_open_.load(std::memory_order_acquire)) return;
 
     ::voiceai::v1::GatewayMessage msg;
     auto* pf = msg.mutable_playback_finished();
     pf->set_session_id(session_id);
     pf->set_interrupted(interrupted);
+    if (played_bytes) pf->set_played_bytes(*played_bytes);
 
     if (!send_queue_->q.push(std::move(msg)))
         logger_.warn("GrpcTransport: send_queue_ full, dropping playback_finished session={}", session_id);
@@ -360,6 +376,11 @@ void GrpcConversationTransport::reader_loop() noexcept {
             break;
 
         case ::voiceai::v1::ServiceMessage::kCancelAck:
+            if (callbacks_.on_cancel_ack_id)
+                callbacks_.on_cancel_ack_id(
+                    msg.cancel_ack().has_cancel_id()
+                        ? std::optional<uint64_t>{msg.cancel_ack().cancel_id()}
+                        : std::nullopt);
             if (callbacks_.on_cancel_ack)
                 callbacks_.on_cancel_ack(session_id_);
             break;

@@ -1,0 +1,281 @@
+{
+ "slug": "transcript-turn-accuracy",
+ "base": "a841bf1c8fd60f13ab8b5d8672c2db7971a0187e",
+ "base_branch": "redesign",
+ "stage": "done",
+ "status": "shipped",
+ "started_at": "2026-10-29T00:37:34Z",
+ "stages": {
+  "security_design": {
+   "status": "passed",
+   "rounds": 1,
+   "verdict": "GREEN",
+   "out_tokens": {
+    "opus": 6035
+   },
+   "agents": [
+    "security_design:critic:r1"
+   ],
+   "artifact_written": true,
+   "started_at": "2026-10-29T00:50:49Z",
+   "findings_path": ".sdlc/transcript-turn-accuracy/02-security.md",
+   "controls_verified": 10,
+   "ended_at": "2026-10-29T00:50:49Z"
+  },
+  "prd": {
+   "status": "passed",
+   "rounds": 2,
+   "verdict": "AMBER",
+   "out_tokens": {
+    "sonnet": 9930,
+    "opus": 7130
+   },
+   "agents": [
+    "prd:author",
+    "prd:critic:r1",
+    "prd:revise:r1",
+    "prd:critic:r2"
+   ],
+   "started_at": "2026-10-29T00:39:04Z",
+   "artifact_written": true,
+   "findings_path": ".sdlc/transcript-turn-accuracy/01-prd.review.md",
+   "controls_verified": 5,
+   "ended_at": "2026-10-29T00:41:52Z"
+  },
+  "_state_writes": {
+   "status": "pending",
+   "rounds": 0,
+   "verdict": null,
+   "out_tokens": {
+    "haiku": 101051
+   },
+   "agents": []
+  },
+  "design": {
+   "status": "passed",
+   "rounds": 1,
+   "verdict": "AMBER",
+   "out_tokens": {
+    "opus": 33837
+   },
+   "agents": [
+    "design:author",
+    "design:critic:r1"
+   ],
+   "started_at": "2026-10-29T00:47:38Z",
+   "artifact_written": true,
+   "findings_path": ".sdlc/transcript-turn-accuracy/02-design.review.md",
+   "controls_verified": 9,
+   "ended_at": "2026-10-29T00:48:53Z"
+  },
+  "plan": {
+   "status": "passed",
+   "rounds": 2,
+   "verdict": "GREEN",
+   "out_tokens": {
+    "opus": 22512
+   },
+   "agents": [
+    "plan:author",
+    "plan:critic:r1",
+    "plan:revise:r1",
+    "plan:critic:r2"
+   ],
+   "started_at": "2026-10-29T00:52:38Z",
+   "artifact_written": true,
+   "findings_path": ".sdlc/transcript-turn-accuracy/03-tasks.review.md",
+   "controls_verified": 12,
+   "ended_at": "2026-10-29T00:56:26Z"
+  },
+  "build": {
+   "status": "passed",
+   "rounds": 1,
+   "verdict": "GREEN",
+   "out_tokens": {
+    "haiku": 18228,
+    "sonnet": 81241
+   },
+   "agents": [
+    "build:partition",
+    "build:Phase 1: Storage and transcript writer:g1",
+    "build:Phase 1: Storage and transcript writer:g2",
+    "build:Phase 1: Storage and transcript writer:g3",
+    "build:Phase 2: Tool-call outcome events:g1",
+    "build:Phase 2: Tool-call outcome events:g2",
+    "build:partition",
+    "build:Phase 1: Storage and transcript writer:g1",
+    "build:Phase 2: Tool-call outcome events:g1",
+    "build:Phase 3: Spoken text and turn ordering in the pipeline:g1",
+    "build:Phase 4: Call-flow outcome and stage:g1",
+    "build:Phase 5: Config reads and admin UI:g1",
+    "build:Phase 5: Config reads and admin UI:g2",
+    "build:fanin",
+    "build:fanin-fix",
+    "build:partition",
+    "build:fanin",
+    "build:fanin-fix",
+    "build:fanin:2",
+    "build:partition",
+    "build:fanin"
+   ],
+   "started_at": "2026-10-29T01:00:18Z",
+   "ended_at": "2026-10-29T03:17:19Z"
+  },
+  "review": {
+   "status": "passed",
+   "rounds": 1,
+   "verdict": "GREEN",
+   "out_tokens": {
+    "opus": 75867,
+    "sonnet": 14629
+   },
+   "agents": [
+    "review:backend",
+    "review:admin-ui",
+    "review:size",
+    "review:backend",
+    "review:admin-ui",
+    "review:size",
+    "review:backend",
+    "review:admin-ui"
+   ],
+   "started_at": "2026-10-29T03:22:12Z",
+   "ended_at": "2026-10-29T04:26:47Z"
+  },
+  "security_code": {
+   "status": "passed",
+   "rounds": 1,
+   "verdict": "GREEN",
+   "out_tokens": {},
+   "agents": [
+    "security_code:r1",
+    "security_code:r1",
+    "security_code:r1"
+   ],
+   "started_at": "2026-10-29T03:22:12Z",
+   "tokens_billed_to": "review",
+   "findings_path": ".sdlc/transcript-turn-accuracy/05-security.md",
+   "controls_verified": 12,
+   "ended_at": "2026-10-29T04:26:47Z"
+  },
+  "test": {
+   "status": "passed",
+   "rounds": 1,
+   "verdict": "GREEN",
+   "out_tokens": {
+    "sonnet": 4431
+   },
+   "agents": [
+    "test:r1",
+    "test:r1"
+   ],
+   "started_at": "2026-10-29T04:28:40Z",
+   "result": "353 passed, 0 failed",
+   "command": "venv/bin/python -m pytest -q services/conversation/tests/test_servicer_spoken_record.py services/conversation/tests/{test_pipeline,test_callflow_handler,test_turn_persistence,test_hangup_with_concurrent_reader,test_transcript_builder,test_session_finalizer}.py services/config/tests/test_calls.py",
+   "ended_at": "2026-10-29T04:28:40Z"
+  },
+  "independent": {
+   "status": "passed",
+   "rounds": 1,
+   "verdict": "GREEN",
+   "out_tokens": {
+    "opus": 20445
+   },
+   "agents": [
+    "independent:r1",
+    "independent:r1"
+   ],
+   "started_at": "2026-10-29T04:32:50Z",
+   "findings_path": ".sdlc/transcript-turn-accuracy/05-review-independent.md",
+   "ended_at": "2026-10-29T04:32:50Z"
+  },
+  "retro": {
+   "status": "pending",
+   "rounds": 0,
+   "verdict": null,
+   "out_tokens": {
+    "sonnet": 650
+   },
+   "agents": [
+    "retro"
+   ]
+  }
+ },
+ "open": [
+  {
+   "stage": "prd",
+   "severity": "minor",
+   "finding": ".sdlc/transcript-turn-accuracy/01-prd.md:22 (AC2) \u2014 AC2 says only TRANSFER_FAILED forces a zero-turn call to count as failed, but the code also emits TRANSFER_TIMEOUT (session.py:345, calls.py:389 groups both), so a timed-out flow-only Dial could be built as a success; fix: extend AC2 to cover TRANSFER_TIMEOUT."
+  },
+  {
+   "stage": "prd",
+   "severity": "minor",
+   "finding": ".sdlc/transcript-turn-accuracy/01-prd.md:37 (AC15) \u2014 AC15 adds a call-to-answering-agent link but no criterion requires that agent to share the call's tenant_id, so per-agent counts could include another tenant's call (lesson 48); fix: add a same-tenant criterion, enforced when the link is written and in the count query."
+  },
+  {
+   "stage": "design",
+   "severity": "minor",
+   "finding": ".sdlc/transcript-turn-accuracy/02-design.md Risks (disposition-drift bullet) \u2014 The tripwire expects 4 Hangup reasons in callflow/runner.py, but runner.py has only 3 distinct ones (flow_budget, flow_complete, retries_exhausted); transfer_refused is emitted at callflow/handler.py:117 and goes through the same Hangup branch at handler.py:132, so the assertion fails on correct code. Fix: scan both runner.py and handler.py and assert the exact set of 4."
+  },
+  {
+   "stage": "review:backend",
+   "severity": "minor",
+   "finding": "services/conversation/pipeline.py:1309 \u2014 The transfer-refused apology nested in _run_turn is iterated with a plain async for and not wrapped in aclosing. On a hang-up, its GeneratorExit write runs only from the asyncgen finalizer, which can run after end_call pops _sessions, so the [transfer_failed] row is silently dropped. This is not a regression, but it is the same class as carried item 2."
+  },
+  {
+   "stage": "review:backend",
+   "severity": "low",
+   "finding": "services/conversation/pipeline.py:1133 \u2014 Merge risk, not a defect: fix/tts-failure-handling changes _spoken_reply (CJK _join_sentences) and the max-duration record_turn near line 1046, which this diff also edits, so expect a conflict. Interrupted replies also join spoken pieces with a trailing space, which leaves spaces between CJK sentences."
+  },
+  {
+   "stage": "test",
+   "severity": "medium",
+   "finding": "uncovered \u2014 pipeline.py:1309 transfer-refused apology iterated without aclosing; GC-finalizer ordering not driven through servicer"
+  },
+  {
+   "stage": "independent",
+   "severity": "minor",
+   "finding": "services/conversation/servicer.py:587 \u2014 AC7 is met only at the level of what was sent, not what was played: the servicer has no pacing and the gateway buffers audio, so sentences synthesized ahead of playback are recorded as spoken even when a barge-in during sentence one means the caller never heard them; a multi-chunk sentence also counts in full once its first chunk is sent, and test_servicer_spoken_record.py holds synthesis back, so it cannot see this; state the limit in the PR body."
+  },
+  {
+   "stage": "independent",
+   "severity": "minor",
+   "finding": "services/conversation/pipeline.py:1309 \u2014 Carried and still open: the transfer-refused apology inside _run_turn is iterated with a plain async for and not aclosing, so on a hang-up its GeneratorExit branch runs from the finalizer after end_call, where the new session_id-in-_sessions guard silently drops the [transfer_failed] row; no test drives this path."
+  },
+  {
+   "stage": "independent",
+   "severity": "minor",
+   "finding": "services/conversation/pipeline.py:1133 \u2014 Carried and still open: spoken pieces are stored as piece plus a trailing space and joined, so CJK replies keep spaces between sentences; this overlaps the _join_sentences change on fix/tts-failure-handling."
+  },
+  {
+   "stage": "independent",
+   "severity": "minor",
+   "finding": "services/conversation/session.py:70 \u2014 Merge risk, not a defect: fix/tts-failure-handling adds end_call_without_audio next to the new on_sent field and rewrites the tts_payloads/audio_sent condition right above the servicer.py:587 on_sent call, so expect textual conflicts and keep on_sent after the cancel drain when resolving them."
+  }
+ ],
+ "retro_sources": [],
+ "updated_at": "2026-10-29T18:18:13Z",
+ "gates": {
+  "prd": "approved (pre-approved in request)",
+  "ship": "approved (pre-approved in request: all reviews GREEN, independent GREEN, no blocking/high open)"
+ },
+ "build_phase_done": "Phase 5: Config reads and admin UI",
+ "verify": {
+  "result": "passed",
+  "command": "POSTGRES_DSN=postgresql://$USER@localhost:5432/voiceai REDIS_URL=redis://localhost:6379/0 JWT_SECRET=x ./venv/bin/python -m pytest -q -p no:cacheprovider -rfE (full tree): 416 failed, 5550 passed, 52 skipped, 249 errors. Admin UI: npm run lint (0 errors, 40 warnings), build ok, npm test 52 pass.",
+  "failures": [
+   "pre-existing: environmental, local voiceai DB schema is stale (missing home_calling_code, agent_documents, knowledge_max_documents, clinic_settings); hits services/config, knowledge, clinic, campaigns, realestate, toolexec, did, telephony test files; CI applies full schema",
+   "pre-existing: libs/vad_sdk/tests/test_silero_vad.py (models/silero_vad.onnx missing), libs/config_sdk, libs/knowledge_sdk, libs/media_stream_sdk, tests/test_env_sip_proxy_host.py, tests/test_rls_coverage.py, tests/test_cross_tenant_admin.py, services/config/tests/test_agent_direction.py: 15 of these fail identically on base a841bf1 (worktree, removed)",
+   "No failure in services/conversation/tests or in services/config/tests/test_calls.py (the files this change added or modified); all of services/conversation/tests passed in the full run",
+   "Note: the .env file was absent and the DB was not re-migrated; T1 schema.sql columns were not verified against a live DB in this run"
+  ],
+  "changed_lines": 1742,
+  "backend": 15,
+  "admin_ui": 2
+ },
+ "lessons": [
+  "none: 05-review-backend.md is GREEN with only two minor findings (pipeline.py:1309 nested apology aclose, pipeline.py:1133 merge risk); no blocking, high or critical items, so .sdlc/lessons.md is unchanged."
+ ],
+ "pr": "https://github.com/yuviz-ai/yuviz/pull/232",
+ "ci": "green"
+}

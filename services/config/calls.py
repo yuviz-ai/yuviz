@@ -64,7 +64,7 @@ async def list_calls(
     params: list[Any] = [tenant_slug]
     if agent_id is not None:
         params.append(agent_id)
-        where.append(f"c.agent_id = ${len(params)}")
+        where.append(f"(c.agent_id = ${len(params)} OR c.answering_agent_id = ${len(params)})")
     if direction is not None:
         params.append(direction)
         where.append(f"c.direction = ${len(params)}")
@@ -107,16 +107,18 @@ async def get_call(
     if tenant_slug is None:
         async with platform_conn(pool, reason="calls-platform-read") as conn:
             row = await conn.fetchrow(
-                "SELECT c.*, a.name AS agent_name FROM calls c "
+                "SELECT c.*, a.name AS agent_name, aa.name AS answering_agent_name FROM calls c "
                 "LEFT JOIN agents a ON a.id = c.agent_id "
+                "LEFT JOIN agents aa ON aa.id = c.answering_agent_id "
                 "WHERE c.session_id = $1",
                 session_id,
             )
     else:
         async with tenant_conn(pool) as conn:
             row = await conn.fetchrow(
-                "SELECT c.*, a.name AS agent_name FROM calls c "
+                "SELECT c.*, a.name AS agent_name, aa.name AS answering_agent_name FROM calls c "
                 "LEFT JOIN agents a ON a.id = c.agent_id "
+                "LEFT JOIN agents aa ON aa.id = c.answering_agent_id "
                 "WHERE c.session_id = $1 AND c.tenant_id = $2",
                 session_id, tenant_slug,
             )
@@ -322,23 +324,33 @@ async def get_agent_call_stats(tenant_slug: str) -> list[dict[str, Any]]:
         rows = await conn.fetch(
             """
             SELECT
-                agent_id,
-                COUNT(*) FILTER (WHERE direction IS DISTINCT FROM 'test') AS calls,
-                COUNT(*) FILTER (WHERE direction = 'test') AS tests,
-                AVG(duration_ms) FILTER (WHERE direction IS DISTINCT FROM 'test') AS avg_duration_ms,
+                a.agent_id,
+                COUNT(*) FILTER (WHERE c.direction IS DISTINCT FROM 'test') AS calls,
+                COUNT(*) FILTER (WHERE c.direction = 'test') AS tests,
+                AVG(c.duration_ms) FILTER (WHERE c.direction IS DISTINCT FROM 'test') AS avg_duration_ms,
                 COUNT(*) FILTER (
-                    WHERE direction IS DISTINCT FROM 'test' AND ended_at IS NOT NULL AND close_reason = ANY($2)
+                    WHERE c.direction IS DISTINCT FROM 'test' AND c.ended_at IS NOT NULL AND c.close_reason = ANY($2)
                 ) AS finished,
                 COUNT(*) FILTER (
-                    WHERE direction IS DISTINCT FROM 'test' AND ended_at IS NOT NULL AND close_reason = ANY($3)
+                    WHERE c.direction IS DISTINCT FROM 'test' AND c.ended_at IS NOT NULL AND c.close_reason = ANY($3)
                 ) AS failed,
                 -- Same rule as the dashboard: a handoff is a transfer a person actually took.
                 COUNT(*) FILTER (
-                    WHERE direction IS DISTINCT FROM 'test' AND ended_at IS NOT NULL AND close_reason = 'TRANSFER_SUCCESS'
+                    WHERE c.direction IS DISTINCT FROM 'test' AND c.ended_at IS NOT NULL AND c.close_reason = 'TRANSFER_SUCCESS'
                 ) AS handoffs
-            FROM calls
-            WHERE tenant_id = $1 AND agent_id IS NOT NULL
-            GROUP BY agent_id
+            FROM calls c
+            -- A call counts once for the agent that took it and once for the agent that answered after a
+            -- handoff; the answering agent only counts when it belongs to the call's own tenant.
+            CROSS JOIN LATERAL (
+                SELECT DISTINCT x AS agent_id
+                FROM unnest(ARRAY[c.agent_id, c.answering_agent_id]) x
+                WHERE x IS NOT NULL AND (x = c.agent_id OR EXISTS (
+                    SELECT 1 FROM agents ag JOIN tenants t ON t.id = ag.tenant_id
+                    WHERE ag.id = x AND t.slug = c.tenant_id
+                ))
+            ) a
+            WHERE c.tenant_id = $1
+            GROUP BY a.agent_id
             """,
             tenant_slug,
             [reason for reasons in _OUTCOME_REASONS.values() for reason in reasons],

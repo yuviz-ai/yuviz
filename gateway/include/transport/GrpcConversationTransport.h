@@ -34,7 +34,11 @@ public:
     void open_session(const SessionContext& ctx) override;
     void send_audio(AudioFrame frame) override;
     void cancel_generation(const std::string& session_id) override;
+    bool send_cancel_generation(const std::string& session_id,
+                                std::optional<uint64_t> cancel_id) override;
     void send_playback_finished(const std::string& session_id, bool interrupted) override;
+    void send_playback_finished_heard(const std::string& session_id, bool interrupted,
+                                      std::optional<uint64_t> played_bytes) override;
     void send_speech_ended(const std::string& session_id,
                            uint32_t duration_ms, float energy_db) override;
     void close_session(const std::string& session_id) override;

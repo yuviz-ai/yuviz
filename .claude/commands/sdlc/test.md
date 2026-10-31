@@ -16,4 +16,4 @@ Still failing: <one line each, or None>
 Uncovered acceptance criteria: <or None>
 ```
 
-Then: `Run /sdlc:ship.`
+Then: `Run /sdlc:independent.`

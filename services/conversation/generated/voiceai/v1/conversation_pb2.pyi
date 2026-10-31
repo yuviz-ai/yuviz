@@ -11,6 +11,14 @@ class AudioCodec(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     AUDIO_CODEC_UNSPECIFIED: _ClassVar[AudioCodec]
     AUDIO_CODEC_PCM_S16LE: _ClassVar[AudioCodec]
 
+class RoutingStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    ROUTING_STATUS_UNSPECIFIED: _ClassVar[RoutingStatus]
+    ROUTING_STATUS_ROUTED: _ClassVar[RoutingStatus]
+    ROUTING_STATUS_ROUTED_LKG: _ClassVar[RoutingStatus]
+    ROUTING_STATUS_UNKNOWN: _ClassVar[RoutingStatus]
+    ROUTING_STATUS_UNAVAILABLE: _ClassVar[RoutingStatus]
+
 class FinalizationReason(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     FINALIZATION_REASON_UNSPECIFIED: _ClassVar[FinalizationReason]
@@ -22,6 +30,11 @@ class FinalizationReason(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     SYSTEM_SHUTDOWN: _ClassVar[FinalizationReason]
 AUDIO_CODEC_UNSPECIFIED: AudioCodec
 AUDIO_CODEC_PCM_S16LE: AudioCodec
+ROUTING_STATUS_UNSPECIFIED: RoutingStatus
+ROUTING_STATUS_ROUTED: RoutingStatus
+ROUTING_STATUS_ROUTED_LKG: RoutingStatus
+ROUTING_STATUS_UNKNOWN: RoutingStatus
+ROUTING_STATUS_UNAVAILABLE: RoutingStatus
 FINALIZATION_REASON_UNSPECIFIED: FinalizationReason
 TRANSFER_SUCCESS: FinalizationReason
 CALL_ENDED: FinalizationReason
@@ -63,7 +76,7 @@ class DtmfDigit(_message.Message):
     def __init__(self, session_id: _Optional[str] = ..., digit: _Optional[str] = ..., trace_id: _Optional[str] = ...) -> None: ...
 
 class SessionOpenRequest(_message.Message):
-    __slots__ = ("protocol_version", "session_id", "tenant_id", "trace_id", "call_id", "caller_did", "called_did", "script_id", "codec", "sample_rate", "channels", "direction", "test_credential")
+    __slots__ = ("protocol_version", "session_id", "tenant_id", "trace_id", "call_id", "caller_did", "called_did", "script_id", "codec", "sample_rate", "channels", "direction", "test_credential", "routing_status")
     PROTOCOL_VERSION_FIELD_NUMBER: _ClassVar[int]
     SESSION_ID_FIELD_NUMBER: _ClassVar[int]
     TENANT_ID_FIELD_NUMBER: _ClassVar[int]
@@ -77,6 +90,7 @@ class SessionOpenRequest(_message.Message):
     CHANNELS_FIELD_NUMBER: _ClassVar[int]
     DIRECTION_FIELD_NUMBER: _ClassVar[int]
     TEST_CREDENTIAL_FIELD_NUMBER: _ClassVar[int]
+    ROUTING_STATUS_FIELD_NUMBER: _ClassVar[int]
     protocol_version: str
     session_id: str
     tenant_id: str
@@ -90,7 +104,8 @@ class SessionOpenRequest(_message.Message):
     channels: int
     direction: str
     test_credential: str
-    def __init__(self, protocol_version: _Optional[str] = ..., session_id: _Optional[str] = ..., tenant_id: _Optional[str] = ..., trace_id: _Optional[str] = ..., call_id: _Optional[str] = ..., caller_did: _Optional[str] = ..., called_did: _Optional[str] = ..., script_id: _Optional[str] = ..., codec: _Optional[_Union[AudioCodec, str]] = ..., sample_rate: _Optional[int] = ..., channels: _Optional[int] = ..., direction: _Optional[str] = ..., test_credential: _Optional[str] = ...) -> None: ...
+    routing_status: RoutingStatus
+    def __init__(self, protocol_version: _Optional[str] = ..., session_id: _Optional[str] = ..., tenant_id: _Optional[str] = ..., trace_id: _Optional[str] = ..., call_id: _Optional[str] = ..., caller_did: _Optional[str] = ..., called_did: _Optional[str] = ..., script_id: _Optional[str] = ..., codec: _Optional[_Union[AudioCodec, str]] = ..., sample_rate: _Optional[int] = ..., channels: _Optional[int] = ..., direction: _Optional[str] = ..., test_credential: _Optional[str] = ..., routing_status: _Optional[_Union[RoutingStatus, str]] = ...) -> None: ...
 
 class AudioChunk(_message.Message):
     __slots__ = ("session_id", "trace_id", "sequence_num", "timestamp_us", "payload")
@@ -107,22 +122,26 @@ class AudioChunk(_message.Message):
     def __init__(self, session_id: _Optional[str] = ..., trace_id: _Optional[str] = ..., sequence_num: _Optional[int] = ..., timestamp_us: _Optional[int] = ..., payload: _Optional[bytes] = ...) -> None: ...
 
 class CancelGeneration(_message.Message):
-    __slots__ = ("session_id", "trace_id")
+    __slots__ = ("session_id", "trace_id", "cancel_id")
     SESSION_ID_FIELD_NUMBER: _ClassVar[int]
     TRACE_ID_FIELD_NUMBER: _ClassVar[int]
+    CANCEL_ID_FIELD_NUMBER: _ClassVar[int]
     session_id: str
     trace_id: str
-    def __init__(self, session_id: _Optional[str] = ..., trace_id: _Optional[str] = ...) -> None: ...
+    cancel_id: int
+    def __init__(self, session_id: _Optional[str] = ..., trace_id: _Optional[str] = ..., cancel_id: _Optional[int] = ...) -> None: ...
 
 class PlaybackFinished(_message.Message):
-    __slots__ = ("session_id", "trace_id", "interrupted")
+    __slots__ = ("session_id", "trace_id", "interrupted", "played_bytes")
     SESSION_ID_FIELD_NUMBER: _ClassVar[int]
     TRACE_ID_FIELD_NUMBER: _ClassVar[int]
     INTERRUPTED_FIELD_NUMBER: _ClassVar[int]
+    PLAYED_BYTES_FIELD_NUMBER: _ClassVar[int]
     session_id: str
     trace_id: str
     interrupted: bool
-    def __init__(self, session_id: _Optional[str] = ..., trace_id: _Optional[str] = ..., interrupted: _Optional[bool] = ...) -> None: ...
+    played_bytes: int
+    def __init__(self, session_id: _Optional[str] = ..., trace_id: _Optional[str] = ..., interrupted: _Optional[bool] = ..., played_bytes: _Optional[int] = ...) -> None: ...
 
 class SpeechEndedNotification(_message.Message):
     __slots__ = ("session_id", "trace_id", "duration_ms", "energy_db")
@@ -253,12 +272,14 @@ class TtsChunk(_message.Message):
     def __init__(self, session_id: _Optional[str] = ..., trace_id: _Optional[str] = ..., sequence_num: _Optional[int] = ..., codec: _Optional[_Union[AudioCodec, str]] = ..., sample_rate: _Optional[int] = ..., payload: _Optional[bytes] = ..., is_final: _Optional[bool] = ...) -> None: ...
 
 class CancelAck(_message.Message):
-    __slots__ = ("session_id", "trace_id")
+    __slots__ = ("session_id", "trace_id", "cancel_id")
     SESSION_ID_FIELD_NUMBER: _ClassVar[int]
     TRACE_ID_FIELD_NUMBER: _ClassVar[int]
+    CANCEL_ID_FIELD_NUMBER: _ClassVar[int]
     session_id: str
     trace_id: str
-    def __init__(self, session_id: _Optional[str] = ..., trace_id: _Optional[str] = ...) -> None: ...
+    cancel_id: int
+    def __init__(self, session_id: _Optional[str] = ..., trace_id: _Optional[str] = ..., cancel_id: _Optional[int] = ...) -> None: ...
 
 class ServiceError(_message.Message):
     __slots__ = ("session_id", "code", "message", "fatal")

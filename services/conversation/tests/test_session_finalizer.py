@@ -179,8 +179,8 @@ async def test_summary_timeout_fallback_gets_persisted():
     result = await finalizer.finalize("s1", _history(), llm, asyncio.Event())
 
     assert result.transcript_written is True
-    transcripts.record_turn.assert_called_once()
-    assert "unavailable" in transcripts.record_turn.call_args.args[3].lower()
+    transcripts.record_summary.assert_called_once()
+    assert "unavailable" in transcripts.record_summary.call_args.args[1].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -195,9 +195,8 @@ async def test_finalize_persists_summary_via_transcripts():
 
     result = await finalizer.finalize("s1", _history(), llm, asyncio.Event())
 
-    transcripts.record_turn.assert_called_once_with(
-        "s1", "[session_summary]", 1.0, "Resolved billing question.", False,
-    )
+    transcripts.record_turn.assert_not_called()
+    transcripts.record_summary.assert_called_once_with("s1", "Resolved billing question.")
     assert result.transcript_written is True
 
 
@@ -208,7 +207,7 @@ async def test_finalize_does_not_persist_empty_summary():
 
     result = await finalizer.finalize("s1", [], None, asyncio.Event())  # -> empty summary
 
-    finalizer_transcripts.record_turn.assert_not_called()
+    finalizer_transcripts.record_summary.assert_not_called()
     assert result.transcript_written is False
 
 
@@ -269,7 +268,7 @@ async def test_finalize_emits_metrics_even_if_summary_generation_fails():
 async def test_finalize_survives_transcript_persistence_failure():
     llm = _make_llm(["summary"])
     transcripts = MagicMock()
-    transcripts.record_turn.side_effect = RuntimeError("DB down")
+    transcripts.record_summary.side_effect = RuntimeError("DB down")
     metrics = FakeMetrics()
     finalizer = SessionFinalizer(transcripts=transcripts, metrics=metrics)
 
@@ -289,7 +288,7 @@ async def test_finalize_never_raises_regardless_of_step_failures():
     llm = MagicMock()
     llm.generate = broken_gen
     transcripts = MagicMock()
-    transcripts.record_turn.side_effect = RuntimeError("also broken")
+    transcripts.record_summary.side_effect = RuntimeError("also broken")
 
     finalizer = SessionFinalizer(transcripts=transcripts)
 

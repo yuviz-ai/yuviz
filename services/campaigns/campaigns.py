@@ -84,7 +84,7 @@ async def caller_id_owned_by_tenant(tenant_id: Any, caller_id: str | None) -> bo
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
         row = await conn.fetchrow(
-            "SELECT 1 FROM phone_numbers WHERE tenant_id = $1 AND did = $2 AND deleted_at IS NULL",
+            "SELECT 1 FROM phone_numbers WHERE tenant_id = $1 AND did = $2 AND status = 'active' AND deleted_at IS NULL",
             tenant_id, normalize_did(caller_id),
         )
     return row is not None
@@ -271,7 +271,7 @@ async def resolve_outbound_route(
                    (a.tenant_id = t.id AND a.status = 'active' AND a.deleted_at IS NULL) AS agent_ok
             FROM tenants t
             JOIN agents a ON a.id = $2
-            LEFT JOIN phone_numbers pn ON pn.tenant_id = t.id AND pn.did = $3 AND pn.deleted_at IS NULL
+            LEFT JOIN phone_numbers pn ON pn.tenant_id = t.id AND pn.did = $3 AND pn.status = 'active' AND pn.deleted_at IS NULL
             LEFT JOIN telephony_configs tc ON tc.id = pn.telephony_config_id AND tc.tenant_id = t.id AND tc.deleted_at IS NULL
             WHERE t.id = $1
             """,

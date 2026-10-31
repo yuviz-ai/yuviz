@@ -11,7 +11,8 @@ import pytest
 from services.conversation.providers.interfaces import ChatMessage
 from services.conversation.tools.executor_registry import ExecutorRegistry
 from services.conversation.tools.llm_adapter import (
-    DeterministicSpokenEvent, LLMAdapter, LocalToolCompletedEvent, TokenEvent, ToolCallEvent, ToolCallStartedEvent,
+    DeterministicSpokenEvent, LLMAdapter, LocalToolCompletedEvent, TokenEvent, ToolCallEvent,
+    ToolCallFinishedEvent, ToolCallStartedEvent,
 )
 from services.conversation.tools.orchestrator import ToolCallOrchestrator
 from services.conversation.tools.policy_resolver import ResolvedToolPolicy
@@ -142,6 +143,7 @@ async def test_tool_call_executes_folds_result_and_continues_to_final_answer():
 
     assert events == [
         ToolCallStartedEvent(tool_name="execute_api"),
+        ToolCallFinishedEvent(tool_name="execute_api", status="success"),
         TokenEvent(text="You're booked!"),
     ]
     assert llm.call_count == 2
@@ -247,6 +249,7 @@ async def test_deterministic_response_short_circuits_llm_narration():
 
     assert events == [
         ToolCallStartedEvent(tool_name="execute_api"),
+        ToolCallFinishedEvent(tool_name="execute_api", status="success"),
         DeterministicSpokenEvent(text="You're all set — I've booked your appointment for Friday at 3 PM."),
     ]
     assert llm.call_count == 1  # never asked to narrate the result
@@ -275,7 +278,9 @@ async def test_max_tool_iterations_forces_final_generation_without_tools():
 
     assert events == [
         ToolCallStartedEvent(tool_name="execute_api"),
+        ToolCallFinishedEvent(tool_name="execute_api", status="success"),
         ToolCallStartedEvent(tool_name="execute_api"),
+        ToolCallFinishedEvent(tool_name="execute_api", status="success"),
         TokenEvent(text="Sorry, having trouble booking that."),
     ]
     assert llm.call_count == 3
@@ -300,6 +305,7 @@ async def test_unknown_tool_name_is_a_failed_result_not_a_crash():
 
     assert events == [
         ToolCallStartedEvent(tool_name="send_email"),
+        ToolCallFinishedEvent(tool_name="send_email", status="failed"),
         TokenEvent(text="I can't do that."),
     ]
     assert json.loads(history[2].content)["status"] == "error"
@@ -351,7 +357,10 @@ async def test_cancel_event_stops_waiting_on_an_in_flight_tool_call():
     cancel_event.set()
     events = await asyncio.wait_for(task, timeout=1.0)
 
-    assert events == [ToolCallStartedEvent(tool_name="execute_api")]
+    assert events == [
+        ToolCallStartedEvent(tool_name="execute_api"),
+        ToolCallFinishedEvent(tool_name="execute_api", status="failed"),
+    ]
     assert json.loads(history[2].content)["status"] == "error"
     assert json.loads(history[2].content)["error"]["code"] == "cancelled"
     assert llm.call_count == 1  # never asked the LLM what to do next — the turn is stale
@@ -385,7 +394,10 @@ async def test_cancel_event_set_before_the_tool_call_even_starts_still_stops_the
         "agent1", "t1", "c1", "s1", history, cancel_event=cancel_event,
     )]
 
-    assert events == [ToolCallStartedEvent(tool_name="execute_api")]
+    assert events == [
+        ToolCallStartedEvent(tool_name="execute_api"),
+        ToolCallFinishedEvent(tool_name="execute_api", status="failed"),
+    ]
     assert json.loads(history[2].content)["error"]["code"] == "cancelled"
 
     executor.release_event.set()
@@ -414,6 +426,7 @@ async def test_no_cancel_event_behaves_exactly_as_before():
 
     assert events == [
         ToolCallStartedEvent(tool_name="execute_api"),
+        ToolCallFinishedEvent(tool_name="execute_api", status="success"),
         TokenEvent(text="You're booked!"),
     ]
 
@@ -459,8 +472,11 @@ async def test_a_local_tool_executes_without_touching_policy_or_provider():
 
     assert calls == [{}]
     assert TokenEvent(text="Thanks!") in events
-    assert LocalToolCompletedEvent(tool_name="caller_verified") in events
+    assert LocalToolCompletedEvent(tool_name="caller_verified", status="success") in events
     assert not any(isinstance(e, ToolCallStartedEvent) for e in events)
+    # A local call reports through LocalToolCompletedEvent alone: a Started event would count as a tool call made
+    # and satisfy the fabricated-booking guard.
+    assert not any(isinstance(e, ToolCallFinishedEvent) for e in events)
     assert json.loads(history[-1].content)["data"]["status"] == "done"
 
 
@@ -649,7 +665,7 @@ async def test_a_local_tool_that_raises_soft_fails_instead_of_crashing_the_turn(
         )
     ]
 
-    assert LocalToolCompletedEvent(tool_name="caller_verified") in events
+    assert LocalToolCompletedEvent(tool_name="caller_verified", status="failed") in events
     assert TokenEvent(text="Still here.") in events
     assert json.loads(history[-1].content)["status"] == "error"
     assert json.loads(history[-1].content)["error"]["code"] == "local_tool_failed"
@@ -702,7 +718,8 @@ async def test_cancel_event_stops_waiting_on_an_in_flight_local_tool():
     cancel_event.set()
     events = await asyncio.wait_for(task, timeout=1.0)
 
-    assert events == []
+    # Reported as failed so the transcript stores the call; no re-resolve follows a cancelled one.
+    assert events == [LocalToolCompletedEvent(tool_name="caller_verified", status="failed")]
     assert json.loads(history[-1].content)["error"]["code"] == "cancelled"
     assert llm.call_count == 1
 
@@ -833,7 +850,7 @@ async def test_local_tool_lookup_uses_definition_name_not_dict_key():
     ]
 
     assert calls == [{}]
-    assert LocalToolCompletedEvent(tool_name="caller_verified") in events
+    assert LocalToolCompletedEvent(tool_name="caller_verified", status="success") in events
     assert TokenEvent(text="Thanks!") in events
 
 

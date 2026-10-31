@@ -33,7 +33,7 @@ class _DtmfHandler:
         return
         yield  # pragma: no cover - make this an async generator
 
-    async def on_cancel(self, session_id: str) -> None:
+    async def on_cancel(self, session_id: str, *, hanging_up: bool = False) -> None:
         pass
 
     async def on_session_end(self, session_id: str, reason: str, final_state=None) -> None:
