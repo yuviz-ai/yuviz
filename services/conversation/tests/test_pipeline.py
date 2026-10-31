@@ -4938,3 +4938,29 @@ async def test_cancel_while_the_model_is_stalled_ends_the_turn_and_runs_barge_in
     assert handler._workflow.pending_end is False
     assert handler._workflow.pending_transfer is None
     assert not any(m.role == "user" and m.content == "bye now" for m in handler._get_history("s1"))
+
+
+@pytest.mark.asyncio
+async def test_a_reply_that_failed_tts_in_full_keeps_the_callers_message_in_history():
+    from ..providers.llm.anthropic import AnthropicLLM
+    from ..providers.llm.gemini import GeminiLLM
+
+    transcripts = MagicMock()
+    tts = _make_tts()
+
+    async def _failing_stream(text, sample_rate):
+        raise RuntimeError("tts down")
+        yield b""
+
+    tts.synthesize_stream = _failing_stream
+    handler = _make_handler(_make_stt("book me in"), _make_llm(["Sure thing."]), tts, transcripts=transcripts)
+
+    await _turn_responses(handler, cut_after_first_audio=False)
+
+    history = handler._get_history("s1")
+    assert history[-1].role == "user" and history[-1].content == "book me in"
+    assert transcripts.record_turn.call_args.args[1] == "book me in"
+    # The next turn sends two user messages in a row; neither provider's message builder may reject that.
+    next_turn = [*history, ChatMessage(role="user", content="hello?")]
+    AnthropicLLM("k")._shape_messages(next_turn)
+    GeminiLLM("k")._shape_contents(next_turn)

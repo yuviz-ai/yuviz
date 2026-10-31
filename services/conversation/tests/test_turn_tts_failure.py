@@ -344,7 +344,7 @@ async def test_empty_audio_chunks_do_not_count_as_audio():
     assert handler._session("s1").unspoken_sentences == ["Hello."]
 
 
-async def test_a_reply_that_is_entirely_silent_is_not_added_to_history(monkeypatch):
+async def test_a_reply_that_is_entirely_silent_leaves_only_the_caller_message_in_history(monkeypatch):
     monkeypatch.setenv("VOICEAI_FILLER_DELAY_MS", "60000")
     transcripts = MagicMock()
     handler = _make_handler(
@@ -354,7 +354,7 @@ async def test_a_reply_that_is_entirely_silent_is_not_added_to_history(monkeypat
     responses = [r async for r in handler.on_speech_ended("s1", _silence(), 200, -20.0)]
 
     assert not any(r.tts_payloads or r.response_text for r in responses)
-    assert [m.role for m in handler._get_history("s1")] == ["system"]
+    assert [(m.role, m.content) for m in handler._get_history("s1")][1:] == [("user", "hi")]
     # The transcript still holds the caller's turn, with nothing stored as spoken.
     assert transcripts.record_turn.call_args.args[1] == "hi"
     assert _reply_recorded(transcripts) == ""
@@ -367,3 +367,16 @@ async def test_a_silent_cached_phrase_is_not_cached_and_is_not_a_reply_sentence(
 
     assert chunks == []
     assert handler._session("s1").unspoken_sentences == []
+
+
+async def test_a_reply_whose_tts_failed_entirely_leaves_only_the_caller_message_in_history(monkeypatch):
+    monkeypatch.setenv("VOICEAI_FILLER_DELAY_MS", "60000")
+    handler = _make_handler(
+        _make_stt("when is it"), _make_llm(["Your booking QATTSFAIL is done."]),
+        _tts_failing_on("QATTSFAIL"),
+    )
+
+    responses = [r async for r in handler.on_speech_ended("s1", _silence(), 200, -20.0)]
+
+    assert not any(r.tts_payloads or r.response_text for r in responses)
+    assert [m.role for m in handler._get_history("s1")] == ["system", "user"]

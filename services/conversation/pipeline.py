@@ -1434,8 +1434,10 @@ class PipelineConversationHandler:
             self._trim_history(session_id)
         else:
             # Barge-in, cancel, or LLM failure: remove the unpaired user message
-            # so history stays consistent for the next turn's LLM context.
-            if history and history[-1].role == "user":
+            # so history stays consistent for the next turn's LLM context. A reply that failed TTS in full keeps it:
+            # the caller did speak, and the transcript holds that turn; only the unspoken reply stays out.
+            reply_failed_tts = not cancelled and full_response and unspoken and not assistant_text
+            if history and history[-1].role == "user" and not reply_failed_tts:
                 history.pop()
 
         if self._transcripts is not None:
