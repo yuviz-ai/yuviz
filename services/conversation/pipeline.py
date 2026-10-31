@@ -1312,8 +1312,13 @@ class PipelineConversationHandler:
                         if not getter.done():
                             getter.cancel()
                     if not getter.done() or getter.cancelled():
-                        break
-                    item = getter.result()
+                        # The producer's read task adds a hop, so a failure raised with the cancel can land
+                        # just behind it: still report it, but send no audio and speak no fallback.
+                        item = items.get_nowait() if not items.empty() else None
+                        if not isinstance(item, Exception) or isinstance(item, LlmResponseTimeout):
+                            break
+                    else:
+                        item = getter.result()
                 else:
                     # Already queued: take it without a suspension, as before the race existed.
                     item = items.get_nowait()

@@ -39,9 +39,13 @@ async def test_hangup_mid_reply_persists_the_turn_as_interrupted():
         return handler
 
     async def consume():
+        chunks = 0
         async for msg in ConversationServicer(factory).Converse(stream(), AsyncMock()):
             if msg.HasField("tts_chunk"):
-                first_audio.set()
+                chunks += 1
+                # The first chunk is the filler; hang up once the reply sentence, the second, is sent.
+                if chunks == 2:
+                    first_audio.set()
 
     task = asyncio.create_task(consume())
     await asyncio.wait_for(first_audio.wait(), 2)

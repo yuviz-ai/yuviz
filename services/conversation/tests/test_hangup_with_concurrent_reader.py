@@ -56,7 +56,9 @@ async def test_hangup_mid_turn_writes_one_interrupted_row_and_leaks_no_task(hang
         async for msg in converse:
             if msg.HasField("tts_chunk"):
                 chunks += 1
-                first_audio.set()
+                # The reply comes from the producer task a hop after the filler, so cancel once it is sent.
+                if hangup == "generator_closed" or chunks == 2:
+                    first_audio.set()
                 # The first chunk is the filler; the reply sentence is the second, and only a sent one is stored.
                 if hangup == "generator_closed" and chunks == 2:
                     await stalled.wait()
