@@ -735,6 +735,28 @@ async def disconnect(
     return {"disconnected": True}
 
 
+async def revoke_deleted_tenant_grants(
+    *, tenant_id: str, grants: list[dict[str, Any]], background_tasks: BackgroundTasks,
+) -> int:
+    """Upstream revoke for connections whose tenant was just deleted: config already
+    nulled the stored tokens and wrote the audit rows, and hands over the sealed
+    refs it cleared. A ref only opens for `tenant_id` (resolve_tenant_ref), an
+    unknown provider or off-allow-list accounts_server is dropped, and the revoke
+    runs after the response like disconnect's. Returns how many were queued."""
+    queued = 0
+    for g in grants:
+        spec = PROVIDERS.get(g["provider"])
+        server = g.get("accounts_server")
+        if spec is None or not g.get("old_ref") or (server is not None and server not in spec.accounts_servers):
+            continue
+        background_tasks.add_task(
+            _revoke_upstream, tenant_id=tenant_id, connection_id=str(g["connection_id"]), provider=g["provider"],
+            provider_sub=g.get("provider_sub"), accounts_server=server, old_ref=g["old_ref"],
+        )
+        queued += 1
+    return queued
+
+
 async def _revoke_upstream(
     *, tenant_id: str, connection_id: str, provider: str, provider_sub: str | None,
     accounts_server: str | None, old_ref: str,

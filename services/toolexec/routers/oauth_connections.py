@@ -27,7 +27,7 @@ from services.config.deps import (
 )
 
 from .. import db, oauth
-from ..schemas import ApiKeyConnectRequest, OAuthAuthorizeRequest, OAuthCallbackRequest
+from ..schemas import ApiKeyConnectRequest, OAuthAuthorizeRequest, OAuthCallbackRequest, RevokeGrantsRequest
 
 
 async def require_tenant_uuid(tenant_id: str) -> None:
@@ -69,6 +69,19 @@ async def list_oauth_providers(current_user: CurrentUser = Depends(get_current_u
         {"key": key, "label": oauth.PROVIDERS[key].label, "auth_kind": oauth.PROVIDERS[key].auth_kind}
         for key in oauth.configured_providers()
     ]
+
+
+@router.post("/internal/oauth/revoke-grants", status_code=202)
+async def revoke_deleted_tenant_grants(
+    body: RevokeGrantsRequest, background_tasks: BackgroundTasks,
+    current_user: CurrentUser = Depends(require_role("superadmin")),
+):
+    """Called by the config service right after a tenant delete, with the caller's own superadmin token."""
+    queued = await oauth.revoke_deleted_tenant_grants(
+        tenant_id=str(body.tenant_id), grants=[g.model_dump(mode="json") for g in body.grants],
+        background_tasks=background_tasks,
+    )
+    return {"queued": queued}
 
 
 @tenant_scoped_router.get("")
