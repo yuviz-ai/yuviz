@@ -209,6 +209,7 @@ app.state.verify_throttle = AcceptThrottle()
 app.state.live_calls_throttle = LiveCallsThrottle()
 app.state.agent_assist_throttle = AgentAssistThrottle()
 app.state.public_demo_throttle = public_demo.PublicDemoThrottle()
+app.state.public_chat_throttle = public_demo.PublicChatThrottle()
 
 app.include_router(auth.router)
 app.include_router(public_demo.router)

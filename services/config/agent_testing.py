@@ -82,7 +82,7 @@ async def load_test_transcript(
 
 async def run_chat_turn(
     redis, *, tenant: dict[str, Any], agent: dict[str, Any], session_id: str, credential: str,
-    message: str, secret_resolver: SecretResolver,
+    message: str, secret_resolver: SecretResolver, turn_cap: int = TURN_CAP,
 ) -> str:
     grant = await redeem_test_credential(redis, credential, channel="chat", consume=False)
     if (
@@ -100,7 +100,7 @@ async def run_chat_turn(
             "UPDATE calls SET turn_count = turn_count + 1, ended_at = now() "
             "WHERE session_id = $1 AND tenant_id = $2 AND agent_id = $3 AND direction = 'test' "
             "AND turn_count < $4 RETURNING turn_count",
-            session_id, tenant["slug"], agent["id"], TURN_CAP,
+            session_id, tenant["slug"], agent["id"], turn_cap,
         )
         if turn_number is None:
             raise TurnLimitReached()
