@@ -190,6 +190,7 @@ class ConversationSession:
         self._metrics      = metrics if metrics is not None else NullMetrics()
         self._tts_seq      = 0
         self._audio_buffer = bytearray()   # accumulates inbound PCM per utterance
+        self._cap_warned = False           # one over-cap warning per utterance
         # Last transfer outcome (TRANSFER_*), or None; persisted at close().
         self._transfer_outcome: str | None = None
 
@@ -239,7 +240,8 @@ class ConversationSession:
             return HandlerResponse()
 
         room = MAX_UTTERANCE_BYTES - len(self._audio_buffer)
-        if 0 < room <= len(payload):  # logged once, by the chunk that reaches the cap
+        if len(payload) > room and not self._cap_warned:  # logged once per utterance
+            self._cap_warned = True
             log.warning(
                 "Utterance audio over cap, dropping excess: buffered=%d cap=%d session=%s",
                 len(self._audio_buffer), MAX_UTTERANCE_BYTES, self._ctx.session_id,
@@ -258,14 +260,19 @@ class ConversationSession:
         """Hand the buffered utterance to the handler and yield its responses."""
         # Any other state means a prior turn is still in flight.
         if self._fsm.state not in _SPEECH_ENDED_STATES:
-            log.debug(
-                "speech_ended: ignoring in state %s session=%s",
-                self._fsm.state.value, self._ctx.session_id,
+            log.log(
+                logging.INFO if self._audio_buffer else logging.DEBUG,
+                "speech_ended: ignoring in state %s, discarding %d buffered bytes session=%s",
+                self._fsm.state.value, len(self._audio_buffer), self._ctx.session_id,
             )
+            # Audio buffered while busy (barge-in detection) must not leak into the next utterance.
+            self._audio_buffer.clear()
+            self._cap_warned = False
             return
 
         audio = bytes(self._audio_buffer)
         self._audio_buffer.clear()
+        self._cap_warned = False
 
         self._fsm.on_speech_started(energy_db)
         self._fsm.on_speech_ended(duration_ms, energy_db)
@@ -367,11 +374,7 @@ class ConversationSession:
                         self._fsm.state.name, self._ctx.session_id)
             return
         start = time.monotonic()
-        self._transfer_outcome = (
-            "TRANSFER_TIMEOUT" if reason == "transfer_timeout" else "TRANSFER_FAILED"
-        )
-        self._fsm.on_transfer_failed_event(reason)
-        self._handler.record_live_stage(self._ctx.session_id, "ai")
+        self._enter_transfer_failed(reason)
 
         any_audio = False
         first_audio = True
@@ -395,7 +398,26 @@ class ConversationSession:
         self._metrics.observe("transfer_recovery_latency_ms", (time.monotonic() - start) * 1000.0)
         if any_audio:
             self._metrics.increment("transfer_recovery_success_total")
+        self._publish_transfer_failed(destination, reason, transfer_id)
 
+    def record_transfer_failed(self, destination: str, reason: str, transfer_id: str = "") -> None:
+        """The caller has gone: record the failed transfer (outcome, FSM, metrics, event) without
+        the spoken apology, which would cost an LLM call and a TTS pass nobody hears."""
+        start = time.monotonic()
+        self._enter_transfer_failed(reason)
+        self._fsm.on_recovery_response_ready()
+        self._fsm.on_playback_finished(interrupted=False)
+        self._metrics.observe("transfer_recovery_latency_ms", (time.monotonic() - start) * 1000.0)
+        self._publish_transfer_failed(destination, reason, transfer_id)
+
+    def _enter_transfer_failed(self, reason: str) -> None:
+        self._transfer_outcome = (
+            "TRANSFER_TIMEOUT" if reason == "transfer_timeout" else "TRANSFER_FAILED"
+        )
+        self._fsm.on_transfer_failed_event(reason)
+        self._handler.record_live_stage(self._ctx.session_id, "ai")
+
+    def _publish_transfer_failed(self, destination: str, reason: str, transfer_id: str) -> None:
         self._bus.publish(TransferFailed(
             session_id=self._ctx.session_id, destination=destination, reason=reason,
             transfer_id=transfer_id,
@@ -412,6 +434,7 @@ class ConversationSession:
 
     async def cancel(self, hanging_up: bool = False) -> None:
         self._audio_buffer.clear()
+        self._cap_warned = False
         await self._handler.on_cancel(self._ctx.session_id, hanging_up=hanging_up)
         self._fsm.on_cancel()  # handles SPEAKING/THINKING/SYNTHESIZING/RECOGNIZING → LISTENING
 
@@ -434,6 +457,7 @@ class ConversationSession:
 
     async def close(self, reason: str = "caller_hangup") -> None:
         self._audio_buffer.clear()
+        self._cap_warned = False
         effective = reason
         if self._transfer_outcome == "TRANSFER_SUCCESS":
             effective = "TRANSFER_SUCCESS"
