@@ -1353,6 +1353,11 @@ class PipelineConversationHandler:
                 producer.cancel()
             producer.add_done_callback(lambda task: task.cancelled() or task.exception())
             await asyncio.wait({producer}, timeout=_STREAM_CLEANUP_TIMEOUT_S)
+            # A failure queued as the turn was cancelled is still reported.
+            while not items.empty():
+                item = items.get_nowait()
+                if isinstance(item, Exception) and not isinstance(item, LlmResponseTimeout):
+                    log.error("LLM/TTS pipeline failed session=%s", session_id, exc_info=item)
         history.extend(producer_history[producer_history_start:])
         if stream_completed:
             directives.extend(producer_directives)

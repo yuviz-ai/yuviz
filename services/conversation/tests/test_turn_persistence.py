@@ -33,18 +33,21 @@ async def test_hangup_mid_reply_persists_the_turn_as_interrupted():
         yield pb.GatewayMessage(speech_ended=pb.SpeechEndedNotification(session_id="s1", duration_ms=1500))
         await asyncio.Event().wait()   # the gateway holds the stream open until it hangs up
 
-    first_audio = asyncio.Event()
+    reply_audio = asyncio.Event()
 
     async def factory(ctx):
         return handler
 
     async def consume():
+        chunks = 0
         async for msg in ConversationServicer(factory).Converse(stream(), AsyncMock()):
             if msg.HasField("tts_chunk"):
-                first_audio.set()
+                chunks += 1
+                if chunks == 2:   # the first chunk is the filler; the reply sentence is the second
+                    reply_audio.set()
 
     task = asyncio.create_task(consume())
-    await asyncio.wait_for(first_audio.wait(), 2)
+    await asyncio.wait_for(reply_audio.wait(), 2)
     task.cancel()
     try:
         await task

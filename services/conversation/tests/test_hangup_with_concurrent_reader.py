@@ -46,6 +46,7 @@ async def test_hangup_mid_turn_writes_one_interrupted_row_and_leaks_no_task(hang
         await asyncio.Event().wait()   # the gateway holds the stream open until it hangs up
 
     first_audio = asyncio.Event()
+    reply_audio = asyncio.Event()   # the reply sentence was sent
 
     async def factory(ctx):
         return handler
@@ -57,6 +58,8 @@ async def test_hangup_mid_turn_writes_one_interrupted_row_and_leaks_no_task(hang
             if msg.HasField("tts_chunk"):
                 chunks += 1
                 first_audio.set()
+                if chunks == 2:
+                    reply_audio.set()
                 # The first chunk is the filler; the reply sentence is the second, and only a sent one is stored.
                 if hangup == "generator_closed" and chunks == 2:
                     await stalled.wait()
@@ -71,6 +74,7 @@ async def test_hangup_mid_turn_writes_one_interrupted_row_and_leaks_no_task(hang
     if hangup == "generator_closed":
         await asyncio.wait_for(task, 2)
     else:
+        await asyncio.wait_for(reply_audio.wait(), 2)   # only a sent reply is stored
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
