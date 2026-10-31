@@ -5,19 +5,15 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { applyConnectorPreset, completeOAuthCallback } from "@/lib/toolexecApi";
 import { OAUTH_CONTEXT_KEY, OAuthContext } from "@/components/ConnectorsPanel";
+import { callbackFailureMessage } from "@/lib/oauthCallback";
 import { draftSetup, presetDraftKey, readPresetDraft } from "@/lib/connectorDraft";
-
-// Whatever went wrong, the page says the same thing: the provider's error text
-// and the server's reason are never shown (the server answers every failure
-// identically too).
-const FAILURE_MESSAGE = "We could not complete the connection. Go back to Connected Apps and try again.";
 
 // The provider sends the browser here with a single-use code in the URL. The
 // URL is stripped before anything else runs so the code is never in history,
 // and the meta tag keeps it out of Referer headers.
 export default function OAuthCallbackPage() {
   const router = useRouter();
-  const [failed, setFailed] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
   // The code is single use; React's dev double-mount must not redeem it twice.
   const started = useRef(false);
 
@@ -49,16 +45,16 @@ export default function OAuthCallbackPage() {
               router.replace(context.returnTo);
             },
           );
-    redeemed.catch(() => setFailed(true));
+    redeemed.catch(() => setFailure(callbackFailureMessage(params.get("error"))));
   }, [router]);
 
   return (
     <>
       <meta name="referrer" content="no-referrer" />
       <div className="card">
-        {failed ? (
+        {failure ? (
           <div className="card-body">
-            <div className="error-banner">{FAILURE_MESSAGE}</div>
+            <div className="error-banner">{failure}</div>
             <Link href="/integrations" className="btn btn-ghost btn-sm">
               Back to Connected Apps
             </Link>

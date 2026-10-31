@@ -650,3 +650,24 @@ async def test_assistant_response_sent_after_turn_audio():
             await stream.done_writing()
     finally:
         await server.stop(grace=0)
+
+
+@pytest.mark.asyncio
+async def test_stray_transfer_events_send_no_conversation_finalized():
+    """Without transfer_initiated, transfer_completed/failed are ignored over the wire (#181)."""
+    addr, server = await _open_echo_server()
+    try:
+        async with grpc.aio.insecure_channel(addr) as channel:
+            stub = pb_grpc.ConversationServiceStub(channel)
+            stream = await _open_and_handshake(stub, "test-stray-transfer")
+            await stream.write(pb.GatewayMessage(
+                transfer_completed=pb.TransferCompleted(
+                    session_id="test-stray-transfer", destination="+15551234567")))
+            await stream.write(pb.GatewayMessage(
+                transfer_failed=pb.TransferFailed(
+                    session_id="test-stray-transfer", destination="+15551234567", reason="x")))
+            await stream.done_writing()
+            while (m := await stream.read()) is not grpc.aio.EOF:
+                assert not m.HasField("conversation_finalized")
+    finally:
+        await server.stop(grace=0)

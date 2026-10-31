@@ -7,7 +7,7 @@ Slug: `cat .sdlc/current`. Feature dir: `.sdlc/<slug>/`.
 
 Tasks to build: $ARGUMENTS, or every unchecked task in `<dir>/03-tasks.md` if no IDs were given.
 
-1. If we are on the default branch, create `feature/<slug>` first.
+1. If HEAD is the repo's default branch or `base_branch` from `.sdlc/<slug>/state.json`, create `feature/<slug>` first.
 
 2. **Read `.claude/sdlc/parallelism.md`.** Group the tasks by the files they touch, then dispatch one `sdlc-implementer` per **file-disjoint** group — all in a single message, so they genuinely run at once rather than one after another. Give each the design path, the task file path, its task IDs, and an explicit list of the files it owns. Two agents must never own the same file: split by file, not by topic.
 

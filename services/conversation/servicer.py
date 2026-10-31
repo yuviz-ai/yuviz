@@ -800,6 +800,8 @@ class ConversationServicer(pb_grpc.ConversationServiceServicer):
                              "duration_ms=%d session=%s",
                              tc.destination, tc.transfer_id, duration_ms, sid)
                     result = await session.on_transfer_completed(tc.destination, tc.transfer_id)
+                    if result is None:
+                        continue  # no transfer was pending; ignored
                     log.info(
                         "Converse: conversation_finalized session=%s summary_generated=%s "
                         "transcript_written=%s status=%s",

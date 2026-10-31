@@ -196,6 +196,7 @@ export TOOLEXEC_SIDE_EFFECT_CLAIM_TTL="24 hours"            # how long a claimed
 export TOOLEXEC_MAX_CHAIN_BUDGET_MS="30000"                 # hard ceiling on any chain's whole-chain wall clock, regardless of what the caller/agent policy requests; default shown
 export TOOLEXEC_MAX_CONCURRENT_RUNS_PER_AGENT="4"           # abuse brake, per (tenant_id, agent_id), per service replica; default shown
 export TOOLEXEC_MAX_RUNS_PER_MINUTE_PER_AGENT="60"          # same scope as above; default shown
+export TOOLEXEC_ADMISSION_MAX_WAIT_MS="1000"                    # a run over the concurrency cap queues this long for a slot before rate_limited (0 = refuse at once); never waits on the per-minute cap; default shown
 export TOOLEXEC_MAX_RESPONSE_BYTES="1048576"                # a step's upstream response is abandoned past this many bytes (1 MiB); default shown
 ```
 

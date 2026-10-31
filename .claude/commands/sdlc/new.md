@@ -5,7 +5,7 @@ allowed-tools: Bash, Read, Write, Agent
 
 Start a new feature: **$ARGUMENTS**
 
-1. Pick a kebab-case slug of at most 4 words from the requirement. Create `.sdlc/<slug>/`, write the requirement verbatim to `.sdlc/<slug>/00-request.md`, and write the slug to `.sdlc/current`.
+1. Pick a kebab-case slug of at most 4 words from the requirement. Create `.sdlc/<slug>/`, write the requirement verbatim to `.sdlc/<slug>/00-request.md`, write the slug to `.sdlc/current`, and write `.sdlc/<slug>/state.json` as `{"slug": "<slug>", "base": "<git rev-parse HEAD>", "base_branch": "<git rev-parse --abbrev-ref HEAD>"}` (`/sdlc:ship` opens the PR against `base_branch`). If that prints `HEAD`, or a branch `git ls-remote --heads origin <branch>` does not list, ask me for the base branch instead.
 2. Run the PRD stage exactly as described in `.claude/commands/sdlc/prd.md`.
 
-Do not read the codebase yourself — that is the agent's job. Your own tool calls in this command should be `mkdir`/`cat >` and the Agent calls, nothing more.
+Do not read the codebase yourself — that is the agent's job. Your own tool calls in this command should be `mkdir`/`cat >`, the `git` calls above and the Agent calls, nothing more.

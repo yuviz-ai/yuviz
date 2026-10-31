@@ -2192,6 +2192,72 @@ async def test_session_on_transfer_completed_finalizes_and_moves_to_closing():
 
 
 @pytest.mark.asyncio
+async def test_session_stray_transfer_completed_is_ignored():
+    """TransferCompleted with no transfer requested must not finalize a live conversation (#181)."""
+    handler = EchoConversationHandler()
+    bus = RecordingEventBus()
+    session = ConversationSession(ctx=SessionContext(session_id="s5x"), bus=bus, handler=handler)
+    session.session_ready()
+    before = session.fsm_state
+
+    assert await session.on_transfer_completed("+15551234567") is None
+
+    assert session.fsm_state == before
+    assert not bus.published_of(TransferCompleted)
+    assert not bus.published_of(ConversationFinalized)
+    assert session._transfer_outcome is None
+
+
+@pytest.mark.asyncio
+async def test_session_duplicate_transfer_completed_finalizes_once():
+    handler = EchoConversationHandler()
+    bus = RecordingEventBus()
+    session = ConversationSession(ctx=SessionContext(session_id="s5y"), bus=bus, handler=handler)
+    session.session_ready()
+    session.on_transfer_initiated("cold", "+15551234567", "x")
+
+    assert await session.on_transfer_completed("+15551234567") is not None
+    assert await session.on_transfer_completed("+15551234567") is None
+
+    assert len(bus.published_of(ConversationFinalized)) == 1
+    assert len(bus.published_of(TransferCompleted)) == 1
+
+
+@pytest.mark.asyncio
+async def test_session_stray_transfer_failed_is_ignored():
+    """TransferFailed with no pending transfer yields no apology and no state change (#181)."""
+    class ApologizingHandler(EchoConversationHandler):
+        async def on_transfer_failed(self, session_id, destination, reason):
+            yield HandlerResponse(tts_payloads=[b"\x00" * 320])
+
+    bus = RecordingEventBus()
+    session = ConversationSession(ctx=SessionContext(session_id="s6x"), bus=bus,
+                                  handler=ApologizingHandler())
+    session.session_ready()
+    before = session.fsm_state
+
+    out = [r async for r in session.on_transfer_failed("+15551234567", "x")]
+
+    assert out == []
+    assert session.fsm_state == before
+    assert not bus.published_of(TransferFailed)
+    assert session._transfer_outcome is None
+
+
+@pytest.mark.asyncio
+async def test_session_transfer_failed_after_completed_is_ignored():
+    handler = EchoConversationHandler()
+    bus = RecordingEventBus()
+    session = ConversationSession(ctx=SessionContext(session_id="s6y"), bus=bus, handler=handler)
+    session.session_ready()
+    session.on_transfer_initiated("cold", "+15551234567", "x")
+    await session.on_transfer_completed("+15551234567")
+
+    assert [r async for r in session.on_transfer_failed("+15551234567", "x")] == []
+    assert session._transfer_outcome == "TRANSFER_SUCCESS"
+
+
+@pytest.mark.asyncio
 async def test_session_on_transfer_failed_recovers_to_listening_and_publishes_event():
     """A transfer failure doesn't end the call: the session returns to LISTENING, not CLOSING."""
     handler = EchoConversationHandler()
@@ -2306,7 +2372,7 @@ async def test_workflow_engine_subscribes_to_transfer_failed_for_metrics():
 
 @pytest.mark.asyncio
 async def test_session_transfer_completed_without_initiated_is_a_no_op():
-    """TransferCompleted without a prior TransferInitiated is ignored by the FSM."""
+    """TransferCompleted without a prior TransferInitiated is ignored entirely (#181)."""
     handler = EchoConversationHandler()
     ctx = SessionContext(session_id="s7")
     bus = RecordingEventBus()
@@ -2316,8 +2382,7 @@ async def test_session_transfer_completed_without_initiated_is_a_no_op():
     await session.on_transfer_completed("+15551234567")
 
     assert session.fsm_state == CallFsmState.LISTENING
-    # Still published for observability even though the FSM no-oped.
-    assert len(bus.published_of(TransferCompleted)) == 1
+    assert len(bus.published_of(TransferCompleted)) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -2384,6 +2449,7 @@ async def _outcome_session(sid: str):
 @pytest.mark.asyncio
 async def test_close_records_transfer_success_outcome():
     session, bus, handler = await _outcome_session("s-ok")
+    session.on_transfer_initiated("cold", "1001", "x")
     await session.on_transfer_completed("1001", transfer_id="tid-1")
     spy = AsyncMock()
     handler.on_session_end = spy
@@ -2395,6 +2461,7 @@ async def test_close_records_transfer_success_outcome():
 @pytest.mark.asyncio
 async def test_close_records_transfer_timeout_on_generic_close():
     session, bus, handler = await _outcome_session("s-to")
+    session.on_transfer_initiated("cold", "1001", "x")
     async for _ in session.on_transfer_failed("1001", "transfer_timeout", "tid-2"):
         pass
     spy = AsyncMock()
@@ -2408,6 +2475,7 @@ async def test_close_records_transfer_timeout_on_generic_close():
 async def test_close_keeps_deliberate_reason_after_failed_transfer():
     """After a failed transfer, a normal later end keeps its real close reason; the attempt shows only in final_state."""
     session, bus, handler = await _outcome_session("s-cont")
+    session.on_transfer_initiated("cold", "1001", "x")
     async for _ in session.on_transfer_failed("1001", "hangup_before_bridge", "tid-3"):
         pass
     spy = AsyncMock()

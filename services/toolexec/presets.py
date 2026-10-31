@@ -794,6 +794,14 @@ async def _insert_missing_steps(
     for step in steps:
         if step.name in api_ids:
             continue
+        # Names are unique case-insensitively; the 409 must quote the clashing API's own spelling.
+        # The caller holds the tenant's advisory lock, so nothing can slip in between this and the insert.
+        clash = await conn.fetchval(
+            "SELECT name FROM custom_apis WHERE tenant_id = $1 AND lower(name) = lower($2) AND deleted_at IS NULL",
+            tenant_id, step.name,
+        )
+        if clash is not None:
+            raise PresetNameConflict(clash)
         auth_config = dict(step.auth_config)
         if step.auth_scheme in _SECRET_REF_FIELD:
             auth_config[_SECRET_REF_FIELD[step.auth_scheme]] = secret_ref
