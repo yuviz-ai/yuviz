@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+import logging
+import os
+from typing import Any
+
+import httpx
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 
 from .. import tenants as tenants_service
 from .. import users as users_service
@@ -9,6 +14,23 @@ from ..deps import get_current_user, get_or_404, require_role
 from ..schemas import TenantConcurrencyUpdate, TenantCreate, TenantTransferPolicyUpdate, TenantUpdate
 
 router = APIRouter(prefix="/tenants", tags=["tenants"])
+log = logging.getLogger(__name__)
+
+
+async def _revoke_grants_upstream(tenant_id: str, grants: list[dict[str, Any]], authorization: str) -> None:
+    """Best effort, after the response: the tokens are already cleared in the DB, so a failure
+    here only means the provider grant stays alive. The deleting superadmin's own token is forwarded."""
+    base = os.environ.get("TOOLEXEC_SERVICE_URL", "http://localhost:8600")
+    try:
+        async with httpx.AsyncClient(base_url=base.rstrip("/"), timeout=10.0) as client:
+            resp = await client.post(
+                "/internal/oauth/revoke-grants", json={"tenant_id": tenant_id, "grants": grants},
+                headers={"Authorization": authorization},
+            )
+        if resp.status_code >= 300:
+            log.warning("tenant_delete_revoke_rejected", extra={"tenant_id": tenant_id, "status": resp.status_code})
+    except httpx.HTTPError as exc:
+        log.warning("tenant_delete_revoke_unreachable", extra={"tenant_id": tenant_id, "error": type(exc).__name__})
 
 
 @router.get("")
@@ -94,8 +116,12 @@ async def update_tenant_transfer_policy(
 
 @router.delete("/{tenant_id}", status_code=204)
 async def delete_tenant(
-    tenant_id: str, force: bool = False, current_user: CurrentUser = Depends(require_role("superadmin")),
+    tenant_id: str, request: Request, background_tasks: BackgroundTasks, force: bool = False,
+    current_user: CurrentUser = Depends(require_role("superadmin")),
 ):
-    await tenants_service.soft_delete_tenant(
+    grants = await tenants_service.soft_delete_tenant(
         tenant_id, user_id=current_user.id, user_email=current_user.email, force=force,
     )
+    authorization = request.headers.get("authorization")
+    if grants and authorization:
+        background_tasks.add_task(_revoke_grants_upstream, tenant_id, grants, authorization)

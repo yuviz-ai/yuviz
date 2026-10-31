@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 import zoneinfo
 from typing import Annotated, Any, Literal
 
@@ -84,6 +85,23 @@ class OAuthCallbackRequest(BaseModel):
     state: str
     code: str
     accounts_server: str | None = None
+
+
+class RevokedGrant(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    connection_id: uuid.UUID
+    provider: str = Field(max_length=64)
+    provider_sub: str | None = Field(default=None, max_length=512)
+    accounts_server: str | None = Field(default=None, max_length=256)
+    old_ref: str = Field(max_length=8192)
+
+
+class RevokeGrantsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: uuid.UUID
+    grants: list[RevokedGrant] = Field(max_length=50)
 
 
 class ApiKeyConnectRequest(BaseModel):

@@ -1288,3 +1288,78 @@ def test_the_function_local_import_resolves_in_a_fresh_interpreter(tenants):
         env={**os.environ, "PYTHONPATH": os.getcwd()},
     )
     assert result.stdout.strip() == "ReconnectRequired", result.stderr
+
+
+# ── tenant delete: upstream revoke + audit (issue 163) ────────────────────
+
+async def _soft_delete(tenant, user) -> list:
+    from services.config import tenants as tenants_service
+    return await tenants_service.soft_delete_tenant(tenant, user_id=user, force=True)
+
+
+async def _revoke(tenant, grants) -> int:
+    background = BackgroundTasks()
+    queued = await oauth.revoke_deleted_tenant_grants(tenant_id=tenant, grants=grants, background_tasks=background)
+    await background()
+    return queued
+
+
+@pytest.mark.asyncio
+async def test_tenant_delete_revokes_the_upstream_grant_and_audits(pool, tenants, fake):
+    made, users = tenants
+    connection = await _connect(made["a"], users["a"], fake, refresh="rt-del", sub="del-account")
+    await _revoke(made["a"], await _soft_delete(made["a"], users["a"]))
+    row = await pool.fetchrow("SELECT * FROM oauth_connections WHERE id = $1", connection["id"])
+    assert row["status"] == "disconnected" and row["refresh_token_ref"] is None
+    (revoke,) = fake.calls_to("/revoke")
+    assert fake.form(revoke) == {"token": "rt-del"}
+    audit = await pool.fetchrow(
+        "SELECT * FROM audit_log WHERE entity_type = 'oauth_connection' AND entity_id = $1", connection["id"])
+    assert audit["action"] == "updated" and json.loads(audit["new_value"])["reason"] == "tenant_deleted"
+    assert "enc:t1" not in str(dict(audit))
+
+
+@pytest.mark.asyncio
+async def test_tenant_delete_does_not_revoke_a_grant_another_tenant_still_holds(tenants, fake):
+    made, users = tenants
+    await _connect(made["a"], users["a"], fake, refresh="rt-A", sub="shared")
+    await _connect(made["b"], users["b"], fake, refresh="rt-B", sub="shared")
+    await _revoke(made["a"], await _soft_delete(made["a"], users["a"]))
+    assert fake.calls_to("/revoke") == []
+
+
+@pytest.mark.asyncio
+async def test_revoke_drops_unknown_provider_off_allowlist_server_and_empty_ref(tenants, fake):
+    made, users = tenants
+    await _connect(made["a"], users["a"], fake, refresh="rt-x", sub="s-x")
+    grants = await _soft_delete(made["a"], users["a"])
+    grants += [
+        {**grants[0], "provider": "nope"},
+        {**grants[0], "accounts_server": "https://evil.test"},
+        {**grants[0], "old_ref": None},
+    ]
+    assert await _revoke(made["a"], grants) == 1
+    assert len(fake.calls_to("/revoke")) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_ref_sealed_for_another_tenant_is_never_revoked(tenants, fake):
+    made, users = tenants
+    a = await _connect(made["a"], users["a"], fake, refresh="rt-A", sub="sa")
+    grants = await _soft_delete(made["a"], users["a"])
+    assert [g["connection_id"] for g in grants] == [str(a["id"])]
+    # Presented under tenant B's id, tenant A's ciphertext must not open.
+    await _revoke(made["b"], grants)
+    assert fake.calls_to("/revoke") == []
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_tenant_twice_returns_no_grants_the_second_time(pool, tenants, fake):
+    made, users = tenants
+    connection = await _connect(made["a"], users["a"], fake, refresh="rt-2", sub="s2")
+    first = await _soft_delete(made["a"], users["a"])
+    second = await _soft_delete(made["a"], users["a"])
+    assert len(first) == 1 and second == []
+    assert await pool.fetchval(
+        "SELECT count(*) FROM audit_log WHERE entity_type = 'oauth_connection' AND entity_id = $1 "
+        "AND action = 'updated'", connection["id"]) == 1

@@ -516,3 +516,14 @@ async def test_a_tenant_deleted_during_the_token_exchange_stores_nothing(pool, w
     assert await pool.fetchval(
         "SELECT count(*) FROM audit_log WHERE entity_type = 'oauth_connection' AND user_id = $1",
         uuid.UUID(users["admin_a"]["id"])) == 0
+
+
+@pytest.mark.asyncio
+async def test_revoke_grants_route_is_superadmin_only(world):
+    tenants, users = world
+    body = {"tenant_id": tenants["a"], "grants": []}
+    async with _client() as c:
+        assert (await c.post("/internal/oauth/revoke-grants", json=body)).status_code == 401
+        for key in ("admin_a", "viewer_a", "supervisor_a"):
+            r = await c.post("/internal/oauth/revoke-grants", json=body, headers=users[key]["headers"])
+            assert r.status_code == 403, key
