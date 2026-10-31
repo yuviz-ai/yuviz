@@ -42,6 +42,7 @@ DEFAULT_MAX_LOCAL_TOOL_CALLS = 8
 # A tool still running after this long gets a spoken filler (ToolCallStartedEvent -> the pipeline's
 # filler path). Remote tools signal at dispatch instead, sized by their measured latency.
 SLOW_TOOL_FILLER_AFTER_S = 0.8
+_TOOL_CANCEL_CLEANUP_TIMEOUT_S = 0.05
 _HELD_WRITE_TTL_S = 600.0   # a held write can be confirmed for this long
 _MAX_HELD_WRITES = 16
 _MAX_TRACKED_CALLS = 256
@@ -241,7 +242,17 @@ class ToolCallOrchestrator:
                             yield ToolCallStartedEvent(tool_name=event.tool_name, filler_only=True)
                         result = await local_task
                     except BaseException:
-                        local_task.cancel()
+                        if cancel_event is not None and cancel_event.is_set():
+                            local_task.cancel()
+                            local_task.add_done_callback(_consume_background_task)
+                        else:
+                            result = _result_if_finished(local_task) or _unknown_tool_result()
+                            _fold_tool_result_into_history(
+                                history, event, result,
+                                read_only=local_entry[0].read_only,
+                                latency_ms=(time.monotonic() - call_t0) * 1000,
+                            )
+                            await _cancel_task_briefly(local_task)
                         raise
                     if (
                         local_entry[0].untrusted_output and result.status == ToolStatus.SUCCESS
@@ -265,6 +276,7 @@ class ToolCallOrchestrator:
                     )
                 else:
                     iteration += 1  # remote only — locals must not burn this budget
+                    read_only = definition.read_only if definition is not None else False
                     # Start before yielding: the yield suspends until the filler finishes speaking.
                     execute_task = asyncio.ensure_future(self._execute_tool_call(
                         event, policies_by_name, tenant_id, agent_id, call_id, session_id, turn_id,
@@ -274,7 +286,16 @@ class ToolCallOrchestrator:
                         yield ToolCallStartedEvent(tool_name=event.tool_name)
                         result = await execute_task
                     except BaseException:
-                        execute_task.cancel()
+                        if cancel_event is not None and cancel_event.is_set():
+                            execute_task.cancel()
+                            execute_task.add_done_callback(_log_background_tool_result)
+                        else:
+                            result = _result_if_finished(execute_task) or _unknown_tool_result()
+                            _fold_tool_result_into_history(
+                                history, event, result, read_only=read_only,
+                                latency_ms=(time.monotonic() - call_t0) * 1000, trace_id=trace_id,
+                            )
+                            await _cancel_task_briefly(execute_task)
                         raise
                     yield ToolCallFinishedEvent(tool_name=event.tool_name, status=result.status.value)
                 latency_ms = (time.monotonic() - call_t0) * 1000
@@ -415,6 +436,10 @@ class ToolCallOrchestrator:
                 event.tool_name,
             )
             return ToolResult(status=ToolStatus.FAILED, error="cancelled")
+        except asyncio.CancelledError:
+            if not cancel_event.is_set():
+                await _cancel_task_briefly(execute_task)
+            raise
         finally:
             cancel_task.cancel()
             if not execute_task.done():
@@ -427,6 +452,41 @@ def _log_background_tool_result(task: "asyncio.Task[ToolResult]") -> None:
     exc = task.exception()
     if exc is not None:
         log.warning("ToolCallOrchestrator: backgrounded tool call (post-cancel) failed: %r", exc)
+
+
+def _consume_background_task(task: "asyncio.Task[Any]") -> None:
+    """Retrieve exceptions from work that outlived its caller."""
+    if task.cancelled():
+        return
+    task.exception()
+
+
+def _result_if_finished(task: "asyncio.Task[Any]") -> ToolResult | None:
+    """Return a completed tool result without waiting for an unfinished task."""
+    if not task.done() or task.cancelled():
+        return None
+    try:
+        result = task.result()
+    except Exception:
+        return None
+    return result if isinstance(result, ToolResult) else None
+
+
+def _unknown_tool_result() -> ToolResult:
+    """Represent a cancelled side effect whose completion could not be confirmed."""
+    return ToolResult(status=ToolStatus.UNAVAILABLE, error="outcome_unknown")
+
+
+async def _cancel_task_briefly(task: "asyncio.Task[Any]") -> bool:
+    """Request cancellation and wait only for the configured cleanup interval."""
+    if not task.done():
+        task.cancel()
+    done, _ = await asyncio.wait({task}, timeout=_TOOL_CANCEL_CLEANUP_TIMEOUT_S)
+    if not done:
+        task.add_done_callback(_consume_background_task)
+    else:
+        _consume_background_task(task)
+    return bool(done)
 
 
 _TOOL_NAMESPACE_PREFIX = "functions."
@@ -489,8 +549,7 @@ async def _execute_local_tool(
     cancel_event: asyncio.Event | None,
     timeout_ms: int | None = None,
 ) -> ToolResult:
-    """Race cancel, but never leave the handler running — workflow transitions
-    mutate call state; a background completion would desync history vs node."""
+    """Race caller cancellation with the handler and bound teardown of its task."""
     if cancel_event is None:
         return await _invoke_local_handler(tool_name, handler, arguments, timeout_ms)
 
@@ -504,9 +563,9 @@ async def _execute_local_tool(
         try:
             await execute_task
         except asyncio.CancelledError:
-            # Only absorb the cancel we sent to execute_task, not teardown of this coroutine.
-            me = asyncio.current_task()
-            if me is not None and me.cancelling():
+            # Only absorb the cancel sent to the handler, not teardown of this coroutine.
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
                 raise
             if not execute_task.cancelled():
                 raise
@@ -518,6 +577,9 @@ async def _execute_local_tool(
             return ToolResult(status=ToolStatus.FAILED, error="cancelled")
         # Handler finished before cancel took effect — keep its result.
         return execute_task.result()
+    except asyncio.CancelledError:
+        await _cancel_task_briefly(execute_task)
+        raise
     finally:
         cancel_task.cancel()
 

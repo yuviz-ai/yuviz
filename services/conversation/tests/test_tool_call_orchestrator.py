@@ -881,3 +881,93 @@ async def test_trailing_message_ends_every_llm_call_and_never_enters_history():
     assert after_tool[0].content == folded and after_tool[-1].role == "tool"
     assert all(m.content != directive.content for m in after_tool)
     assert directive not in history and history[0].content == "book it" and len(history) == 3
+
+
+async def test_external_stream_cancellation_bounds_remote_cleanup_and_folds_unknown_outcome():
+    """Stream closure bounds cancellation and records an unresolved remote write."""
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    release = asyncio.Event()
+
+    class _BlockingExecutor:
+        async def execute(self, _request) -> ToolResult:
+            started.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                await release.wait()
+            return ToolResult(status=ToolStatus.SUCCESS, payload={"booked": True})
+
+    llm = _ScriptedLLM([[
+        ToolCallEvent(tool_call_id="c1", tool_name="execute_api", arguments={"api_name": "x"}),
+    ]])
+    registry = ExecutorRegistry()
+    registry.register("execute_api", lambda _provider: _BlockingExecutor())
+    orchestrator = ToolCallOrchestrator(
+        llm_adapter=LLMAdapter(llm), policy_resolver=_FakePolicyResolver([_policy()]),
+        provider_manager=_FakeProviderManager(), executor_registry=registry,
+    )
+    history = [ChatMessage(role="user", content="book it")]
+    stream = orchestrator.run_turn("agent1", "t1", "c1", "s1", history)
+
+    assert await anext(stream) == ToolCallStartedEvent(tool_name="execute_api")
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+    started_at = asyncio.get_running_loop().time()
+    await stream.aclose()
+
+    assert asyncio.get_running_loop().time() - started_at < 0.2
+    assert cancelled.is_set()
+    folded = json.loads(history[-1].content)
+    assert folded["error"]["code"] == "outcome_unknown"
+    assert folded["error"]["retryable"] is False
+    release.set()
+    await asyncio.sleep(0.01)
+
+
+async def test_external_stream_cancellation_bounds_local_cleanup_and_folds_unknown_outcome(monkeypatch):
+    """Stream closure bounds cancellation and records an unresolved local transition."""
+    monkeypatch.setattr("services.conversation.tools.orchestrator.SLOW_TOOL_FILLER_AFTER_S", 0.01)
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(_arguments: dict) -> ToolResult:
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            await release.wait()
+        return ToolResult(status=ToolStatus.SUCCESS, payload={"transitioned": True})
+
+    definition = ToolDefinition(
+        name="local_transition", description="move the workflow", parameters_schema={
+            "type": "object", "properties": {},
+        },
+    )
+    llm = _ScriptedLLM([[
+        ToolCallEvent(tool_call_id="c1", tool_name="local_transition", arguments={}),
+    ]])
+    orchestrator = ToolCallOrchestrator(
+        llm_adapter=LLMAdapter(llm), policy_resolver=_FakePolicyResolver([]),
+        provider_manager=_FakeProviderManager(), executor_registry=ExecutorRegistry(),
+    )
+    history = [ChatMessage(role="user", content="continue")]
+    stream = orchestrator.run_turn(
+        "agent1", "t1", "c1", "s1", history,
+        local_tools={"local_transition": (definition, handler)},
+    )
+
+    assert await anext(stream) == ToolCallStartedEvent(tool_name="local_transition", filler_only=True)
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+    started_at = asyncio.get_running_loop().time()
+    await stream.aclose()
+
+    assert asyncio.get_running_loop().time() - started_at < 0.2
+    assert cancelled.is_set()
+    folded = json.loads(history[-1].content)
+    assert folded["error"]["code"] == "outcome_unknown"
+    assert folded["error"]["retryable"] is False
+    release.set()
+    await asyncio.sleep(0.01)

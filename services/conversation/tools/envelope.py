@@ -32,6 +32,10 @@ _ERRORS: dict[str, tuple[str, str]] = {
     "local_tool_call_cap_exceeded": ("error", f"I've reached my limit of lookups for this question. {_TRANSFER}"),
     "unknown_tool": ("error", f"I can't do that. {_TRANSFER}"),
     "cancelled": ("error", "The caller interrupted; do not mention this call."),
+    "outcome_unknown": (
+        "unavailable",
+        "The request may have completed. Do not repeat it or say it failed; ask the caller to confirm its status.",
+    ),
     "partial_failure": ("partial", "Only part of that went through. Do not say it is done; tell the caller and offer to connect them with someone."),
     "needs_caller_confirmation": ("error", "Reference documents were read this turn, so nothing can be changed yet. Do not call that again now: ask the caller to confirm out loud exactly what they want done, and make the call after their reply."),
     "knowledge_incomplete": ("unavailable", f"I couldn't fully check the documents and found nothing in the part I could check. Say that you couldn't fully check, do not say the business has no such information. {_TRANSFER}"),
@@ -40,7 +44,7 @@ _ERRORS: dict[str, tuple[str, str]] = {
 # A transient failure is retryable for a read tool, but never when the guard itself refused the call.
 _NOT_RETRYABLE = frozenset({
     "repeated_call", "tool_call_cap_exceeded", "local_tool_call_cap_exceeded", "invalid_arguments_unrecoverable",
-    "unknown_tool", "cancelled", "invalid_tool_output",
+    "unknown_tool", "cancelled", "outcome_unknown", "invalid_tool_output",
     "needs_caller_confirmation",  # not this turn: the confirmation path is the caller's next utterance
 })
 _REPAIRABLE = frozenset({"invalid_arguments", "invalid_argument"})
