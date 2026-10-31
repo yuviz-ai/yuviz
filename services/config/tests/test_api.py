@@ -113,6 +113,52 @@ class TestTenantEndpoints:
 
         await pool.execute("DELETE FROM tenants WHERE id = $1", tenant["id"])
 
+    async def test_delete_tenant_hands_cleared_grants_to_toolexec_revoke(self, client, test_tenant, pool, monkeypatch):
+        from services.config.routers import tenants as tenants_router
+        calls = []
+
+        async def _record(tenant_id, grants, authorization):
+            calls.append((tenant_id, grants, authorization))
+
+        monkeypatch.setattr(tenants_router, "_revoke_grants_upstream", _record)
+        await pool.execute(
+            "INSERT INTO oauth_connections (tenant_id, provider, status, access_token_ref, access_expires_at, "
+            "refresh_token_ref, provider_sub, auth_kind) VALUES ($1, 'google', 'connected', 'enc:t1.a', "
+            "now() + interval '1 hour', 'enc:t1.r', 's1', 'oauth2')",
+            test_tenant["id"],
+        )
+        try:
+            resp = await client.delete(f"/tenants/{test_tenant['id']}")
+            assert resp.status_code == 204
+            ((tenant_id, grants, authorization),) = calls
+            assert tenant_id == str(test_tenant["id"]) and authorization.startswith("Bearer ")
+            assert [(g["provider"], g["old_ref"], g["provider_sub"]) for g in grants] == [("google", "enc:t1.r", "s1")]
+        finally:
+            await pool.execute("DELETE FROM oauth_connections WHERE tenant_id = $1", test_tenant["id"])
+
+    async def test_refused_delete_revokes_nothing_and_keeps_the_tokens(self, client, test_tenant, pool, monkeypatch):
+        from services.config.routers import tenants as tenants_router
+        calls = []
+
+        async def _record(*args):
+            calls.append(args)
+
+        monkeypatch.setattr(tenants_router, "_revoke_grants_upstream", _record)
+        await client.post(f"/tenants/{test_tenant['slug']}/agents", json={"slug": "support-agent", "name": "Support"})
+        await pool.execute(
+            "INSERT INTO oauth_connections (tenant_id, provider, status, access_token_ref, access_expires_at, "
+            "refresh_token_ref, auth_kind) VALUES ($1, 'google', 'connected', 'enc:t1.a', "
+            "now() + interval '1 hour', 'enc:t1.r', 'oauth2')", test_tenant["id"],
+        )
+        try:
+            assert (await client.delete(f"/tenants/{test_tenant['id']}")).status_code == 409
+            assert calls == []
+            row = await pool.fetchrow("SELECT status, refresh_token_ref FROM oauth_connections WHERE tenant_id = $1",
+                                      test_tenant["id"])
+            assert (row["status"], row["refresh_token_ref"]) == ("connected", "enc:t1.r")
+        finally:
+            await pool.execute("DELETE FROM oauth_connections WHERE tenant_id = $1", test_tenant["id"])
+
     async def test_delete_tenant_with_active_agent_is_409(self, client, test_tenant):
         agent = await client.post(
             f"/tenants/{test_tenant['slug']}/agents", json={"slug": "support-agent", "name": "Support"},

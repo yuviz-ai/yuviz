@@ -83,8 +83,6 @@ async def test_bounded_step_lets_cancellation_through():
     task.cancel()
     await asyncio.wait({task}, timeout=0.5)
     assert task.cancelled()
-
-
 class _VirtualClock:
     """Sleep advances time instantly; the test stops the loop by cancelling it from inside sleep."""
 
@@ -239,4 +237,3 @@ async def test_cancel_during_a_failing_iteration_is_prompt():
     task.cancel()
     await asyncio.wait({task}, timeout=0.5)
     assert task.cancelled()
-

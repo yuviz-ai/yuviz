@@ -233,7 +233,8 @@ class TenantHasActiveResources(Exception):
 
 async def soft_delete_tenant(
     tenant_id: Any, *, user_id: Any | None = None, user_email: str | None = None, force: bool = False,
-) -> None:
+) -> list[dict[str, Any]]:
+    """Returns the sealed refs it cleared, for the caller to hand to toolexec's upstream revoke."""
     pool = await db.get_pool()
     async with platform_conn(pool, reason="tenants-out-of-rls-scope") as conn:
         old_row = await conn.fetchrow(
@@ -267,14 +268,27 @@ async def soft_delete_tenant(
             user_email=user_email,
             old_value=old,
         )
-        # A deleted tenant keeps no usable CRM/calendar credential. The upstream
-        # grant is not revoked here: that is a provider call, owned by toolexec.
-        await conn.execute(
-            "UPDATE oauth_connections SET status = 'disconnected', access_token_ref = NULL, "
+        # A deleted tenant keeps no usable CRM/calendar credential. The upstream revoke is a provider
+        # call owned by toolexec, so the sealed refs are returned for the caller to hand over.
+        cleared = await conn.fetch(
+            "UPDATE oauth_connections c SET status = 'disconnected', access_token_ref = NULL, "
             "       refresh_token_ref = NULL, access_expires_at = NULL, updated_at = now() "
-            " WHERE tenant_id = $1 AND deleted_at IS NULL AND status <> 'disconnected'",
+            "  FROM (SELECT id, refresh_token_ref AS old_ref FROM oauth_connections "
+            "         WHERE tenant_id = $1 AND deleted_at IS NULL AND status <> 'disconnected' FOR UPDATE) o "
+            " WHERE c.id = o.id AND c.tenant_id = $1 "
+            "RETURNING c.id, c.provider, c.provider_sub, c.accounts_server, o.old_ref",
             tenant_id,
         )
+        for row in cleared:
+            await audit.write_audit(
+                conn,
+                entity_type="oauth_connection",
+                entity_id=row["id"],
+                action="updated",
+                user_id=user_id,
+                user_email=user_email,
+                new_value={"status": "disconnected", "reason": "tenant_deleted"},
+            )
         # A deleted tenant's numbers must stop routing; did:{did} has no TTL,
         # so nothing else would ever remove them.
         retired = await conn.fetch(
@@ -296,3 +310,8 @@ async def soft_delete_tenant(
     await cache.invalidate(_cache_key(old["slug"]))
     for row in retired:
         await cache.invalidate(phone_numbers._cache_key(row["did"]))
+    return [
+        {"connection_id": str(r["id"]), "provider": r["provider"], "provider_sub": r["provider_sub"],
+         "accounts_server": r["accounts_server"], "old_ref": r["old_ref"]}
+        for r in cleared if r["old_ref"] is not None
+    ]

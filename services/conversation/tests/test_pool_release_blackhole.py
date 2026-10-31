@@ -115,8 +115,6 @@ async def test_cancelled_user_releases_slot_within_bound(blackhole_server, answe
         conn.terminate()
     finally:
         pool.terminate()
-
-
 async def test_without_acquire_timeout_rollback_hangs_after_begin(blackhole_server):
     task, pool = await _cancel_mid_flight(await blackhole_server(1), None)
     try:
@@ -147,4 +145,3 @@ async def test_exhausted_pool_still_raises_timeout_not_cancellation(blackhole_se
     finally:
         held.terminate()
         pool.terminate()
-

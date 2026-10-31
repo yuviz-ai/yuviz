@@ -75,6 +75,13 @@ from .workflow import (
 )
 
 log = logging.getLogger(__name__)
+_DEFAULT_LLM_TIMEOUT_MS = 20_000
+_LLM_RESPONSE_RESERVE_RATIO = 0.1
+_STREAM_CLEANUP_TIMEOUT_S = 0.1
+
+
+class LlmResponseTimeout(TimeoutError):
+    """The first-output deadline expired before a response reached the caller."""
 
 
 @dataclass
@@ -422,6 +429,53 @@ def _filler_delay_s() -> float:
     return env_ms("VOICEAI_FILLER_DELAY_MS", _FILLER_DELAY_MS_DEFAULT) / 1000
 
 
+def _consume_async_task(task: asyncio.Task[Any]) -> None:
+    """Retrieve a detached cleanup task's exception without re-raising it."""
+    if not task.cancelled():
+        try:
+            task.exception()
+        except BaseException:
+            log.debug("Detached async stream cleanup failed", exc_info=True)
+
+
+def _defer_stream_close(stream: Any, pending_read: asyncio.Task[Any]) -> None:
+    """Close a stream after its cancellation-resistant read settles, with a bounded wait."""
+    def close_after_read(task: asyncio.Task[Any]) -> None:
+        _consume_async_task(task)
+
+        async def close_bounded() -> None:
+            close_task = asyncio.create_task(stream.aclose())
+            done, _ = await asyncio.wait({close_task}, timeout=_STREAM_CLEANUP_TIMEOUT_S)
+            if not done:
+                close_task.cancel()
+                close_task.add_done_callback(_consume_async_task)
+            else:
+                _consume_async_task(close_task)
+
+        close_task = asyncio.create_task(close_bounded())
+        close_task.add_done_callback(_consume_async_task)
+
+    pending_read.add_done_callback(close_after_read)
+
+
+async def _close_stream_bounded(stream: Any) -> None:
+    """Close a response stream without delaying timeout fallback delivery."""
+    close_task = asyncio.create_task(stream.aclose())
+    done, _ = await asyncio.wait({close_task}, timeout=_STREAM_CLEANUP_TIMEOUT_S)
+    if not done:
+        close_task.cancel()
+        close_task.add_done_callback(_consume_async_task)
+    else:
+        _consume_async_task(close_task)
+
+
+async def _settle_pending_read(pending_read: asyncio.Task[Any]) -> None:
+    """Give a cancelled stream read a bounded chance to fold tool state into history."""
+    if not pending_read.done():
+        pending_read.cancel()
+    await asyncio.wait({pending_read}, timeout=_STREAM_CLEANUP_TIMEOUT_S)
+
+
 class _FillerText(str):
     """The (empty) text paired with filler audio: '' in transcripts and history, but
     recognisable, so a filler never counts as the agent having replied."""
@@ -472,12 +526,10 @@ async def _with_filler_timer(source: AsyncGenerator, delay_s: float, *, arm_firs
                 await pending
             except BaseException:
                 pass
-        aclose = getattr(it, "aclose", None)
-        if aclose is not None:
-            try:
-                await aclose()
-            except Exception:
-                pass
+        # Closing the nested tool orchestrator can itself wait for a
+        # cancellation-resistant executor. Keep that cleanup bounded so a
+        # timed-out filler cannot consume the fallback's response budget.
+        await _close_stream_bounded(it)
 # Items the model/voice producer may run ahead of the consumer: enough to keep it busy, small enough that a
 # caller's interruption does not leave seconds of unsent audio synthesized.
 _TURN_QUEUE_MAX = 16
@@ -605,6 +657,12 @@ class PipelineConversationHandler:
         self._stt          = provider_bundle.stt
         self._llm          = provider_bundle.llm
         self._tts          = provider_bundle.tts
+        llm_timeout_ms = runtime_config.policies.llm_timeout_ms
+        if llm_timeout_ms is None:
+            llm_timeout_ms = _DEFAULT_LLM_TIMEOUT_MS
+        self._llm_response_timeout_s = max(
+            0.0, llm_timeout_ms * (1.0 - _LLM_RESPONSE_RESERVE_RATIO) / 1000.0,
+        )
         self._tts_by_language: dict[str, Any] = dict(getattr(provider_bundle, "tts_by_language", None) or {})
         # The bundle owns the override-or-base rule; bundles predating it have no overrides.
         self._tts_for = getattr(provider_bundle, "tts_for", None) or (lambda _language: self._tts)
@@ -1154,9 +1212,10 @@ class PipelineConversationHandler:
 
         # Knowledge retrieval is the `search_knowledge` local tool, called only when needed. A turn that looks like
         # a knowledge question searches up front instead (prefetch.py), so the model answers in one pass. The
-        # passages are a note folded into the caller's turn on every LLM call (turn_context): never stored in
-        # history, and the history list stays the one the turn's tool messages are appended to.
-        messages_for_llm = history
+        # passages ride on every LLM call and are never stored in history.
+        producer_history = list(history)
+        producer_history_start = len(producer_history)
+        messages_for_llm = producer_history
         turn_context: ChatMessage | None = None
         if pre_retrieval is not None:
             block = await self._pre_retrieval_block(pre_retrieval, session_id)
@@ -1164,8 +1223,11 @@ class PipelineConversationHandler:
                 turn_context = ChatMessage(role="user", content=block)
 
         directives: list[Directive] = []
-        full_response = progress.reply_tokens
+        producer_directives: list[Directive] = []
+        full_response: list[str] = progress.reply_tokens
         tool_calls_made = progress.tool_calls
+        producer_tool_calls: list[str] = []
+        output_started = asyncio.Event()
         any_audio = False
         llm_t0 = time.monotonic()
         first_token_at: float | None = None
@@ -1176,20 +1238,65 @@ class PipelineConversationHandler:
         items: asyncio.Queue = asyncio.Queue(maxsize=_TURN_QUEUE_MAX)
 
         async def _produce() -> None:
+            """Stream model and voice output until completion or the first-output deadline."""
+            stream = self._llm_to_tts(
+                messages_for_llm, cancel_event, session_id, producer_directives, producer_tool_calls,
+                store=history, caller_text=stt_result.text, first_turn_filler=first_turn_filler,
+                turn_context=turn_context, transcript_tool_calls=progress.transcript_tool_calls,
+            )
+            iterator = stream.__aiter__()
+            pending_read: asyncio.Task[Any] | None = None
+            defer_close = False
+            completed = False
+            deadline = asyncio.get_running_loop().time() + self._llm_response_timeout_s
             try:
-                async for item in self._llm_to_tts(
-                    messages_for_llm, cancel_event, session_id, directives, tool_calls_made,
-                    store=history, caller_text=stt_result.text, first_turn_filler=first_turn_filler,
-                    turn_context=turn_context, transcript_tool_calls=progress.transcript_tool_calls,
-                ):
+                while True:
+                    pending_read = asyncio.create_task(iterator.__anext__())
+                    if output_started.is_set():
+                        try:
+                            item = await asyncio.shield(pending_read)
+                        except asyncio.CancelledError:
+                            await _settle_pending_read(pending_read)
+                            _defer_stream_close(stream, pending_read)
+                            defer_close = True
+                            raise
+                    else:
+                        remaining = deadline - asyncio.get_running_loop().time()
+                        if remaining <= 0:
+                            await _settle_pending_read(pending_read)
+                            _defer_stream_close(stream, pending_read)
+                            defer_close = True
+                            raise LlmResponseTimeout("LLM response deadline expired")
+                        done, _ = await asyncio.wait({pending_read}, timeout=remaining)
+                        if not done:
+                            await _settle_pending_read(pending_read)
+                            _defer_stream_close(stream, pending_read)
+                            defer_close = True
+                            raise LlmResponseTimeout("LLM response deadline expired")
+                        item = pending_read.result()
+                    if item[1]:
+                        output_started.set()
                     await items.put(item)
+            except StopAsyncIteration:
+                completed = True
                 await items.put(_STREAM_END)
+            except LlmResponseTimeout as exc:
+                await items.put(exc)
             except asyncio.CancelledError:
+                if pending_read is not None and not pending_read.done() and not defer_close:
+                    pending_read.cancel()
+                    _defer_stream_close(stream, pending_read)
+                    defer_close = True
                 raise
             except Exception as exc:
                 await items.put(exc)
+            finally:
+                if not completed and not defer_close:
+                    await _close_stream_bounded(stream)
 
         producer = asyncio.create_task(_produce())
+        stream_completed = False
+        stream_timed_out = False
         cancel_wait = asyncio.ensure_future(cancel_event.wait())
         try:
             while True:
@@ -1209,9 +1316,13 @@ class PipelineConversationHandler:
                     # Already queued: take it without a suspension, as before the race existed.
                     item = items.get_nowait()
                 if item is _STREAM_END:
+                    stream_completed = True
                     break
                 if isinstance(item, Exception):
-                    log.error("LLM/TTS pipeline failed session=%s", session_id, exc_info=item)
+                    if isinstance(item, LlmResponseTimeout):
+                        stream_timed_out = True
+                    else:
+                        log.error("LLM/TTS pipeline failed session=%s", session_id, exc_info=item)
                     break
                 chunk, tts_audio, _marker_seen, spoken_piece = item
                 now = time.monotonic()
@@ -1221,6 +1332,7 @@ class PipelineConversationHandler:
                 if tts_audio:
                     if first_audio_at is None:
                         first_audio_at = now   # a filler is the first thing the caller hears, so it counts here
+                        output_started.set()
                     is_filler = isinstance(chunk, _FillerText)
                     if not is_filler:
                         any_audio = True
@@ -1237,10 +1349,27 @@ class PipelineConversationHandler:
                     break
         finally:
             cancel_wait.cancel()
-            # Stop the model/voice task without awaiting it: awaiting here could swallow a cancellation aimed
-            # at this turn itself. The callback reads its outcome so nothing is logged as never retrieved.
-            producer.cancel()
+            if not producer.done():
+                producer.cancel()
             producer.add_done_callback(lambda task: task.cancelled() or task.exception())
+            await asyncio.wait({producer}, timeout=_STREAM_CLEANUP_TIMEOUT_S)
+        history.extend(producer_history[producer_history_start:])
+        if stream_completed:
+            directives.extend(producer_directives)
+            tool_calls_made.extend(producer_tool_calls)
+        elif stream_timed_out:
+            full_response.clear()
+            directives.clear()
+            tool_calls_made.clear()
+            fallback_text = t("fallback_llm_error", self._spoken_language(session_id))
+            full_response.append(fallback_text)
+            first = True
+            async for chunk in self._synthesize_sentence_stream(fallback_text, session_id):
+                if first_audio_at is None:
+                    first_audio_at = time.monotonic()
+                    any_audio = True
+                yield _sent_response(progress, chunk, fallback_text, first=first)
+                first = False
         # Read after the stream: the guard may have removed a marker yielded mid-stream.
         end_call = any(isinstance(d, EndCallDirective) for d in directives)
 
@@ -1896,101 +2025,103 @@ class PipelineConversationHandler:
         spoke = False  # any reply speech this turn; a filler does not count
         first_piece_sent = False  # the reply's first sentence or clause has gone to TTS
         try:
-            async for item in _with_filler_timer(
+            timed = _with_filler_timer(
                 self._token_stream(
                     history, session_id, cancel_event, tool_calls_made, store, carry_taint, turn_context,
                     transcript_tool_calls,
                 ),
                 _filler_delay_s(), arm_first=first_turn_filler,
-            ):
-                if cancel_event.is_set():
-                    self._workflow.pending_speech = None
-                    break
-                if isinstance(item, LocalToolCompletedEvent):
-                    speech = self._workflow.pending_speech
-                    if speech:
+            )
+            async with aclosing(timed):
+                async for item in timed:
+                    if cancel_event.is_set():
                         self._workflow.pending_speech = None
-                        spoke = True
-                        transition_text += f"{speech} "
-                        # Yield text once so full_response/history/transcript record it.
-                        first = True
-                        async for chunk in self._synthesize_sentence_stream(speech, session_id):
-                            yield speech if first else "", chunk, end_call, speech if first else ""
-                            first = False
-                    continue
-                if isinstance(item, ToolCallStartedEvent):
-                    continue  # the filler, if any, comes as a _FillerDue when the wait runs long
-                if isinstance(item, _FillerDue):
-                    if item.tool_name == _FIRST_TURN:
-                        # Counts toward the gap, so a tool call right after doesn't add a second filler.
-                        self._session(session_id).tool_call_filler_last_spoken = time.monotonic()
-                        phrase = self._first_turn_filler(session_id)
-                        async for chunk in self._synthesize_sentence_stream(phrase, session_id, cache=True):
-                            yield _FILLER, chunk, end_call, ""
-                        log.info("First-turn filler spoken phrase=%r session=%s", phrase, session_id)
-                        continue
-                    now = time.monotonic()
-                    state = self._session(session_id)
-                    last_spoken = state.tool_call_filler_last_spoken
-                    if last_spoken is None or (now - last_spoken) >= _TOOL_CALL_FILLER_MIN_GAP_S:
-                        state.tool_call_filler_last_spoken = now
-                        average_ms = (
-                            self._latency_store.average_ms(self._tenant_id, self._agent_id or "", item.tool_name)
-                            if self._latency_store is not None else None
-                        )
-                        phrase = self._filler_selector.select_tool_filler(
-                            item.tool_name, state.tool_call_filler_last_phrase, average_ms,
-                            **({"language": self._spoken_language(session_id)}
-                               if self._spoken_language(session_id) != "en" else {}),
-                        )
-                        state.tool_call_filler_last_phrase = phrase
-                        any_filler_chunk = False
-                        async for chunk in self._synthesize_sentence_stream(phrase, session_id, cache=True):
-                            if not any_filler_chunk:
-                                any_filler_chunk = True
-                                log.info(
-                                    "Tool-call filler spoken tool=%s phrase=%r session=%s",
-                                    item.tool_name, phrase, session_id,
-                                )
-                            yield _FILLER, chunk, end_call, ""
-                    continue
-                token = item
-                result = DirectiveParser.parse(stream_buf.feed(token), strip_markdown=False)
-                directives.extend(result.directives)
-                text_buffer += result.clean_text
-                reply_text += result.clean_text
-                spoke = spoke or bool(strip_markdown_chars(result.clean_text).strip())
-                end_call = any(isinstance(d, EndCallDirective) for d in directives)
-                if result.directives:
-                    for d in result.directives:
-                        if isinstance(d, EndCallDirective):
-                            log.info("End-call marker detected session=%s", session_id)
-                yield token, b"", end_call, ""
-
-                # Split on sentence boundaries and synthesise each complete sentence.
-                while True:
-                    parts = _SENTENCE_RE.split(text_buffer, maxsplit=1)
-                    if len(parts) < 2:
                         break
-                    sentence, text_buffer = parts[0].strip(), parts[1]
-                    if sentence:
-                        first_piece_sent = True
-                        piece = sentence
-                        async for chunk in self._synthesize_sentence_stream(sentence, session_id, in_reply=True):
-                            yield "", chunk, end_call, piece
-                            piece = ""
-                # Nothing spoken yet and the first sentence is still open: start on its first clause.
-                if not first_piece_sent:
-                    for match in _CLAUSE_RE.finditer(text_buffer):
-                        clause = text_buffer[:match.start()].strip()
-                        if len(clause) >= _FIRST_CLAUSE_MIN_CHARS:
-                            text_buffer = text_buffer[match.end():]
+                    if isinstance(item, LocalToolCompletedEvent):
+                        speech = self._workflow.pending_speech
+                        if speech:
+                            self._workflow.pending_speech = None
+                            spoke = True
+                            transition_text += f"{speech} "
+                            # Yield text once so full_response/history/transcript record it.
+                            first = True
+                            async for chunk in self._synthesize_sentence_stream(speech, session_id):
+                                yield speech if first else "", chunk, end_call, speech if first else ""
+                                first = False
+                        continue
+                    if isinstance(item, ToolCallStartedEvent):
+                        continue  # the filler, if any, comes as a _FillerDue when the wait runs long
+                    if isinstance(item, _FillerDue):
+                        if item.tool_name == _FIRST_TURN:
+                            # Counts toward the gap, so a tool call right after doesn't add a second filler.
+                            self._session(session_id).tool_call_filler_last_spoken = time.monotonic()
+                            phrase = self._first_turn_filler(session_id)
+                            async for chunk in self._synthesize_sentence_stream(phrase, session_id, cache=True):
+                                yield _FILLER, chunk, end_call, ""
+                            log.info("First-turn filler spoken phrase=%r session=%s", phrase, session_id)
+                            continue
+                        now = time.monotonic()
+                        state = self._session(session_id)
+                        last_spoken = state.tool_call_filler_last_spoken
+                        if last_spoken is None or (now - last_spoken) >= _TOOL_CALL_FILLER_MIN_GAP_S:
+                            state.tool_call_filler_last_spoken = now
+                            average_ms = (
+                                self._latency_store.average_ms(self._tenant_id, self._agent_id or "", item.tool_name)
+                                if self._latency_store is not None else None
+                            )
+                            phrase = self._filler_selector.select_tool_filler(
+                                item.tool_name, state.tool_call_filler_last_phrase, average_ms,
+                                **({"language": self._spoken_language(session_id)}
+                                   if self._spoken_language(session_id) != "en" else {}),
+                            )
+                            state.tool_call_filler_last_phrase = phrase
+                            any_filler_chunk = False
+                            async for chunk in self._synthesize_sentence_stream(phrase, session_id, cache=True):
+                                if not any_filler_chunk:
+                                    any_filler_chunk = True
+                                    log.info(
+                                        "Tool-call filler spoken tool=%s phrase=%r session=%s",
+                                        item.tool_name, phrase, session_id,
+                                    )
+                                yield _FILLER, chunk, end_call, ""
+                        continue
+                    token = item
+                    result = DirectiveParser.parse(stream_buf.feed(token), strip_markdown=False)
+                    directives.extend(result.directives)
+                    text_buffer += result.clean_text
+                    reply_text += result.clean_text
+                    spoke = spoke or bool(strip_markdown_chars(result.clean_text).strip())
+                    end_call = any(isinstance(d, EndCallDirective) for d in directives)
+                    if result.directives:
+                        for d in result.directives:
+                            if isinstance(d, EndCallDirective):
+                                log.info("End-call marker detected session=%s", session_id)
+                    yield token, b"", end_call, ""
+
+                    # Split on sentence boundaries and synthesise each complete sentence.
+                    while True:
+                        parts = _SENTENCE_RE.split(text_buffer, maxsplit=1)
+                        if len(parts) < 2:
+                            break
+                        sentence, text_buffer = parts[0].strip(), parts[1]
+                        if sentence:
                             first_piece_sent = True
-                            piece = clause
-                            async for chunk in self._synthesize_sentence_stream(clause, session_id, in_reply=True):
+                            piece = sentence
+                            async for chunk in self._synthesize_sentence_stream(sentence, session_id, in_reply=True):
                                 yield "", chunk, end_call, piece
                                 piece = ""
-                            break
+                    # Nothing spoken yet and the first sentence is still open: start on its first clause.
+                    if not first_piece_sent:
+                        for match in _CLAUSE_RE.finditer(text_buffer):
+                            clause = text_buffer[:match.start()].strip()
+                            if len(clause) >= _FIRST_CLAUSE_MIN_CHARS:
+                                text_buffer = text_buffer[match.end():]
+                                first_piece_sent = True
+                                piece = clause
+                                async for chunk in self._synthesize_sentence_stream(clause, session_id, in_reply=True):
+                                    yield "", chunk, end_call, piece
+                                    piece = ""
+                                break
         except Exception:
             log.exception("LLM streaming failed session=%s", session_id)
             if not cancel_event.is_set():
