@@ -213,6 +213,35 @@ async def test_a_hand_registered_row_with_the_preset_name_is_a_conflict_and_is_n
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("theirs", ["Zoho_Lookup_Contact", "ZOHO_LOOKUP_CONTACT"])
+async def test_the_conflict_names_the_clashing_apis_own_spelling(pool, tenant_agent, crm_cleanup, theirs):
+    tenant, _agent = tenant_agent
+    await seed_connection(pool, tenant, "zoho")
+    await custom_apis.create_custom_api(
+        tenant_id=str(tenant["id"]), name=theirs, description="mine",
+        endpoint_url="https://example.com/x", method="GET",
+    )
+    with pytest.raises(presets.PresetNameConflict) as exc:
+        await apply_crm(tenant, "zoho")
+    assert f"'{theirs}'" in str(exc.value)
+    assert "'zoho_lookup_contact'" not in str(exc.value)
+    assert await pool.fetchval("SELECT count(*) FROM custom_apis WHERE tenant_id = $1", tenant["id"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_api_with_a_differently_cased_name_is_not_a_conflict(pool, tenant_agent, crm_cleanup):
+    tenant, _agent = tenant_agent
+    await seed_connection(pool, tenant, "zoho")
+    gone = await custom_apis.create_custom_api(
+        tenant_id=str(tenant["id"]), name="Zoho_Lookup_Contact", description="old",
+        endpoint_url="https://example.com/x", method="GET",
+    )
+    await pool.execute("UPDATE custom_apis SET deleted_at = now() WHERE id = $1", gone["id"])
+    row = await apply_crm(tenant, "zoho")
+    assert row["name"] == "zoho_lookup_contact"
+
+
+@pytest.mark.asyncio
 async def test_apply_without_the_scopes_or_origin_creates_nothing(pool, tenant_agent, crm_cleanup):
     tenant, _agent = tenant_agent
     await seed_connection(pool, tenant, "zoho", scopes=["openid"])

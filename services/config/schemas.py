@@ -9,24 +9,31 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from libs.config_sdk.calling_codes import CALLING_CODES
+from libs.config_sdk.callflow import DTMF_KEYS, MAX_NODES as MAX_CALL_FLOW_NODES
 from libs.config_sdk.dial_targets import is_dial_number, is_transfer_destination
 from libs.telephony_sdk.did_format import is_routable_did, normalize_did
 
 MAX_WORKFLOW_NODES = 50
 MAX_WORKFLOW_EDGES = 120
+# A menu step can fan out to every DTMF key, so a connected flow of MAX_NODES steps needs more edges.
+MAX_CALL_FLOW_EDGES = MAX_CALL_FLOW_NODES * len(DTMF_KEYS)
 # Caps prompt bloat: a 2-node graph can still carry multi-MB strings.
 MAX_WORKFLOW_BYTES = 256_000
 
 
-def _check_graph_bounds(graph: dict[str, Any] | None) -> dict[str, Any] | None:
+def _check_graph_bounds(
+    graph: dict[str, Any] | None,
+    max_nodes: int = MAX_WORKFLOW_NODES,
+    max_edges: int = MAX_WORKFLOW_EDGES,
+) -> dict[str, Any] | None:
     if graph is None:
         return None
     nodes = graph.get("nodes")
     edges = graph.get("edges")
-    if isinstance(nodes, list) and len(nodes) > MAX_WORKFLOW_NODES:
-        raise ValueError(f"workflow has too many nodes (max {MAX_WORKFLOW_NODES})")
-    if isinstance(edges, list) and len(edges) > MAX_WORKFLOW_EDGES:
-        raise ValueError(f"workflow has too many edges (max {MAX_WORKFLOW_EDGES})")
+    if isinstance(nodes, list) and len(nodes) > max_nodes:
+        raise ValueError(f"workflow has too many nodes (max {max_nodes})")
+    if isinstance(edges, list) and len(edges) > max_edges:
+        raise ValueError(f"workflow has too many edges (max {max_edges})")
     # Cheap size check before CPU-bound parse_graph / graph_warnings.
     size = len(json.dumps(graph, default=str))
     if size > MAX_WORKFLOW_BYTES:
@@ -294,7 +301,7 @@ class CallFlowCreate(BaseModel):
     @field_validator("graph")
     @classmethod
     def _graph_bounds(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
-        return _check_graph_bounds(value)
+        return _check_graph_bounds(value, MAX_CALL_FLOW_NODES, MAX_CALL_FLOW_EDGES)
 
 
 class CallFlowUpdate(BaseModel):
@@ -312,7 +319,7 @@ class CallFlowDraft(BaseModel):
     @field_validator("graph")
     @classmethod
     def _graph_bounds(cls, value: dict[str, Any]) -> dict[str, Any]:
-        checked = _check_graph_bounds(value)
+        checked = _check_graph_bounds(value, MAX_CALL_FLOW_NODES, MAX_CALL_FLOW_EDGES)
         assert checked is not None
         return checked
 
@@ -324,7 +331,7 @@ class CallFlowPublish(BaseModel):
     @field_validator("graph")
     @classmethod
     def _graph_bounds(cls, value: dict[str, Any]) -> dict[str, Any]:
-        checked = _check_graph_bounds(value)
+        checked = _check_graph_bounds(value, MAX_CALL_FLOW_NODES, MAX_CALL_FLOW_EDGES)
         assert checked is not None
         return checked
 

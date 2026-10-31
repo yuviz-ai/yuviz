@@ -535,16 +535,17 @@ class TestTestSessions:
             _url(test_tenant, f"/{chat['id']}/test-sessions"), json={"channel": "voice"})
         assert wrong.status_code == 400
 
-    async def test_voice_mint_shape_and_a_mismatched_channel(self, client, test_tenant, configs):
+    async def test_voice_mint_shape_and_a_voice_agent_can_also_chat(self, client, test_tenant, configs):
         phone = await _create_agent(client, test_tenant, configs, "inbound-triage")
         resp = await client.post(
             _url(test_tenant, f"/{phone['id']}/test-sessions"), json={"channel": "voice"})
         assert resp.status_code == 200
         assert set(resp.json()) == {"credential", "expires_in"}
         assert resp.json()["expires_in"] == 60
-        wrong = await client.post(
+        chat = await client.post(
             _url(test_tenant, f"/{phone['id']}/test-sessions"), json={"channel": "chat"})
-        assert wrong.status_code == 400
+        assert chat.status_code == 200
+        assert chat.json()["greeting"] == phone["greeting"]
 
     async def test_an_agent_without_a_template_tests_by_voice(self, client, test_tenant, configs):
         created = await client.post(

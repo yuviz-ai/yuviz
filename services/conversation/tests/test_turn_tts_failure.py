@@ -267,3 +267,110 @@ async def test_a_failed_prewarm_filler_is_not_a_failed_reply_sentence():
 
     assert chunks == []
     assert handler._session("s1").unspoken_sentences == []
+
+
+_SPLIT_REPLIES = [
+    (["Your", " order", "_status", " is", " ready", "."], "Your order_status is ready."),
+    (["Mail", " john", "_", "doe", "@x.com", "."], "Mail john_doe@x.com."),
+    (["Code", " ABC", "_", "123", "."], "Code ABC_123."),
+    (["I", " use", " C", "#", "."], "I use C#."),
+    (["Ticket", " #", "42", "."], "Ticket #42."),
+    (["It", " is", " **", "done", "**", "."], "It is done."),
+]
+
+
+async def test_token_split_underscores_and_hashes_are_spoken_and_stored_the_same():
+    """#180: the live path feeds the parser one LLM token at a time; a token usually starts at the _ or #."""
+    for tokens, expected in _SPLIT_REPLIES:
+        spoken = []
+        tts = MagicMock()
+
+        async def _stream(text, sample_rate, _spoken=spoken):
+            _spoken.append(text)
+            yield b"\x00" * 320
+
+        tts.synthesize_stream = _stream
+        transcripts = MagicMock()
+        handler = _make_handler(_make_stt("hi"), _make_llm(tokens), tts, transcripts=transcripts)
+
+        async for _ in handler.on_speech_ended("s1", _silence(), 200, -20.0):
+            pass
+
+        assert spoken[-1] == expected   # earlier entries may be a filler phrase
+        assert _reply_recorded(transcripts) == expected
+
+
+async def test_a_failed_sentence_with_a_split_underscore_is_not_stored():
+    transcripts = MagicMock()
+    handler = _make_handler(
+        _make_stt("hi"),
+        _make_llm(["Your", " order", "_status", " FAILME", " is", " ready.", " Anything", " else?"]),
+        _tts_failing_on("FAILME"), transcripts=transcripts,
+    )
+
+    async for _ in handler.on_speech_ended("s1", _silence(), 200, -20.0):
+        pass
+
+    assert _reply_recorded(transcripts) == "Anything else?"
+
+
+def _tts_silent_on(marker: str) -> MagicMock:
+    """Returns no audio, without raising, for text containing marker (macOS `say` on a leading '-')."""
+    tts = MagicMock()
+
+    async def _stream(text, sample_rate):
+        if marker in text:
+            return
+        yield b"\x00" * 320
+
+    tts.synthesize_stream = _stream
+    return tts
+
+
+async def test_a_sentence_whose_tts_returned_no_audio_without_raising_is_not_stored_as_spoken():
+    transcripts = MagicMock()
+    handler = _make_handler(
+        _make_stt("weather"), _make_llm(["-5 degrees outside today.", " Anything else?"]),
+        _tts_silent_on("-5 degrees"), transcripts=transcripts,
+    )
+
+    async for _ in handler.on_speech_ended("s1", _silence(), 200, -20.0):
+        pass
+
+    assert _reply_recorded(transcripts) == "Anything else?"
+    assert handler._get_history("s1")[-1].content == "Anything else?"
+
+
+async def test_empty_audio_chunks_do_not_count_as_audio():
+    tts = MagicMock()
+
+    async def _stream(text, sample_rate):
+        yield b""
+        yield b""
+
+    tts.synthesize_stream = _stream
+    handler = _make_handler(_make_stt("hi"), _make_llm(["Hello."]), tts)
+
+    chunks = [c async for c in handler._synthesize_sentence_stream("Hello.", "s1", in_reply=True)]
+
+    assert chunks == []
+    assert handler._session("s1").unspoken_sentences == ["Hello."]
+
+
+async def test_a_reply_that_is_entirely_silent_is_not_added_to_history(monkeypatch):
+    monkeypatch.setenv("VOICEAI_FILLER_DELAY_MS", "60000")
+    handler = _make_handler(_make_stt("hi"), _make_llm(["-5 degrees."]), _tts_silent_on("-5"))
+
+    responses = [r async for r in handler.on_speech_ended("s1", _silence(), 200, -20.0)]
+
+    assert not any(r.tts_payloads or r.response_text for r in responses)
+    assert [m.role for m in handler._get_history("s1")] == ["system"]
+
+
+async def test_a_silent_cached_phrase_is_not_cached_and_is_not_a_reply_sentence():
+    handler = _make_handler(_make_stt("hi"), _make_llm(["Hello."]), _tts_silent_on("Let me check"))
+
+    chunks = [c async for c in handler._synthesize_sentence_stream("Let me check that.", "s1", cache=True)]
+
+    assert chunks == []
+    assert handler._session("s1").unspoken_sentences == []

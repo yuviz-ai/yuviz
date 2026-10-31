@@ -196,5 +196,12 @@ def test_stt_languages_by_engine_and_model():
     from libs.config_sdk.languages import LANGUAGES
     assert stt_languages("faster_whisper", "small.en") == frozenset({"en"})
     assert stt_languages("faster_whisper", "small") == frozenset(LANGUAGES)
-    assert stt_languages("deepgram", "nova-3") == frozenset(LANGUAGES)
+    assert stt_languages("deepgram", "nova-3") == frozenset(LANGUAGES) - {"ta", "te", "kn", "mr", "bn"}
+    assert stt_languages("sarvam", "saaras:v4") == frozenset({"en", "hi", "ta", "te", "kn", "mr", "bn"})
+
+
+def test_a_sarvam_voice_speaks_what_its_model_and_persona_cover():
+    assert tts_languages("sarvam", "bulbul:v3", "kavya") >= {"ta", "te", "kn", "mr", "bn"}
+    assert tts_languages("sarvam", "bulbul:v4-flash", "shubh_enhi_ads") == frozenset({"en", "hi"})
+    assert tts_languages("sarvam", "bulbul:v4-flash", "meera_ta_customer") == frozenset({"ta"})
     assert stt_languages("unknown-engine", None) == frozenset({"en"})

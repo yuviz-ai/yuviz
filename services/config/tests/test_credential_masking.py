@@ -58,6 +58,7 @@ def _row_routes() -> set[tuple[str, str]]:
 @pytest.fixture(autouse=True)
 def _secret_encryption_key(monkeypatch):
     monkeypatch.setenv("SECRET_ENCRYPTION_KEY", generate_key())
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
 
 
 @pytest_asyncio.fixture
@@ -115,6 +116,10 @@ def _requests(ids: dict) -> dict[tuple[str, str], tuple[str, dict | None, dict |
             f"/tenants/{t}/providers", {"name": "n", "role": "llm", "engine": "openai", "api_key": "k-plain"}, None),
         ("GET", "/providers/{provider_id}"): (f"/providers/{ids['provider']}", None, None),
         ("PATCH", "/providers/{provider_id}"): (f"/providers/{ids['provider']}", {"model": "m"}, None),
+        ("POST", "/tenants/{tenant_id}/ai-options/choose"): (
+            f"/tenants/{t}/ai-options/choose", {"option_id": "llm:openai:gpt-4o-mini"}, None),
+        ("POST", "/tenants/{tenant_id}/ai-options/recommended"): (
+            f"/tenants/{t}/ai-options/recommended", {"languages": ["en"], "roles": ["llm"]}, None),
         ("GET", "/tenants/{tenant_id}/tool-providers"): (f"/tenants/{t}/tool-providers", None, None),
         ("POST", "/tenants/{tenant_id}/tool-providers"): (
             f"/tenants/{t}/tool-providers",
@@ -166,7 +171,7 @@ def _credential_values(body) -> list[str]:
 
 def test_walked_routes_match_the_request_table():
     walked = _row_routes()
-    assert len(walked) == 18
+    assert len(walked) == 20
     assert walked == set(_requests({k: "x" for k in ("tenant", "provider", "tool", "telephony", "carrier")}))
 
 
@@ -261,7 +266,7 @@ async def test_platform_scoped_principal_can_store_a_pointer(pool, test_tenant, 
 # allowed. The count makes a new caller break this test until it is read.
 _CREDENTIAL_CALLEES = functions_taking("allow_pointer_schemes")
 _EXPECTED_CALLEES = 12
-_EXPECTED_CALL_SITES = 110  # Includes the carrier-disconnect fixture and the website-demo seed (create + update).
+_EXPECTED_CALL_SITES = 114  # Includes the carrier-disconnect fixture and the website-demo seed (create + update); +4 platform AI.
 
 
 def test_every_credential_call_site_passes_allow_pointer_schemes():

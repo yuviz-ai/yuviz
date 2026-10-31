@@ -17,7 +17,7 @@ on its own.
 | `/sdlc:review` | Adversarial code review of the diff | `05-review.md` |
 | `/sdlc:security` | Audits the implementation, not the intention | `05-security.md` |
 | `/sdlc:test` | Writes the tests the design called for and runs them | `06-test-report.md` |
-| *(in `/sdlc:run`)* independent review | Fresh reviewer, not bound by the design, checks the whole diff against the PRD and the issues | `05-review-independent.md` |
+| *(in `/sdlc:run`, local-only for now)* independent review | Fresh reviewer, not bound by the design, checks the whole diff against the PRD and the issues | `05-review-independent.md` |
 | `/sdlc:ship` | Runs the repo-wide checks on the staged tree, commits, pushes, opens a PR, waits for CI green | PR URL |
 | `/sdlc:qa` | **After merge** — runs the real app and hunts edge cases | `07-qa-report.md` |
 

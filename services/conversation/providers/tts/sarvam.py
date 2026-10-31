@@ -27,6 +27,7 @@ import websockets
 from libs.config_sdk.languages import normalize_language
 
 from ..interfaces import INSTANCE_LANGUAGE
+from services.conversation.providers.http_pool import provider_http_limits
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +37,7 @@ _DEFAULT_BASE_URL = "https://api.sarvam.ai"
 DEFAULT_MODEL = "bulbul:v4-flash"
 DEFAULT_SPEAKER = "shubh_enhi_ads"
 # Registry language -> Sarvam language_code. Only the registry languages Sarvam speaks.
-LANGUAGE_CODES = {"en": "en-IN", "hi": "hi-IN"}
+LANGUAGE_CODES = {code: f"{code}-IN" for code in ("en", "hi", "ta", "te", "kn", "mr", "bn")}
 # Rates every Bulbul model serves; anything else is requested at the next one up and resampled.
 _SUPPORTED_RATES = (8000, 16000, 22050, 24000)
 _MAX_CHARS = 2500
@@ -110,6 +111,7 @@ class SarvamTTS:
             base_url=base_url.rstrip("/"),
             headers={"api-subscription-key": api_key},
             timeout=timeout_s,
+            limits=provider_http_limits(),
         )
         self._api_key = api_key
         self._streaming = streaming

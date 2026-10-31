@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { AlertCircle, X } from "lucide-react";
 import Link from "next/link";
 import {
   AgentToolPolicy,
@@ -25,7 +26,7 @@ const DEFAULT_STEP_TIMEOUT_MS = 6000;
 const DEFAULT_CHAIN_BUDGET_MS = 20000;
 const EXECUTE_API_TOOL_NAME = "execute_api";
 
-// Attach-only picker of the tenant's custom APIs for one agent, plus the execute_api switch and
+// Attach-only multi-select of the tenant's custom APIs for one agent, plus the execute_api switch and
 // chain budget. Create/edit/delete live in CustomApisPanel.
 export function AgentCustomApisPanel({ tenantId, agentId }: { tenantId: string; agentId: string }) {
   const [customApis, setCustomApis] = useState<CustomApi[]>([]);
@@ -40,10 +41,21 @@ export function AgentCustomApisPanel({ tenantId, agentId }: { tenantId: string; 
   const [switchSaving, setSwitchSaving] = useState(false);
   const [switchError, setSwitchError] = useState<string | null>(null);
   const [budgetDraft, setBudgetDraft] = useState(String(DEFAULT_CHAIN_BUDGET_MS / 1000));
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const pickerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!pickerOpen) return;
+    const close = (e: MouseEvent) => {
+      if (!pickerRef.current?.contains(e.target as Node)) setPickerOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [pickerOpen]);
 
   // Each source is caught independently so one 403 doesn't blank the others.
   const refresh = async () => {
-    setLoading(true);
     await Promise.allSettled([
       listCustomApis(tenantId)
         .then(setCustomApis)
@@ -151,16 +163,26 @@ export function AgentCustomApisPanel({ tenantId, agentId }: { tenantId: string; 
 
   const budgetMs = executeApiPolicy?.timeout_ms ?? DEFAULT_CHAIN_BUDGET_MS;
   const paused = !executeApiPolicy?.enabled && agentCustomApis.some((a) => a.enabled);
+  const selected = customApis.filter((api) => agentCustomApiByApiId.get(api.id)?.enabled);
+  const choices = customApis.filter(
+    (api) => !agentCustomApiByApiId.get(api.id)?.enabled && api.name.toLowerCase().includes(query.trim().toLowerCase()),
+  );
+  const slow = selected.filter((api) => api.chain_levels * (api.timeout_ms ?? DEFAULT_STEP_TIMEOUT_MS) > budgetMs);
+
+  const add = (api: CustomApi) => {
+    setQuery("");
+    void handleToggleAgentApi(api, true);
+  };
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
   return (
-    <div className="card">
+    <section className="card">
       <div className="card-hdr">
         <div>
-          <div className="card-title">Look things up during calls</div>
+          <div className="card-title">Tools</div>
           <div className="card-sub" style={{ marginLeft: 0 }}>
-            Let the agent check your own systems, like an order or a booking.
+            Let the agent check your own systems during calls, like an order or a booking. Changes save right away.
           </div>
         </div>
       </div>
@@ -171,54 +193,79 @@ export function AgentCustomApisPanel({ tenantId, agentId }: { tenantId: string; 
 
       {paused && (
         <div className="kb-row" style={{ background: "var(--amber-bg, transparent)" }}>
-          <div style={{ flex: 1, fontSize: ".78rem" }}>Lookups are paused for this agent.</div>
+          <div style={{ flex: 1, fontSize: ".78rem" }}>Tools are paused for this agent.</div>
           <button className="btn btn-primary btn-sm" disabled={switchSaving} onClick={() => handleToggleMasterSwitch(true)}>
             Turn on
           </button>
         </div>
       )}
 
-      {customApis.map((api) => {
-            const assignment = agentCustomApiByApiId.get(api.id);
-            const perStepMs = api.timeout_ms ?? DEFAULT_STEP_TIMEOUT_MS;
-            const worstCaseMs = api.chain_levels * perStepMs;
-            const worstCaseExceedsBudget = worstCaseMs > budgetMs;
-            return (
-              <div key={api.id} className="kb-row" style={{ flexWrap: "wrap" }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 500, overflowWrap: "anywhere" }}>{api.name}</div>
-                  <div style={{ fontSize: ".7rem", color: "var(--text-3)" }}>
-                    {api.description}
-                  </div>
-                  {worstCaseExceedsBudget && (
-                    <div style={{ fontSize: ".7rem", color: "var(--red)" }}>
-                      May be too slow: this can take up to {worstCaseMs / 1000}s, but the agent only waits{" "}
-                      {budgetMs / 1000}s.
-                    </div>
-                  )}
-                </div>
-                <label
-                  className="toggle-switch"
-                  title={assignment?.enabled ? "On for this agent" : "Off for this agent"}
-                >
-                  <input
-                    type="checkbox"
-                    checked={!!assignment?.enabled}
-                    onChange={(e) => handleToggleAgentApi(api, e.target.checked)}
-                  />
-                  <span className="toggle-slider" />
-                </label>
+      <div className="card-body">
+        {customApis.length === 0 && !customApisError ? (
+          <div className="empty-state">
+            No tools yet. <Link href="/integrations#custom-tools">Set up a connection</Link>, then pick it here.
+          </div>
+        ) : (
+          <div className="kb-picker" ref={pickerRef}>
+            <div className="kb-chips" onClick={() => setPickerOpen(true)}>
+              {selected.map((api) => (
+                <span key={api.id} className="kb-chip" title={api.description ?? undefined}>
+                  <span className="kb-chip-title">{api.name}</span>
+                  <button
+                    type="button"
+                    className="kb-chip-remove"
+                    aria-label={`Remove ${api.name}`}
+                    onClick={(e) => { e.stopPropagation(); void handleToggleAgentApi(api, false); }}
+                  >
+                    <X size={13} />
+                  </button>
+                </span>
+              ))}
+              <input
+                className="kb-chips-input"
+                placeholder={selected.length ? "" : "Add a tool…"}
+                role="combobox"
+                aria-label="Add a tool"
+                aria-expanded={pickerOpen}
+                aria-controls="tool-picker-menu"
+                value={query}
+                onFocus={() => setPickerOpen(true)}
+                onChange={(e) => { setQuery(e.target.value); setPickerOpen(true); }}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") setPickerOpen(false);
+                  if (e.key === "Backspace" && !query && selected.length) void handleToggleAgentApi(selected[selected.length - 1], false);
+                }}
+              />
+            </div>
+            {pickerOpen && (
+              <div id="tool-picker-menu" className="kb-picker-menu" role="listbox" aria-label="Tools to add">
+                {choices.length === 0 ? (
+                  <div className="kb-picker-empty">{query ? "No tools match." : "Every tool is selected."}</div>
+                ) : (
+                  choices.map((api) => (
+                    <button key={api.id} type="button" role="option" aria-selected={false} className="kb-picker-option"
+                      onClick={() => add(api)}>
+                      <span>{api.name}</span>
+                      {api.description && <span className="kb-picker-desc">{api.description}</span>}
+                    </button>
+                  ))
+                )}
               </div>
-            );
-          })}
-
-      {customApis.length === 0 && !customApisError && (
-        <div className="empty-state">Nothing connected yet.</div>
-      )}
-
-      <div className="card-body" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            )}
+            <div className="kb-picker-hint">Click a tool to add it. Connections are set up on the Integrations page.</div>
+          </div>
+        )}
+        {slow.map((api) => (
+          <div key={api.id} className="voice-missing">
+            <AlertCircle size={13} />
+            <span>
+              {api.name} may be too slow: it can take up to {(api.chain_levels * (api.timeout_ms ?? DEFAULT_STEP_TIMEOUT_MS)) / 1000}s,
+              but the agent only waits {budgetMs / 1000}s.
+            </span>
+          </div>
+        ))}
         {customApis.length > 0 && (
-          <details>
+          <details style={{ marginTop: 12 }}>
             <summary style={{ cursor: "pointer", fontSize: ".78rem", color: "var(--text-2)" }}>Advanced</summary>
             <div className="form-group" style={{ marginTop: 12 }}>
               <label className="form-label">
@@ -241,10 +288,13 @@ export function AgentCustomApisPanel({ tenantId, agentId }: { tenantId: string; 
             </div>
           </details>
         )}
-        <Link href="/integrations#custom-tools" style={{ fontSize: ".76rem", color: "var(--cyan)" }}>
-          {customApis.length > 0 ? "Manage connections →" : "Set up a connection →"}
-        </Link>
       </div>
-    </div>
+      {customApis.length > 0 && (
+        <div className="kb-picker-count">
+          <strong>{selected.length}</strong> of {customApis.length} selected ·{" "}
+          <Link href="/integrations#custom-tools" style={{ color: "var(--cyan)" }}>Manage connections</Link>
+        </div>
+      )}
+    </section>
   );
 }

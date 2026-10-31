@@ -255,6 +255,17 @@ async def _make_deepgram(cfg: ProviderConfig, api_key: str | None) -> Any:
     )
 
 
+async def _make_sarvam_stt(cfg: ProviderConfig, api_key: str | None) -> Any:
+    from .providers.stt.sarvam import DEFAULT_MODEL, SarvamSTT
+
+    return SarvamSTT(
+        api_key=_require_api_key(cfg, api_key),
+        model=cfg.model or DEFAULT_MODEL,
+        language=cfg.language,
+        mode=(cfg.extra or {}).get("mode"),
+    )
+
+
 async def _make_openai_llm(cfg: ProviderConfig, api_key: str | None) -> Any:
     from .providers.llm.openai import OpenAILLM
 
@@ -402,6 +413,7 @@ async def _make_cartesia_tts(cfg: ProviderConfig, api_key: str | None) -> Any:
 _DEFAULT_REGISTRY: dict[tuple[str, str], ProviderFactory] = {
     ("stt", "faster_whisper"): _make_faster_whisper,
     ("stt", "deepgram"):       _make_deepgram,
+    ("stt", "sarvam"):         _make_sarvam_stt,
     ("llm", "ollama"):         _make_ollama,
     ("llm", "openai"):         _make_openai_llm,
     ("llm", "gemini"):         _make_gemini_llm,

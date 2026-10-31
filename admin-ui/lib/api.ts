@@ -159,6 +159,60 @@ export interface ProviderConfigUpdate {
   extra?: Record<string, unknown>;
 }
 
+// A model the platform runs on its own keys (or a local one a superadmin turned on).
+export interface AiOption {
+  id: string;
+  role: "stt" | "llm" | "tts";
+  engine: string;
+  provider: string;
+  label: string;
+  model: string | null;
+  price_per_min: number;
+  default_voice: string | null;
+  blurb: string;
+  local: boolean;
+  /** False while the platform has no key for it. */
+  available: boolean;
+  languages: string[];
+  /** Superadmin only: the .env variable that turns it on. */
+  key_env?: string | null;
+}
+
+export interface AiCatalog {
+  local_models_enabled: boolean;
+  platform_fee_per_min: number;
+  options: AiOption[];
+}
+
+export const getAiCatalog = (tenantId: string) => request<AiCatalog>(`/tenants/${tenantId}/ai-options`);
+
+export const chooseAiOption = (
+  tenantId: string, body: { option_id: string; voice?: string; voice_name?: string; temperature?: number },
+) => request<ProviderConfig>(`/tenants/${tenantId}/ai-options/choose`, { method: "POST", body: JSON.stringify(body) });
+
+export const recommendedAiOptions = (tenantId: string, languages: string[], roles?: ("stt" | "llm" | "tts")[]) =>
+  request<ProviderConfig[]>(`/tenants/${tenantId}/ai-options/recommended`, {
+    method: "POST", body: JSON.stringify(roles ? { languages, roles } : { languages }),
+  });
+
+export const listAiOptionVoices = (tenantId: string, optionId: string) =>
+  request<ElevenLabsVoice[]>(`/tenants/${tenantId}/ai-options/voices?option_id=${encodeURIComponent(optionId)}`);
+
+export interface PlatformAiSettings {
+  local_models_enabled: boolean;
+  keys: { key_env: string; providers: string[]; configured: boolean }[];
+}
+
+export const getPlatformAiSettings = () => request<PlatformAiSettings>("/platform/ai-settings");
+export const setPlatformAiSettings = (local_models_enabled: boolean) =>
+  request<{ local_models_enabled: boolean }>("/platform/ai-settings", {
+    method: "PUT", body: JSON.stringify({ local_models_enabled }),
+  });
+
+/** The platform option a workspace provider row was made from, or null for the workspace's own provider. */
+export const managedOptionId = (p: ProviderConfig | null | undefined): string | null =>
+  (p?.extra?.managed as string | undefined) ?? null;
+
 export const updateProvider = (providerId: string, body: ProviderConfigUpdate) =>
   request<ProviderConfig>(`/providers/${providerId}`, { method: "PATCH", body: JSON.stringify(body) });
 export const deleteProvider = (providerId: string) =>
@@ -193,6 +247,58 @@ export const previewVoice = async (providerId: string, text: string, voiceId?: s
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify(previewBody(text, voiceId)),
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      detail = ((await res.json())?.detail as string) || detail;
+    } catch {
+      // not JSON — keep statusText
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return res.blob();
+};
+
+// A short recorded clip transcribed by the agent's own hearing model (console voice typing).
+export const transcribeVoiceInput = async (tenantSlug: string, agentId: string, clip: Blob): Promise<string> => {
+  const token = getToken();
+  const res = await fetch(`${BASE_URL}/tenants/${tenantSlug}/agents/${agentId}/voice-input`, {
+    method: "POST",
+    headers: { "Content-Type": clip.type || "audio/webm", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: clip,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      detail = ((await res.json())?.detail as string) || detail;
+    } catch {
+      // not JSON — keep statusText
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return ((await res.json()) as { text: string }).text;
+};
+
+// A typed test conversation with an agent; each turn runs the agent's instructions on its model.
+export interface ChatTestSession { credential: string; session_id: string; greeting: string; expires_in: number }
+
+export const startChatTest = (tenantSlug: string, agentId: string) =>
+  request<ChatTestSession>(`/tenants/${tenantSlug}/agents/${agentId}/test-sessions`, {
+    method: "POST", body: JSON.stringify({ channel: "chat" }),
+  });
+
+export const sendChatTest = (tenantSlug: string, agentId: string, body: { credential: string; session_id: string; message: string }) =>
+  request<{ reply: string }>(`/tenants/${tenantSlug}/agents/${agentId}/test-chat`, {
+    method: "POST", body: JSON.stringify(body),
+  });
+
+// The platform's fixed greeting spoken in one of its cloud voices.
+export const previewAiVoice = async (tenantId: string, optionId: string, voice: string, language: string): Promise<Blob> => {
+  const token = getToken();
+  const qs = new URLSearchParams({ option_id: optionId, voice, language });
+  const res = await fetch(`${BASE_URL}/tenants/${tenantId}/ai-options/preview?${qs}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
   if (!res.ok) {
     let detail = res.statusText;
@@ -1048,6 +1154,8 @@ export interface AgentCallStats {
   avg_duration_ms: number | null;
   finished: number;
   failed: number;
+  /** Calls handed to a person (transfer answered). */
+  handoffs: number;
 }
 
 export const getAgentCallStats = (tenantSlug: string) =>

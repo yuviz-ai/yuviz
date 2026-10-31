@@ -54,6 +54,12 @@ function maskNumber(n: string | null): string {
   return n.length <= 6 ? n : `${n.slice(0, Math.min(6, n.length - 4))}••• ${n.slice(-4)}`;
 }
 
+// How-calls-ended bars in the brand palette, one hue per outcome.
+const OUTCOME_COLOR: Record<string, string> = {
+  done: "var(--chart-inbound)", to_person: "var(--chart-ai)", transfer_failed: "var(--chart-outbound)",
+  dropped: "var(--chart-rose)", unrecorded: "var(--text-3)",
+};
+
 const TONE_COLOR: Record<Tone, string> = {
   g: "var(--green)", a: "var(--amber)", r: "var(--red)", n: "var(--text-3)",
 };
@@ -570,7 +576,7 @@ export default function DashboardPage() {
                     <span>{outcome.label}</span>
                     <b>{pct < 1 ? "<1%" : `${Math.round(pct)}%`}</b>
                   </div>
-                  <div className="bar"><i style={{ width: `${Math.max(pct, 1)}%`, background: TONE_COLOR[outcome.tone] }} /></div>
+                  <div className="bar"><i style={{ width: `${Math.max(pct, 1)}%`, background: OUTCOME_COLOR[outcome.key] ?? TONE_COLOR[outcome.tone] }} /></div>
                 </div>
               );
             })

@@ -453,13 +453,18 @@ async def _appointment_by_reference(conn: Any, clinic: Clinic, reference: str | 
     return dict(row) if row else None
 
 
-def may_manage(appointment: dict, caller_phone: str | None, patient_phone: str | None) -> bool:
-    """The number on the call made or owns the booking, or the caller knows the patient's
-    number as well as the booking number (someone calling for family from another phone)."""
-    owners = {appointment["patient_phone"], appointment.get("booked_by_phone")} - {None}
-    return bool(caller_phone and caller_phone in owners) or bool(
-        patient_phone and patient_phone == appointment["patient_phone"]
-    )
+def may_manage(appointment: dict, caller_phone: str | None, claimed_phone: str | None = None) -> bool:
+    """Who may see or change an appointment, once the caller has named it by booking number.
+
+    The server-side number of the call (`caller_phone`, from call metadata) is enough on its own when it is the
+    patient's number or the number the booking was made from. A number the caller merely SAYS (`claimed_phone`,
+    model-supplied) is the second factor for someone calling from another phone: it counts only with the booking
+    number in hand, and only against the patient's own number, never the booking phone."""
+    caller = phones.normalize_phone(caller_phone)
+    if caller is not None and caller in (appointment["patient_phone"], appointment.get("booked_by_phone")):
+        return True
+    claimed = phones.normalize_phone(claimed_phone)
+    return claimed is not None and claimed == appointment["patient_phone"]
 
 
 def _not_found_sentence(language: str) -> str:
@@ -696,14 +701,13 @@ async def find_appointments(
             return {"ok": True, "appointments": [], "message": _not_found_sentence(language)}
         rows = [appointment]
     else:
-        phone_set = [p for p in (caller, patient) if p]
-        if not phone_set:
+        # Without a booking number only the number the call came from is trusted: a spoken number is ignored.
+        if not caller:
             return {"ok": True, "appointments": [], "message": _not_found_sentence(language)}
         rows = [dict(r) for r in await conn.fetch(
             "SELECT * FROM clinic_appointments WHERE tenant_id = $1 AND status = 'booked' AND starts_at > now() "
-            "AND (patient_phone = ANY($2::text[]) OR booked_by_phone = ANY($3::text[])) "
-            "ORDER BY starts_at LIMIT 5",
-            clinic.tenant_id, phone_set, [caller] if caller else [],
+            "AND (patient_phone = $2 OR booked_by_phone = $2) ORDER BY starts_at LIMIT 5",
+            clinic.tenant_id, caller,
         )]
     views = []
     for appointment in rows:

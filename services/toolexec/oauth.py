@@ -473,11 +473,29 @@ async def get_connected(conn, tenant_id: str, provider: str) -> dict[str, Any] |
     return dict(row) if row is not None else None
 
 
+def zoho_desk_base(api_base_url: str | None) -> str | None:
+    """Zoho Desk's origin in the same data centre as the connection's API origin
+    (https://www.zohoapis.in -> https://desk.zoho.in); None for anything else."""
+    host = urlsplit(api_base_url or "").hostname
+    for tld in _ZOHO_TLDS:
+        if host == f"www.zohoapis.{tld}":
+            return f"https://desk.zoho.{tld}"
+    return None
+
+
+def row_api_base(base_source: str, api_base_url: str | None) -> str | None:
+    """The origin a row's path is dialed on, by its endpoint_base_source."""
+    return zoho_desk_base(api_base_url) if base_source == "zoho_desk" else api_base_url
+
+
 def provider_host_allowed(
     provider: OAuthProvider, host: str | None, api_base_url: str | None, *, base_source: str,
 ) -> bool:
     """Where a connector token may be sent. `api_host_suffixes` is not consulted:
     it gates what may be stored at connect time, this is the per-row equality."""
+    if base_source == "zoho_desk":
+        desk = zoho_desk_base(api_base_url) if provider.key == "zoho" else None
+        return desk is not None and host == urlsplit(desk).hostname
     if base_source == "oauth_connection":
         return api_base_url is not None and host == urlsplit(api_base_url).hostname
     return host in provider.api_hosts

@@ -316,8 +316,16 @@ class ConversationSession:
         self._handler.start_finalization(self._ctx.session_id)
 
     async def on_transfer_completed(self, destination: str,
-                                    transfer_id: str = "") -> FinalizationResult:
-        """Destination bridged: finalize the session and return the result for ConversationFinalized."""
+                                    transfer_id: str = "") -> FinalizationResult | None:
+        """Destination bridged: finalize the session and return the result for ConversationFinalized.
+
+        Returns None (and does nothing) when no transfer is pending: a stray or
+        duplicate TransferCompleted must not finalize a live conversation.
+        """
+        if self._fsm.state != CallFsmState.TRANSFERRING:
+            log.warning("Ignoring transfer_completed with no pending transfer state=%s session=%s",
+                        self._fsm.state.name, self._ctx.session_id)
+            return None
         self._transfer_outcome = "TRANSFER_SUCCESS"
         self._metrics.increment("transfer_success_total")
         self._fsm.on_transfer_completed(True, destination)
@@ -342,6 +350,10 @@ class ConversationSession:
         self, destination: str, reason: str, transfer_id: str = "",
     ) -> AsyncGenerator[HandlerResponse, None]:
         """Transfer failed but the caller is usually still on the line: yield a spoken apology."""
+        if self._fsm.state != CallFsmState.TRANSFERRING:
+            log.warning("Ignoring transfer_failed with no pending transfer state=%s session=%s",
+                        self._fsm.state.name, self._ctx.session_id)
+            return
         start = time.monotonic()
         self._transfer_outcome = (
             "TRANSFER_TIMEOUT" if reason == "transfer_timeout" else "TRANSFER_FAILED"

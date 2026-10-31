@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { ProvidersPanel } from "@/components/ProvidersPanel";
+import { PlatformAiCard } from "@/components/PlatformAiCard";
 
 type AiVoiceSection = "speech" | "llm" | "embedding";
 
@@ -16,6 +17,7 @@ export function AiVoicePanel() {
 
   return (
     <>
+      <PlatformAiCard />
       <div className="tabs">
         {TABS.map((tab) => (
           <button

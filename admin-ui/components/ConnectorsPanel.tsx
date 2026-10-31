@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Check, Plus, Search } from "lucide-react";
 import { ApiError, listCarriers, listTelephonyConfigs, deleteCarrier, deleteTelephonyConfig } from "@/lib/api";
 import { CallingAppModal, CallingAccount } from "@/components/CallingAppModal";
-import { AppCard, availabilityLabel, filterApps, oauthAuthorizationUrl, workAppCards } from "@/lib/connectedApps";
+import { APP_CATEGORIES, AppCard, availabilityLabel, filterApps, oauthAuthorizationUrl, workAppCards } from "@/lib/connectedApps";
 import {
   ConnectorPreset,
   CustomApi,
@@ -78,6 +78,10 @@ const PRESET_FIELDS: Record<string, FieldDef[]> = {
   sheets_lead_capture: [
     { name: "title", label: "Spreadsheet title", hint: "A new sheet with this name is created in the connected account" },
   ],
+  zoho_desk_ticket: [
+    { name: "org_id", label: "Organization ID", hint: "Zoho Desk → Setup → Developer Space → API. Digits only." },
+    { name: "department_id", label: "Department ID", hint: "Open the department in Zoho Desk Setup; the ID is in the page address. Tickets go here." },
+  ],
 };
 
 const presetDefaults = (key: string): Record<string, string> => {
@@ -97,6 +101,8 @@ const presetDefaults = (key: string): Record<string, string> => {
       };
     case "sheets_lead_capture":
       return { title: "Yuviz leads" };
+    case "zoho_desk_ticket":
+      return { org_id: "", department_id: "" };
     default:
       return {};
   }
@@ -321,7 +327,7 @@ export function ConnectorsPanel({
       setApplying(null);
       setShowPhoneNumbersLink(false);
       setValues({});
-      setNotice(`${applying.title} is on. Add it to an agent from the agent’s Tools tab.`);
+      setNotice(`${applying.title} is on. Add it to an agent from the agent’s Knowledge section, under Tools.`);
       await refresh(["apis"]);
     } catch (e) {
       if (e instanceof ApiError && e.status === 409 && CONNECTOR_REQUIRED.has(e.detail) && applying.provider) {
@@ -383,7 +389,7 @@ export function ConnectorsPanel({
     ...CALLING_APPS.map((app): AppCard => {
       const count = callingAccounts.filter((a) => a.record.provider === app.key).length;
       return { id: `calling:${app.key}`, label: app.label, description: app.description,
-        icon: app.icon, category: "Calling", connected: count > 0,
+        icon: app.icon, category: "Telephony", connected: count > 0,
         reconnect: false, available: callingLoaded[CARRIER_PROVIDERS.includes(app.key) ? "carrier" : "telephony_config"], calling: app.key, count };
     }),
     ...workAppCards(providers, connections, presets, apis),
@@ -429,14 +435,15 @@ export function ConnectorsPanel({
         </button>)}
       </div>
       <div className="connected-apps-categories" aria-label="App category">
-        {(["Calling", "Work", "Messaging"] as const).map((value) => <button key={value} type="button" aria-pressed={category === value}
-          className={category === value ? "on" : ""} onClick={() => onCategoryChange(category === value ? "All" : value)}>{value}</button>)}
+        {(["All", ...APP_CATEGORIES] as const).map((value) => <button key={value} type="button" aria-pressed={category === value}
+          className={category === value ? "on" : ""} onClick={() => onCategoryChange(value)}>{value}</button>)}
       </div>
     </div>
     <div className="connected-apps-grid">
       {visible.map((app) => <article key={app.id} className={`connected-app-card${app.connected ? " connected" : ""}`}>
         <div className="connected-app-icon"><AppIcon icon={app.icon} /></div>
         <div className="connected-app-copy"><h2>{app.label}</h2><p>{app.description}</p></div>
+        <span className="connected-app-tag">{app.category}</span>
         {!!app.accounts?.length && <div className="connected-app-account" title={app.accounts.map((a) => a.account_label ?? "Account connected").join(", ")}>
           {app.accounts.length === 1 ? app.accounts[0].account_label ?? "Account connected" : `${app.accounts[0].account_label ?? "Account connected"} +${app.accounts.length - 1} more`}
         </div>}
@@ -457,7 +464,8 @@ export function ConnectorsPanel({
         </div>
       </article>)}
     </div>
-    {visible.length === 0 && <div className="empty-state">No apps match your search and filters.<button className="btn btn-ghost btn-sm" onClick={() => { setQuery(""); setSegment("All"); onCategoryChange("All"); }}>Clear filters</button></div>}
+    {visible.length === 0 && category === "Ticketing" && !query && segment === "All" ? <div className="empty-state">No ticketing apps yet. Zendesk and Freshdesk are on the way.</div>
+    : visible.length === 0 && <div className="empty-state">No apps match your search and filters.<button className="btn btn-ghost btn-sm" onClick={() => { setQuery(""); setSegment("All"); onCategoryChange("All"); }}>Clear filters</button></div>}
   </>;
 
   return (

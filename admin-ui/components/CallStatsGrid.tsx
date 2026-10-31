@@ -2,7 +2,7 @@ import { AgentCallStats } from "@/lib/api";
 
 export type CallStats = Omit<AgentCallStats, "agent_id">;
 
-export const NO_CALLS: CallStats = { calls: 0, tests: 0, avg_duration_ms: null, finished: 0, failed: 0 };
+export const NO_CALLS: CallStats = { calls: 0, tests: 0, avg_duration_ms: null, finished: 0, failed: 0, handoffs: 0 };
 
 const fmtDuration = (ms: number) => {
   const s = Math.round(ms / 1000);
@@ -18,6 +18,7 @@ export function sumCallStats(list: CallStats[]): CallStats {
     tests: list.reduce((n, s) => n + s.tests, 0),
     finished: list.reduce((n, s) => n + s.finished, 0),
     failed: list.reduce((n, s) => n + s.failed, 0),
+    handoffs: list.reduce((n, s) => n + s.handoffs, 0),
     avg_duration_ms: timedCalls
       ? Math.round(timed.reduce((n, s) => n + s.avg_duration_ms! * s.calls, 0) / timedCalls)
       : null,
@@ -27,6 +28,7 @@ export function sumCallStats(list: CallStats[]): CallStats {
 export function CallStatsGrid({ stats }: { stats: CallStats }) {
   // Same rule as the calls page: only transfer-failed and dropped calls count as failed.
   const pct = stats.finished ? Math.round((100 * (stats.finished - stats.failed)) / stats.finished) : null;
+  const handoff = stats.finished ? Math.round((100 * stats.handoffs) / stats.finished) : null;
   return (
     <div className="agent-card-stats">
       <div><b>{stats.calls}</b><span>Calls</span></div>
@@ -36,6 +38,10 @@ export function CallStatsGrid({ stats }: { stats: CallStats }) {
           {pct == null ? "—" : `${pct}%`}
         </b>
         <span>Success</span>
+      </div>
+      <div title="Calls handed to a person on your team">
+        <b>{handoff == null ? "—" : `${handoff}%`}</b>
+        <span>Handoff</span>
       </div>
     </div>
   );

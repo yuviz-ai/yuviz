@@ -7,11 +7,11 @@ import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import {
   AlertCircle, ArrowLeft, ArrowRight, BookOpen, Check, Copy, FileText, Mic, MoreHorizontal,
-  Loader2, Settings2, SlidersHorizontal, Sparkles, Trash2, Undo2, Wrench,
+  Loader2, Settings2, SlidersHorizontal, Sparkles, Trash2, Undo2,
 } from "lucide-react";
 import {
   Agent, AgentUpdate, ApiError, Call, LanguageMode, PhoneNumber, ProviderConfig, createAgent, deleteAgent, getAgent,
-  getCurrentUser, getLiveCalls, listCalls, listPhoneNumbers, listProviders, listTenants, rewritePrompt,
+  getCurrentUser, getLiveCalls, listCalls, listPhoneNumbers, listProviders, listTenants, managedOptionId, rewritePrompt,
   undoPrompt, updateAgent,
 } from "@/lib/api";
 import { KnowledgeBasePanel } from "@/components/KnowledgeBasePanel";
@@ -20,9 +20,12 @@ import { Modal } from "@/components/Modal";
 import { AgentStatusDialog } from "@/components/AgentStatusDialog";
 import { AgentNumbersPanel } from "@/components/AgentNumbersPanel";
 import {
-  AgentVoiceSettings, agentLocalModels, isLanguageError, multilingualPayload, notReadyModels,
+  AgentCostBar, AgentVoiceSettings, agentLocalModels, isLanguageError, multilingualPayload, notReadyModels,
 } from "@/components/AgentVoiceSettings";
+import { useAiCatalog } from "@/lib/useAiCatalog";
 import { AgentTestPanel } from "@/components/AgentTestPanel";
+import { PromptReview } from "@/components/PromptReview";
+import { VoiceInputButton } from "@/components/VoiceInputButton";
 import { MAX_LANGUAGES, keptGreetings, languageLabel, languagesWithoutVoice } from "@/lib/engineCatalog";
 import { deriveLanguageDraft } from "@/lib/agentDraft";
 import { useLocalModels } from "@/lib/useLocalModels";
@@ -30,13 +33,12 @@ import { normalizeDialTarget } from "@/lib/dialTargets";
 import { useMenuKeys } from "@/lib/useMenuKeys";
 import { hasInboundNumber, isChatAgent } from "@/lib/agentReadiness";
 
-type Section = "instructions" | "voice" | "knowledge" | "tools" | "settings" | "advanced";
+type Section = "instructions" | "voice" | "knowledge" | "settings" | "advanced";
 
 const SECTIONS: { key: Section; label: string; hint: string; icon: typeof FileText }[] = [
   { key: "instructions", label: "Instructions", hint: "What the agent says first and how it handles the call.", icon: FileText },
   { key: "voice", label: "Language & voice", hint: "What callers speak and how the agent sounds.", icon: Mic },
-  { key: "knowledge", label: "Knowledge", hint: "Files the agent can use to answer questions.", icon: BookOpen },
-  { key: "tools", label: "Tools", hint: "Actions and API tools this agent can use.", icon: Wrench },
+  { key: "knowledge", label: "Knowledge", hint: "Files the agent answers from and the tools it can use.", icon: BookOpen },
   { key: "settings", label: "Settings", hint: "Phone number, how it thinks, and call behaviour.", icon: Settings2 },
 ];
 
@@ -91,7 +93,8 @@ export default function AgentDetailPage() {
   const [recentCalls, setRecentCalls] = useState<Call[]>([]);
   const [section, setSection] = useState<Section>("instructions");
   useEffect(() => {
-    const requested = searchParams.get("section");
+    // Tools moved into Knowledge; old links still land there.
+    const requested = searchParams.get("section") === "tools" ? "knowledge" : searchParams.get("section");
     if (SECTIONS.some((s) => s.key === requested)) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setSection(requested as Section);
@@ -118,6 +121,8 @@ export default function AgentDetailPage() {
   const [rewriteError, setRewriteError] = useState<string | null>(null);
   // Prompt before the last "Ask AI" rewrite, for a one-step local undo.
   const [beforeRewrite, setBeforeRewrite] = useState<string | null>(null);
+  // An AI rewrite waiting for review; the instructions don't change until it is accepted.
+  const [review, setReview] = useState<{ before: string; after: string } | null>(null);
 
   const [menuOpen, setMenuOpen] = useState(false);
   const { triggerRef: menuTriggerRef, menuRef, onMenuKey } = useMenuKeys(menuOpen, () => setMenuOpen(false));
@@ -139,6 +144,14 @@ export default function AgentDetailPage() {
     providers, [form.stt_config_id, form.llm_config_id, form.tts_config_id, ...Object.values(form.tts_config_by_language ?? {})],
   );
   const localModels = useLocalModels(selectedModels);
+  const { catalog: aiCatalog } = useAiCatalog(agent?.tenant_id);
+  // A platform model whose key isn't in the platform .env can't run; a workspace's own provider is taken as set up.
+  const providerReady = (id: string | null | undefined) => {
+    const p = providers.find((x) => x.id === id);
+    if (!p) return false;
+    const option = aiCatalog?.options.find((o) => o.id === managedOptionId(p));
+    return option ? option.available : true;
+  };
   const modelsNotReady = notReadyModels(selectedModels, localModels);
 
   useEffect(() => {
@@ -303,9 +316,7 @@ export default function AgentDetailPage() {
     try {
       const current = form.system_prompt ?? "";
       const { after } = await rewritePrompt(tenantSlug, agent.id, { prompt: current, instruction: askText.trim() });
-      setBeforeRewrite(current);
-      setForm((f) => ({ ...f, system_prompt: after }));
-      setAskText("");
+      setReview({ before: current, after });
     } catch (e) {
       const detail = e instanceof ApiError ? e.detail : "";
       setRewriteError(
@@ -511,8 +522,8 @@ export default function AgentDetailPage() {
           </button>
         )}
         <label className="ed2-dir">
-          Calls: {" "}
-          <select aria-label="Agent call direction" value={form.direction ?? agent.direction}
+          Role: {" "}
+          <select aria-label="Agent role" value={form.direction ?? agent.direction}
             onChange={(e) => setForm({ ...form, direction: e.target.value as Agent["direction"] })}>
             <option value="inbound">People call my agent</option>
             <option value="outbound">My agent calls people</option>
@@ -578,7 +589,7 @@ export default function AgentDetailPage() {
 
         <main className="ed2-main">
           <div className="ed2-sec-hdr">
-            <h2>{sectionInfo.label}{(section === "knowledge" || section === "tools") && <span className="ed2-optional"> (Optional)</span>}</h2>
+            <h2>{sectionInfo.label}{section === "knowledge" && <span className="ed2-optional"> (Optional)</span>}</h2>
             <p>{sectionInfo.hint}</p>
           </div>
           {saveError && (
@@ -617,13 +628,35 @@ export default function AgentDetailPage() {
                     placeholder={'Ask AI: "Make it more polite, also speak Hindi"'}
                     onChange={(e) => setAskText(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && handleAskAi()}
-                    disabled={rewriting}
+                    disabled={rewriting || !!review}
                   />
-                  <button className="btn btn-primary btn-sm" onClick={handleAskAi} disabled={rewriting || !askText.trim()}>
+                  <VoiceInputButton
+                    tenantSlug={tenantSlug}
+                    agentId={agent.id}
+                    disabled={rewriting || !!review}
+                    onText={(text) => setAskText((t) => (t.trim() ? `${t.trim()} ${text}` : text))}
+                    onError={setRewriteError}
+                  />
+                  <button className="btn btn-primary btn-sm" onClick={handleAskAi} disabled={rewriting || !askText.trim() || !!review}>
                     {rewriting ? "Rewriting…" : "Rewrite"}
                   </button>
                 </div>
                 {rewriteError && <div className="error-banner">{rewriteError}</div>}
+                {review && (
+                  <PromptReview
+                    key={review.after}
+                    before={review.before}
+                    after={review.after}
+                    title={`Rewrite: “${askText.trim() || "AI suggestion"}”`}
+                    onDiscard={() => setReview(null)}
+                    onAccept={(prompt) => {
+                      setBeforeRewrite(review.before);
+                      setForm((f) => ({ ...f, system_prompt: prompt }));
+                      setReview(null);
+                      setAskText("");
+                    }}
+                  />
+                )}
 
                 <div className="form-group">
                   <label className="form-label">Opening line</label>
@@ -652,6 +685,8 @@ export default function AgentDetailPage() {
                     placeholder={"Who you are: You are the friendly receptionist for Acme Dental.\nWhat you do: Book, move or cancel appointments.\nWhen you don't know: Offer to take a message.\nNever: Give medical advice."}
                     onChange={(e) => setForm({ ...form, system_prompt: e.target.value })}
                     onBlur={saveHeld}
+                    readOnly={!!review}
+                    title={review ? "Accept or discard the rewrite above first" : undefined}
                   />
                   <div className="form-hint">
                     Say who the agent is, what it helps with, and what it must never do. Changes also update its conversation steps.
@@ -661,6 +696,14 @@ export default function AgentDetailPage() {
             </div>
           )}
 
+          {(section === "voice" || section === "settings") && (
+            <AgentCostBar
+              catalog={aiCatalog}
+              stt={providers.find((p) => p.id === form.stt_config_id) ?? null}
+              llm={providers.find((p) => p.id === form.llm_config_id) ?? null}
+              tts={providers.find((p) => p.id === (form.tts_config_id ?? defaultTtsId)) ?? null}
+            />
+          )}
           {section === "settings" && (
             <div style={{ marginBottom: 14 }}>
               <AgentNumbersPanel
@@ -698,6 +741,8 @@ export default function AgentDetailPage() {
             )}
             <AgentVoiceSettings
               part={section === "voice" ? "voice" : "engines"}
+              catalog={aiCatalog}
+              showCost={false}
               tenantId={agent.tenant_id}
               providers={providers}
               setProviders={setProviders}
@@ -724,8 +769,11 @@ export default function AgentDetailPage() {
             </>
           )}
 
-          {section === "knowledge" && <KnowledgeBasePanel tenantId={agent.tenant_id} agentId={agent.id} />}
-          {section === "tools" && <AgentCustomApisPanel tenantId={agent.tenant_id} agentId={agent.id} />}
+          {section === "knowledge" && (
+            <KnowledgeBasePanel tenantId={agent.tenant_id} agentId={agent.id}>
+              <AgentCustomApisPanel tenantId={agent.tenant_id} agentId={agent.id} />
+            </KnowledgeBasePanel>
+          )}
 
           {section === "advanced" && (
             <>
@@ -970,6 +1018,11 @@ export default function AgentDetailPage() {
           <AgentTestPanel
             tenantSlug={tenantSlug}
             agentSlug={agentSlug}
+            agentId={agent.id}
+            agentName={form.name?.trim() || agent.name}
+            voiceReady={!aiCatalog || (providerReady(form.stt_config_id) && providerReady(form.llm_config_id)
+              && providerReady(form.tts_config_id ?? defaultTtsId))}
+            chatReady={!aiCatalog || providerReady(form.llm_config_id)}
             savePending={saving || (canSave && !held)}
             blockedReason={
               modelsNotReady.some((m) => m.status === "downloading") ? "Wait for the model download to finish to test"

@@ -15,9 +15,15 @@ from typing import Union
 _TAG_RE  = re.compile(r'\[\[(?P<name>[A-Z_]+)(?P<attrs>[^\]]*)\]\]')
 _ATTR_RE = re.compile(r'(\w+)="([^"]*)"')
 
-# TTS speaks markdown chars literally. Blanket strip (not paired regex) because
-# markers can be split across streamed chunks.
-_MARKDOWN_CHARS_RE = re.compile(r"[*_`#]")
+# TTS speaks markdown chars literally. Not a paired regex because markers can be split across streamed
+# chunks, so each char is judged by its neighbours alone; callers must therefore strip whole sentences, never
+# single streamed tokens (a token usually starts at the "_"/"#"). Kept: an "_" with a letter or digit on both sides
+# (qa_pwn.aiff, john_doe@x.com, ABC_123) and a "#" touching a word (C#, #1, order #42); both are content.
+_MARKDOWN_CHARS_RE = re.compile(
+    r"[*`]"
+    r"|(?<![^\W_])_|_(?![^\W_])"          # "_" unless flanked by alphanumerics on both sides
+    r"|(?<!\w)#+(?!\w)"                   # "#" / "##" heading marker: no word char touching the run
+)
 
 
 def strip_markdown_chars(text: str) -> str:
@@ -115,7 +121,8 @@ class DirectiveParser:
     """Pure str -> DirectiveResult parsing; input never contains a partial tag."""
 
     @staticmethod
-    def parse(text: str) -> DirectiveResult:
+    def parse(text: str, strip_markdown: bool = True) -> DirectiveResult:
+        """strip_markdown=False for a streamed token: markdown is judged on whole sentences, not on token edges."""
         directives: list[Directive] = []
 
         def _record(m: "re.Match[str]") -> str:
@@ -125,7 +132,8 @@ class DirectiveParser:
             return ""
 
         clean_text = _TAG_RE.sub(_record, text)
-        clean_text = strip_markdown_chars(clean_text)
+        if strip_markdown:
+            clean_text = strip_markdown_chars(clean_text)
         return DirectiveResult(clean_text=clean_text, directives=directives)
 
     @staticmethod

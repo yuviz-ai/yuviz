@@ -331,7 +331,11 @@ async def get_agent_call_stats(tenant_slug: str) -> list[dict[str, Any]]:
                 ) AS finished,
                 COUNT(*) FILTER (
                     WHERE direction IS DISTINCT FROM 'test' AND ended_at IS NOT NULL AND close_reason = ANY($3)
-                ) AS failed
+                ) AS failed,
+                -- Same rule as the dashboard: a handoff is a transfer a person actually took.
+                COUNT(*) FILTER (
+                    WHERE direction IS DISTINCT FROM 'test' AND ended_at IS NOT NULL AND close_reason = 'TRANSFER_SUCCESS'
+                ) AS handoffs
             FROM calls
             WHERE tenant_id = $1 AND agent_id IS NOT NULL
             GROUP BY agent_id

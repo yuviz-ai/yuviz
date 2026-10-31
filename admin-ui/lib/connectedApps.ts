@@ -1,11 +1,15 @@
 import type { ConnectorPreset, CustomApi, OAuthConnection, OAuthProvider } from "./toolexecApi";
 
+// Filter order on the Connected Apps page; every card carries one as its tag.
+export const APP_CATEGORIES = ["Ticketing", "CRM", "Telephony", "Messaging", "Productivity"] as const;
+export type AppCategory = (typeof APP_CATEGORIES)[number];
+
 export interface AppCard {
   id: string;
   label: string;
   description: string;
   icon: string;
-  category: "Calling" | "Work" | "Messaging";
+  category: AppCategory;
   connected: boolean;
   reconnect: boolean;
   available: boolean;
@@ -21,14 +25,15 @@ export interface AppCard {
 type WorkAppDefinition = { key: string; label: string; description: string; category: AppCard["category"]; icon: string; presetKey?: string; comingSoon?: boolean };
 
 const WORK_APPS: WorkAppDefinition[] = [
-  { key: "google", label: "Google", description: "Calendar and Sheets your agents can use on calls.", category: "Work", icon: "google" },
-  { key: "salesforce", label: "Salesforce", description: "Look up customer records during a call.", category: "Work", icon: "salesforce" },
-  { key: "hubspot", label: "HubSpot", description: "Find contacts in your HubSpot CRM.", category: "Work", icon: "hubspot" },
-  { key: "zoho", label: "Zoho CRM", description: "Look up contacts in your Zoho CRM.", category: "Work", icon: "zoho" },
-  { key: "microsoft", label: "Microsoft", description: "Connect your Microsoft work account.", category: "Work", icon: "microsoft" },
-  { key: "calcom", label: "Cal.com", description: "Connect your Cal.com account.", category: "Work", icon: "calcom" },
-  { key: "whatsapp_confirmation", label: "WhatsApp", description: "Send a confirmation message after a call.", category: "Messaging", icon: "whatsapp", presetKey: "whatsapp_confirmation" },
-  { key: "dynamics_crm", label: "Dynamics 365", description: "Customer records from Microsoft Dynamics.", category: "Work", icon: "dynamics365", presetKey: "dynamics_crm", comingSoon: true },
+  { key: "google", label: "Google", description: "Calendar and Sheets your agents can use on calls.", category: "Productivity", icon: "google" },
+  { key: "salesforce", label: "Salesforce", description: "Look up customer records during a call.", category: "CRM", icon: "salesforce" },
+  { key: "hubspot", label: "HubSpot", description: "Find contacts in your HubSpot CRM.", category: "CRM", icon: "hubspot" },
+  { key: "zoho", label: "Zoho CRM", description: "Look up contacts in your Zoho CRM.", category: "CRM", icon: "zoho" },
+  { key: "microsoft", label: "Microsoft", description: "Connect your Microsoft work account.", category: "Productivity", icon: "microsoft" },
+  { key: "calcom", label: "Cal.com", description: "Connect your Cal.com account.", category: "Productivity", icon: "calcom" },
+  { key: "whatsapp_confirmation", label: "WhatsApp Business", description: "Send a confirmation message after a call.", category: "Messaging", icon: "whatsapp", presetKey: "whatsapp_confirmation" },
+  { key: "zoho_desk", label: "Zoho Desk", description: "Raise a support ticket from the call for your team.", category: "Ticketing", icon: "zoho", presetKey: "zoho_desk_ticket" },
+  { key: "dynamics_crm", label: "Dynamics 365", description: "Customer records from Microsoft Dynamics.", category: "CRM", icon: "dynamics365", presetKey: "dynamics_crm", comingSoon: true },
 ];
 
 export function availabilityLabel(app: AppCard): string {
@@ -44,12 +49,14 @@ export function workAppCards(providers: OAuthProvider[], connections: OAuthConne
     if (catalog?.presetKey) {
       const rows = apis.filter((a) => a.preset_key === catalog.presetKey);
       return { id: entry.key, label: entry.label, description: entry.description, icon: catalog.icon, category: catalog.category,
-        connected: rows.length > 0, reconnect: false, available: !!preset && !catalog.comingSoon,
+        connected: rows.length > 0, reconnect: false,
+        // A preset that signs in to a provider can't be turned on until the platform has that provider's login.
+        available: !!preset && !catalog.comingSoon && (!preset.provider || providers.some((p) => p.key === preset.provider)),
         comingSoon: catalog.comingSoon, preset, count: rows.length };
     }
     const provider = providers.find((p) => p.key === entry.key);
     const active = connections.filter((c) => c.provider === entry.key && c.status !== "disconnected");
-    return { id: entry.key, label: entry.label, description: entry.description, icon: catalog?.icon ?? entry.key, category: "Work",
+    return { id: entry.key, label: entry.label, description: entry.description, icon: catalog?.icon ?? entry.key, category: catalog?.category ?? "Productivity",
       available: !!provider, connected: active.some((c) => c.status === "connected"),
       reconnect: active.length > 0 && active.every((c) => c.status === "reconnect_needed"),
       accounts: active, count: active.length, provider,
@@ -64,7 +71,7 @@ export function workAppCards(providers: OAuthProvider[], connections: OAuthConne
     cards.push({ id: preset.key, label: sheets ? "Google Sheets" : preset.title,
       description: sheets ? "Save leads from calls into a spreadsheet." : `Use ${preset.title} with your agents.`,
       icon: sheets ? "sheets" : preset.provider ?? "calendar",
-      category: "Work", connected: rows.length > 0,
+      category: "Productivity", connected: rows.length > 0,
       reconnect: rows.length > 0 && !!preset.provider && !connections.some((c) => c.provider === preset.provider && c.status === "connected"
         && rows.some((r) => !r.oauth_connection_id || r.oauth_connection_id === c.id)),
       available: !preset.provider || providers.some((p) => p.key === preset.provider), preset });

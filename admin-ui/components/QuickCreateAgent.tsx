@@ -7,8 +7,7 @@ import { useRouter } from "next/navigation";
 import {
   ArrowLeft, ArrowRight, Mic, PenLine, Phone, PhoneIncoming, PhoneOutgoing, Sparkles,
 } from "lucide-react";
-import { ApiError, ProviderConfig, createAgent, createProvider, generateSystemPrompt, listProviders } from "@/lib/api";
-import { BUILTIN_TTS_ENGINE, BUILTIN_TTS_VOICE } from "@/lib/engineCatalog";
+import { ApiError, ProviderConfig, createAgent, generateSystemPrompt, listProviders, recommendedAiOptions } from "@/lib/api";
 import { useActiveTenant } from "@/lib/useActiveTenant";
 import { AGENT_TEMPLATES, AgentTemplate, CallDirection, DEFAULT_GREETING, templateByKey } from "@/lib/agentTemplates";
 import { buildSystemPrompt } from "@/lib/systemPromptBuilder";
@@ -62,26 +61,19 @@ export function QuickCreateAgent({ initialTemplate, onStepByStep }: {
       .catch((e) => setProvidersError(e instanceof ApiError ? e.detail : String(e)));
   }, [account]);
 
-  const pick = (role: "stt" | "llm" | "tts", accountDefault: string | null) => {
-    const ofRole = (providers ?? []).filter((p) => p.role === role);
-    if (accountDefault && ofRole.some((p) => p.id === accountDefault)) return accountDefault;
-    return ofRole[0]?.id ?? null;
-  };
-
-  // The account's chosen voice if it has one, otherwise the built-in voice (set up on first use).
-  const defaultVoiceId = async (accountId: string, accountDefault: string | null) => {
-    const tts = (providers ?? []).filter((p) => p.role === "tts");
-    if (accountDefault && tts.some((p) => p.id === accountDefault)) return accountDefault;
-    const builtin = tts.find((p) => p.engine === BUILTIN_TTS_ENGINE && p.voice === BUILTIN_TTS_VOICE)
-      ?? tts.find((p) => p.engine === BUILTIN_TTS_ENGINE);
-    if (builtin) return builtin.id;
-    try {
-      return (await createProvider(accountId, {
-        name: `${BUILTIN_TTS_ENGINE} — ${BUILTIN_TTS_VOICE}`, role: "tts", engine: BUILTIN_TTS_ENGINE, voice: BUILTIN_TTS_VOICE,
-      })).id;
-    } catch {
-      return tts[0]?.id ?? null;
+  // The account's default, else the platform's recommended model, else any provider the account has.
+  const pickAll = async (accountId: string, defaults: Record<"stt" | "llm" | "tts", string | null>) => {
+    const own = (role: "stt" | "llm" | "tts") => (providers ?? []).filter((p) => p.role === role);
+    const picked = Object.fromEntries((["stt", "llm", "tts"] as const).map((role) => [
+      role, defaults[role] && own(role).some((p) => p.id === defaults[role]) ? defaults[role] : null,
+    ])) as Record<"stt" | "llm" | "tts", string | null>;
+    const missing = (["stt", "llm", "tts"] as const).filter((r) => !picked[r]);
+    if (missing.length) {
+      const rows = await recommendedAiOptions(accountId, ["en"], [...missing]).catch(() => []);
+      for (const row of rows) picked[row.role as "stt" | "llm" | "tts"] ??= row.id;
     }
+    for (const role of missing) picked[role] ??= own(role)[0]?.id ?? null;
+    return picked;
   };
 
   const chooseTemplate = (t: AgentTemplate | null) => {
@@ -99,7 +91,10 @@ export function QuickCreateAgent({ initialTemplate, onStepByStep }: {
   const handleCreate = async () => {
     if (!account || !canCreate) return;
     setError(null);
-    const llmId = pick("llm", account.default_llm_config_id);
+    const picked = await pickAll(account.id, {
+      stt: account.default_stt_config_id, llm: account.default_llm_config_id, tts: account.default_tts_config_id,
+    });
+    const llmId = picked.llm;
     const tone = template?.tone ?? "Friendly and professional";
     const persona = `${ROLE_LINE[direction]} ${template?.persona ?? ""}`.trim();
     let systemPrompt: string | null = null;
@@ -127,9 +122,9 @@ export function QuickCreateAgent({ initialTemplate, onStepByStep }: {
         direction,
         greeting: template?.greeting ?? DEFAULT_GREETING[direction],
         system_prompt: systemPrompt,
-        stt_config_id: pick("stt", account.default_stt_config_id),
+        stt_config_id: picked.stt,
         llm_config_id: llmId,
-        tts_config_id: await defaultVoiceId(account.id, account.default_tts_config_id),
+        tts_config_id: picked.tts,
         status: "inactive",
       });
       router.push(`/agents/${account.slug}/${agent.slug}?new=1`);

@@ -580,3 +580,12 @@ async def test_generated_prompt_keeps_the_knowledge_rule_even_if_the_model_parap
     assert sp._KNOWLEDGE_RULE in _sections(out)[sp.HEADING_WANTS]
     out_no_kb = await sp.generate_system_prompt("t", "c", _kb_inputs(False), secret_resolver=None)
     assert sp._KNOWLEDGE_RULE not in out_no_kb
+
+
+def test_ollama_uses_the_platform_server_and_vets_a_tenant_address(monkeypatch):
+    from libs.egress_guard import UnsafeProviderUrl
+
+    monkeypatch.setenv("VOICEAI_LLM_URL", "http://localhost:11434/")
+    assert sp._ollama_base({"extra": {}}) == "http://localhost:11434"
+    with pytest.raises(UnsafeProviderUrl):
+        sp._ollama_base({"extra": {"base_url": "http://169.254.169.254"}})

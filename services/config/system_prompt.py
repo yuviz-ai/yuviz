@@ -7,12 +7,15 @@ restores any block it dropped. Only openai/anthropic engines are supported; othe
 from __future__ import annotations
 
 import logging
+import os
 import re
 import uuid
 from collections.abc import Callable
 from typing import Any, Literal
 
 import httpx
+
+from libs.egress_guard import UnsafeProviderUrl, validate_base_url
 
 from .provider_configs import get_provider_config
 from .secret_resolver import SecretResolver
@@ -296,28 +299,37 @@ def _check_truncated(text: str, truncated: bool) -> str:
     return text
 
 
-async def _call_openai(
-    api_key: str, model: str, messages: _Messages, system: str | None, max_tokens: int,
-) -> str:
-    if system:
-        messages = [{"role": "system", "content": system}, *messages]
-    async with httpx.AsyncClient(base_url="https://api.openai.com", timeout=_TIMEOUT_S) as client:
-        resp = await client.post(
-            "/v1/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}"},
-            json={
-                "model": model,
-                "messages": messages,
-                "stream": False,
-                "temperature": 0.4,
-                "max_tokens": max_tokens,
-            },
-        )
-    if resp.status_code != 200:
-        log.warning("OpenAI chat/completions returned %s", resp.status_code)
-        raise ValueError(f"OpenAI returned {resp.status_code}")
-    text = _parse_text(resp, lambda body: body["choices"][0]["message"]["content"])
-    return _check_truncated(text, resp.json()["choices"][0].get("finish_reason") == "length")
+def _openai_style(label: str, base_url: str | None, path: str = "/v1/chat/completions"):
+    """A caller for an OpenAI-compatible chat API; `base` overrides the address (Ollama's is per deployment)."""
+
+    async def call(
+        api_key: str | None, model: str, messages: _Messages, system: str | None, max_tokens: int,
+        *, base: str | None = None,
+    ) -> str:
+        if system:
+            messages = [{"role": "system", "content": system}, *messages]
+        async with httpx.AsyncClient(base_url=base or base_url or "", timeout=_TIMEOUT_S) as client:
+            resp = await client.post(
+                path,
+                headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "stream": False,
+                    "temperature": 0.4,
+                    "max_tokens": max_tokens,
+                },
+            )
+        if resp.status_code != 200:
+            log.warning("%s chat/completions returned %s", label, resp.status_code)
+            raise ValueError(f"{label} returned {resp.status_code}")
+        text = _parse_text(resp, lambda body: body["choices"][0]["message"]["content"])
+        return _check_truncated(text, resp.json()["choices"][0].get("finish_reason") == "length")
+
+    return call
+
+
+_call_openai = _openai_style("OpenAI", "https://api.openai.com")
 
 
 async def _call_anthropic(
@@ -344,8 +356,28 @@ async def _call_anthropic(
     return _check_truncated(text, resp.json().get("stop_reason") == "max_tokens")
 
 
-_CALLERS = {"openai": _call_openai, "anthropic": _call_anthropic}
-_DEFAULT_MODEL = {"openai": "gpt-4o-mini", "anthropic": "claude-3-5-haiku-20241022"}
+_CALLERS = {
+    "openai": _call_openai,
+    "anthropic": _call_anthropic,
+    "groq": _openai_style("Groq", "https://api.groq.com/openai"),
+    "gemini": _openai_style("Gemini", "https://generativelanguage.googleapis.com", "/v1beta/openai/chat/completions"),
+    "ollama": _openai_style("Ollama", None),
+}
+_DEFAULT_MODEL = {
+    "openai": "gpt-4o-mini", "anthropic": "claude-3-5-haiku-20241022", "groq": "llama-3.3-70b-versatile",
+    "gemini": "gemini-flash-latest", "ollama": "llama3.2",
+}
+# Engines that run without a key (a local model server).
+_KEYLESS = {"ollama"}
+
+
+def _ollama_base(cfg: dict[str, Any]) -> str:
+    """Same address the Conversation service uses; a tenant-set one is vetted again before it is fetched."""
+    custom = (cfg.get("extra") or {}).get("base_url")
+    if custom:
+        validate_base_url(custom)
+        return custom.rstrip("/")
+    return (os.environ.get("VOICEAI_LLM_URL") or "http://localhost:11434").rstrip("/")
 
 
 async def _load_tenant_llm_config(tenant_id: Any, llm_config_id: Any) -> dict[str, Any]:
@@ -365,7 +397,7 @@ async def _load_tenant_llm_config(tenant_id: Any, llm_config_id: Any) -> dict[st
             f"system-prompt generation isn't supported for engine {cfg['engine']!r} yet — "
             f"supported: {sorted(_CALLERS)}"
         )
-    if not cfg["api_key_ref"]:
+    if not cfg["api_key_ref"] and cfg["engine"] not in _KEYLESS:
         raise ValueError(f"provider_config {llm_config_id} has no api_key_ref configured")
     return cfg
 
@@ -375,12 +407,15 @@ async def _complete(
     system: str | None = None, max_tokens: int, secret_resolver: SecretResolver,
 ) -> str:
     cfg = await _load_tenant_llm_config(tenant_id, llm_config_id)
-    api_key = await secret_resolver.resolve(cfg["api_key_ref"])
+    api_key = await secret_resolver.resolve(cfg["api_key_ref"]) if cfg["api_key_ref"] else None
     caller = _CALLERS[cfg["engine"]]
     try:
+        extra = {"base": _ollama_base(cfg)} if cfg["engine"] == "ollama" else {}
         return await caller(
-            api_key, cfg["model"] or _DEFAULT_MODEL[cfg["engine"]], messages, system, max_tokens,
+            api_key, cfg["model"] or _DEFAULT_MODEL[cfg["engine"]], messages, system, max_tokens, **extra,
         )
+    except UnsafeProviderUrl as exc:
+        raise ValueError(f"the model server address was refused: {exc}") from exc
     except httpx.RequestError as exc:
         raise ValueError(f"could not reach the LLM provider: {exc.__class__.__name__}") from exc
 

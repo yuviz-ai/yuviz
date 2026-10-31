@@ -6,6 +6,7 @@ import { CustomApisPanel } from "@/components/CustomApisPanel";
 import { ConnectorsPanel } from "@/components/ConnectorsPanel";
 import { ConnectedAppsHeading } from "@/components/ConnectedAppsHeading";
 import { useActiveTenant } from "@/lib/useActiveTenant";
+import { APP_CATEGORIES } from "@/lib/connectedApps";
 
 export default function IntegrationsPage() {
   return (
@@ -18,7 +19,7 @@ export default function IntegrationsPage() {
 function Integrations() {
   const { tenant, isAllTenants, loading, error } = useActiveTenant();
   const searchParams = useSearchParams();
-  const category = (["Calling", "Work", "Messaging"] as const)
+  const category = APP_CATEGORIES
     .find((value) => value.toLowerCase() === searchParams.get("category")?.toLowerCase()) ?? "All";
   const updateParams = (update: (params: URLSearchParams) => void) => {
     const params = new URLSearchParams(window.location.search);

@@ -245,9 +245,9 @@ export default function AgentsPage() {
                   <span className="badge gray">{tpl?.label ?? "Custom"}</span>
                   {direction !== "outbound" && att?.numbers != null && (att.numbers.length === 0
                     ? !isChatAgent(a) && <span className="badge gray">No number</span>
-                    : att.numbers.map((n) => <span key={n} className="badge green" title="People who call this number reach this agent">{n}</span>))}
+                    : att.numbers.map((n) => <span key={n} className="badge cyan" title="People who call this number reach this agent">{n}</span>))}
                   {direction && direction !== "inbound" && !isChatAgent(a) && (a.outbound_caller_id
-                    ? <span className="badge green" title="The number people see when this agent calls them">Caller ID {a.outbound_caller_id}</span>
+                    ? <span className="badge cyan" title="The number people see when this agent calls them">Caller ID {a.outbound_caller_id}</span>
                     : <span className="badge gray">No caller ID</span>)}
                 </div>
 

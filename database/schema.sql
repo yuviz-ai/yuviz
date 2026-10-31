@@ -721,6 +721,15 @@ CREATE TABLE IF NOT EXISTS platform_outbound_limits (
 INSERT INTO platform_outbound_limits (singleton, total_call_capacity, inbound_reserve, max_outbound_concurrent_calls)
     VALUES (true, 300, 75, 225) ON CONFLICT DO NOTHING;
 
+-- Platform singleton: local (self-hosted) models are hidden from workspaces until a superadmin turns them on.
+CREATE TABLE IF NOT EXISTS platform_ai_settings (
+    singleton            BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton),
+    local_models_enabled BOOLEAN NOT NULL DEFAULT false,
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by           UUID
+);
+INSERT INTO platform_ai_settings (singleton) VALUES (true) ON CONFLICT DO NOTHING;
+
 -- Platform-wide CPS per scope; no row = no CPS limit for that scope.
 CREATE TABLE IF NOT EXISTS outbound_cps_limits (
     scope      TEXT PRIMARY KEY CHECK (scope ~ '^(sip_trunk:[a-z0-9_-]{1,40}|provider_account:[0-9a-f-]{36})$'),
@@ -1318,6 +1327,9 @@ DO $$ BEGIN
     OR (auth_kind = 'api_key'
          AND (status = 'connected') = (access_token_ref IS NOT NULL)
          AND refresh_token_ref IS NULL AND access_expires_at IS NULL))$sql$;
+  EXECUTE 'ALTER TABLE custom_apis DROP CONSTRAINT IF EXISTS custom_apis_endpoint_base_source_check';
+  EXECUTE $sql$ALTER TABLE custom_apis ADD CONSTRAINT custom_apis_endpoint_base_source_check
+    CHECK (endpoint_base_source IN ('literal','oauth_connection','zoho_desk'))$sql$;
   EXECUTE 'ALTER TABLE custom_apis DROP CONSTRAINT IF EXISTS custom_apis_endpoint_base_shape';
   EXECUTE $sql$ALTER TABLE custom_apis ADD CONSTRAINT custom_apis_endpoint_base_shape CHECK (
        endpoint_base_source = 'literal'

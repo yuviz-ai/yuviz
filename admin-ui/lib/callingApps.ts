@@ -4,9 +4,9 @@ export const CALLING_APPS = [
   { key: "twilio", icon: "twilio", label: "Twilio", description: "Buy and use phone numbers from Twilio." },
   { key: "plivo", icon: "plivo", label: "Plivo", description: "Buy and use phone numbers from Plivo." },
   { key: "vonage", icon: "vonage", label: "Vonage", description: "Buy and use phone numbers from Vonage." },
-  { key: "cloudonix", icon: "cloudonix", label: "Cloudonix", description: "Route calls through your Cloudonix account." },
   { key: "vobiz", icon: "vobiz", label: "Vobiz", description: "Route calls through your Vobiz account." },
-  { key: "native", icon: "local-phone", label: "Local phone", description: "Use this platform’s own phone system — no outside account." },
+  { key: "native", icon: "local-phone", label: "Native", description: "Use this platform’s own phone system — no outside account." },
+  { key: "cloudonix", icon: "cloudonix", label: "Cloudonix", description: "Route calls through your Cloudonix account." },
 ];
 
 export const CARRIER_PROVIDERS: readonly string[] = ["twilio", "plivo", "vonage"] satisfies CarrierProvider[];

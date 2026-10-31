@@ -101,7 +101,7 @@ _CALLEES = {
     "resolve_api_key_input", "create_provider_config", "update_provider_config",
     "create_tool_provider_config", "update_tool_provider_config",
 }
-_EXPECTED_CALL_SITES = 65  # +2: website-demo seed (create + update); +1: template-route null-language test; +3: test_agent_languages (_cartesia + two provider-edit tests); +2: agent-language provider tests; +7: RAG redesign (knowledge fixtures, provider URL guard tests); every site passes allow_pointer_schemes
+_EXPECTED_CALL_SITES = 69  # +4: platform AI (choose + lock tests); +2: website-demo seed (create + update); +1: template-route null-language test; +3: test_agent_languages (_cartesia + two provider-edit tests); +2: agent-language provider tests; +7: RAG redesign (knowledge fixtures, provider URL guard tests); every site passes allow_pointer_schemes
 
 
 def test_every_call_site_passes_allow_pointer_schemes():

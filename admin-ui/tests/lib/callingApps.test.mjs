@@ -16,7 +16,7 @@ test("Cloudonix key replacement retains the remaining keys during rotation", () 
 });
 
 test("calling app names fall back safely and their icons come from the catalog", () => {
-  assert.equal(callingAppLabel("native"), "Local phone");
+  assert.equal(callingAppLabel("native"), "Native");
   assert.equal(callingAppLabel("future-provider"), "future-provider");
   assert.equal(CALLING_APPS.find((app) => app.key === "native").icon, "local-phone");
   assert.ok(CALLING_APPS.every((app) => !!app.icon));

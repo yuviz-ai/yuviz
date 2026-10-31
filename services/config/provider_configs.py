@@ -101,6 +101,9 @@ def mask_enc(value: str | None) -> str | None:
 def public_provider_config(cfg: dict[str, Any], *, masked: bool) -> dict[str, Any]:
     if not masked:
         return cfg
+    # A platform-provided row's pointer names the platform's own env var; workspaces see only that one is set.
+    if (cfg.get("extra") or {}).get("managed") and cfg["api_key_ref"]:
+        return {**cfg, "api_key_ref": STORED_SENTINEL}
     return {**cfg, "api_key_ref": mask_enc(cfg["api_key_ref"])}
 
 
@@ -148,6 +151,40 @@ def resolve_api_key_input(
         "k8s:namespace/secret). To store the key itself, send it as `api_key` "
         "and it will be encrypted — never paste a real key into this field."
     )
+
+MANAGED_KEY = "managed"
+# Extra keys a workspace may still change on a platform-provided row; everything else is the platform's.
+MANAGED_EDITABLE_EXTRA = frozenset({"speed", "think", "mode"})
+# Saaras output modes (services/conversation/providers/stt/sarvam.py MODES).
+SARVAM_STT_MODES = ("transcribe", "translate", "verbatim", "translit", "codemix")
+
+
+def require_supported_stt_mode(role: str, engine: str, extra: dict[str, Any] | None) -> None:
+    mode = (extra or {}).get("mode")
+    if role == "stt" and engine == "sarvam" and mode is not None and mode not in SARVAM_STT_MODES:
+        raise ValueError(f"extra.mode {mode!r} is not supported; use one of {', '.join(SARVAM_STT_MODES)}")
+_MANAGED_LOCKED = "this model is provided by the platform; only its speed can be changed here"
+
+
+def reject_managed_marker(extra: Any) -> None:
+    if isinstance(extra, dict) and MANAGED_KEY in extra:
+        raise ValueError("extra.managed is reserved for platform-provided models")
+
+
+def check_managed_edit(old: dict[str, Any], fields: dict[str, Any], new_extra: Any, *, had_api_key: bool) -> None:
+    """A workspace may only change speed/think on a platform-provided row, and may not mark its own rows as one."""
+    old_extra = old.get("extra") or {}
+    if not old_extra.get(MANAGED_KEY):
+        if "extra" in fields:
+            reject_managed_marker(new_extra)
+        return
+    if had_api_key or set(fields) - {"extra"}:
+        raise ValueError(_MANAGED_LOCKED)
+    new_extra = new_extra or {}
+    changed = {k for k in set(old_extra) | set(new_extra) if old_extra.get(k) != new_extra.get(k)}
+    if changed - MANAGED_EDITABLE_EXTRA:
+        raise ValueError(_MANAGED_LOCKED)
+
 
 _UPDATABLE_FIELDS = {
     "name", "engine", "model", "voice", "language", "region", "environment",
@@ -227,8 +264,11 @@ async def create_provider_config(
     import json as _json
 
     api_key_ref = resolve_api_key_input(api_key, api_key_ref, allow_pointer_schemes=allow_pointer_schemes)
+    if not allow_pointer_schemes:
+        reject_managed_marker(extra)
     require_safe_embedding_url(role, engine, extra)
     require_supported_whisper(engine, model, extra)
+    require_supported_stt_mode(role, engine, extra)
 
     pool = await db.get_pool()
     async with tenant_conn(pool) as conn:
@@ -287,6 +327,8 @@ async def update_provider_config(
             raise LookupError(f"provider_config {provider_id} not found")
         old = dict(old_row)
         old["extra"] = db.json_col(old["extra"])
+        if not allow_pointer_schemes:
+            check_managed_edit(old, fields, new_extra, had_api_key=had_api_key)
         # The row as it will be: a changed engine re-checks the stored extra, a changed extra is checked as sent.
         if "extra" in fields or "engine" in fields:
             require_safe_embedding_url(
@@ -296,6 +338,7 @@ async def update_provider_config(
             fields.get("engine", old["engine"]), fields.get("model", old["model"]),
             new_extra if "extra" in fields else old["extra"], old=old,
         )
+        require_supported_stt_mode(old["role"], fields.get("engine", old["engine"]), new_extra if "extra" in fields else old["extra"])
 
         # After the FOR UPDATE fetch, so "[stored]" and the byte-identical
         # round-trip are compared with the row this transaction holds.
@@ -496,6 +539,11 @@ async def list_provider_voices(provider_id: Any, *, secret_resolver: SecretResol
         raise ValueError(f"provider_config {provider_id} has no api_key_ref configured")
 
     api_key = await secret_resolver.resolve(cfg["api_key_ref"])
+    return await fetch_vendor_voices(engine, api_key, source=f"provider_config {provider_id}")
+
+
+async def fetch_vendor_voices(engine: str, api_key: str, *, source: str) -> list[dict[str, Any]]:
+    """ElevenLabs or Cartesia voices for this key; the key never leaves the server."""
     if engine == "elevenlabs":
         label, url, headers = "ElevenLabs", _ELEVENLABS_VOICES_URL, {"xi-api-key": api_key}
     else:
@@ -509,10 +557,7 @@ async def list_provider_voices(provider_id: Any, *, secret_resolver: SecretResol
         raise ValueError(f"could not reach the {label} Voices API: {exc.__class__.__name__}") from exc
     if resp.status_code != 200:
         # Log the upstream body but don't forward it in the 400 detail.
-        log.warning(
-            "%s Voices API returned %s for provider_config %s: %s",
-            label, resp.status_code, provider_id, resp.text[:200],
-        )
+        log.warning("%s Voices API returned %s for %s: %s", label, resp.status_code, source, resp.text[:200])
         raise ValueError(f"{label} Voices API returned {resp.status_code}")
 
     return _elevenlabs_voices(resp) if engine == "elevenlabs" else _cartesia_voices(resp)

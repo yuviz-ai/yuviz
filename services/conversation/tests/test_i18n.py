@@ -223,10 +223,21 @@ def test_shortest_tool_filler_is_the_real_shortest_phrase():
 _BANNED_STEMS = {
     "en": ("check", "look into", "take care of", "thank"),
     "hi": ("देख", "पूरा कर", "धन्यवाद", "शुक्रिया"),
+    "ta": ("பார்க்க", "சரிபார்", "முடித்து", "நன்றி"),
+    "te": ("చూ", "పూర్తి", "ధన్యవాద"),
+    "kn": ("ನೋಡ", "ಮುಗಿಸ", "ಧನ್ಯವಾದ"),
+    "mr": ("पाह", "तपास", "पूर्ण कर", "धन्यवाद"),
+    "bn": ("দেখ", "শেষ কর", "ধন্যবাদ"),
 }
-_LOOKUP_FILLER = {"en": "Let me check on that.", "hi": "जी, अभी देखते हैं।"}
+_LOOKUP_FILLER = {
+    "en": "Let me check on that.", "hi": "जी, अभी देखते हैं।", "ta": "சரி, இப்போது பார்க்கலாம்.",
+    "te": "సరే, ఇప్పుడే చూద్దాం.", "kn": "ಸರಿ, ಈಗ ನೋಡೋಣ.", "mr": "हो, आत्ता पाहूया.", "bn": "আচ্ছা, এখনই দেখছি।",
+}
 # Thanks belong to a closing or a wait the caller has already sat through, not to a reply to a greeting.
-_THANKS_FILLER = {"en": "Thank you, one moment please.", "hi": "धन्यवाद, बस एक पल।"}
+_THANKS_FILLER = {
+    "en": "Thank you, one moment please.", "hi": "धन्यवाद, बस एक पल।", "ta": "நன்றி, ஒரு நிமிடம்.",
+    "te": "ధన్యవాదాలు, ఒక్క క్షణం.", "kn": "ಧನ್ಯವಾದಗಳು, ಒಂದು ಕ್ಷಣ.", "mr": "धन्यवाद, एक क्षण.", "bn": "ধন্যবাদ, এক মুহূর্ত।",
+}
 
 
 # Every language that ships a turn-1 pool is checked, so a new language is covered without editing the tests.

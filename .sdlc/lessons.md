@@ -449,8 +449,10 @@ Tags: [prd] [architect] [planner] [implementer] [critic] [security] [tester] [qa
     *Earned: PR #214, where every live call on an expired key ran its own 2 s DB attempt and logged its own warning during the outage.*
 
 54. [planner][tester][approver] When the suite needs a service the local machine lacks, the task file must say so up front
-    (`## Test environment`), and the fan-in must check failures against the base commit before halting. A failure that is
-    identical on base is pre-existing, not a blocker.
+    (`## Test environment`), and the fan-in must check failures against the base commit before halting. A failure is
+    pre-existing only when the same test node ID fails with the same error on base, and only for tests that exercise no
+    module the diff touches. The tester lists each one under `## Pre-existing on base` in `06-test-report.md` as "not exercised",
+    never as passed, and CI must run them green before ship. A failing test that exercises a module the diff touches is always a blocker.
     *Earned: the PR #214 run halted twice at build on 50 clinic/toolexec fixture errors (no local Postgres socket) that failed
     identically on base.*
 

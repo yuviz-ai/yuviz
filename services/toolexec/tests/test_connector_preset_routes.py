@@ -190,7 +190,8 @@ async def test_every_console_role_can_list_the_presets(world):
     assert r.status_code == 200
     assert [(p["key"], p["provider"]) for p in r.json()] == [
         ("calendar_booking", "google"), ("whatsapp_confirmation", None), ("sheets_lead_capture", "google"),
-        ("salesforce_crm", "salesforce"), ("hubspot_crm", "hubspot"), ("zoho_crm", "zoho")]
+        ("salesforce_crm", "salesforce"), ("hubspot_crm", "hubspot"), ("zoho_crm", "zoho"),
+        ("zoho_desk_ticket", "zoho")]
     assert all(set(p) == {"key", "title", "provider", "setup_schema"} for p in r.json())
 
 
@@ -345,7 +346,7 @@ async def test_a_hand_made_api_with_a_preset_rows_name_is_a_conflict_and_rolls_e
         r = await _apply(c, tenants["a"], h, CALENDAR)
 
     assert (r.status_code, r.json()) == (409, {"detail": (
-        "An API named 'gcal_book' already exists. Rename or remove it, then turn this on again.")})
+        "An API named 'GCAL_BOOK' already exists. Rename or remove it, then turn this on again.")})
     assert [row["name"] for row in await _rows(pool, tenants["a"])] == ["GCAL_BOOK"]   # nothing of the preset survived
 
 

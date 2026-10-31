@@ -28,10 +28,21 @@ from services.config.deps import (
 from .. import oauth
 from ..schemas import ApiKeyConnectRequest, OAuthAuthorizeRequest, OAuthCallbackRequest, RevokeGrantsRequest
 
+async def require_tenant_uuid(tenant_id: str) -> None:
+    """Reject a slug in the id segment with 422 (it reached the DB as a UUID and 500'd).
+
+    Runs after require_path_tenant_access, so another tenant's or an unknown slug
+    is still the same 404 and this adds no tenant oracle."""
+    try:
+        uuid.UUID(tenant_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="tenant_id must be a tenant UUID") from None
+
+
 tenant_scoped_router = APIRouter(
     prefix="/tenants/{tenant_id}/oauth-connections",
     tags=["oauth_connections"],
-    dependencies=[Depends(bind_path_tenant), Depends(require_path_tenant_access)],
+    dependencies=[Depends(bind_path_tenant), Depends(require_path_tenant_access), Depends(require_tenant_uuid)],
 )
 router = APIRouter(tags=["oauth_connections"])
 

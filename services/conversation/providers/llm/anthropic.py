@@ -16,6 +16,7 @@ import httpx
 from ..interfaces import ChatMessage
 from . import build_chat_messages, raise_with_body_logged
 from ...tools.llm_adapter import TokenEvent, ToolCallEvent, TurnEvent
+from services.conversation.providers.http_pool import provider_http_limits
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +57,7 @@ class AnthropicLLM:
             base_url=base_url.rstrip("/"),
             headers={"x-api-key": api_key, "anthropic-version": _API_VERSION},
             timeout=timeout_s,
+            limits=provider_http_limits(),
         )
         log.info("AnthropicLLM model=%s", model)
 

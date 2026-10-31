@@ -21,6 +21,7 @@ Rules:
 - No test that only restates the implementation. No mocking the thing under test.
 - One assertion focus per test; name the test after the behaviour, not the function.
 - If a test fails, report the failure — do not weaken the assertion or edit the source to make it pass. Fixing source is the implementer's job.
+- A failure goes under `## Pre-existing on base`, not FAILURES or RESULT, only when lesson 54 allows it: same node ID, same error on base, and the test exercises no module the diff touches. Otherwise it is a FAIL.
 - Maximum 8 new tests. Fewer is better.
 
 Write to the report path:
@@ -33,6 +34,9 @@ RESULT: <n passed, n failed>
 - <test name> — <what it protects> — pass|FAIL
 FAILURES: <one line each, or "None">
 UNCOVERED: <acceptance criteria with no test, or "None">
+
+## Pre-existing on base
+- <node id> — <error> — not exercised (same failure on <base sha>; exercises no module the diff touches)
 ```
 
 Return to the caller: the command, pass/fail counts, and failure lines. Nothing else.

@@ -110,7 +110,7 @@ def test_every_transform_a_row_carries_is_valid():
 def test_oauth_scopes_come_from_the_preset_definitions():
     oauth_presets = {key: p for key, p in presets.PRESETS.items() if p.provider}
     assert set(oauth_presets) == {
-        "calendar_booking", "sheets_lead_capture", "salesforce_crm", "hubspot_crm", "zoho_crm",
+        "calendar_booking", "sheets_lead_capture", "salesforce_crm", "hubspot_crm", "zoho_crm", "zoho_desk_ticket",
     }
     for preset in oauth_presets.values():
         assert preset.provider in oauth.PROVIDERS and preset.scopes
@@ -544,3 +544,29 @@ def test_the_crm_presets_request_no_write_capable_scope():
             assert not re.search(r"write|\.all$|\.ALL$|modify|create|update|delete", scope, re.I), (key, scope)
     assert presets.PRESETS["hubspot_crm"].scopes == {"oauth", "crm.objects.contacts.read"}
     assert presets.PRESETS["zoho_crm"].scopes == {"ZohoCRM.modules.contacts.READ"}
+
+
+def test_zoho_desk_dials_desk_in_the_connections_data_centre_only():
+    zoho = oauth.PROVIDERS["zoho"]
+    assert oauth.zoho_desk_base("https://www.zohoapis.in") == "https://desk.zoho.in"
+    assert oauth.zoho_desk_base("https://www.zohoapis.com.au") == "https://desk.zoho.com.au"
+    assert oauth.zoho_desk_base("https://evil.example") is None
+    allowed = lambda host, base: oauth.provider_host_allowed(zoho, host, base, base_source="zoho_desk")  # noqa: E731
+    assert allowed("desk.zoho.in", "https://www.zohoapis.in")
+    assert not allowed("desk.zoho.com", "https://www.zohoapis.in")
+    assert not allowed("www.zohoapis.in", "https://www.zohoapis.in")
+    assert not oauth.provider_host_allowed(
+        oauth.PROVIDERS["google"], "desk.zoho.in", "https://www.zohoapis.in", base_source="zoho_desk")
+
+
+def test_zoho_desk_ticket_sends_the_org_header_and_the_callers_number():
+    from services.toolexec.schemas import ZohoDeskSetup
+
+    [step] = presets.PRESETS["zoho_desk_ticket"].steps(
+        ZohoDeskSetup(preset_key="zoho_desk_ticket", org_id="123", department_id="456"))
+    by_name = {p.name: p for p in step.params}
+    assert step.endpoint_base_source == "zoho_desk" and step.side_effecting
+    assert (by_name["orgId"].location, by_name["orgId"].literal_value) == ("header", "123")
+    assert by_name["contact_phone"].source == "caller_id" and by_name["contact_phone"].body_path == "contact.phone"
+    with pytest.raises(ValueError):
+        ZohoDeskSetup(preset_key="zoho_desk_ticket", org_id="12a", department_id="456")

@@ -723,8 +723,13 @@ async def execute_chain(request: ChainExecuteRequest) -> ChainExecuteResponse:
 
     chain_budget_ms = min(request.chain_budget_ms, int(os.environ.get(_MAX_CHAIN_BUDGET_MS_ENV, _DEFAULT_MAX_CHAIN_BUDGET_MS)))
 
-    if not admission.acquire(tenant_id, agent_id):
+    # Queue briefly for a concurrency slot (never past the chain budget) rather than refuse a transient burst.
+    max_wait_s = min(admission.max_wait_ms(), chain_budget_ms) / 1000.0
+    waited_from = time.monotonic()
+    if not await admission.acquire_wait(tenant_id, agent_id, max_wait_s):
         return ChainExecuteResponse(run_id="", chain_status="rate_limited", error="rate_limited")
+    # Time queued is part of the caller's deadline: a run must not outlive the tool timeout and still commit.
+    chain_budget_ms = max(chain_budget_ms - int((time.monotonic() - waited_from) * 1000), 0)
 
     # Tracked separately from run_id: _claim_run can raise before run_id is set.
     run_id: str | None = None
@@ -807,8 +812,11 @@ async def _run_steps(
 
         try:
             effective_url = api_row["endpoint_url"]
-            if api_row["endpoint_base_source"] == "oauth_connection":
-                api_base = await oauth.connection_api_base(tenant_id, api_row["oauth_connection_id"])
+            if api_row["endpoint_base_source"] in ("oauth_connection", "zoho_desk"):
+                api_base = oauth.row_api_base(
+                    api_row["endpoint_base_source"],
+                    await oauth.connection_api_base(tenant_id, api_row["oauth_connection_id"]),
+                )
                 if api_base is None:
                     raise _StepFailure("unavailable", "reconnect_required")
                 effective_url = api_base + api_row["endpoint_url"]

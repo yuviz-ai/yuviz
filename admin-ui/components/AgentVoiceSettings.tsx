@@ -1,20 +1,20 @@
 "use client";
 
-// Language, voice, hearing and thinking for one agent — shared by the creation
-// wizard and the agent page so both read the same.
+// Languages, voice, hearing and thinking for one agent, from the models the platform provides.
+// Shared by the creation wizard and the agent page so both read the same.
 
 import { Dispatch, SetStateAction, useEffect, useState } from "react";
-import Link from "next/link";
-import { AlertCircle, Check } from "lucide-react";
+import { AlertCircle, Check, RotateCcw } from "lucide-react";
 import {
-  AgentUpdate, ApiError, ElevenLabsVoice, LanguageMode, ProviderConfig, ProviderConfigCreate, createProvider, listProviderVoices,
-  listProviders, updateProvider,
+  AgentUpdate, AiCatalog, AiOption, ApiError, ElevenLabsVoice, LanguageMode, ProviderConfig, chooseAiOption, createProvider,
+  listAiOptionVoices, previewAiVoice, listProviders, managedOptionId, updateProvider,
 } from "@/lib/api";
 import {
-  BUILTIN_TTS_ENGINE, BUILTIN_TTS_VOICE, DEEPGRAM_MULTI_LANGUAGES, LANGUAGE_MODES, LOCAL_ENGINES, MAX_LANGUAGES,
-  PREMIUM_ENGINES, SUPPORTED_LANGUAGES, VOICES_BY_ENGINE, baseLanguage, deepgramSupportsMulti, keptGreetings, languageLabel, languagesWithoutVoice, ttsLanguages, voiceSpeaks,
+  LOCAL_ENGINES, SARVAM_V3_VOICES, SUPPORTED_LANGUAGES, VOICES_BY_ENGINE, BUILTIN_TTS_ENGINE, BUILTIN_TTS_VOICE, baseLanguage,
+  deepgramSupportsMulti, languageLabel, voiceSpeaks,
 } from "@/lib/engineCatalog";
 import { ModelRef, useLocalModels } from "@/lib/useLocalModels";
+import { useAiCatalog } from "@/lib/useAiCatalog";
 import { VoicePickerWithPreview } from "./VoicePickerWithPreview";
 
 type Role = "stt" | "llm" | "tts";
@@ -22,7 +22,7 @@ type Role = "stt" | "llm" | "tts";
 export type LocalModels = ReturnType<typeof useLocalModels>;
 
 // The catalogue model a provider config points at, or null when the Config Service does not manage it:
-// premium engines, and an Ollama with its own base_url (Config never pulls into a URL a tenant supplies).
+// cloud engines, and an Ollama with its own base_url (Config never pulls into a URL a tenant supplies).
 export function localModelRef(p: ProviderConfig): ModelRef | null {
   if (!LOCAL_ENGINES.has(p.engine) || (p.engine === "ollama" && p.extra?.base_url)) return null;
   const name = p.role === "tts" ? p.voice || (p.engine === BUILTIN_TTS_ENGINE ? BUILTIN_TTS_VOICE : "") : p.model;
@@ -75,108 +75,205 @@ export function isLanguageError(detail: string): boolean {
 function friendlyLanguageError(detail: string): string {
   const lang = detail.match(/^(.+?) \([a-z]{2}(?:-[A-Z]{2})?\) can't be spoken/i)?.[1]
     ?? detail.match(/can't speak (.+?)\./i)?.[1];
-  if (lang) {
-    return `${lang} needs a voice that can speak it. Pick one below, or add one in AI & Voice.`;
-  }
+  if (lang) return `${lang} needs a voice that can speak it. Pick one in the Voice card.`;
   if (/can't be spoken|TTS provider|voice override|multilingual TTS/i.test(detail)) {
-    return "One of these languages needs a different voice. Pick one below, or add one in AI & Voice.";
+    return "One of these languages needs a different voice. Pick one in the Voice card.";
   }
   return detail;
 }
 
-// `ready: false` = no voice-service integration yet, shown so users know it's coming.
-const VOICE_SERVICES: { engine: string; name: string; blurb: string; ready: boolean }[] = [
-  { engine: "elevenlabs", name: "ElevenLabs", blurb: "The most lifelike voices, many languages.", ready: true },
-  { engine: "cartesia", name: "Cartesia", blurb: "Very fast, natural voices.", ready: true },
-  { engine: "sarvam", name: "Sarvam", blurb: "Made for Indian languages.", ready: false },
-  { engine: "smallest", name: "Smallest AI", blurb: "Low-cost, quick voices.", ready: false },
+const OWN = "__own__";
+const article = (word: string) => (/^[AEIOU]/i.test(word) ? "an" : "a");
+// Saaras v3 output modes; the server accepts these values only.
+const SARVAM_STT_MODES = [
+  { value: "transcribe", label: "Transcribe", hint: "Words as spoken, in each language's own script." },
+  { value: "codemix", label: "Code-mix", hint: "Hindi in Devanagari, English words kept in English." },
+  { value: "translit", label: "Transliterate", hint: "Everything in Roman letters, e.g. \"aap kaise hain\"." },
+  { value: "translate", label: "Translate to English", hint: "The agent reads every caller turn in English." },
+  { value: "verbatim", label: "Verbatim", hint: "Keeps fillers like \"umm\" and repeated words." },
 ];
+// Voice engines that run on this server, as the In-house voice models.
+const IN_HOUSE_TTS: Record<string, string> = { kokoro: "Kokoro", macos: "macOS voices" };
+const MACOS_ACCENTS: Record<string, string> = { Samantha: "American", Alex: "American", Karen: "Australian", Moira: "Irish", Daniel: "British" };
+const sampleOf = (engine: string, voice: string) => VOICES_BY_ENGINE[engine]?.find((v) => v.id === voice)?.sampleUrl;
 
-const SERVICE_NAMES: Record<string, string> = {
-  elevenlabs: "ElevenLabs", cartesia: "Cartesia", deepgram: "Deepgram", macos: "Basic voice",
+function shapeVoice(id: string, name: string, labels: Record<string, string> = {}): ElevenLabsVoice {
+  return { voice_id: id, name, category: null, labels, preview_url: null, verified_languages: [] };
+}
+// Kokoro voice ids start with their accent: af_sarah = American female.
+const KOKORO_ACCENTS: Record<string, string> = {
+  a: "American", b: "British", e: "Spanish", f: "French", h: "Hindi", i: "Italian", j: "Japanese", p: "Portuguese", z: "Chinese",
 };
+const kokoroSample = (voice: string) => VOICES_BY_ENGINE.kokoro?.find((v) => v.id === voice)?.sampleUrl;
+const DEFAULT_TEMPERATURE = 0.7;
+const money = (n: number) => `$${n < 0.01 ? n.toFixed(4) : n.toFixed(3)}`;
 
-// Voices of a connected premium account that speak `lang`. Falls back to a pasted voice ID when
-// the account's voice list can't be loaded.
-function PremiumLanguageVoice({ provider, lang, current, placeholder, onPick }: {
-  provider: ProviderConfig;
-  lang: string;
-  /** The voice config now chosen for `lang`, if any. */
-  current: ProviderConfig | undefined;
-  /** Shown while nothing is chosen. */
-  placeholder: string;
-  onPick: (voiceId: string, label: string) => void;
+// Mirrors recommended("stt") in services/config/platform_ai.py.
+function recommendedHearing(options: AiOption[], languages: string[]): AiOption | null {
+  return options.find((o) => o.role === "stt" && o.available && hears(o, languages)) ?? null;
+}
+
+function hears(o: AiOption, languages: string[]): boolean {
+  if (!languages.every((l) => o.languages.includes(l))) return false;
+  return o.engine !== "deepgram" || languages.length < 2 || deepgramSupportsMulti(o.model ?? "", languages);
+}
+
+// The agent languages a model can't handle; language models aren't language-bound here.
+function missingLanguages(o: AiOption, languages: string[]): string[] {
+  if (o.role === "llm") return [];
+  const missing = languages.filter((l) => !o.languages.includes(l));
+  if (!missing.length && o.role === "stt" && !hears(o, languages)) return languages.slice(1);
+  return missing;
+}
+
+const shortLabel = (code: string) => SUPPORTED_LANGUAGES.find((l) => l.value === code)?.label ?? code;
+const noLanguages = (missing: string[]) => `No ${missing.map(shortLabel).join(", ")}`;
+
+function unavailableHint(o: AiOption | undefined): string {
+  if (!o) return "";
+  return o.key_env ? `Add ${o.key_env} to the platform .env to turn this on.` : "Not set up on this platform yet.";
+}
+
+// Provider buttons for one role, grouped from the catalogue; the workspace's own providers come last.
+function ProviderChips({ options, current, own, label, onPick, showOwn = false, languages = [] }: {
+  options: AiOption[];
+  /** The agent's languages: a provider with no model covering them is greyed out. */
+  languages?: string[];
+  current: string | null;
+  own: ProviderConfig[];
+  /** Offer In-house even before the workspace has a local model of its own. */
+  showOwn?: boolean;
+  label: string;
+  onPick: (provider: string) => void;
 }) {
-  // undefined = still loading, null = the list failed to load.
-  const [loaded, setLoaded] = useState<{ providerId: string; voices: ElevenLabsVoice[] | null } | null>(null);
-  const [manualId, setManualId] = useState("");
-
-  useEffect(() => {
-    let cancelled = false;
-    listProviderVoices(provider.id)
-      .then((voices) => { if (!cancelled) setLoaded({ providerId: provider.id, voices }); })
-      .catch(() => { if (!cancelled) setLoaded({ providerId: provider.id, voices: null }); });
-    return () => { cancelled = true; };
-  }, [provider.id]);
-
-  const voices = loaded?.providerId === provider.id ? loaded.voices : undefined;
-  // The model must speak `lang` too: an English-only model can't use a voice verified for Hindi.
-  // Cloned or generated voices have no verified languages: go by their label, else by the model.
-  const modelLanguages = ttsLanguages(provider);
-  const speaks = (v: ElevenLabsVoice) => {
-    const labelled = baseLanguage(v.labels.language);
-    const langs = v.verified_languages.length ? v.verified_languages.map((x) => x.language) : labelled ? [labelled] : modelLanguages;
-    return langs.includes(lang);
-  };
-  const matching = voices?.filter((v) => modelLanguages.includes(lang) && speaks(v));
-  const pasteVoiceId = (
-    <>
-      <div style={{ display: "flex", gap: 8 }}>
-        <input
-          className="form-input"
-          style={{ flex: 1 }}
-          value={manualId}
-          onChange={(e) => setManualId(e.target.value)}
-          placeholder="Paste the voice ID"
-        />
+  const providers = [...new Set(options.map((o) => o.provider))];
+  return (
+    <div className="ai-chips" role="radiogroup" aria-label={label}>
+      {providers.map((name) => {
+        const group = options.filter((o) => o.provider === name);
+        const ready = group.some((o) => o.available);
+        const fit = group.filter((o) => o.available && missingLanguages(o, languages).length === 0);
+        const missing = ready && !fit.length ? missingLanguages(group.find((o) => o.available)!, languages) : [];
+        const local = group.every((o) => o.local);
+        return (
+          <button
+            key={name}
+            type="button"
+            role="radio"
+            aria-checked={current === name}
+            disabled={!ready || missing.length > 0}
+            title={!ready ? unavailableHint(group[0]) : missing.length ? `${name} doesn't support ${missing.map(shortLabel).join(" or ")}` : undefined}
+            className={`ai-chip${current === name ? " on" : ""}`}
+            onClick={() => onPick(name)}
+          >
+            {current === name && <Check size={12} />} {name}
+            {local && <span className="ai-chip-tag">Local</span>}
+            {!ready && <span className="ai-chip-tag">Not set up</span>}
+            {missing.length > 0 && <span className="ai-chip-tag">{noLanguages(missing)}</span>}
+          </button>
+        );
+      })}
+      {(own.length > 0 || showOwn) && (
         <button
           type="button"
-          className="btn btn-ghost btn-sm"
-          disabled={!manualId.trim()}
-          onClick={() => { onPick(manualId.trim(), manualId.trim()); setManualId(""); }}
+          role="radio"
+          aria-checked={current === OWN}
+          className={`ai-chip${current === OWN ? " on" : ""}`}
+          onClick={() => onPick(OWN)}
+          title="A provider set up in this workspace with its own key"
         >
-          Use
+          {current === OWN && <Check size={12} />} In-house
         </button>
-      </div>
-    </>
-  );
-
-  return (
-    <div>
-      {voices === undefined ? (
-        <div className="form-hint" style={{ marginTop: 0 }}>Loading voices…</div>
-      ) : voices === null ? (
-        <>
-          {pasteVoiceId}
-          <div className="form-hint">Couldn&apos;t load the voice list, so paste a voice ID instead.</div>
-        </>
-      ) : matching!.length === 0 ? (
-        <>
-          <div className="form-hint" style={{ marginTop: 0, marginBottom: 6 }}>
-            No {languageLabel(lang)} voices found on this account. Paste a voice ID instead.
-          </div>
-          {pasteVoiceId}
-        </>
-      ) : (
-        <VoicePickerWithPreview
-          voices={matching!}
-          currentVoiceId={current?.voice}
-          currentVoiceLabel={current?.name}
-          placeholder={placeholder}
-          providerId={provider.id}
-          onPick={onPick}
-        />
       )}
+    </div>
+  );
+}
+
+function LanguageCoverage({ verb, option }: { verb: string; option: AiOption }) {
+  if (!option.languages.length) return null;
+  return <div className="form-hint">{verb} {option.languages.map(shortLabel).join(", ")}.</div>;
+}
+
+function ModelSelect({ options, value, languages, onPick, label }: {
+  options: AiOption[];
+  value: string | null;
+  languages?: string[];
+  label: string;
+  onPick: (option: AiOption) => void;
+}) {
+  return (
+    <select
+      className="form-select"
+      aria-label={label}
+      value={value ?? ""}
+      onChange={(e) => {
+        const o = options.find((x) => x.id === e.target.value);
+        if (o) onPick(o);
+      }}
+    >
+      {!value && <option value="" disabled>Choose a model…</option>}
+      {options.map((o) => {
+        const missing = languages ? missingLanguages(o, languages) : [];
+        return (
+          <option key={o.id} value={o.id} disabled={!o.available || missing.length > 0}>
+            {o.label} · {money(o.price_per_min)}/min{!o.available ? " (not set up)" : missing.length ? ` (${noLanguages(missing).toLowerCase()})` : ""}
+          </option>
+        );
+      })}
+    </select>
+  );
+}
+
+function OwnSelect({ own, value, onPick, label }: {
+  own: ProviderConfig[]; value: string | null | undefined; label: string; onPick: (id: string) => void;
+}) {
+  return (
+    <select className="form-select" aria-label={label} value={value ?? ""} onChange={(e) => e.target.value && onPick(e.target.value)}>
+      <option value="" disabled>Choose an in-house provider…</option>
+      {own.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+    </select>
+  );
+}
+
+export function AgentCostBar({ catalog, stt, llm, tts }: {
+  catalog: AiCatalog | null;
+  stt: ProviderConfig | null;
+  llm: ProviderConfig | null;
+  tts: ProviderConfig | null;
+}) {
+  if (!catalog) return null;
+  const price = (p: ProviderConfig | null) => {
+    const o = catalog.options.find((x) => x.id === managedOptionId(p));
+    return o ? o.price_per_min : null;
+  };
+  const parts = [
+    { key: "stt", label: "Hearing", value: price(stt), set: !!stt },
+    { key: "llm", label: "Thinking", value: price(llm), set: !!llm },
+    { key: "tts", label: "Voice", value: price(tts), set: !!tts },
+    { key: "fee", label: "Platform", value: catalog.platform_fee_per_min, set: true },
+  ];
+  const total = parts.reduce((sum, p) => sum + (p.value ?? 0), 0);
+  const own = parts.some((p) => p.set && p.value === null);
+  return (
+    <div className="ai-cost" aria-label="Estimated cost per minute">
+      <div className="ai-cost-head">
+        <span>Estimated cost per minute</span>
+        <strong>{money(total)}{own ? " +" : ""}</strong>
+      </div>
+      <div className="ai-cost-bar" aria-hidden="true">
+        {parts.map((p) => p.value ? (
+          <span key={p.key} className={`ai-cost-seg ${p.key}`} style={{ flexGrow: p.value }} />
+        ) : null)}
+      </div>
+      <div className="ai-cost-legend">
+        {parts.map((p) => (
+          <span key={p.key}>
+            <i className={`ai-cost-dot ${p.key}`} />
+            {p.label} {!p.set ? "not chosen" : p.value === null ? "In-house" : money(p.value)}
+          </span>
+        ))}
+      </div>
+      <div className="ai-cost-note">An estimate for planning; billing isn&apos;t live yet.</div>
     </div>
   );
 }
@@ -184,7 +281,7 @@ function PremiumLanguageVoice({ provider, lang, current, placeholder, onPick }: 
 export function AgentVoiceSettings({
   tenantId, providers, setProviders, localModels, defaultTtsId,
   languageMode, onLanguageMode, languages, onLanguages, ttsByLanguage, onTtsByLanguage, languagesError,
-  sttId, llmId, ttsId, onAssign, onError, part,
+  sttId, llmId, ttsId, onAssign, onError, part, catalog: catalogProp, showCost = true,
 }: {
   /** Omitted = everything; the agent editor splits voice and engines across two sections. */
   part?: "voice" | "engines";
@@ -197,7 +294,7 @@ export function AgentVoiceSettings({
   defaultTtsId: string | null;
   languageMode: LanguageMode;
   onLanguageMode: (v: LanguageMode) => void;
-  /** Base codes, primary first: exactly one when monolingual, up to MAX_LANGUAGES when multilingual. */
+  /** Base codes, primary first: one when monolingual, two when switching languages. */
   languages: string[];
   onLanguages: (v: string[]) => void;
   /** Voice configs of the non-default languages; the default language's is `ttsId`. */
@@ -210,24 +307,29 @@ export function AgentVoiceSettings({
   ttsId: string | null | undefined;
   onAssign: (role: Role, id: string | null) => void;
   onError: (message: string) => void;
+  /** Given by a page that loads the catalogue itself (e.g. to place the cost bar); omitted = loaded here. */
+  catalog?: AiCatalog | null;
+  showCost?: boolean;
 }) {
-  // null = follow the assigned voice: built-in unless the agent already uses another service.
-  const [chosenMode, setChosenMode] = useState<"builtin" | "own" | null>(null);
-  const [showConnect, setShowConnect] = useState(false);
-  // The connected voice service whose voices are listed; null = the one the agent's voice already uses.
-  const [accountId, setAccountId] = useState<string | null>(null);
-  const [service, setService] = useState("elevenlabs");
-  const [apiKey, setApiKey] = useState("");
-  const [voiceId, setVoiceId] = useState("");
-  const [connecting, setConnecting] = useState(false);
-  const [connectError, setConnectError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<Role | null>(null);
+  const [tempDraft, setTempDraft] = useState<number | null>(null);
   const [speedDraft, setSpeedDraft] = useState<number | null>(null);
-  // The second language dropped by the last Multi→Mono switch, until that choice is undone.
-  const [droppedLanguage, setDroppedLanguage] = useState<string | null>(null);
+  // Chips chosen before a model/voice is: the workspace's own list, or a voice service still being picked.
+  const [llmChip, setLlmChip] = useState<string | null>(null);
+  const [sttChip, setSttChip] = useState<string | null>(null);
+  const [voiceOptionId, setVoiceOptionId] = useState<string | null>(null);
+  const [voiceOwn, setVoiceOwn] = useState(false);
+  const [ownTtsEngine, setOwnTtsEngine] = useState<string | null>(null);
+  const [hearingCustom, setHearingCustom] = useState<boolean | null>(null);
+  const [otherVoiceFor, setOtherVoiceFor] = useState<string | null>(null);
+  const [vendorVoices, setVendorVoices] = useState<Record<string, ElevenLabsVoice[] | null>>({});
   const { models, supports, status, trigger } = localModels;
 
-  // Voices are often created on the AI & Voice page mid-setup: re-read the list when this
-  // panel opens and whenever the browser tab regains focus, so new ones show up here.
+  const fetched = useAiCatalog(catalogProp === undefined ? tenantId : null);
+  const catalog = catalogProp === undefined ? fetched.catalog : catalogProp;
+  const catalogError = catalogProp === undefined ? fetched.error : null;
+
+  // Providers may be added on the AI page mid-setup: re-read on open and when the tab regains focus.
   useEffect(() => {
     let cancelled = false;
     const refresh = () => {
@@ -240,93 +342,27 @@ export function AgentVoiceSettings({
     return () => { cancelled = true; window.removeEventListener("focus", refresh); };
   }, [tenantId, setProviders]);
 
-  const byRole = (role: Role) => providers.filter((p) => p.role === role);
-  const selectedTts = providers.find((p) => p.id === ttsId) ?? null;
-  const selectedLlm = providers.find((p) => p.id === llmId) ?? null;
-  const selectedStt = providers.find((p) => p.id === sttId) ?? null;
+  const options = catalog?.options ?? [];
+  const ofRole = (role: Role) => options.filter((o) => o.role === role);
+  // In-house = models on the workspace's own server; its cloud keys stay usable only where already assigned.
+  const assigned = new Set([sttId, llmId, ttsId, ...Object.values(ttsByLanguage)].filter(Boolean));
+  const own = (role: Role) => providers.filter((p) => p.role === role && !managedOptionId(p)
+    && (LOCAL_ENGINES.has(p.engine) || assigned.has(p.id)));
+  const find = (id: string | null | undefined) => providers.find((p) => p.id === id) ?? null;
+  const optionOf = (p: ProviderConfig | null) => options.find((o) => o.id === managedOptionId(p)) ?? null;
 
+  const selectedStt = find(sttId);
+  const selectedLlm = find(llmId);
+  const selectedTts = find(ttsId);
   const multilingual = languageMode === "multilingual";
   const primaryLanguage = languages[0] ?? null;
+  const secondaryLanguage = multilingual ? languages[1] ?? null : null;
 
-  const voiceIdFor = (lang: string) => (lang === primaryLanguage ? ttsId : ttsByLanguage[lang]) ?? null;
-  // With no voice chosen for the agent, calls use the workspace's default voice.
-  const baseVoice = selectedTts ?? providers.find((p) => p.id === defaultTtsId) ?? null;
-  const voiceFor = (lang: string) => providers.find((p) => p.id === voiceIdFor(lang));
-
-  const changeMode = (mode: LanguageMode) => {
-    if (mode === languageMode) return;
-    onLanguageMode(mode);
-    if (mode === "monolingual") {
-      // Keep the primary language; the other one's voice goes on save.
-      setDroppedLanguage(languages[1] ?? null);
-      onLanguages(languages.slice(0, 1));
-    } else {
-      setDroppedLanguage(null);
-    }
-  };
-
-  // The default language's voice lives in `ttsId`: when another language becomes the default,
-  // it takes its own voice over, or none.
-  const changeLanguages = (next: string[]) => {
-    // A monolingual agent keeps its voice when it can speak the new language.
-    const keepVoice = !multilingual && !!next[0] && voiceSpeaks(selectedTts, next[0], supports);
-    if (next[0] !== primaryLanguage && !keepVoice) onAssign("tts", (next[0] && ttsByLanguage[next[0]]) || null);
-    onLanguages(next);
-  };
-
-  const toggleLanguage = (code: string) => {
-    changeLanguages(languages.includes(code) ? languages.filter((c) => c !== code) : [...languages, code]);
-  };
-
-  // A voice from the other source can't carry over, so switching source starts the choices afresh.
-  const changeVoiceSource = (source: "builtin" | "own") => {
-    if (source === voiceMode) return;
-    setChosenMode(source);
-    onAssign("tts", null);
-    onTtsByLanguage({});
-  };
-
-  const setLanguageEntry = (
-    map: Record<string, string>, onChange: (v: Record<string, string>) => void, lang: string, value: string,
-  ) => {
-    const next = { ...map };
-    if (value) next[lang] = value;
-    else delete next[lang];
-    onChange(next);
-  };
-
-  // Free models are judged by the catalogue (an .en Whisper can't hear Hindi); Deepgram only code-switches on nova-2/3.
-  const sttUnheard = selectedStt?.model ? languages.filter((l) => !supports(selectedStt.engine, selectedStt.model!, l)) : [];
-  const sttLanguageWarning = !selectedStt
-    ? null
-    : sttUnheard.length > 0
-      ? `${selectedStt.model} can't recognise ${sttUnheard.map(languageLabel).join(", ")}. Pick a speech model that supports ${languages.map(languageLabel).join(" and ")}.`
-      : !multilingual || languages.length < 2
-        ? null
-      : selectedStt.engine === "deepgram" && selectedStt.model && !deepgramSupportsMulti(selectedStt.model, languages)
-        ? (/^nova-[23]/i.test(selectedStt.model)
-          // Already the right model: the gap is a language Deepgram's multi mode doesn't cover.
-          ? `${selectedStt.model} can't recognise ${languages.filter((l) => !DEEPGRAM_MULTI_LANGUAGES.includes(l)).map(languageLabel).join(", ")} while switching languages. Remove it, or use a Whisper speech recognition provider.`
-          : `${selectedStt.model} can't switch between ${languages.map(languageLabel).join(", ")} mid-call; it will listen in the default language only. Use nova-2 or nova-3, which cover en, hi, es, fr, de, pt, it and ja.`)
-        : null;
-  const connectedVoices = byRole("tts").filter((p) => PREMIUM_ENGINES.includes(p.engine));
-  const voiceMode = chosenMode ?? (selectedTts && selectedTts.engine !== BUILTIN_TTS_ENGINE ? "own" : "builtin");
-  const account = providers.find((p) => p.id === accountId) ?? (selectedTts && PREMIUM_ENGINES.includes(selectedTts.engine) ? selectedTts : null);
-  const connectOpen = showConnect || connectedVoices.length === 0;
-
-  const replaceProvider = (updated: ProviderConfig) =>
-    setProviders((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
-
-  const patchExtra = async (p: ProviderConfig, patch: Record<string, unknown>) => {
-    try {
-      replaceProvider(await updateProvider(p.id, { extra: { ...(p.extra || {}), ...patch } }));
-    } catch (e) {
-      onError(e instanceof ApiError ? e.detail : String(e));
-    }
-  };
+  const upsert = (row: ProviderConfig) =>
+    setProviders((prev) => (prev.some((p) => p.id === row.id) ? prev.map((p) => (p.id === row.id ? row : p)) : [...prev, row]));
 
   // Choosing a free model starts its download when the host doesn't have it yet.
-  const prefetch = (p: ProviderConfig | undefined) => {
+  const prefetch = (p: ProviderConfig | null | undefined) => {
     const ref = p && localModelRef(p);
     const s = ref && status(ref.engine, ref.name);
     if (ref && (s === "missing" || s === "failed")) {
@@ -334,53 +370,156 @@ export function AgentVoiceSettings({
     }
   };
 
-  const assign = (role: Role, id: string | null) => {
-    onAssign(role, id);
-    prefetch(providers.find((p) => p.id === id));
-  };
-
-  const setVoiceFor = (lang: string, id: string) => {
-    if (lang === primaryLanguage) onAssign("tts", id);
-    else setLanguageEntry(ttsByLanguage, onTtsByLanguage, lang, id);
-  };
-
-  // Points one language's voice at a voice config, creating it when none matches yet.
-  const assignLanguageVoice = async (lang: string, spec: ProviderConfigCreate) => {
+  const choose = async (role: Role, option: AiOption, extra: { voice?: string; voice_name?: string; temperature?: number } = {}) => {
+    setBusy(role);
     try {
-      const existing = providers.find(
-        (p) => p.role === "tts" && p.engine === spec.engine && p.voice === spec.voice && p.api_key_ref === (spec.api_key_ref ?? null),
-      );
-      const voice = existing ?? await createProvider(tenantId, spec);
-      if (!existing) setProviders((prev) => [...prev, voice]);
-      prefetch(voice);
-      setVoiceFor(lang, voice.id);
+      const row = await chooseAiOption(tenantId, { option_id: option.id, ...extra });
+      upsert(row);
+      prefetch(row);
+      return row;
+    } catch (e) {
+      onError(e instanceof ApiError ? e.detail : String(e));
+      return null;
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const patchExtra = async (p: ProviderConfig, patch: Record<string, unknown>) => {
+    try {
+      upsert(await updateProvider(p.id, { extra: { ...(p.extra || {}), ...patch } }));
     } catch (e) {
       onError(e instanceof ApiError ? e.detail : String(e));
     }
   };
 
-  const handleConnect = async () => {
-    const svc = VOICE_SERVICES.find((s) => s.engine === service)!;
-    setConnecting(true);
-    setConnectError(null);
-    try {
-      const created = await createProvider(tenantId, {
-        name: svc.name, role: "tts", engine: svc.engine, api_key: apiKey.trim(),
-        ...(svc.engine === "cartesia" ? { voice: voiceId.trim() } : {}),
-      });
-      setProviders((prev) => [...prev, created]);
-      setAccountId(created.id);
-      setApiKey("");
-      setVoiceId("");
-      setShowConnect(false);
-    } catch (e) {
-      setConnectError(e instanceof ApiError ? e.detail : String(e));
-    } finally {
-      setConnecting(false);
+  // ── Hearing ────────────────────────────────────────────────────────────────
+  const recommended = recommendedHearing(options, languages);
+  const sttOption = optionOf(selectedStt);
+  const custom = hearingCustom ?? (!!selectedStt && (!recommended || sttOption?.id !== recommended.id));
+
+  const applyRecommendedHearing = async (langs: string[]) => {
+    const rec = recommendedHearing(options, langs);
+    if (!rec) return;
+    const row = await choose("stt", rec);
+    if (row) onAssign("stt", row.id);
+  };
+
+  // Languages change in one place, so the platform's hearing pick can follow them.
+  const applyLanguages = (next: string[]) => {
+    const keepVoice = !!next[0] && voiceSpeaks(selectedTts, next[0], supports);
+    if (next[0] !== primaryLanguage && !keepVoice) onAssign("tts", (next[0] && ttsByLanguage[next[0]]) || null);
+    onLanguages(next);
+    const nextRec = recommendedHearing(options, next);
+    if (!custom && nextRec && nextRec.id !== sttOption?.id) void applyRecommendedHearing(next);
+  };
+
+  const setSwitching = (on: boolean) => {
+    if (on === multilingual) return;
+    onLanguageMode(on ? "multilingual" : "monolingual");
+    if (on) {
+      const second = SUPPORTED_LANGUAGES.find((l) => l.value !== primaryLanguage && (primaryLanguage === "en" ? l.value === "hi" : l.value === "en"))
+        ?? SUPPORTED_LANGUAGES.find((l) => l.value !== primaryLanguage);
+      applyLanguages([primaryLanguage ?? "en", second!.value]);
+    } else {
+      applyLanguages(languages.slice(0, 1));
     }
   };
 
-  // One speed for every voice the agent uses.
+  const sttUnheard = selectedStt?.model && !sttOption ? languages.filter((l) => !supports(selectedStt.engine, selectedStt.model!, l)) : [];
+  const sttWarning = selectedStt && !sttOption && sttUnheard.length > 0
+    ? `${selectedStt.name} can't recognise ${sttUnheard.map(languageLabel).join(", ")}.`
+    : sttOption && !hears(sttOption, languages)
+      ? `${sttOption.provider} ${sttOption.label} can't hear ${languages.map(languageLabel).join(" and ")}${languages.length > 1 ? " in one call" : ""}.`
+      : null;
+
+  // ── Thinking ───────────────────────────────────────────────────────────────
+  const llmOption = optionOf(selectedLlm);
+  const llmProvider = llmChip ?? llmOption?.provider ?? (selectedLlm ? OWN : null);
+  const savedTemperature = Number(selectedLlm?.extra?.temperature ?? DEFAULT_TEMPERATURE);
+  const temperature = tempDraft ?? savedTemperature;
+  const temperatureArg = (t: number) => (t === DEFAULT_TEMPERATURE ? {} : { temperature: t });
+
+  const pickLlm = async (option: AiOption, t = savedTemperature) => {
+    const row = await choose("llm", option, temperatureArg(t));
+    if (row) { onAssign("llm", row.id); setLlmChip(null); }
+  };
+
+  const commitTemperature = async (t: number) => {
+    setTempDraft(null);
+    if (!selectedLlm || t === savedTemperature) return;
+    if (llmOption) await pickLlm(llmOption, t);
+    else await patchExtra(selectedLlm, { temperature: t });
+  };
+
+  // Must match _is_thinking_capable() in services/conversation/ai_provider_manager.py.
+  const thinkingCapable = selectedLlm?.engine === "ollama" && !!selectedLlm.model?.startsWith("gemma4");
+
+  // ── Voice ──────────────────────────────────────────────────────────────────
+  const baseVoice = selectedTts ?? find(defaultTtsId);
+  const voiceOption = voiceOwn ? null : options.find((o) => o.id === voiceOptionId) ?? optionOf(baseVoice);
+  const voiceProvider = voiceOwn ? OWN : voiceOption?.provider ?? (baseVoice ? OWN : null);
+  const voiceIdFor = (lang: string) => (lang === primaryLanguage ? ttsId : ttsByLanguage[lang]) ?? null;
+  const voiceFor = (lang: string) => find(voiceIdFor(lang));
+
+  const vendorKey = voiceOption && (voiceOption.engine === "elevenlabs" || voiceOption.engine === "cartesia") ? voiceOption.id : null;
+  useEffect(() => {
+    if (!vendorKey || vendorKey in vendorVoices) return;
+    let cancelled = false;
+    listAiOptionVoices(tenantId, vendorKey)
+      .then((v) => { if (!cancelled) setVendorVoices((m) => ({ ...m, [vendorKey]: v })); })
+      .catch(() => { if (!cancelled) setVendorVoices((m) => ({ ...m, [vendorKey]: null })); });
+    return () => { cancelled = true; };
+  }, [tenantId, vendorKey, vendorVoices]);
+
+  // Voices of an option that speak `lang`, in the shape the picker takes.
+  const voicesOf = (o: AiOption, lang: string): ElevenLabsVoice[] | undefined | null => {
+    if (o.engine === "elevenlabs" || o.engine === "cartesia") {
+      const list = vendorVoices[o.id];
+      if (!list) return list;
+      if (!o.languages.includes(lang)) return [];
+      return list.filter((v) => {
+        const labelled = baseLanguage(v.labels.language);
+        const langs = v.verified_languages.length ? v.verified_languages.map((x) => x.language) : labelled ? [labelled] : o.languages;
+        return langs.includes(lang);
+      });
+    }
+    if (o.engine === "kokoro") {
+      return models.filter((m) => m.role === "tts" && m.engine === "kokoro" && m.status !== "unavailable" && supports(m.engine, m.name, lang))
+        .map((m) => shapeVoice(m.name, m.label.replace(/\s*\(.*\)$/, ""), {
+          gender: m.name[1] === "f" ? "female" : m.name[1] === "m" ? "male" : "",
+          accent: KOKORO_ACCENTS[m.name[0]] ?? "",
+        }));
+    }
+    if (!o.languages.includes(lang)) return [];
+    const list = o.engine === "sarvam" && o.model === "bulbul:v3" ? SARVAM_V3_VOICES : VOICES_BY_ENGINE[o.engine] ?? [];
+    return list.map((v) => shapeVoice(v.id, v.label, {
+      gender: v.gender, accent: o.engine === "sarvam" ? "Indian" : o.engine === "deepgram" ? "American" : "",
+    }));
+  };
+
+  const pickVoiceOption = async (option: AiOption) => {
+    setVoiceOwn(false);
+    setVoiceOptionId(option.id);
+    setOtherVoiceFor(null);
+    onTtsByLanguage({});
+    const voice = option.engine === "kokoro"
+      ? voicesOf(option, primaryLanguage ?? "en")?.[0]?.voice_id
+      : option.default_voice ?? undefined;
+    if (!voice) { onAssign("tts", null); return; }
+    const row = await choose("tts", option, { voice });
+    if (row) onAssign("tts", row.id);
+  };
+
+  const pickVoice = async (lang: string, voice: string, name: string) => {
+    if (!voiceOption) return;
+    const row = await choose("tts", voiceOption, { voice, voice_name: name });
+    if (!row) return;
+    if (lang === primaryLanguage) onAssign("tts", row.id);
+    else onTtsByLanguage({ ...ttsByLanguage, [lang]: row.id });
+    setOtherVoiceFor(null);
+  };
+
   const voiceConfigs = languages.flatMap((l) => voiceFor(l) ?? []);
   const savedSpeed = Number(voiceConfigs[0]?.extra?.speed ?? 1.0);
   const speed = speedDraft ?? savedSpeed;
@@ -389,418 +528,453 @@ export function AgentVoiceSettings({
     for (const p of voiceConfigs) if (v !== Number(p.extra?.speed ?? 1.0)) patchExtra(p, { speed: v });
   };
 
-  // Must match _is_thinking_capable() in services/conversation/ai_provider_manager.py.
-  const thinkingCapable = selectedLlm?.engine === "ollama" && !!selectedLlm.model?.startsWith("gemma4");
+  const inHouseEngines = Object.keys(IN_HOUSE_TTS).filter((e) => models.some((m) => m.role === "tts" && m.engine === e && m.status !== "unavailable"));
+  const ownEngine = ownTtsEngine
+    ?? (baseVoice && IN_HOUSE_TTS[baseVoice.engine] ? baseVoice.engine : inHouseEngines[0] ?? null);
 
-  const providerSelect = (role: "stt" | "llm", value: string | null | undefined, label: string, hint: string) => {
-    // Speech models that can't hear every chosen language are left out (the current pick stays visible).
-    const options = byRole(role).filter((p) =>
-      role !== "stt" || !p.model || p.id === value || languages.every((l) => supports(p.engine, p.model!, l)));
-    const noFreeStt = role === "stt" && models.length > 0
-      && !models.some((m) => m.role === "stt" && languages.every((l) => supports(m.engine, m.name, l)));
-    const pick = providers.find((p) => p.id === value);
-    const ref = pick && localModelRef(pick);
-    const pickStatus = ref && status(ref.engine, ref.name);
-    return (
-      <div className="form-group">
-        <label className="form-label">{label}</label>
-        <div className="form-hint" style={{ marginTop: 0, marginBottom: 6 }}>{hint}</div>
-        {options.length === 0 ? (
-          <div className="voice-missing">
-            <AlertCircle size={13} />
-            <span>None set up yet. <Link href="/ai-voice">Add one in AI &amp; Voice</Link>.</span>
-          </div>
-        ) : (
-          <>
-            <select className="form-select" value={value || ""} onChange={(e) => assign(role, e.target.value || null)}>
-              <option value="">Choose…</option>
-              {options.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}{p.environment !== "prod" ? ` (${p.environment})` : ""}
-                </option>
-              ))}
-            </select>
-            {!value && (
-              <div className="voice-missing">
-                <AlertCircle size={13} />
-                <span>Required — the agent can&apos;t take calls without it.</span>
-              </div>
-            )}
-            {pickStatus === "downloading" && <div className="form-hint">Downloading the model…</div>}
-            {pickStatus === "failed" && (
-              <div className="voice-missing">
-                <AlertCircle size={13} />
-                <span>The model download failed. Choose another model, or try again later.</span>
-              </div>
-            )}
-          </>
-        )}
-        {noFreeStt && (
-          <div className="voice-missing">
-            <AlertCircle size={13} />
-            <span>
-              No free model supports {languages.map(languageLabel).join(" and ")}.{" "}
-              <Link href="/ai-voice">Use a premium speech service in AI &amp; Voice</Link>.
-            </span>
-          </div>
-        )}
-      </div>
-    );
+  // Local voices of an engine that speak every given language.
+  const inHouseVoices = (engine: string, langs: string[]): ElevenLabsVoice[] =>
+    models.filter((m) => m.role === "tts" && m.engine === engine && m.status !== "unavailable" && langs.every((l) => supports(engine, m.name, l)))
+      .map((m) => engine === "kokoro"
+        ? shapeVoice(m.name, m.label.replace(/\s*\(.*\)$/, ""), {
+          gender: m.name[1] === "f" ? "female" : m.name[1] === "m" ? "male" : "", accent: KOKORO_ACCENTS[m.name[0]] ?? "",
+        })
+        : shapeVoice(m.name, m.label, {
+          gender: VOICES_BY_ENGINE[engine]?.find((v) => v.id === m.name)?.gender ?? "", accent: MACOS_ACCENTS[m.name] ?? "",
+        }));
+
+  // The workspace's config for this local voice, created on first use.
+  const pickInHouseVoice = async (lang: string, engine: string, voice: string, name: string) => {
+    try {
+      const existing = providers.find((p) => p.role === "tts" && !managedOptionId(p) && p.engine === engine && p.voice === voice);
+      const row = existing ?? await createProvider(tenantId, { name: `${IN_HOUSE_TTS[engine]} — ${name}`, role: "tts", engine, voice });
+      upsert(row);
+      prefetch(row);
+      if (lang === primaryLanguage) onAssign("tts", row.id);
+      else onTtsByLanguage({ ...ttsByLanguage, [lang]: row.id });
+      setOtherVoiceFor(null);
+    } catch (e) {
+      onError(e instanceof ApiError ? e.detail : String(e));
+    }
   };
 
-  // The voice dropdown for one selected language: only voices of the chosen source that speak it.
-  const languageVoice = (lang: string) => {
+  // One voice for every language when the service's voices code-mix (Sarvam, ElevenLabs, Cartesia).
+  const oneVoice = multilingual && (voiceOption
+    ? languages.every((l) => voiceOption.languages.includes(l))
+    : !!baseVoice && languages.every((l) => voiceSpeaks(baseVoice, l, supports)));
+
+  const languageVoice = (lang: string, all = false) => {
     const current = voiceFor(lang);
-    const label = languageLabel(lang);
-    const workspaceVoice = lang === primaryLanguage && !current ? providers.find((p) => p.id === defaultTtsId) : undefined;
-    // A secondary language the default voice can already speak needs no voice of its own.
-    const sharedVoice = lang !== primaryLanguage && !current && voiceSpeaks(baseVoice, lang, supports) ? baseVoice : null;
-    const placeholder = workspaceVoice ? `Workspace default voice (${workspaceVoice.name})`
-      : sharedVoice ? `Uses ${sharedVoice.name} (speaks ${label})`
-      : `Choose a ${label} voice…`;
+    const label = all ? languages.map(languageLabel).join(" + ") : languageLabel(lang);
+    const isPrimary = lang === primaryLanguage;
+    const workspaceVoice = isPrimary && !current ? find(defaultTtsId) : null;
+    const shared = !isPrimary && !current && voiceSpeaks(baseVoice, lang, supports) ? baseVoice : null;
+    const heading = all ? (
+      <label className="form-label">Voice <span className="hint">speaks {label}</span></label>
+    ) : (
+      <label className="form-label">{label} voice{isPrimary && multilingual && <span className="hint">main</span>}</label>
+    );
+    if (shared && otherVoiceFor !== lang) {
+      return (
+        <div className="form-group">
+          {heading}
+          <div className="ai-shared-voice">
+            <Check size={13} /> Uses {shared.name}, which also speaks {label}.
+            {voiceOption && (
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => setOtherVoiceFor(lang)}>
+                Use a different voice
+              </button>
+            )}
+          </div>
+        </div>
+      );
+    }
     let picker;
-    if (voiceMode === "own") {
-      picker = account ? (
-        <PremiumLanguageVoice
-          provider={account}
-          lang={lang}
-          current={current}
-          placeholder={placeholder}
-          onPick={(voice, voiceName) => assignLanguageVoice(lang, {
-            name: `${SERVICE_NAMES[account.engine]} — ${voiceName}`, role: "tts", engine: account.engine,
-            environment: account.environment, model: account.model ?? undefined, voice,
-            api_key_ref: account.api_key_ref ?? undefined, extra: account.extra ?? undefined,
-          })}
-        />
+    if (voiceProvider === OWN || !voiceOption) {
+      const list = ownEngine ? inHouseVoices(ownEngine, all ? languages : [lang]) : [];
+      const sameEngine = current?.engine === ownEngine;
+      // A voice set up earlier with the workspace's own cloud key: still in use, shown until replaced.
+      const legacy = current && !managedOptionId(current) && !IN_HOUSE_TTS[current.engine] ? current : null;
+      picker = !ownEngine ? (
+        <div className="form-hint" style={{ marginTop: 0 }}>Pick a voice service above.</div>
+      ) : list.length === 0 ? (
+        <div className="voice-missing"><AlertCircle size={13} /><span>{IN_HOUSE_TTS[ownEngine]} has no {label} voices. Pick another model or voice service.</span></div>
       ) : (
-        <div className="form-hint" style={{ marginTop: 0 }}>Connect or pick a voice service above to list its voices.</div>
+        <>
+        {legacy && (
+          <div className="ai-shared-voice" style={{ marginBottom: 8 }}>
+            <Check size={13} /> Now using {legacy.name}, set up with this workspace&apos;s own key. Pick a voice below to switch.
+          </div>
+        )}
+        <VoicePickerWithPreview
+          voices={list}
+          currentVoiceId={sameEngine ? current?.voice : null}
+          currentVoiceLabel={null}
+          placeholder={`Choose ${article(label)} ${label} voice…`}
+          canPreview={(id) => !!sampleOf(ownEngine, id)}
+          preview={(id) => fetch(sampleOf(ownEngine, id)!).then((r) => r.blob())}
+          onPick={(id, name) => void pickInHouseVoice(lang, ownEngine, id, name)}
+        />
+        </>
       );
     } else {
-      const freeVoices = models.filter((m) =>
-        m.role === "tts" && m.engine === BUILTIN_TTS_ENGINE && m.status !== "unavailable" && supports(m.engine, m.name, lang));
-      const configFor = (name: string) => providers.find((p) => p.role === "tts" && p.engine === BUILTIN_TTS_ENGINE && p.voice === name);
-      const sampleUrl = current?.engine === BUILTIN_TTS_ENGINE
-        ? VOICES_BY_ENGINE[BUILTIN_TTS_ENGINE]?.find((v) => v.id === current.voice)?.sampleUrl
-        : undefined;
-      picker = (
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <select
-            className="form-select"
-            style={{ flex: 1 }}
-            value={current?.id ?? ""}
-            onChange={(e) => {
-              const picked = e.target.value;
-              if (!picked.startsWith("free:")) {
-                prefetch(providers.find((p) => p.id === picked));
-                return setVoiceFor(lang, picked);
-              }
-              const name = picked.slice(5);
-              void assignLanguageVoice(lang, { name: `${BUILTIN_TTS_ENGINE} — ${name}`, role: "tts", engine: BUILTIN_TTS_ENGINE, voice: name });
-            }}
-          >
-            <option value="" disabled>{placeholder}</option>
-            {/* A saved voice outside the list still shows as selected. */}
-            {current && !freeVoices.some((m) => configFor(m.name)?.id === current.id) && (
-              <option value={current.id}>{current.name}</option>
-            )}
-            {freeVoices.map((m) => (
-              <option key={m.name} value={configFor(m.name)?.id ?? `free:${m.name}`}>{m.label}</option>
-            ))}
-          </select>
-          {sampleUrl && <audio key={sampleUrl} controls preload="none" src={sampleUrl} style={{ height: 30, maxWidth: 200 }} />}
-        </div>
+      const lists = (all ? languages : [lang]).map((l) => voicesOf(voiceOption, l));
+      const list = lists.some((l) => l === undefined) ? undefined : lists.some((l) => l === null) ? null
+        : lists[0]!.filter((v) => lists.every((l) => l!.some((x) => x.voice_id === v.voice_id)));
+      const sameOption = current && managedOptionId(current) === voiceOption.id;
+      picker = list === undefined ? (
+        <div className="form-hint" style={{ marginTop: 0 }}>Loading voices…</div>
+      ) : list === null ? (
+        <div className="voice-missing"><AlertCircle size={13} /><span>Couldn&apos;t load {voiceOption.provider}&apos;s voices. Try again shortly.</span></div>
+      ) : list.length === 0 ? (
+        <div className="voice-missing"><AlertCircle size={13} /><span>{voiceOption.provider} {voiceOption.label} has no {label} voices. Pick another voice service.</span></div>
+      ) : (
+        <VoicePickerWithPreview
+          voices={list}
+          currentVoiceId={sameOption ? current?.voice : null}
+          currentVoiceLabel={sameOption ? current?.name : null}
+          placeholder={workspaceVoice ? `Workspace default voice (${workspaceVoice.name})` : `Choose ${article(label)} ${label} voice…`}
+          canPreview={(id) => voiceOption.engine !== "kokoro" || !!kokoroSample(id)}
+          preview={(id) => voiceOption.engine === "kokoro"
+            ? fetch(kokoroSample(id)!).then((r) => r.blob())
+            : previewAiVoice(tenantId, voiceOption.id, id, lang)}
+          onPick={(id, name) => void pickVoice(lang, id, name)}
+        />
       );
     }
     return (
       <div className="form-group">
-        <label className="form-label">
-          {label} voice{lang === primaryLanguage && multilingual && <span className="hint">main</span>}
-        </label>
+        {heading}
         {picker}
-        {!current && !workspaceVoice && !sharedVoice && (
+        {!current && !workspaceVoice && !shared && (
           <div className="voice-missing">
             <AlertCircle size={13} />
-            <span>
-              {lang === primaryLanguage
-                ? `Voice needed — ${label} has no voice and the workspace has no default voice.`
-                : `Voice needed — the agent can't be saved until ${label} has a voice.`}
-            </span>
+            <span>{isPrimary ? `Voice needed — pick ${article(label)} ${label} voice.` : `Voice needed — the agent can't be saved until ${label} has a voice.`}</span>
           </div>
         )}
       </div>
     );
   };
 
+  const catalogNotice = catalogError ? (
+    <div className="error-banner">Couldn&apos;t load the available models: {catalogError}</div>
+  ) : null;
+
+  const sttGroup = ofRole("stt").filter((o) => o.provider === (sttChip ?? sttOption?.provider));
+  const llmGroup = ofRole("llm").filter((o) => o.provider === llmProvider);
+  const voiceGroup = ofRole("tts").filter((o) => o.provider === voiceProvider);
+
   return (
     <>
+      {showCost && <AgentCostBar catalog={catalog} stt={selectedStt} llm={selectedLlm} tts={baseVoice} />}
+      {catalogNotice}
+
       {part !== "engines" && <>
-      <div className="card" style={{ marginBottom: 14 }}>
-        <div className="card-hdr">
-          <div className="card-title">Language</div>
-        </div>
-        <div className="card-body">
-          <div className="voice-engine-row" role="radiogroup" aria-label="Language mode" style={{ marginBottom: 14 }}>
-            {LANGUAGE_MODES.map((m) => (
-              <button
-                key={m.value}
-                type="button"
-                role="radio"
-                aria-checked={languageMode === m.value}
-                className={`voice-engine-card${languageMode === m.value ? " on" : ""}`}
-                onClick={() => changeMode(m.value)}
-              >
-                <div className="agent-template-title">{m.label}</div>
-                <div className="agent-template-blurb">{m.blurb}</div>
-              </button>
-            ))}
+        <div className="card" style={{ marginBottom: 14 }}>
+          <div className="card-hdr">
+            <div className="card-title">Languages</div>
+            <div className="card-sub">Agent understands and speaks with callers.</div>
           </div>
-
-          {multilingual ? (
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <label className="form-label">Languages <span className="hint">pick {MAX_LANGUAGES}</span></label>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }} role="group" aria-label="Languages">
-                {SUPPORTED_LANGUAGES.map((l) => {
-                  const on = languages.includes(l.value);
-                  const full = !on && languages.length >= MAX_LANGUAGES;
-                  return (
-                    <button
-                      key={l.value}
-                      type="button"
-                      aria-pressed={on}
-                      disabled={full}
-                      className={`btn btn-sm ${on ? "btn-primary" : "btn-ghost"}`}
-                      onClick={() => toggleLanguage(l.value)}
-                      title={full ? `maximum ${MAX_LANGUAGES} languages` : undefined}
-                    >
-                      {languageLabel(l.value)}{on && l.value === primaryLanguage ? " · main" : ""}
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="form-hint">
-                The agent greets in the main language, then follows whichever of the two the caller uses.
-                {languages.length < MAX_LANGUAGES && ` Pick ${MAX_LANGUAGES - languages.length} more.`}
-                {languages.length >= MAX_LANGUAGES && ` Maximum ${MAX_LANGUAGES} languages: remove one to pick another.`}
-              </div>
-            </div>
-          ) : (
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <label className="form-label">What language will callers speak?</label>
-              <select className="form-select" value={primaryLanguage ?? ""} onChange={(e) => changeLanguages([e.target.value])}>
-                {SUPPORTED_LANGUAGES.map((l) => (
-                  <option key={l.value} value={l.value}>{languageLabel(l.value)}</option>
-                ))}
+          <div className="card-body">
+            <div className="form-group">
+              <label className="form-label" htmlFor="agent-primary-language">Primary language</label>
+              <select
+                id="agent-primary-language"
+                className="form-select"
+                value={primaryLanguage ?? ""}
+                onChange={(e) => applyLanguages([e.target.value, ...languages.slice(1).filter((l) => l !== e.target.value)])}
+              >
+                {SUPPORTED_LANGUAGES.map((l) => <option key={l.value} value={l.value}>{languageLabel(l.value)}</option>)}
               </select>
-              <div className="form-hint">Callers are heard and answered in this language.</div>
-              {droppedLanguage && (
-                <div className="voice-missing">
-                  <AlertCircle size={13} />
-                  <span>
-                    {languageLabel(droppedLanguage)} will be removed when you save, along with its voice.
-                  </span>
-                </div>
-              )}
+              <div className="form-hint">The agent greets callers in this language.</div>
             </div>
-          )}
-
-          <div style={{ marginTop: 14 }}>
-            {languages.map((lang) => <div key={lang}>{languageVoice(lang)}</div>)}
-          </div>
-
-          {languagesError && (
-            <div className="voice-missing">
-              <AlertCircle size={13} />
-              <span>{friendlyLanguageError(languagesError)}</span>
-            </div>
-          )}
-        </div>
-      </div>
-      <div className="card" style={{ marginBottom: 14 }}>
-        <div className="card-hdr">
-          <div className="card-title">How it sounds</div>
-          <div className="card-sub">the voice callers hear on the phone</div>
-        </div>
-        <div className="card-body">
-          <div className="voice-engine-row" role="radiogroup" aria-label="Where the voice comes from">
-            <button
-              type="button"
-              role="radio"
-              aria-checked={voiceMode === "builtin"}
-              className={`voice-engine-card${voiceMode === "builtin" ? " on" : ""}`}
-              onClick={() => changeVoiceSource("builtin")}
-            >
-              <div className="agent-template-title">Built-in voice <span className="voice-default-tag">Default</span></div>
-              <div className="agent-template-blurb">Included with your plan. Works right away, no setup needed.</div>
-            </button>
-            <button
-              type="button"
-              role="radio"
-              aria-checked={voiceMode === "own"}
-              className={`voice-engine-card${voiceMode === "own" ? " on" : ""}`}
-              onClick={() => changeVoiceSource("own")}
-            >
-              <div className="agent-template-title">Your own voice service</div>
-              <div className="agent-template-blurb">Use your ElevenLabs, Cartesia or other account.</div>
-            </button>
-          </div>
-
-          {voiceMode === "own" && (
-            <>
-              {connectedVoices.length > 0 && (
-                <div className="form-group">
-                  <label className="form-label">Which service should the voices come from?</label>
-                  <div className="voice-list">
-                    {connectedVoices.map((p) => (
-                      <button
-                        key={p.id}
-                        type="button"
-                        className={`voice-list-row${p.id === account?.id ? " on" : ""}`}
-                        onClick={() => setAccountId(p.id)}
-                      >
-                        <span className="voice-list-check">{p.id === account?.id && <Check size={13} />}</span>
-                        <span className="voice-list-name">{p.name}</span>
-                        <span className="voice-list-meta">{SERVICE_NAMES[p.engine] ?? p.engine}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {!connectOpen ? (
-                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setShowConnect(true)}>
-                  + Connect another service
-                </button>
-              ) : (
-              <>
-              <div className="form-group">
-                <label className="form-label">Which service do you use?</label>
-                <div className="voice-service-row" role="radiogroup" aria-label="Voice service">
-                  {VOICE_SERVICES.map((s) => (
-                    <button
-                      key={s.engine}
-                      type="button"
-                      role="radio"
-                      aria-checked={service === s.engine}
-                      disabled={!s.ready}
-                      className={`voice-service${service === s.engine ? " on" : ""}`}
-                      onClick={() => setService(s.engine)}
-                    >
-                      <b>{s.name}</b>
-                      <span>{s.ready ? s.blurb : "Coming soon"}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-              {connectError && <div className="error-banner">{connectError}</div>}
-              <div className="form-group">
-                <label className="form-label">Your {VOICE_SERVICES.find((s) => s.engine === service)?.name} API key</label>
-                <input
-                  className="form-input"
-                  type="password"
-                  autoComplete="off"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="Paste your API key"
-                />
-                <div className="form-hint">
-                  Find it in your {service === "cartesia" ? "Cartesia" : "ElevenLabs"} account settings. We store it encrypted.
-                </div>
-              </div>
-              {service === "cartesia" && (
-                <div className="form-group">
-                  <label className="form-label">Voice ID</label>
-                  <input
-                    className="form-input"
-                    value={voiceId}
-                    onChange={(e) => setVoiceId(e.target.value)}
-                    placeholder="Paste the voice ID"
-                  />
-                  <div className="form-hint">Open the voice you like in Cartesia and copy its ID.</div>
-                </div>
-              )}
-              <button
-                type="button"
-                className="btn btn-primary btn-sm"
-                onClick={handleConnect}
-                disabled={connecting || !apiKey.trim() || (service === "cartesia" && !voiceId.trim())}
-              >
-                {connecting ? "Connecting…" : "Connect and use this service"}
-              </button>
-              {connectedVoices.length > 0 && (
-                <button type="button" className="btn btn-ghost btn-sm" style={{ marginLeft: 6 }} onClick={() => setShowConnect(false)}>
-                  Cancel
-                </button>
-              )}
-              </>
-              )}
-            </>
-          )}
-
-          <div className="form-group" style={{ marginTop: 16, marginBottom: 0 }}>
-            <label className="form-label">Speaking speed</label>
-            <div className="voice-speed">
-              <span>Slower</span>
-              <input
-                type="range"
-                min={0.7}
-                max={1.2}
-                step={0.05}
-                value={speed}
-                disabled={voiceConfigs.length === 0}
-                aria-label="Speaking speed"
-                onChange={(e) => setSpeedDraft(Number(e.target.value))}
-                onMouseUp={(e) => commitSpeed(Number(e.currentTarget.value))}
-                onTouchEnd={(e) => commitSpeed(Number(e.currentTarget.value))}
-                onKeyUp={(e) => commitSpeed(Number(e.currentTarget.value))}
-              />
-              <span>Faster</span>
-              <span className="voice-speed-value">{speed === 1 ? "Normal" : `${speed.toFixed(2)}×`}</span>
-            </div>
-            <div className="form-hint">
-              {voiceConfigs.length > 0
-                ? "Saved right away. Every agent using these voices shares the same speed."
-                : "Pick a voice first."}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      </>}
-
-      {part !== "voice" && <div className="card">
-        <div className="card-hdr">
-          <div className="card-title">Hearing &amp; thinking</div>
-          <div className="card-sub">both are needed to take calls</div>
-        </div>
-        <div className="card-body">
-          <div className="form-row" style={{ flexWrap: "wrap" }}>
-            {providerSelect("stt", sttId, "How it hears callers", "Turns speech into words the agent can understand.")}
-            {providerSelect("llm", llmId, "How it thinks", "Chooses what to say next.")}
-          </div>
-          {sttLanguageWarning && (
-            <div className="voice-missing" style={{ marginTop: 0, marginBottom: 14 }}>
-              <AlertCircle size={13} />
-              <span>{sttLanguageWarning}</span>
-            </div>
-          )}
-          {thinkingCapable && selectedLlm && (
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <label className="form-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                Think before answering
-                <span className="hint">smarter replies, but adds 5–8 seconds per turn</span>
-              </label>
+            <div className="ai-toggle-row">
               <label className="toggle-switch">
                 <input
                   type="checkbox"
-                  checked={Boolean(selectedLlm.extra?.think ?? false)}
-                  onChange={(e) => patchExtra(selectedLlm, { think: e.target.checked })}
+                  aria-label="Auto switch language"
+                  checked={multilingual}
+                  onChange={(e) => setSwitching(e.target.checked)}
                 />
                 <span className="toggle-slider" />
               </label>
+              <div>
+                <div className="form-label" style={{ margin: 0 }}>Auto switch language <span className="ed2-optional">(optional)</span></div>
+                <div className="form-hint" style={{ marginTop: 2 }}>When the caller speaks another language, the agent follows them.</div>
+              </div>
             </div>
-          )}
+            {multilingual && (
+              <div className="form-group" style={{ marginTop: 14, marginBottom: 0 }}>
+                <label className="form-label" htmlFor="agent-secondary-language">Secondary language <span className="ed2-optional">(optional)</span></label>
+                <select
+                  id="agent-secondary-language"
+                  className="form-select"
+                  value={secondaryLanguage ?? ""}
+                  onChange={(e) => applyLanguages([primaryLanguage ?? "en", e.target.value])}
+                >
+                  {SUPPORTED_LANGUAGES.filter((l) => l.value !== primaryLanguage).map((l) => (
+                    <option key={l.value} value={l.value}>{languageLabel(l.value)}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {languagesError && (
+              <div className="voice-missing">
+                <AlertCircle size={13} />
+                <span>{friendlyLanguageError(languagesError)}</span>
+              </div>
+            )}
+          </div>
         </div>
-      </div>}
+
+        <div className="card" style={{ marginBottom: 14 }}>
+          <div className="card-hdr">
+            <div className="card-title">Voice</div>
+            <div className="card-sub">How agent will sound on every call.</div>
+          </div>
+          <div className="card-body">
+            <div className="form-group">
+              <label className="form-label">Provider</label>
+              <ProviderChips
+                options={ofRole("tts")}
+                languages={languages}
+                current={voiceProvider}
+                own={own("tts")}
+                showOwn={!!catalog?.local_models_enabled && inHouseEngines.length > 0}
+                label="Voice provider"
+                onPick={(name) => {
+                  if (name === OWN) { setVoiceOwn(true); setVoiceOptionId(null); return; }
+                  const group = ofRole("tts").filter((o) => o.provider === name && o.available);
+                  const fit = group.find((o) => languages.every((l) => o.languages.includes(l))) ?? group[0];
+                  if (fit) void pickVoiceOption(fit);
+                }}
+              />
+            </div>
+            {voiceProvider === OWN && inHouseEngines.length > 0 && (
+              <div className="form-group">
+                <label className="form-label">Model</label>
+                <select className="form-select" aria-label="In-house voice model" value={ownEngine ?? ""}
+                  onChange={(e) => setOwnTtsEngine(e.target.value)}>
+                  {inHouseEngines.map((e) => <option key={e} value={e}>{IN_HOUSE_TTS[e]} · runs on your server</option>)}
+                </select>
+              </div>
+            )}
+            {voiceOption && voiceProvider !== OWN && voiceGroup.length > 0 && (
+              <div className="form-group">
+                <label className="form-label">Model</label>
+                <ModelSelect options={voiceGroup} value={voiceOption.id} languages={languages} label="Voice model" onPick={(o) => void pickVoiceOption(o)} />
+                <LanguageCoverage verb="Speaks" option={voiceOption} />
+              </div>
+            )}
+            {oneVoice && primaryLanguage ? (
+              <>
+                {languageVoice(primaryLanguage, true)}
+                {secondaryLanguage && ttsByLanguage[secondaryLanguage] && languageVoice(secondaryLanguage)}
+              </>
+            ) : (
+              languages.map((lang) => <div key={lang}>{languageVoice(lang)}</div>)
+            )}
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Speaking speed</label>
+              <div className="voice-speed">
+                <span>Slower</span>
+                <input
+                  type="range" min={0.7} max={1.2} step={0.05} value={speed}
+                  disabled={voiceConfigs.length === 0 || busy === "tts"}
+                  aria-label="Speaking speed"
+                  onChange={(e) => setSpeedDraft(Number(e.target.value))}
+                  onMouseUp={(e) => commitSpeed(Number(e.currentTarget.value))}
+                  onTouchEnd={(e) => commitSpeed(Number(e.currentTarget.value))}
+                  onKeyUp={(e) => commitSpeed(Number(e.currentTarget.value))}
+                />
+                <span>Faster</span>
+                <span className="voice-speed-value">{speed === 1 ? "Normal" : `${speed.toFixed(2)}×`}</span>
+              </div>
+              <div className="form-hint">
+                {voiceConfigs.length > 0 ? "Saved right away for every agent using this voice." : "Pick a voice first."}
+              </div>
+            </div>
+          </div>
+        </div>
+      </>}
+
+      {part !== "voice" && <>
+        <div className="card" style={{ marginBottom: 14 }}>
+          <div className="card-hdr">
+            <div className="card-title">Thinking</div>
+            <div className="card-sub">the model that decides what to say</div>
+          </div>
+          <div className="card-body">
+            <div className="form-group">
+              <label className="form-label">Provider</label>
+              <ProviderChips
+                options={ofRole("llm")}
+                current={llmProvider}
+                own={own("llm")}
+                label="Thinking provider"
+                onPick={(name) => {
+                  if (name === OWN) { setLlmChip(OWN); return; }
+                  const first = ofRole("llm").find((o) => o.provider === name && o.available);
+                  if (first) void pickLlm(first);
+                }}
+              />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Model</label>
+              {llmProvider === OWN ? (
+                <OwnSelect own={own("llm")} value={llmOption ? null : llmId} label="Thinking model"
+                  onPick={(id) => { onAssign("llm", id); setLlmChip(null); }} />
+              ) : llmGroup.length ? (
+                <ModelSelect options={llmGroup} value={llmOption?.id ?? null} label="Thinking model" onPick={(o) => void pickLlm(o)} />
+              ) : (
+                <div className="form-hint" style={{ marginTop: 0 }}>Pick a provider above.</div>
+              )}
+              {llmOption?.blurb && <div className="form-hint">{llmOption.blurb}</div>}
+              {!llmId && (
+                <div className="voice-missing"><AlertCircle size={13} /><span>Required — the agent can&apos;t take calls without it.</span></div>
+              )}
+            </div>
+            <div className="form-group" style={{ marginBottom: thinkingCapable ? undefined : 0 }}>
+              <label className="form-label">Response style</label>
+              <div className="voice-speed">
+                <span>Focused</span>
+                <input
+                  type="range" min={0} max={1.2} step={0.1} value={temperature}
+                  disabled={!selectedLlm || busy === "llm"}
+                  aria-label="Response style, from focused to creative"
+                  onChange={(e) => setTempDraft(Number(e.target.value))}
+                  onMouseUp={(e) => void commitTemperature(Number(e.currentTarget.value))}
+                  onTouchEnd={(e) => void commitTemperature(Number(e.currentTarget.value))}
+                  onKeyUp={(e) => void commitTemperature(Number(e.currentTarget.value))}
+                />
+                <span>Creative</span>
+                <span className="voice-speed-value">{temperature.toFixed(1)}</span>
+              </div>
+              <div className="form-hint">Focused keeps answers consistent; creative varies the wording more.</div>
+            </div>
+            {thinkingCapable && selectedLlm && (
+              <div className="ai-toggle-row">
+                <label className="toggle-switch">
+                  <input
+                    type="checkbox"
+                    aria-label="Think before answering"
+                    checked={Boolean(selectedLlm.extra?.think ?? false)}
+                    onChange={(e) => patchExtra(selectedLlm, { think: e.target.checked })}
+                  />
+                  <span className="toggle-slider" />
+                </label>
+                <div>
+                  <div className="form-label" style={{ margin: 0 }}>Think before answering</div>
+                  <div className="form-hint" style={{ marginTop: 2 }}>Smarter replies, but adds 5–8 seconds per turn.</div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="card" style={{ marginBottom: 14 }}>
+          <div className="card-hdr">
+            <div className="card-title">Hearing</div>
+            <div className="card-sub">turns callers&apos; speech into words</div>
+          </div>
+          <div className="card-body">
+            {!custom ? (
+              <>
+                {recommended ? (
+                  <div className="ai-recommended">
+                    <div>
+                      <div className="ai-recommended-kicker">Platform picks this from your languages</div>
+                      <div className="ai-recommended-name">{recommended.provider} {recommended.label}</div>
+                      <div className="form-hint" style={{ marginTop: 2 }}>
+                        {recommended.blurb} Hears {languages.map(languageLabel).join(" and ")}. {money(recommended.price_per_min)}/min.
+                      </div>
+                    </div>
+                    {sttOption?.id === recommended.id ? (
+                      <span className="badge green"><Check size={11} /> In use</span>
+                    ) : (
+                      <button type="button" className="btn btn-primary btn-sm" disabled={busy === "stt"}
+                        onClick={() => void applyRecommendedHearing(languages)}>
+                        Use this
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <div className="voice-missing">
+                    <AlertCircle size={13} />
+                    <span>
+                      No speech recognition on this platform hears {languages.map(languageLabel).join(" and ")} yet.
+                      {ofRole("stt")[0]?.key_env ? ` ${unavailableHint(ofRole("stt")[0])}` : ""}
+                    </span>
+                  </div>
+                )}
+                <button type="button" className="btn btn-ghost btn-sm" style={{ marginTop: 10 }} onClick={() => setHearingCustom(true)}>
+                  Choose myself
+                </button>
+              </>
+            ) : (
+              <>
+                <div className="form-group">
+                  <label className="form-label">Provider</label>
+                  <ProviderChips
+                    options={ofRole("stt")}
+                    languages={languages}
+                    current={sttChip ?? sttOption?.provider ?? (selectedStt ? OWN : null)}
+                    own={own("stt")}
+                    label="Hearing provider"
+                    onPick={(name) => {
+                      setSttChip(name);
+                      if (name === OWN) return;
+                      const fit = ofRole("stt").find((o) => o.provider === name && o.available && hears(o, languages));
+                      if (fit) void choose("stt", fit).then((row) => { if (row) { onAssign("stt", row.id); setSttChip(null); } });
+                    }}
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Model</label>
+                  {(sttChip ?? (sttOption ? null : selectedStt ? OWN : null)) === OWN ? (
+                    <OwnSelect own={own("stt")} value={sttOption ? null : sttId} label="Hearing model"
+                      onPick={(id) => { onAssign("stt", id); setSttChip(null); }} />
+                  ) : sttGroup.length ? (
+                    <>
+                      <ModelSelect options={sttGroup} value={sttOption?.id ?? null} languages={languages} label="Hearing model"
+                        onPick={(o) => void choose("stt", o).then((row) => { if (row) onAssign("stt", row.id); })} />
+                      {sttOption && <LanguageCoverage verb="Hears" option={sttOption} />}
+                    </>
+                  ) : (
+                    <div className="form-hint" style={{ marginTop: 0 }}>Pick a provider above.</div>
+                  )}
+                </div>
+                {recommended && (
+                  <button type="button" className="btn btn-ghost btn-sm" disabled={busy === "stt"}
+                    onClick={() => { setHearingCustom(false); setSttChip(null); void applyRecommendedHearing(languages); }}>
+                    <RotateCcw size={12} /> Reset to recommended
+                  </button>
+                )}
+              </>
+            )}
+            {selectedStt?.engine === "sarvam" && selectedStt.model === "saaras:v3" && (
+              <div className="form-group" style={{ marginTop: 12, marginBottom: 0 }}>
+                <label className="form-label" htmlFor="sarvam-stt-mode">Output</label>
+                <select
+                  id="sarvam-stt-mode"
+                  className="form-select"
+                  value={String(selectedStt.extra?.mode ?? "transcribe")}
+                  onChange={(e) => patchExtra(selectedStt, { mode: e.target.value })}
+                >
+                  {SARVAM_STT_MODES.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+                </select>
+                <div className="form-hint">{SARVAM_STT_MODES.find((m) => m.value === (selectedStt.extra?.mode ?? "transcribe"))?.hint}</div>
+              </div>
+            )}
+            {sttWarning && (
+              <div className="voice-missing"><AlertCircle size={13} /><span>{sttWarning}</span></div>
+            )}
+            {!sttId && custom && (
+              <div className="voice-missing"><AlertCircle size={13} /><span>Required — the agent can&apos;t take calls without it.</span></div>
+            )}
+          </div>
+        </div>
+      </>}
     </>
   );
 }

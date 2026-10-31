@@ -1,8 +1,9 @@
-"""Speak operator text in a provider_config's voice. Only HTTP engines (elevenlabs,
-deepgram) are supported here. Returns WAV because <audio> can't play raw PCM."""
+"""Speak operator text in a provider_config's voice. Only HTTP engines (elevenlabs, deepgram,
+cartesia, sarvam) are supported here. Returns WAV because <audio> can't play raw PCM."""
 
 from __future__ import annotations
 
+import base64
 import io
 import logging
 import wave
@@ -19,7 +20,8 @@ PREVIEW_RATE = 24_000
 MAX_CHARS = 600
 _TIMEOUT_S = 20.0
 
-SUPPORTED_ENGINES = ("elevenlabs", "deepgram")
+SUPPORTED_ENGINES = ("elevenlabs", "deepgram", "cartesia", "sarvam")
+_CARTESIA_API_VERSION = "2024-06-10"  # keep equal to services/conversation/providers/tts/cartesia.py
 UNSUPPORTED_ENGINES = {
     "macos": "macOS voices are synthesized by the host's own `say` binary, which this service "
              "cannot reach — use the sample clip on the voice picker instead.",
@@ -77,7 +79,8 @@ async def _deepgram(cfg: dict[str, Any], api_key: str, text: str) -> bytes:
         resp = await client.post(
             "/v1/speak",
             params={
-                "model": cfg.get("model") or "aura-asteria-en",
+                # The Aura voice id is the model name; older rows stored it in model.
+                "model": cfg.get("voice") or cfg.get("model") or "aura-asteria-en",
                 "encoding": "linear16",
                 "container": "none",
                 "sample_rate": PREVIEW_RATE,
@@ -89,6 +92,49 @@ async def _deepgram(cfg: dict[str, Any], api_key: str, text: str) -> bytes:
         log.warning("Deepgram TTS preview returned %s: %s", resp.status_code, resp.text[:200])
         raise PreviewUnavailable(f"Deepgram returned {resp.status_code}")
     return resp.content
+
+
+async def _cartesia(cfg: dict[str, Any], api_key: str, text: str) -> bytes:
+    extra = cfg.get("extra") or {}
+    body: dict[str, Any] = {
+        "model_id": extra.get("model") or cfg.get("model") or "sonic-2",
+        "transcript": text,
+        "voice": {"mode": "id", "id": cfg.get("voice") or ""},
+        "output_format": {"container": "raw", "encoding": "pcm_s16le", "sample_rate": PREVIEW_RATE},
+    }
+    if cfg.get("language"):
+        body["language"] = str(cfg["language"]).split("-")[0].lower()
+    async with httpx.AsyncClient(base_url="https://api.cartesia.ai", timeout=_TIMEOUT_S) as client:
+        resp = await client.post(
+            "/tts/bytes", json=body, headers={"X-API-Key": api_key, "Cartesia-Version": _CARTESIA_API_VERSION},
+        )
+    if resp.status_code != 200:
+        log.warning("Cartesia TTS preview returned %s: %s", resp.status_code, resp.text[:200])
+        raise PreviewUnavailable(f"Cartesia returned {resp.status_code}")
+    return resp.content
+
+
+async def _sarvam(cfg: dict[str, Any], api_key: str, text: str) -> bytes:
+    """Sarvam answers with a WAV clip; its PCM is returned at PREVIEW_RATE (24 kHz is a supported rate)."""
+    lang = str(cfg.get("language") or "en").split("-")[0].lower()
+    body = {
+        "text": text, "language_code": f"{lang}-IN", "speaker": (cfg.get("voice") or "").lower(),
+        "model": (cfg.get("extra") or {}).get("model") or cfg.get("model") or "bulbul:v4-flash",
+        "speech_sample_rate": PREVIEW_RATE, "output_audio_codec": "wav",
+    }
+    async with httpx.AsyncClient(base_url="https://api.sarvam.ai", timeout=_TIMEOUT_S) as client:
+        resp = await client.post("/text-to-speech", json=body, headers={"api-subscription-key": api_key})
+    if resp.status_code != 200:
+        log.warning("Sarvam TTS preview returned %s: %s", resp.status_code, resp.text[:200])
+        raise PreviewUnavailable(f"Sarvam returned {resp.status_code}")
+    try:
+        with wave.open(io.BytesIO(base64.b64decode(resp.json()["audios"][0])), "rb") as clip:
+            return clip.readframes(clip.getnframes())
+    except (KeyError, IndexError, ValueError, wave.Error) as exc:
+        raise PreviewUnavailable("Sarvam returned audio this preview can't read") from exc
+
+
+_SYNTH = {"elevenlabs": _elevenlabs, "deepgram": _deepgram, "cartesia": _cartesia, "sarvam": _sarvam}
 
 
 async def synthesize_preview(
@@ -114,8 +160,8 @@ async def synthesize_preview(
         raise PreviewUnavailable(f"previewing {engine!r} voices isn't supported yet")
     if not cfg.get("api_key_ref"):
         raise PreviewUnavailable(f"provider_config {cfg['id']} has no api_key_ref configured")
-    if engine == "elevenlabs" and not cfg.get("voice"):
-        raise PreviewUnavailable("this ElevenLabs provider has no voice selected yet")
+    if engine in ("elevenlabs", "cartesia", "sarvam") and not cfg.get("voice"):
+        raise PreviewUnavailable("pick a voice first")
 
     try:
         api_key = await secret_resolver.resolve(cfg["api_key_ref"])
@@ -126,7 +172,7 @@ async def synthesize_preview(
             "this voice's API key could not be read — check the provider's credential in AI & Voice"
         ) from exc
     try:
-        pcm = await (_elevenlabs if engine == "elevenlabs" else _deepgram)(cfg, api_key, text)
+        pcm = await _SYNTH[engine](cfg, api_key, text)
     except httpx.RequestError as exc:
         raise PreviewUnavailable(f"could not reach the voice provider: {exc.__class__.__name__}") from exc
 

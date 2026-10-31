@@ -86,8 +86,9 @@ async def test_errors_return_silence_not_exceptions():
     assert await tts.synthesize("hi", 16000) == b""
 
 
-def test_multilingual_agents_may_use_sarvam_for_hindi_and_english():
-    assert tts_languages("sarvam", "bulbul:v3") == frozenset({"en", "hi"})
+def test_multilingual_agents_may_use_sarvam_for_indian_languages_and_english():
+    assert tts_languages("sarvam", "bulbul:v3") == frozenset({"en", "hi", "ta", "te", "kn", "mr", "bn"})
+    assert tts_languages("sarvam", "bulbul:v4-flash", "shubh_enhi_ads") == frozenset({"en", "hi"})
 
 
 @pytest.mark.asyncio

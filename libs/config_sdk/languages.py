@@ -36,6 +36,16 @@ LANGUAGES: dict[str, Language] = {l.code: l for l in (
              "Always write Hindi words in Devanagari script (देवनागरी), even when the caller's "
              "words reach you in Latin letters; write English words in Latin script.",
              aliases=("ur",)),
+    Language("ta", "Tamil",      "தமிழ்",      None, False,
+             "Write Tamil words in Tamil script (தமிழ்) and English words in Latin script."),
+    Language("te", "Telugu",     "తెలుగు",     None, False,
+             "Write Telugu words in Telugu script (తెలుగు) and English words in Latin script."),
+    Language("kn", "Kannada",    "ಕನ್ನಡ",      None, False,
+             "Write Kannada words in Kannada script (ಕನ್ನಡ) and English words in Latin script."),
+    Language("mr", "Marathi",    "मराठी",      None, False,
+             "Write Marathi words in Devanagari script (मराठी) and English words in Latin script."),
+    Language("bn", "Bengali",    "বাংলা",      None, False,
+             "Write Bengali words in Bengali script (বাংলা) and English words in Latin script."),
     Language("es", "Spanish",    "Español",   "e", True),
     Language("fr", "French",     "Français",  "f", True),
     Language("de", "German",     "Deutsch",   None, True),
@@ -46,6 +56,11 @@ LANGUAGES: dict[str, Language] = {l.code: l for l in (
     Language("ja", "Japanese",   "日本語",     None, True),
     Language("zh", "Chinese",    "中文",       None, False),
 )}
+
+# Of ours, the languages Sarvam's Saaras (hearing) and Bulbul (voice) cover, Indian English included.
+SARVAM_LANGUAGES = frozenset({"en", "hi", "ta", "te", "kn", "mr", "bn"})
+# Deepgram nova-2/3 languages we route to it; Indian languages beyond Hindi go to Sarvam.
+_DEEPGRAM_STT_LANGUAGES = frozenset({"en", "hi", "es", "fr", "de", "pt", "it", "ja", "zh"})
 
 # Deepgram's code-switching mode; a valid provider_configs.language for Deepgram STT only.
 DEEPGRAM_MULTI = "multi"
@@ -123,8 +138,12 @@ def tts_languages(engine: str, model: str | None, voice: str | None = None) -> f
         m = (model or "eleven_turbo_v2_5").lower()
         return frozenset({"en"}) if m in _ELEVENLABS_ENGLISH_ONLY_MODELS else _ELEVENLABS_MULTILINGUAL
     if engine == "sarvam":
-        # Bulbul speaks Indian languages and Indian English; of ours, English and Hindi.
-        return frozenset({"en", "hi"})
+        # A Bulbul v4 persona speaks the languages in its name (shubh_enhi_ads); v3 speakers speak all of them.
+        persona = re.fullmatch(r"[a-z]+_([a-z]+)_[a-z]+", (voice or "").lower())
+        if persona:
+            code = persona.group(1)
+            return frozenset({"en", "hi"}) if code == "enhi" else frozenset({code}) & SARVAM_LANGUAGES
+        return SARVAM_LANGUAGES
     if engine == "kokoro":
         # A Kokoro voice speaks its own language only: an English voice reading Hindi
         # phonemes comes out barely intelligible.
@@ -144,7 +163,9 @@ def stt_languages(engine: str, model: str | None) -> frozenset[str]:
         name = (model or "").lower()
         return frozenset({"en"}) if name.endswith(".en") or name.startswith("distil-") else frozenset(LANGUAGES)
     if engine == "deepgram":
-        return frozenset(LANGUAGES)
+        return _DEEPGRAM_STT_LANGUAGES
+    if engine == "sarvam":
+        return SARVAM_LANGUAGES
     return frozenset({"en"})
 
 
@@ -217,7 +238,7 @@ def resolve_languages(agent: "Agent", stt: "ProviderConfig", tts: "ProviderConfi
                 agent.slug, stt.model, ",".join(supported), default,
             )
             stt_language = default
-    elif stt.engine == "faster_whisper":
+    elif stt.engine in ("faster_whisper", "sarvam"):
         stt_language = None  # auto-detect per utterance
     else:
         stt_language = default

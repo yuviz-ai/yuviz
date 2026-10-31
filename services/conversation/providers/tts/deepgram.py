@@ -10,6 +10,7 @@ import logging
 from typing import AsyncGenerator
 
 import httpx
+from services.conversation.providers.http_pool import provider_http_limits
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class DeepgramTTS:
             base_url=base_url.rstrip("/"),
             headers={"Authorization": f"Token {api_key}"},
             timeout=timeout_s,
+            limits=provider_http_limits(),
         )
         log.info("DeepgramTTS voice=%s", voice)
 

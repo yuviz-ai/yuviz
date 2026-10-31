@@ -16,6 +16,7 @@ _sys.path.insert(0, _os.path.join(
 import asyncio
 import json
 import logging
+import math
 import os
 import time
 from http import HTTPStatus
@@ -62,6 +63,29 @@ def _write_wav_dump(session_id: str, utterance_num: int, pcm: bytes) -> None:
     log.info("webcall: wrote audio dump %s (%d bytes)", path, len(pcm))
 
 
+_UINT32_MAX = 2**32 - 1
+
+
+def _bounded_int(value, maximum: int) -> int | None:
+    """A JSON number in [0, maximum] as int, else None (bools, strings, NaN and out-of-range are rejected)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    value = int(value)
+    return value if 0 <= value <= maximum else None
+
+
+def _finite_float(value) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        value = float(value)
+    except OverflowError:
+        return None
+    return value if math.isfinite(value) else None
+
+
 async def _browser_to_grpc(
     ws: ServerConnection, call, session_id: str, response_watchdog: "ResponseWatchdog",
 ) -> None:
@@ -84,12 +108,20 @@ async def _browser_to_grpc(
 
         try:
             control = json.loads(message)
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):
             log.warning("webcall: malformed control message (type=%s, len=%d)", type(message).__name__, len(message))
+            continue
+        if not isinstance(control, dict):
+            log.warning("webcall: control message is not a JSON object (got %s)", type(control).__name__)
             continue
 
         kind = control.get("type")
         if kind == "speech_ended":
+            duration_ms = _bounded_int(control.get("duration_ms", 0), _UINT32_MAX)
+            energy_db = _finite_float(control.get("energy_db", 0.0))
+            if duration_ms is None or energy_db is None:
+                log.warning("webcall: speech_ended with invalid duration_ms/energy_db ignored")
+                continue
             utterance_num += 1
             if current_utterance is not None:
                 _write_wav_dump(session_id, utterance_num, bytes(current_utterance))
@@ -97,8 +129,8 @@ async def _browser_to_grpc(
             response_watchdog.arm()
             await call.write(pb.GatewayMessage(speech_ended=pb.SpeechEndedNotification(
                 session_id=session_id,
-                duration_ms=int(control.get("duration_ms", 0)),
-                energy_db=float(control.get("energy_db", 0.0)),
+                duration_ms=duration_ms,
+                energy_db=energy_db,
             )))
         elif kind == "cancel":
             await call.write(pb.GatewayMessage(cancel_generation=pb.CancelGeneration(

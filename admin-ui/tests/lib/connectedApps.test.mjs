@@ -44,9 +44,9 @@ test("saved tools stay manageable when their grant needs reconnecting", () => {
 
 test("search, category and connection filters intersect without changing the catalog", () => {
   const cards = workAppCards(providers, [{ provider: "google", status: "connected" }], presets, [{ preset_key: "whatsapp_confirmation" }]);
-  assert.deepEqual(filterApps(cards, " GOOGLE ", "Connected", "Work").map((c) => c.id), ["google"]);
+  assert.deepEqual(filterApps(cards, " GOOGLE ", "Connected", "Productivity").map((c) => c.id), ["google"]);
   assert.deepEqual(filterApps(cards, "confirmation", "Connected", "Messaging").map((c) => c.id), ["whatsapp_confirmation"]);
-  assert.equal(filterApps(cards, "google", "Not connected", "Work").some((c) => c.id === "google"), false);
+  assert.equal(filterApps(cards, "google", "Not connected", "Productivity").some((c) => c.id === "google"), false);
   assert.equal(filterApps(cards, "no such app", "All", "All").length, 0);
   assert.equal(cards.length, workAppCards(providers, [], presets, []).length);
 });
@@ -56,7 +56,7 @@ test("connected account details are searchable without exposing disconnected acc
   const connection = { id: "g1", provider: "google", status: "connected", account_label: "admin@example.com" };
   const cards = workAppCards(providers, [connection, { ...connection, id: "old", status: "disconnected", account_label: "old@example.com" }], presets, []);
   assert.deepEqual(cards.find((c) => c.id === "google").accounts, [connection]);
-  assert.deepEqual(filterApps(cards, "admin@example.com", "Connected", "Work").map((c) => c.id), ["google"]);
+  assert.deepEqual(filterApps(cards, "admin@example.com", "Connected", "Productivity").map((c) => c.id), ["google"]);
   assert.equal(filterApps(cards, "old@example.com", "All", "All").length, 0);
 });
 

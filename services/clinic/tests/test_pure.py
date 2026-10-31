@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime
 from zoneinfo import ZoneInfo
 
-from services.clinic import phones, reminders_schedule, slots, speech
+from services.clinic import booking, phones, reminders_schedule, slots, speech
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -134,3 +134,17 @@ def test_speech_parts_fit_toolexec_template_limit():
     long_text = "Just to confirm: Rahul Sharma with Dr. Anjali Mehta, Cardiology, tomorrow at 11:30 AM, " \
                 "mobile number ending 3 2 1 0. The consultation fee is 1200 rupees. Shall I book it?"
     assert " ".join(p for p in speech_parts(long_text) if p) == long_text
+
+
+def test_may_manage_caller_number_is_enough_spoken_is_second_factor():
+    appt = {"patient_phone": "+919811100001", "booked_by_phone": "+919811100002"}
+    assert booking.may_manage(appt, "+919811100002", None)
+    assert booking.may_manage(appt, "+919811100001", None)
+    assert booking.may_manage(appt, None, "9811100001")
+    assert not booking.may_manage(appt, None, None)
+    assert not booking.may_manage(appt, "+919811100003", None)
+    # a spoken number counts against the patient's number only, never the booking phone
+    assert not booking.may_manage(appt, None, "+919811100002")
+    assert not booking.may_manage(appt, "+919811100003", "+919811100002")
+    assert booking.may_manage(appt, "+919811100003", "+919811100001")
+    assert not booking.may_manage({"patient_phone": "+919811100001", "booked_by_phone": None}, None, "garbage")

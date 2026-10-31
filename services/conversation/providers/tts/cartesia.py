@@ -35,6 +35,7 @@ import httpx
 from libs.config_sdk.languages import normalize_language
 
 from ..interfaces import INSTANCE_LANGUAGE
+from services.conversation.providers.http_pool import provider_http_limits
 
 log = logging.getLogger(__name__)
 
@@ -97,6 +98,7 @@ class CartesiaTTS:
                 "Cartesia-Version": _API_VERSION,
             },
             timeout=timeout_s,
+            limits=provider_http_limits(),
         )
         log.info("CartesiaTTS voice=%s model=%s speed=%s language=%s", voice, model, self._speed, language)
 

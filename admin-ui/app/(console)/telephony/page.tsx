@@ -60,7 +60,7 @@ function CallingAppIdentity({ config }: { config: ConfigRow | null }) {
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={`/connected-apps/${app.icon}.svg`} alt="" width={14} height={14} />
       </span>}
-      <span>{config?.providerLabel ?? "Local phone"}{config && config.name !== config.providerLabel && <span className="phone-number-muted"> · {config.name}</span>}</span>
+      <span>{config?.providerLabel ?? "Native"}{config && config.name !== config.providerLabel && <span className="phone-number-muted"> · {config.name}</span>}</span>
     </span>
   );
 }
@@ -124,7 +124,7 @@ export default function TelephonyPage() {
           const agent = agents.agents.find((a) => a.id === n.agent_id);
           return {
             ...n, tenantName: t.name, configKey: config?.key ?? null, configName: config?.name ?? null,
-            providerLabel: config?.providerLabel ?? "Local phone",
+            providerLabel: config?.providerLabel ?? "Native",
             answers: !agents.ok ? "Unavailable" : agent?.name ?? (n.agent_id ? "Unavailable agent" : null),
             callerIdFor: agents.agents
               .filter((a) => a.outbound_caller_id && digits(a.outbound_caller_id) === digits(n.did))
@@ -207,7 +207,7 @@ export default function TelephonyPage() {
               <div className="empty-state phone-numbers-empty">
                 <Phone size={24} aria-hidden="true" />
                 <h2>Connect a calling app first</h2>
-                <p>Link Twilio, Plivo, or Local phone on Connected Apps. Then come back here to buy or add a number.</p>
+                <p>Link Twilio, Plivo, Vobiz or Native on Connected Apps. Then come back here to buy or add a number.</p>
                 <Link className="btn btn-primary btn-sm" href={CONNECTED_CALLING_APPS_URL}>Go to Connected Apps</Link>
               </div>
             ) : (

@@ -185,6 +185,44 @@ async def test_strangers_cannot_see_or_change_a_booking(run):
     assert allowed["ok"]
 
 
+async def test_spoken_number_alone_lists_nothing(run):
+    """A stranger who merely says the patient's number (no booking number) must get no appointments."""
+    _, done = await _prepare_and_book(run, slot=tomorrow_at(10, 30), caller="+919811100015", name="Private Patient")
+    stranger = "+919899999998"
+    for said in ("9811100015", "+919811100015", "09811100015"):
+        found = await run(booking.find_appointments, caller_phone=stranger, reference=None, patient_phone=said,
+                          language="en")
+        assert found["appointments"] == []
+    found = await run(booking.find_appointments, caller_phone=None, reference=None, patient_phone="9811100015",
+                      language="en")
+    assert found["appointments"] == []
+    # The call's own number still lists it.
+    own = await run(booking.find_appointments, caller_phone="+919811100015", reference=None, patient_phone=None,
+                    language="en")
+    assert [a["reference"] for a in own["appointments"]] == [done["reference"]]
+    # With the booking number plus the patient's number it works, from another phone.
+    with_ref = await run(booking.find_appointments, caller_phone=stranger, reference=done["reference"],
+                         patient_phone="9811100015", language="en")
+    assert [a["reference"] for a in with_ref["appointments"]] == [done["reference"]]
+
+
+async def test_spoken_booking_phone_does_not_authorize(run):
+    """Booked on behalf of a patient: saying the booker's number is not a second factor (only the patient's is)."""
+    prep, done = await _prepare_and_book(run, slot=tomorrow_at(11, 30), caller="+919811100016",
+                                         patient_phone="+919811100017", name="Meera Rao")
+    ref = done["reference"]
+    stranger = "+919899999997"
+    nope = await run(booking.find_appointments, caller_phone=stranger, reference=ref, patient_phone="9811100016",
+                     language="en")
+    assert nope["appointments"] == []
+    assert not (await run(booking.prepare_cancel, reference=ref, caller_phone=stranger,
+                          patient_phone="9811100016", language="en"))["ok"]
+    # The booker's real call number still works, and lists the booking without a reference.
+    listed = await run(booking.find_appointments, caller_phone="+919811100016", reference=None, patient_phone=None,
+                       language="en")
+    assert [a["reference"] for a in listed["appointments"]] == [ref]
+
+
 async def test_hindi_read_back_and_confirmation(run):
     prep, done = await _prepare_and_book(run, slot=tomorrow_at(9, 30), caller="+919811100006", name="सुनीता",
                                          language="hi", doctor="CARD-02")

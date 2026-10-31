@@ -322,6 +322,102 @@ async def test_audio_behind_a_dtmf_flood_survives_the_deferral():
     assert audios == [b"", b"", b"\x03\x03"]
 
 
+async def test_utterance_spoken_before_first_turn_returns_keeps_its_audio():
+    """Issue #218: the second utterance's frames arrive while turn 1 runs and before any deferred
+    speech_ended, so they were discarded as trailing frames and the turn got 0 bytes."""
+    audios = await _utterance_audio_per_turn([_audio(b"\x01\x01"), _audio(b"\x02\x02"), _speech_ended()])
+
+    assert audios == [b"", b"\x01\x01\x02\x02"]
+
+
+async def test_trailing_frames_with_no_following_utterance_are_still_discarded():
+    """Frames that no speech_ended follows must not leak into the next utterance."""
+    audios: list[bytes] = []
+    release = asyncio.Event()
+
+    async def turn(session_id, audio, duration_ms, energy_db):
+        audios.append(audio)
+        if len(audios) == 1:
+            await release.wait()
+        yield HandlerResponse(stt_text="x")
+
+    servicer, handler = _servicer(turn)
+    handler.on_audio.return_value = HandlerResponse()
+    done = asyncio.Event()
+
+    async def stream():
+        yield _open()
+        yield _speech_ended()
+        await asyncio.sleep(0.05)
+        yield _audio(b"\x09\x09")          # trailing, no speech_ended behind it
+        await asyncio.sleep(0.05)
+        release.set()
+        await asyncio.sleep(0.05)
+        yield _audio(b"\x07\x07")          # next utterance, after the turn ended
+        yield _speech_ended()
+        await asyncio.Event().wait()
+
+    async def consume():
+        async for _ in servicer.Converse(stream(), AsyncMock()):
+            if len(audios) == 2:
+                done.set()
+
+    task = asyncio.create_task(consume())
+    try:
+        await asyncio.wait_for(done.wait(), 3)
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    assert audios == [b"", b"\x07\x07"]
+
+
+async def test_pre_speech_ended_audio_is_capped_to_one_utterance():
+    from services.conversation.session import MAX_UTTERANCE_BYTES
+
+    big = b"\x01" * MAX_UTTERANCE_BYTES
+    audios = await _utterance_audio_per_turn([_audio(big), _audio(b"\x02\x02"), _speech_ended()])
+
+    assert audios[0] == b"" and len(audios[1]) <= MAX_UTTERANCE_BYTES
+    assert audios[1].endswith(b"\x02\x02")
+
+
+async def test_half_close_during_the_drain_still_transcribes_the_deferred_utterance():
+    audios: list[bytes] = []
+    release = asyncio.Event()
+
+    async def turn(session_id, audio, duration_ms, energy_db):
+        audios.append(audio)
+        if len(audios) == 1:
+            await release.wait()
+        yield HandlerResponse(stt_text=f"turn{len(audios)}")
+
+    servicer, handler = _servicer(turn)
+    handler.on_audio.return_value = HandlerResponse()
+
+    async def on_cancel(_sid):
+        release.set()      # a cancelled turn ends
+
+    handler.on_cancel.side_effect = on_cancel
+
+    async def stream():
+        yield _open()
+        yield _speech_ended()
+        await asyncio.sleep(0.05)
+        yield _audio(b"\x05\x05")
+        yield _speech_ended()
+        # generator returns: gateway half-closes
+
+    async def consume():
+        async for _ in servicer.Converse(stream(), AsyncMock()):
+            pass
+
+    await asyncio.wait_for(consume(), 3)
+    assert audios == [b"", b"\x05\x05"]
+
+
 async def test_audio_flood_behind_a_deferred_speech_ended_is_capped(monkeypatch):
     """Issue #201: a deferred speech_ended makes every later frame queue whole; the held audio
     of one utterance must stop at the utterance cap instead of growing with the flood."""
@@ -355,3 +451,47 @@ async def test_audio_under_the_cap_is_untouched(monkeypatch):
     )
 
     assert audios[2] == b"\x03" * 1000
+
+
+async def test_cancel_drops_pre_cancel_frames_so_the_barge_in_utterance_is_clean():
+    """Frames buffered before a cancel_generation must not be replayed after the barge-in audio."""
+    audios: list[bytes] = []
+    release = asyncio.Event()
+
+    async def turn(session_id, audio, duration_ms, energy_db):
+        audios.append(audio)
+        if len(audios) == 1:
+            await release.wait()
+        yield HandlerResponse(stt_text=f"turn{len(audios)}")
+
+    servicer, handler = _servicer(turn)
+    handler.on_audio.return_value = HandlerResponse()
+    done = asyncio.Event()
+
+    async def stream():
+        yield _open()
+        yield _speech_ended()
+        await asyncio.sleep(0.05)
+        yield _audio(b"\x09\x09")
+        yield _cancel()
+        yield _audio(b"\x05\x05")
+        yield _speech_ended()
+        await asyncio.sleep(0.05)
+        release.set()
+        await asyncio.Event().wait()
+
+    async def consume():
+        async for _ in servicer.Converse(stream(), AsyncMock()):
+            if len(audios) == 2:
+                done.set()
+
+    task = asyncio.create_task(consume())
+    try:
+        await asyncio.wait_for(done.wait(), 3)
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    assert audios[1] == b"\x05\x05"

@@ -199,9 +199,18 @@ class ZohoCrmSetup(BaseModel):
     preset_key: Literal["zoho_crm"]
 
 
+class ZohoDeskSetup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preset_key: Literal["zoho_desk_ticket"]
+    # Zoho Desk → Setup → Developer Space → API shows both; they are numeric ids.
+    org_id: str = Field(pattern=r"^\d{1,30}$")
+    department_id: str = Field(pattern=r"^\d{1,30}$")
+
+
 PresetApplyRequest = Annotated[
     CalendarBookingSetup | WhatsAppSetup | SheetsLeadCaptureSetup
-    | SalesforceCrmSetup | HubspotCrmSetup | ZohoCrmSetup,
+    | SalesforceCrmSetup | HubspotCrmSetup | ZohoCrmSetup | ZohoDeskSetup,
     Field(discriminator="preset_key"),
 ]
 

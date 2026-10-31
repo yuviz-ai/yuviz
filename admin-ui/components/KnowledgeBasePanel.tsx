@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Check, X } from "lucide-react";
 import { ApiError } from "@/lib/api";
@@ -31,7 +31,7 @@ const samePolicy = (a: PolicyForm, b: PolicyForm) =>
   && a.include_citations === b.include_citations;
 
 // The agent's knowledge: which of the account's documents it answers from, and how it searches them.
-export function KnowledgeBasePanel({ tenantId, agentId }: { tenantId: string; agentId: string }) {
+export function KnowledgeBasePanel({ tenantId, agentId, children }: { tenantId: string; agentId: string; children?: ReactNode }) {
   const [documents, setDocuments] = useState<KbDocument[]>([]);
   const [savedIds, setSavedIds] = useState<string[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -298,6 +298,8 @@ export function KnowledgeBasePanel({ tenantId, agentId }: { tenantId: string; ag
           </div>
         </div>
       </section>
+
+      {children}
 
       <div className="knowledge-agent-footer">
         {saved && <span className="saved-note">Saved <Check size={13} /></span>}

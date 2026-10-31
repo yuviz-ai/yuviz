@@ -13,6 +13,7 @@ from libs.tenancy import tenant_conn
 
 from .. import agent_templates
 from .. import agent_testing
+from .. import voice_input
 from .. import agents as agents_service
 from .. import cache, db
 from .. import tenants as tenants_service
@@ -245,7 +246,8 @@ async def create_test_session(
 ):
     tenant = await _resolve_tenant(tenant_slug, current_user)
     agent = await _load_agent(tenant, agent_id)
-    if body.channel != _agent_channel(agent):
+    # Any agent can be validated by chat; only a voice agent takes a voice test.
+    if body.channel == "voice" and _agent_channel(agent) != "voice":
         raise HTTPException(status_code=400, detail="channel does not match this agent")
     request.app.state.agent_assist_throttle.check_mint(str(tenant["id"]))
     return await agent_testing.mint_test_session(
@@ -276,6 +278,36 @@ async def test_chat(
     except ValueError:
         raise HTTPException(status_code=502, detail="ai_unavailable")
     return {"reply": reply}
+
+
+@router.post("/{agent_id}/voice-input")
+async def transcribe_voice_input(
+    request: Request,
+    tenant_slug: str,
+    agent_id: str,
+    current_user: CurrentUser = Depends(require_role("superadmin", "admin")),
+):
+    """Voice typing for the console: the raw recorded clip in, its text out, heard by the agent's own STT model."""
+    tenant = await _resolve_tenant(tenant_slug, current_user)
+    agent = await _load_agent(tenant, agent_id)
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > voice_input.MAX_CLIP_BYTES:
+        raise HTTPException(status_code=413, detail="the recording is too long; keep it under a minute")
+    request.app.state.agent_assist_throttle.check_voice(str(tenant["id"]))
+    chunks = []
+    total_size = 0
+    async for chunk in request.stream():
+        total_size += len(chunk)
+        if total_size > voice_input.MAX_CLIP_BYTES:
+            raise HTTPException(status_code=413, detail="the recording is too long; keep it under a minute")
+        chunks.append(chunk)
+    audio = b"".join(chunks)
+    try:
+        return await voice_input.transcribe_clip(
+            tenant, agent, audio, request.headers.get("content-type", ""), secret_resolver=_secret_resolver,
+        )
+    except voice_input.VoiceInputUnavailable as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.post("/{agent_id}/prompt/revise")

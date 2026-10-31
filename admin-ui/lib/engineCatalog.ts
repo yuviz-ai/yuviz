@@ -132,6 +132,15 @@ export const VOICES_BY_ENGINE: Record<string, VoiceOption[] | null> = {
   ],
 };
 
+// bulbul:v3 speakers (Sarvam API reference); the server rejects any other name for that model.
+const SARVAM_V3_FEMALE = ["ritu", "priya", "neha", "pooja", "simran", "kavya", "ishita", "shreya", "roopa", "tanya", "shruti", "suhani", "kavitha", "rupali"];
+const SARVAM_V3_MALE = ["shubh", "aditya", "rahul", "rohan", "amit", "dev", "ratan", "varun", "manan", "sumit", "kabir", "aayan", "ashutosh", "advait", "anand", "tarun", "sunny", "mani", "gokul", "vijay", "mohit", "rehan", "soham"];
+const title = (n: string) => n[0].toUpperCase() + n.slice(1);
+export const SARVAM_V3_VOICES: VoiceOption[] = [
+  ...SARVAM_V3_MALE.map((id) => ({ id, label: id === "shubh" ? "Shubh (default)" : title(id), gender: "male" as const })),
+  ...SARVAM_V3_FEMALE.map((id) => ({ id, label: title(id), gender: "female" as const })),
+];
+
 // Suggested values for agents.language; not enforced (free text via "Other").
 export const LANGUAGES = [
   { value: "en", label: "English" },
@@ -165,6 +174,11 @@ export const MAX_LANGUAGES = 2;
 export const SUPPORTED_LANGUAGES = [
   { value: "en", label: "English", native: "English" },
   { value: "hi", label: "Hindi", native: "हिन्दी" },
+  { value: "ta", label: "Tamil", native: "தமிழ்" },
+  { value: "te", label: "Telugu", native: "తెలుగు" },
+  { value: "kn", label: "Kannada", native: "ಕನ್ನಡ" },
+  { value: "mr", label: "Marathi", native: "मराठी" },
+  { value: "bn", label: "Bengali", native: "বাংলা" },
   { value: "es", label: "Spanish", native: "Español" },
   { value: "fr", label: "French", native: "Français" },
   { value: "de", label: "German", native: "Deutsch" },
@@ -208,8 +222,17 @@ export function ttsLanguages(p: { engine: string; model: string | null; voice: s
     const model = String(extra.model_id ?? p.model ?? "eleven_turbo_v2_5").toLowerCase();
     return ELEVENLABS_ENGLISH_ONLY_MODELS.includes(model) ? ["en"] : MULTILINGUAL_TTS;
   }
+  if (p.engine === "sarvam") {
+    // A Bulbul v4 persona speaks the languages in its name (shubh_enhi_ads); v3 speakers speak all of them.
+    const persona = (p.voice ?? "").toLowerCase().match(/^[a-z]+_([a-z]+)_[a-z]+$/);
+    if (!persona) return SARVAM_LANGUAGES;
+    return persona[1] === "enhi" ? ["en", "hi"] : SARVAM_LANGUAGES.filter((l) => l === persona[1]);
+  }
   return ["en"];
 }
+
+// Mirrors SARVAM_LANGUAGES in libs/config_sdk/languages.py.
+export const SARVAM_LANGUAGES = ["en", "hi", "ta", "te", "kn", "mr", "bn"];
 
 export const PREMIUM_ENGINES = ["elevenlabs", "cartesia"];
 
@@ -218,7 +241,7 @@ export function voiceSpeaks(
   voice: ProviderConfig | null | undefined, lang: string, supports: (engine: string, name: string, lang: string) => boolean,
 ): boolean {
   if (!voice) return false;
-  if (PREMIUM_ENGINES.includes(voice.engine)) return ttsLanguages(voice).includes(lang);
+  if (!LOCAL_ENGINES.has(voice.engine)) return ttsLanguages(voice).includes(lang);
   return !!voice.voice && supports(voice.engine, voice.voice, lang);
 }
 

@@ -22,6 +22,7 @@ import websockets
 from libs.config_sdk.languages import normalize_language
 
 from ..interfaces import INSTANCE_LANGUAGE, SttResult
+from services.conversation.providers.http_pool import provider_http_limits
 
 log = logging.getLogger(__name__)
 
@@ -139,6 +140,7 @@ class DeepgramSTT:
             base_url=base_url.rstrip("/"),
             headers={"Authorization": f"Token {api_key}"},
             timeout=timeout_s,
+            limits=provider_http_limits(),
         )
         # Swappable for tests. One live connection per session, opened on first chunk.
         self._ws_connect = websockets.connect

@@ -153,7 +153,7 @@ async def test_agent_call_stats_count_per_agent_and_never_cross_tenants(test_ten
         [stats] = await calls.get_agent_call_stats(test_tenant["slug"])
         assert stats["agent_id"] == mine
         assert (stats["calls"], stats["tests"], stats["avg_duration_ms"]) == (3, 1, 20000)
-        assert (stats["finished"], stats["failed"]) == (3, 1)
+        assert (stats["finished"], stats["failed"], stats["handoffs"]) == (3, 1, 1)
     finally:
         await pool.execute("DELETE FROM calls WHERE session_id = ANY($1)", ids)
         await pool.execute("DELETE FROM agents WHERE id = ANY($1)", [mine, foreign])
