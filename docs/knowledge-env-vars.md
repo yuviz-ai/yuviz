@@ -230,6 +230,8 @@ Read by `services/conversation`; listed so the reference is complete.
 | `VOICEAI_LANG_SHORT_MIN_CONFIDENCE_HI` | `0` | float | Language detection: short-utterance confidence for Hindi. | `services/conversation/language.py:47` |
 | `VOICEAI_LANG_SHORT_MIN_S` | `0.45` | float | Language detection: what counts as a short utterance (s). | `services/conversation/language.py:40` |
 | `VOICEAI_LANG_SWITCH_STREAK` | `1` | float | Language detection: consecutive detections needed to switch. | `services/conversation/language.py:35` |
+| `VOICEAI_MAX_BACKLOG_BYTES` | `7680000` | int | Total bytes of caller input queued behind a busy turn; oldest utterances dropped beyond it. Floor is MAX_UTTERANCE_BYTES + 64 KiB (raised with a warning). | `services/conversation/servicer.py:56` |
+| `VOICEAI_MAX_QUEUED_UTTERANCES` | `3` | int | Complete caller utterances queued behind a busy turn; oldest dropped beyond it. 0 means no limit. | `services/conversation/servicer.py:61` |
 | `VOICEAI_LLM_MODEL` | `(unset)` | str | Dev override: LLM model name. | `services/conversation/__main__.py:232`, `services/conversation/pipeline_config.py:104` |
 | `VOICEAI_LLM_SYSTEM` | `(unset)` | str | Dev override: LLM system prompt. | `services/conversation/pipeline_config.py:105` |
 | `VOICEAI_LLM_TEMPERATURE` | `0.7` | float | Dev override: LLM temperature. | `services/conversation/pipeline_config.py:107` |
